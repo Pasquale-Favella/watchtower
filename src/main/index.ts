@@ -1,14 +1,19 @@
 import { homedir } from 'node:os'
+import { pathToFileURL } from 'node:url'
 
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
+import * as RpcServer from 'effect/rpc/RpcServer'
 import * as Schema from 'effect/Schema'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
+import { ApplicationRpcGroup, PanelRpcGroup } from '../shared/rpc/application.js'
+import { serverProtocolLayer } from '../shared/rpc/port-protocol.js'
 import type { ComparePair } from '../shared/schemas/compare.js'
 import type { ExportResult } from '../shared/schemas/export.js'
 import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
@@ -41,6 +46,8 @@ import {
   safeLogOperationalEvent,
 } from './operational-log.js'
 import { createQuitCoordinator } from './quit-coordinator.js'
+import { registerElectronRpc, type RpcWindowRole } from './rpc/electron.js'
+import { analyticsHandlers, configHandlers } from './rpc/handlers.js'
 import { AppUpdates, updatesLayer } from './updates.js'
 
 /**
@@ -56,6 +63,9 @@ import { AppUpdates, updatesLayer } from './updates.js'
 let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
+const rendererRoles = new WeakMap<Electron.WebContents, RpcWindowRole>()
+const rendererRpcFibers = new Set<Fiber.Fiber<never>>()
+let disposeRendererRpc: (() => void) | undefined
 const mainRuntime = makeMainRuntime(
   {
     clientVersion: app.getVersion(),
@@ -65,6 +75,7 @@ const mainRuntime = makeMainRuntime(
   {},
   Layer.merge(
     backgroundShellLayer({
+      onRendererWindow: (window, role) => rendererRoles.set(window.webContents, role),
       preloadPath: join(__dirname, '../preload/index.js'),
       rendererUrl: process.env['ELECTRON_RENDERER_URL'],
       rendererDir: join(__dirname, '../renderer'),
@@ -500,6 +511,7 @@ function createWindow(): BrowserWindow {
     },
   })
 
+  rendererRoles.set(mainWindow.webContents, 'app')
   mainWindow.on('ready-to-show', () => mainWindow.show())
   backgroundShell?.attachMainWindow(mainWindow)
 
@@ -538,6 +550,35 @@ app.whenReady().then(async () => {
   relayWorkerEvents(db)
   dbClient = db
   registerIpc(db)
+  disposeRendererRpc = registerElectronRpc({
+    ipcMain,
+    resolveRole: ({ webContents, url }) => {
+      const role = rendererRoles.get(webContents)
+      // Beacon RPC remains unavailable until its lifecycle-only contract is installed.
+      if (!role || role === 'beacon') return undefined
+      const filename = role === 'app' ? 'index.html' : 'orb-panel.html'
+      const rendererUrl = process.env['ELECTRON_RENDERER_URL']
+      const expected = rendererUrl
+        ? role === 'app'
+          ? new URL(rendererUrl).href
+          : new URL(filename, `${rendererUrl.replace(/\/$/, '')}/`).href
+        : pathToFileURL(join(__dirname, '../renderer', filename)).href
+      return new URL(url).href === expected ? role : undefined
+    },
+    onConnection: (port, role) => {
+      const handlers = Layer.merge(analyticsHandlers(db, role === 'panel' ? 'panel' : 'app'), configHandlers(db))
+      const protocol = serverProtocolLayer(port)
+      const options = { disableTracing: true, disableFatalDefects: true } as const
+      const program =
+        role === 'panel'
+          ? RpcServer.make(PanelRpcGroup, options).pipe(Effect.provide(Layer.merge(handlers, protocol)))
+          : RpcServer.make(ApplicationRpcGroup, options).pipe(Effect.provide(Layer.merge(handlers, protocol)))
+      const fiber = mainRuntime.runFork(program)
+      rendererRpcFibers.add(fiber)
+      fiber.addObserver(() => rendererRpcFibers.delete(fiber))
+      return () => fiber.interruptUnsafe()
+    },
+  })
   backgroundShell = await mainRuntime.runPromise(BackgroundShell)
   createWindow()
 
@@ -598,6 +639,8 @@ function showUpdateInstallError(): void {
 const quitCoordinator = createQuitCoordinator({
   markQuitting: () => backgroundShell?.markQuitting(),
   cleanup: async () => {
+    disposeRendererRpc?.()
+    await Promise.all(Array.from(rendererRpcFibers, fiber => mainRuntime.runPromise(Fiber.interrupt(fiber))))
     const coachShutdown = mainRuntime
       .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
       .finally(() => agentsCleanup?.dispose())

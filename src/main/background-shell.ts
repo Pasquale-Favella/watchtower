@@ -77,6 +77,7 @@ const SUMMON_ACCELERATOR = (() => {
 type PanelMode = 'open' | 'peek'
 
 export interface BackgroundShellOptions {
+  onRendererWindow?: (window: BrowserWindow, role: 'beacon' | 'panel') => void
   preloadPath: string
   /** electron-vite's dev server URL, when running `npm run dev`. */
   rendererUrl: string | undefined
@@ -366,6 +367,7 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
     win.setAlwaysOnTop(true, 'floating')
     // macOS: follow the user across Spaces and over full-screen apps.
     win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
+    options.onRendererWindow?.(win, page === 'orb.html' ? 'beacon' : 'panel')
     if (options.rendererUrl) void win.loadURL(`${options.rendererUrl}/${page}`)
     else void win.loadFile(join(options.rendererDir, page))
     return win

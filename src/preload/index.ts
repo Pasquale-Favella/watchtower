@@ -50,6 +50,7 @@ import type {
   SessionRow,
 } from '../shared/schemas/views.js'
 import type { YieldPayload } from '../shared/schemas/yield.js'
+import { createRpcBridge } from './rpc.js'
 
 export type {
   CoachEventEnvelope,
@@ -72,6 +73,7 @@ export type {
 } from '../shared/schemas/ipc.js'
 
 const api = {
+  rpcV1: createRpcBridge(ipcRenderer),
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,

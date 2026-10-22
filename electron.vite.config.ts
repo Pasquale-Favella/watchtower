@@ -22,7 +22,14 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()]
+    // Sandboxed preloads can require Electron, but cannot load Effect from node_modules.
+    plugins: [externalizeDepsPlugin({ exclude: ['effect'] })],
+    build: {
+      rollupOptions: {
+        // Keep bundled dependency bindings out of Electron's preload wrapper scope.
+        output: { banner: '(() => {', footer: '})();' }
+      }
+    }
   },
   renderer: {
     resolve: {
