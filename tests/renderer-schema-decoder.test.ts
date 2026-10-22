@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { parseEvent, parsePayload } from '../src/renderer/src/shared/lib/api.js'
 import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
 import { cadenceOptionSchema, cadenceValueSchema } from '../src/shared/schemas/cadence.js'
+import { exportResultSchema } from '../src/shared/schemas/export.js'
 
 const finiteNumber = Schema.Finite
 const optionalNullableSchema = Schema.Struct({ value: Schema.optional(Schema.NullOr(Schema.String)) })
@@ -13,6 +14,14 @@ afterEach(() => {
 })
 
 describe('renderer Effect Schema decoding', () => {
+  it('decodes export cancellation while rejecting a pathless success', () => {
+    expect(decodeSchema(exportResultSchema, { ok: true }).ok).toBe(false)
+    expect(decodeSchema(exportResultSchema, { ok: false, cancelled: true })).toEqual({
+      ok: true,
+      value: { ok: false, cancelled: true },
+    })
+  })
+
   it('decodes cadence options, strips unknown fields, and accepts nullable milliseconds', () => {
     const schema = cadenceOptionSchema
 

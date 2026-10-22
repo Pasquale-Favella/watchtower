@@ -1,37 +1,20 @@
-import { useState } from 'react'
 import { Download } from 'lucide-react'
 
+import { PaneHeader } from '@/features/settings/pane-parts'
+import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { PaneHeader } from '@/features/settings/pane-parts'
-import { fetchExport } from '@/shared/lib/api'
 
-/** Settings › Export: CSV/JSON export through the export bridge, in the
- * currently selected display currency. The main process shows the folder/file
- * picker at export time — data never leaves the machine. */
+import { selectExportFormat, selectExporting, selectExportMessage, useExportStore } from './export-store'
+
 export function ExportPane() {
-  const [format, setFormat] = useState<'csv' | 'json'>('csv')
-  const [exporting, setExporting] = useState(false)
-  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null)
-
-  const exportNow = async (): Promise<void> => {
-    setResult(null)
-    setExporting(true)
-    try {
-      const outcome = await fetchExport(format)
-      setResult(
-        outcome.ok
-          ? { ok: true, text: `Exported to ${outcome.data.path}.` }
-          : { ok: false, text: outcome.error ?? 'Export failed.' },
-      )
-    } catch (err) {
-      setResult({ ok: false, text: err instanceof Error ? err.message : 'Export failed.' })
-    } finally {
-      setExporting(false)
-    }
-  }
+  const machine = useExportStore(state => state.machine)
+  const format = selectExportFormat(machine)
+  const exporting = selectExporting(machine)
+  const result = selectExportMessage(machine)
+  const selectFormat = useExportStore(state => state.selectFormat)
+  const exportNow = useExportStore(state => state.exportNow)
 
   return (
     <div className="flex max-w-md flex-col gap-3">
@@ -45,10 +28,7 @@ export function ExportPane() {
               { value: 'json', label: 'JSON' },
             ]}
             value={format}
-            onChange={value => {
-              setFormat(value as 'csv' | 'json')
-              setResult(null)
-            }}
+            onChange={value => selectFormat(value as 'csv' | 'json')}
           />
         </div>
         <Separator className="my-3" />
@@ -66,7 +46,8 @@ export function ExportPane() {
         )}
       </Card>
       <p className="text-muted-foreground text-[11px]">
-        CSV writes a folder (summary, daily, models, projects, sessions, tools, mcp). JSON writes one file (schema
+        CSV packs one CSV per table (daily, activity, models, records, projects, sessions, tools, mcp, shell-commands —
+        plus a README) into a single ZIP file you name in the save dialog. JSON writes one file (schema
         watchtower.export.v1).
       </p>
     </div>

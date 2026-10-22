@@ -203,7 +203,20 @@ describe('export file ownership and overwrite checks', () => {
     expect(readdirSync(join(root, 'usage')).sort()).toEqual(
       ['.watchtower-export', ...files.map(file => file.name)].sort(),
     )
-    expect(readFileSync(join(root, 'usage', 'table-8.csv'), 'utf-8')).toBe('row-8')
+    const table8 = readFileSync(join(root, 'usage', 'table-8.csv'), 'utf-8')
+    expect(table8.charCodeAt(0)).toBe(0xfeff)
+    expect(table8.slice(1)).toBe('row-8')
+  })
+
+  it('writes .csv files with a UTF-8 BOM but leaves the marker and README raw', async () => {
+    const root = tempDirectory()
+    const target = join(root, 'usage')
+    await writeCsvWithLivePort(target, [
+      { name: 'README.txt', contents: 'plain readme' },
+      { name: 'daily.csv', contents: 'Date,Cost (USD)\n' },
+    ])
+    expect(readFileSync(join(root, 'usage', 'daily.csv'), 'utf-8').charCodeAt(0)).toBe(0xfeff)
+    expect(readFileSync(join(root, 'usage', 'README.txt'), 'utf-8')).toBe('plain readme')
   })
 
   it('refuses an unmarked directory without changing its contents', async () => {

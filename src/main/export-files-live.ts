@@ -14,6 +14,11 @@ import { mapPlatformCloseCause } from './platform-file-errors.js'
 
 const EXPORT_MARKER_FILE = '.watchtower-export'
 
+/** Excel on Windows decodes BOM-less CSV as ANSI, garbling non-ASCII project
+ * paths and shell commands; a UTF-8 BOM makes it pick the right encoding.
+ * Applied to .csv files only (JSON parsers and README.txt must stay raw). */
+const CSV_UTF8_BOM = String.fromCharCode(0xfeff)
+
 function fileError(reason: ExportFileErrorReason): ExportFileError {
   return new ExportFileError({ reason })
 }
@@ -92,7 +97,13 @@ const writeCsvExportFilesEffect = Effect.fnUntraced(function* (
 
   yield* io(fs.makeDirectory(folder, { recursive: true }))
   yield* io(fs.writeFileString(resolve(folder, EXPORT_MARKER_FILE), ''))
-  for (const file of files) yield* io(fs.writeFileString(join(folder, file.name), file.contents))
+  for (const file of files)
+    yield* io(
+      fs.writeFileString(
+        join(folder, file.name),
+        file.name.endsWith('.csv') ? `${CSV_UTF8_BOM}${file.contents}` : file.contents,
+      ),
+    )
   return folder
 })
 

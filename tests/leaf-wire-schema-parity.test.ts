@@ -140,22 +140,25 @@ describe('leaf wire schemas retain the prior decoded contract', () => {
     ])
   })
 
-  it('preserves optional export-field verdicts and decoded values', () => {
+  it('preserves export verdicts and decoded values (success requires the written path)', () => {
     expectCases(exportResultSchema, [
-      { input: { ok: true }, output: { ok: true } },
       { input: { ok: true, path: '/tmp/export' }, output: { ok: true, path: '/tmp/export' } },
       { input: { ok: false, error: 'denied' }, output: { ok: false, error: 'denied' } },
-      { input: { ok: true, path: undefined }, output: { ok: true, path: undefined } },
-      { input: { ok: false, error: undefined }, output: { ok: false, error: undefined } },
-      {
-        input: { ok: true, path: '/tmp/export', error: 'retained' },
-        output: { ok: true, path: '/tmp/export', error: 'retained' },
-      },
+      { input: { ok: false, cancelled: true }, output: { ok: false, cancelled: true } },
+      // The union strips keys that are not part of the matched variant:
+      { input: { ok: true, path: '/tmp/export', error: 'retained' }, output: { ok: true, path: '/tmp/export' } },
       { input: { ok: false, error: 'denied', extra: true }, output: { ok: false, error: 'denied' } },
+      // A pathless success is a wire error — it used to render as
+      // "Exported to undefined." in the pane:
+      { input: { ok: true }, rejects: true },
+      { input: { ok: true, path: undefined }, rejects: true },
+      { input: { ok: false }, rejects: true },
+      { input: { ok: false, error: undefined }, rejects: true },
       { input: { ok: undefined }, rejects: true },
       { input: { ok: null }, rejects: true },
       { input: { ok: 'true' }, rejects: true },
       { input: { ok: true, path: null }, rejects: true },
+      { input: { ok: false, error: 1 }, rejects: true },
       { input: { ok: true, error: 1 }, rejects: true },
       { input: {}, rejects: true },
       { input: null, rejects: true },
