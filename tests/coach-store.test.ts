@@ -1,39 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { CoachEventEnvelope, CoachSessionModels, CoachSessionModes } from '../src/shared/schemas/agents.js'
 import { harnessBadge, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
-
-function createMemoryStorage(): Storage {
-  const store = new Map<string, string>()
-  return {
-    get length() {
-      return store.size
-    },
-    clear: () => {
-      store.clear()
-    },
-    getItem: (key: string) => store.get(key) ?? null,
-    key: (index: number) => Array.from(store.keys())[index] ?? null,
-    removeItem: (key: string) => {
-      store.delete(key)
-    },
-    setItem: (key: string, value: string) => {
-      store.set(key, value)
-    },
-  }
-}
-
-// The settings store persists via `createJSONStorage(() => localStorage)` at
-// module load — install the memory storage BEFORE the dynamic import.
-const memory = createMemoryStorage()
-vi.stubGlobal('localStorage', memory)
+import type { CoachEventEnvelope, CoachSessionModels, CoachSessionModes } from '../src/shared/schemas/agents.js'
 
 const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
-const { useSettingsStore } = await import('../src/renderer/src/features/settings/store.js')
-const { selectScope, useScopeStore } = await import('../src/renderer/src/app/stores/scope-store.js')
+const { preferencesAtom } = await import('../src/renderer/src/features/settings/preferences-atoms.js')
+const { defaultPreferences } = await import('../src/renderer/src/shared/lib/preferences.js')
+const { overviewScopeAtom } = await import('../src/renderer/src/app/atoms/scope.js')
+const { registry } = await import('../src/renderer/src/app/renderer-runtime.js')
 
 /** The UI-scope snapshot the store attaches to every run (map 53). */
-const expectedScope = (): ReturnType<typeof selectScope> => selectScope(useScopeStore.getState())
+const expectedScope = () => registry.get(overviewScopeAtom)
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. */
 function mockWindow(api: unknown): void {
@@ -55,6 +32,7 @@ const modes: CoachSessionModes = { availableModes: [{ id: 'plan', name: 'Plan' }
 
 beforeEach(() => {
   useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
+  registry.set(preferencesAtom, defaultPreferences)
 })
 
 describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
@@ -284,21 +262,21 @@ describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
     // The acked first run is still "in flight" (no completion events in this
     // test) — settle it so the second send is not refused as concurrent.
     useCoachSkillsStore.setState({ running: false, activeRunId: null })
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
+    registry.set(preferencesAtom, { ...registry.get(preferencesAtom), allowHarnessApiKeyEnv: true })
     await useCoachSkillsStore.getState().sendCoach('p2')
     expect(startCoachRun).toHaveBeenLastCalledWith(expect.objectContaining({ allowApiKeyEnv: true }))
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(false)
+    registry.set(preferencesAtom, { ...registry.get(preferencesAtom), allowHarnessApiKeyEnv: false })
   })
 
   it('inspectHarness carries the API-key passthrough opt-in from settings', async () => {
     const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'nope' }))
     mockWindow({ inspectCoachHarness })
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
+    registry.set(preferencesAtom, { ...registry.get(preferencesAtom), allowHarnessApiKeyEnv: true })
 
     await useCoachSkillsStore.getState().inspectHarness('claude')
 
     expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude', allowApiKeyEnv: true })
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(false)
+    registry.set(preferencesAtom, { ...registry.get(preferencesAtom), allowHarnessApiKeyEnv: false })
   })
 
   it('setHarness clears the live set for an UNCACHED harness without probing it', () => {

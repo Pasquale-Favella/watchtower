@@ -1,11 +1,12 @@
 import { create } from 'zustand'
 
+import { invalidateAnalyticsAtom } from '@/app/atoms/invalidation'
+import { registry } from '@/app/renderer-runtime'
 import { fetchAnalytics, fetchScan, fetchScanActive, fetchScanStatus } from '@/shared/lib/api'
 
 import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
-import { SCAN_STAGE_ORDER } from '../../../../shared/schemas/scan.js'
-
 import type { ScanMetadata, ScanProgress, ScanStage } from '../../../../shared/schemas/scan.js'
+import { SCAN_STAGE_ORDER } from '../../../../shared/schemas/scan.js'
 
 /** Rows/blobs the last scan skipped because a declared field failed the
  * extraction schema — the drift signal ADR 0003 says must be visible. */
@@ -116,6 +117,8 @@ export const useScanStore = create<ScanState>()((set, get) => ({
     }
     set(state => ({ refreshVersion: state.refreshVersion + 1 }))
     notifyRefreshListeners()
+    // Removed with this legacy scan store when its lifecycle moves to Effect atoms.
+    registry.set(invalidateAnalyticsAtom, undefined)
   },
   refresh: async () => {
     set({ scanning: true, scanError: null })

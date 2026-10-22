@@ -1,11 +1,12 @@
+import { useAtomValue } from '@effect/atom-react'
 import { useEffect } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 
-import { cn } from '@/shared/lib/utils'
-import { motionClass } from '@/shared/lib/motion'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { overviewScopeAtom } from '@/app/atoms/scope'
 import { useCoachSkillsStore } from '@/features/coach-skills/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { motionClass } from '@/shared/lib/motion'
+import { cn } from '@/shared/lib/utils'
+
 import { ConversationView } from './conversation'
 
 /** The Coach section (ADR 0017, conversation prototype picked on map 58): a
@@ -21,7 +22,7 @@ import { ConversationView } from './conversation'
  *  here, the surface is the colocated conversation components
  *  (elements.ai-sdk.dev-inspired). */
 export function CoachSkillsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
+  const scope = useAtomValue(overviewScopeAtom)
   const detection = useCoachSkillsStore(s => s.detection)
   const loadHarnesses = useCoachSkillsStore(s => s.loadHarnesses)
 

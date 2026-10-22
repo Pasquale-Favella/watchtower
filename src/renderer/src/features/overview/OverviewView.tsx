@@ -1,19 +1,22 @@
-import { useEffect, useMemo } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useAtomValue } from '@effect/atom-react'
+import { useMemo } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { Panel } from '@/shared/components/Panel'
-import { BarList, type BarItem } from '@/features/overview/BarList'
-import { DailySpendChart } from '@/features/overview/DailySpendChart'
-import { formatChartDate, formatChartValue } from '@/features/overview/lib'
-import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
-import { motionClass } from '@/shared/lib/motion'
-import { formatUsd } from '@/shared/lib/models'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { LoadingRegion, SkeletonCard, SkeletonLines, SkeletonBars } from '@/shared/components/skeletons'
-import { useOverviewStore } from '@/features/overview/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { overviewScopeAtom } from '@/app/atoms/scope'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSection } from '@/app/navigation'
+import { overviewQuery } from '@/features/overview/atoms'
+import { type BarItem, BarList } from '@/features/overview/BarList'
+import { DailySpendChart } from '@/features/overview/DailySpendChart'
+import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
+import { formatChartDate, formatChartValue } from '@/features/overview/lib'
+import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { Panel } from '@/shared/components/Panel'
+import { LoadingRegion, SkeletonBars, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
+import { formatUsd } from '@/shared/lib/models'
+import { motionClass } from '@/shared/lib/motion'
+import { keyOfScope } from '@/shared/lib/query-keys'
+import { cn } from '@/shared/lib/utils'
+
 import type { OverviewPayload } from '../../../../shared/schemas/overview.js'
 
 function formatCompact(n: number): string {
@@ -239,17 +242,8 @@ function LocalSavingsPanel({ payload }: { payload: OverviewPayload }) {
 }
 
 export function OverviewView() {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = useOverviewStore(s => s.data)
-  const error = useOverviewStore(s => s.error)
-  const load = useOverviewStore(s => s.load)
-
-  // Store-driven load (ADR 0011): the store owns fetching — same-scope
-  // refetches (refresh tick) keep the last-known payload (true SWR), scope
-  // changes clear to a fresh load.
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
+  const scope = useAtomValue(overviewScopeAtom)
+  const { data: payload, error } = useRemoteQuery(overviewQuery, scope, keyOfScope)
 
   const chartData = useMemo(() => payload?.daily ?? [], [payload])
   const topModel = payload?.models[0]

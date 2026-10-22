@@ -1,26 +1,28 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+import { useMemo, useState } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import {
-  filterSessions,
-  sortSessions,
-  groupSessionsByProvider,
-  summarizeSessions,
-  type SessionSort,
-} from '@/features/sessions/sessions-lib'
-import { formatUsd } from '@/shared/lib/models'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { useSessionsStore } from '@/features/sessions/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSession } from '@/app/navigation'
 import { useScanStore } from '@/app/stores/scan-store'
+import { sessionRowsQuery } from '@/features/sessions/atoms'
 import type { SessionRow } from '@/features/sessions/drilldown'
+import {
+  filterSessions,
+  groupSessionsByProvider,
+  type SessionSort,
+  sortSessions,
+  summarizeSessions,
+} from '@/features/sessions/sessions-lib'
+import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { formatUsd } from '@/shared/lib/models'
+import { motionClass } from '@/shared/lib/motion'
+import { keyOfScope } from '@/shared/lib/query-keys'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { cn } from '@/shared/lib/utils'
 
 const SORT_OPTIONS: SegOption[] = [
   { value: 'cost', label: 'Cost' },
@@ -111,20 +113,14 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
 }
 
 export function SessionsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const rows = useSessionsStore(s => s.data)
-  const error = useSessionsStore(s => s.error)
-  const load = useSessionsStore(s => s.load)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
+  const scope = useAtomValue(overviewScopeAtom)
+  const { data: rows, error } = useRemoteQuery(sessionRowsQuery, scope, keyOfScope)
+  const provider = useAtomValue(providerAtom)
+  const setProvider = useAtomSet(setProviderAtom)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)
-
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
 
   const filtered = useMemo(() => filterSessions(rows ?? [], query), [rows, query])
   const summary = useMemo(() => summarizeSessions(filtered), [filtered])

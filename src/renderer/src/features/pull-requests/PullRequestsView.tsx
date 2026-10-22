@@ -1,25 +1,28 @@
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+import { ChevronRight, GitPullRequest } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent } from 'react'
-import { useEffect, useMemo, useState } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useMemo, useState } from 'react'
 
-import { GitPullRequest, ChevronRight } from 'lucide-react'
-import { cn } from '@/shared/lib/utils'
-import { Panel } from '@/shared/components/Panel'
-import { InfoTip } from '@/shared/components/InfoTip'
-import { MetricCard } from '@/features/overview/MetricCard'
-import { Card } from '@/shared/components/ui/card'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { spanLabel, sessionWord, summarizePullRequests, payloadSpan } from '@/features/pull-requests/lib'
-import { formatUsd } from '@/shared/lib/models'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonCard, SkeletonMetricCard, SkeletonRows } from '@/shared/components/skeletons'
-import { usePullRequestsStore } from '@/features/pull-requests/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { useScanStore } from '@/app/stores/scan-store'
-import type { PullRequestsPayload, PullRequestRow } from '../../../../shared/schemas/pull-requests.js'
+import { MetricCard } from '@/features/overview/MetricCard'
+import { pullRequestsQuery } from '@/features/pull-requests/atoms'
+import { payloadSpan, sessionWord, spanLabel, summarizePullRequests } from '@/features/pull-requests/lib'
+import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { InfoTip } from '@/shared/components/InfoTip'
+import { Panel } from '@/shared/components/Panel'
+import { SegTabs } from '@/shared/components/SegTabs'
+import { LoadingRegion, SkeletonCard, SkeletonMetricCard, SkeletonRows } from '@/shared/components/skeletons'
+import { Card } from '@/shared/components/ui/card'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { formatUsd } from '@/shared/lib/models'
+import { motionClass } from '@/shared/lib/motion'
+import { keyOfScope } from '@/shared/lib/query-keys'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { cn } from '@/shared/lib/utils'
+
+import type { PullRequestRow, PullRequestsPayload } from '../../../../shared/schemas/pull-requests.js'
 
 function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
   event.preventDefault()
@@ -296,18 +299,12 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
 }
 
 export function PullRequestsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = usePullRequestsStore(s => s.data)
-  const error = usePullRequestsStore(s => s.error)
-  const load = usePullRequestsStore(s => s.load)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
+  const scope = useAtomValue(overviewScopeAtom)
+  const { data: payload, error } = useRemoteQuery(pullRequestsQuery, scope, keyOfScope)
+  const provider = useAtomValue(providerAtom)
+  const setProvider = useAtomSet(setProviderAtom)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
-
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
 

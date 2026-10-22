@@ -1,55 +1,36 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { selectScope, useScopeStore } from '../src/renderer/src/app/stores/scope-store.js'
-import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
-
+import {
+  customRangeAtom,
+  overviewScopeAtom,
+  periodAtom,
+  providerAtom,
+  setCustomRangeAtom,
+  setPeriodAtom,
+  setProviderAtom,
+} from '../src/renderer/src/app/atoms/scope.js'
+import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
+let owner: ReturnType<typeof createRendererRuntimeOwner>
 beforeEach(() => {
-  useScopeStore.setState(useScopeStore.getInitialState(), true)
+  owner = createRendererRuntimeOwner({ initialPeriod: 'week' })
 })
-
-describe('useScopeStore (ADR 0011)', () => {
-  it('starts on the persisted default period, all providers, no custom range', () => {
-    const s = useScopeStore.getState()
-    expect(s.period).toBe('today')
-    expect(s.provider).toBe('all')
-    expect(s.customRange).toBeNull()
+afterEach(() => owner.dispose())
+describe('Scope atoms', () => {
+  it('seeds the transient active period before the first read', () => {
+    expect(owner.registry.get(periodAtom)).toBe('week')
+    expect(owner.registry.get(providerAtom)).toBe('all')
+    expect(owner.registry.get(customRangeAtom)).toBeNull()
   })
-
-  it('seeds the active period from the persisted default (ADR 0011)', () => {
-    expect(useScopeStore.getState().period).toBe(useSettingsStore.getState().defaultPeriod)
+  it('clears the custom range when the selected period changes', () => {
+    owner.registry.set(setCustomRangeAtom, { since: '2026-01-01', until: '2026-01-07' })
+    owner.registry.set(setPeriodAtom, '30days')
+    expect(owner.registry.get(overviewScopeAtom)).toEqual({ period: '30days' })
   })
-
-  it('setPeriod clears a custom range (parity with AppRoot)', () => {
-    useScopeStore.getState().setCustomRange({ since: '2026-01-01', until: '2026-01-07' })
-    useScopeStore.getState().setPeriod('week')
-    const s = useScopeStore.getState()
-    expect(s.period).toBe('week')
-    expect(s.customRange).toBeNull()
-  })
-
-  it('setCustomRange/setProvider store the raw values', () => {
-    useScopeStore.getState().setProvider('openai')
-    useScopeStore.getState().setCustomRange({ since: 'a', until: 'b' })
-    const s = useScopeStore.getState()
-    expect(s.provider).toBe('openai')
-    expect(s.customRange).toEqual({ since: 'a', until: 'b' })
-  })
-})
-
-describe('selectScope', () => {
-  it('maps the all-provider sentinel to an undefined filter', () => {
-    useScopeStore.setState({ period: 'week', provider: 'all', customRange: null })
-    expect(selectScope(useScopeStore.getState())).toEqual({ period: 'week' })
-  })
-
-  it('maps a concrete provider and custom range through', () => {
-    useScopeStore.setState({
-      period: '30days',
-      provider: 'openai',
-      customRange: { since: '2026-01-01', until: '2026-01-31' },
-    })
-    expect(selectScope(useScopeStore.getState())).toEqual({
-      period: '30days',
+  it('includes the provider and custom range in the query identity', () => {
+    owner.registry.set(setProviderAtom, 'openai')
+    owner.registry.set(setCustomRangeAtom, { since: '2026-01-01', until: '2026-01-31' })
+    expect(owner.registry.get(overviewScopeAtom)).toEqual({
+      period: 'week',
       provider: 'openai',
       range: { since: '2026-01-01', until: '2026-01-31' },
     })

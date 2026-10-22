@@ -1,15 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ExternalLink, ShieldAlert, X } from 'lucide-react'
+import { useEffect, useState } from 'react'
 
+import { useScanStore } from '@/app/stores/scan-store'
+import { AboutSection } from '@/features/settings/AboutSection'
+import {
+  activeCurrencyAtom,
+  cadenceAtom,
+  currencyOptionsAtom,
+  setCadenceAtom,
+  setCurrencyAtom,
+} from '@/features/settings/atoms'
+import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
+import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { AboutSection } from '@/features/settings/AboutSection'
-import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
-import { DEFAULT_PERIOD_OPTIONS } from '@/shared/lib/settings-constants'
 import { fetchSettings } from '@/shared/lib/api'
-import { useSettingsStore } from '@/features/settings/store'
-import { useScanStore } from '@/app/stores/scan-store'
+import { DEFAULT_PERIOD_OPTIONS } from '@/shared/lib/settings-constants'
+import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
 
 const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
@@ -23,15 +31,13 @@ const THEME_OPTIONS = [
 export function GeneralPane() {
   const fdaNeeded = useScanStore(s => s.fdaNeeded)
   const [fdaDismissed, setFdaDismissed] = useState(false)
-  const theme = useSettingsStore(s => s.theme)
-  const setTheme = useSettingsStore(s => s.setTheme)
-  const cadence = useSettingsStore(s => s.cadence)
-  const setCadence = useSettingsStore(s => s.setCadence)
-  const currency = useSettingsStore(s => s.activeCurrency)
-  const currencyOptions = useSettingsStore(s => s.currencyOptions)
-  const setCurrency = useSettingsStore(s => s.setCurrency)
-  const defaultPeriod = useSettingsStore(s => s.defaultPeriod)
-  const setDefaultPeriod = useSettingsStore(s => s.setDefaultPeriod)
+  const preferences = useAtomValue(preferencesAtom)
+  const cadence = useAtomValue(cadenceAtom)
+  const currency = useAtomValue(activeCurrencyAtom)
+  const currencyOptions = useAtomValue(currencyOptionsAtom)
+  const setPreferences = useAtomSet(setPreferencesAtom)
+  const setCadence = useAtomSet(setCadenceAtom)
+  const setCurrency = useAtomSet(setCurrencyAtom)
   const [claudeConfigDirs, setClaudeConfigDirs] = useState<string[] | undefined>()
 
   useEffect(() => {
@@ -46,7 +52,7 @@ export function GeneralPane() {
   }, [])
 
   const choosePeriod = (value: string): void => {
-    setDefaultPeriod(value)
+    setPreferences({ defaultPeriod: value as typeof preferences.defaultPeriod })
   }
 
   // The Claude-config row is conditional: shown when a
@@ -92,7 +98,11 @@ export function GeneralPane() {
         <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Appearance</p>
         <div className="flex items-center justify-between gap-3">
           <span className="text-foreground text-[12.5px]">Theme</span>
-          <SegTabs options={THEME_OPTIONS} value={theme} onChange={value => setTheme(value as Theme)} />
+          <SegTabs
+            options={THEME_OPTIONS}
+            value={preferences.theme}
+            onChange={value => setPreferences({ theme: value as Theme })}
+          />
         </div>
         <p className="text-muted-foreground text-[11px]">Match your system or force a mode; your choice persists.</p>
       </div>
@@ -111,7 +121,7 @@ export function GeneralPane() {
             <Select
               value={currency.code}
               onValueChange={value => {
-                if (value) void setCurrency(value)
+                if (value) setCurrency(value)
               }}
             >
               <SelectTrigger id="settings-currency" size="sm" className="mt-1 w-full text-[12.5px]">
@@ -131,7 +141,7 @@ export function GeneralPane() {
               size="sm"
               className="mt-1 shrink-0 text-[11px]"
               disabled={currency.code === 'USD'}
-              onClick={() => void setCurrency('USD')}
+              onClick={() => setCurrency('USD')}
             >
               Reset to USD
             </Button>
@@ -155,7 +165,7 @@ export function GeneralPane() {
           </label>
           <p className="text-muted-foreground text-[11px]">Applied on next launch.</p>
           <Select
-            value={defaultPeriod}
+            value={preferences.defaultPeriod}
             onValueChange={value => {
               if (value) choosePeriod(value)
             }}
@@ -183,7 +193,7 @@ export function GeneralPane() {
           <Select
             value={cadence}
             onValueChange={value => {
-              if (value) void setCadence(value)
+              if (value) setCadence(value)
             }}
           >
             <SelectTrigger id="settings-cadence" size="sm" className="mt-1 w-full text-[12.5px]">

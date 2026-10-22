@@ -1,4 +1,6 @@
-import { useSettingsStore } from '@/features/settings/store'
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+
+import { preferencesAtom, setPreferencesAtom } from './preferences-atoms'
 
 /** Settings › Skills detection (ticket 24, ADR 0017): the frequency × spread
  * gate the detection core consumes — the suggested-skill pool the unified
@@ -6,9 +8,8 @@ import { useSettingsStore } from '@/features/settings/store'
  * theme and passed with every `skills:view` request — the values are app
  * settings, not code constants. */
 export function SkillsPane() {
-  const frequency = useSettingsStore(s => s.skillsFrequency)
-  const spread = useSettingsStore(s => s.skillsSpread)
-  const setSkillsThresholds = useSettingsStore(s => s.setSkillsThresholds)
+  const { skillsFrequency: frequency, skillsSpread: spread } = useAtomValue(preferencesAtom)
+  const updatePreferences = useAtomSet(setPreferencesAtom)
 
   const clamp = (value: number): number => (Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1)
 
@@ -28,7 +29,7 @@ export function SkillsPane() {
             type="number"
             min={1}
             value={frequency}
-            onChange={e => setSkillsThresholds(clamp(Number(e.target.value)), spread)}
+            onChange={e => updatePreferences({ skillsFrequency: clamp(Number(e.target.value)) })}
             className="border-border bg-card text-foreground focus:ring-ring mt-1 w-28 rounded-md border px-2.5 py-1.5 text-[12.5px] tabular-nums focus:ring-1 focus:outline-none"
           />
         </div>
@@ -44,7 +45,7 @@ export function SkillsPane() {
             type="number"
             min={1}
             value={spread}
-            onChange={e => setSkillsThresholds(frequency, clamp(Number(e.target.value)))}
+            onChange={e => updatePreferences({ skillsSpread: clamp(Number(e.target.value)) })}
             className="border-border bg-card text-foreground focus:ring-ring mt-1 w-28 rounded-md border px-2.5 py-1.5 text-[12.5px] tabular-nums focus:ring-1 focus:outline-none"
           />
         </div>

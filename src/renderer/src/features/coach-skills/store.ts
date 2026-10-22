@@ -1,4 +1,8 @@
 import { create } from 'zustand'
+
+import { overviewScopeAtom } from '@/app/atoms/scope'
+import { registry } from '@/app/renderer-runtime'
+import { preferencesAtom } from '@/features/settings/preferences-atoms'
 import {
   fetchCoachHarnesses,
   fetchCoachInspect,
@@ -6,10 +10,7 @@ import {
   fetchSkills,
   refreshCoachHarnesses,
 } from '@/shared/lib/api'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { scopedDataSlice, type ScopedDataSlice } from '../../app/stores/data-store'
-import { subscribeToRefresh } from '../../app/stores/scan-store'
-import { useSettingsStore } from '@/features/settings/store'
+
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
@@ -17,6 +18,8 @@ import type {
   CoachSessionModes,
 } from '../../../../shared/schemas/agents.js'
 import type { SkillsPayload } from '../../../../shared/schemas/skills.js'
+import { type ScopedDataSlice, scopedDataSlice } from '../../app/stores/data-store'
+import { subscribeToRefresh } from '../../app/stores/scan-store'
 
 /** One tool-call notice on a streaming assistant turn — the lifecycle of a
  *  single agent tool call, in the order it was announced. `started` opens the
@@ -241,8 +244,8 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
   detection: scopedDataSlice<SkillsPayload>(
     scope =>
       fetchSkills(scope, {
-        frequency: useSettingsStore.getState().skillsFrequency,
-        spread: useSettingsStore.getState().skillsSpread,
+        frequency: registry.get(preferencesAtom).skillsFrequency,
+        spread: registry.get(preferencesAtom).skillsSpread,
       }),
     patch => set(state => ({ detection: { ...state.detection, ...patch } })),
     () => get().detection,
@@ -333,7 +336,7 @@ export const useCoachSkillsStore = create<CoachSkillsState>()((set, get) => ({
     // The probe warms a session the first run may resume — spawn it with the
     // same API-key opt-in the run will use, or the resumed session would
     // carry the wrong environment.
-    const allowApiKeyEnv = useSettingsStore.getState().allowHarnessApiKeyEnv
+    const allowApiKeyEnv = registry.get(preferencesAtom).allowHarnessApiKeyEnv
     const inspectRequest = allowApiKeyEnv ? { kind, allowApiKeyEnv: true as const } : { kind }
     const result = await fetchCoachInspect(inspectRequest)
     set(state => (state.inspectingKind === kind ? { inspectingKind: null } : state))
@@ -599,13 +602,13 @@ async function startRun(
   // API-key passthrough opt-in (persisted Coach setting): lets key-based
   // terminal sign-ins work inside harness runs. Sent per run (never stored
   // with the conversation) so toggling applies immediately.
-  const allowApiKeyEnv = useSettingsStore.getState().allowHarnessApiKeyEnv
+  const allowApiKeyEnv = registry.get(preferencesAtom).allowHarnessApiKeyEnv
   const result = await fetchCoachRun({
     harnessKind: s.harnessKind,
     // The conversation's UI-scope snapshot (map 53): no longer baked into the
     // MCP server (it serves the full lifetime ledger) — it rides the first-run
     // briefing as the suggested default window for the agent's queries.
-    scope: selectScope(useScopeStore.getState()),
+    scope: registry.get(overviewScopeAtom),
     prompt: input.prompt,
     // Progressive model/mode selection (map 47 ticket 50): forward the user's
     // choices ONLY when the agent declared that set (null = agent default).
@@ -660,18 +663,3 @@ function setRunFailed(error: string): void {
 subscribeToRefresh(() => {
   void useCoachSkillsStore.getState().detection.reload()
 })
-
-/** Refetch the detection pool whenever the detection gate changes in
- *  Settings › Skills — tuning the thresholds must repaint the welcome
- *  screen's suggested-skill chips without a manual refresh. */
-let lastThresholdKey = ''
-function watchThresholds(): void {
-  const state = useSettingsStore.getState()
-  const key = `${state.skillsFrequency}\0${state.skillsSpread}`
-  if (key !== lastThresholdKey) {
-    lastThresholdKey = key
-    void useCoachSkillsStore.getState().detection.reload()
-  }
-}
-
-useSettingsStore.subscribe(watchThresholds)

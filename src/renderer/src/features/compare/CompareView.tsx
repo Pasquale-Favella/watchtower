@@ -1,21 +1,25 @@
-import { useEffect, useMemo } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
+import * as Option from 'effect/Option'
+import * as AsyncResult from 'effect/reactivity/AsyncResult'
+import { useContext, useEffect, useMemo } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { Panel } from '@/shared/components/Panel'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { seriesColorForModel } from '@/shared/lib/modelSeries'
-import { categoryLabel } from '@/shared/lib/models'
+import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import { useScanStore } from '@/app/stores/scan-store'
+import { compareQuery, compareRequestKey, compareSelectionAtom, pairFromPayload } from '@/features/compare/atoms'
 import { compareValue } from '@/features/compare/lib'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
+import { Panel } from '@/shared/components/Panel'
+import { SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
-import { useCompareStore } from '@/features/compare/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { categoryLabel } from '@/shared/lib/models'
+import { seriesColorForModel } from '@/shared/lib/modelSeries'
+import { motionClass } from '@/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { cn } from '@/shared/lib/utils'
+
 import type {
   CategoryComparison,
   CompareModelStat,
@@ -210,22 +214,19 @@ function ModelPicker({
 }
 
 export function CompareView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = useCompareStore(s => s.data)
-  const error = useCompareStore(s => s.error)
-  const pair = useCompareStore(s => s.pair)
-  const load = useCompareStore(s => s.load)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
+  const scope = useAtomValue(overviewScopeAtom)
+  const registry = useContext(RegistryContext)
+  const selectedPair = useAtomValue(compareSelectionAtom)
+  const selectPair = useAtomSet(compareSelectionAtom)
+  const request = useMemo(() => {
+    const previous = Option.getOrNull(AsyncResult.value(registry.get(compareQuery.resultAtom)))
+    return { scope, pair: selectedPair ?? pairFromPayload(previous) }
+  }, [scope, selectedPair, registry])
+  const { data: payload, error } = useRemoteQuery(compareQuery, request, compareRequestKey)
+  const pair = request.pair ?? pairFromPayload(payload)
+  const provider = useAtomValue(providerAtom)
+  const setProvider = useAtomSet(setProviderAtom)
   const detectedProviders = useScanStore(s => s.detectedProviders)
-
-  // Load on mount and on shell scope changes; the store keeps the committed
-  // pair across refresh ticks (recorded deviation), so a scope change while a
-  // pair is picked refetches that same pair.
-  useEffect(() => {
-    void load(scope, pair)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, load])
 
   // On each payload, keep the current pair if it is still detectable, otherwise
   // fall back to the top two by cost (the builder's own default).
@@ -236,10 +237,9 @@ export function CompareView(): React.JSX.Element {
     const nextA = pair?.modelA && available.has(pair.modelA) ? pair.modelA : (models[0]?.model ?? null)
     const nextB = pair?.modelB && available.has(pair.modelB) ? pair.modelB : (models[1]?.model ?? null)
     if (nextA && nextB && (nextA !== pair?.modelA || nextB !== pair?.modelB)) {
-      void load(scope, { modelA: nextA, modelB: nextB } satisfies ComparePair)
+      selectPair({ modelA: nextA, modelB: nextB } satisfies ComparePair)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload])
+  }, [payload, pair?.modelA, pair?.modelB, selectPair])
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
 
@@ -251,7 +251,7 @@ export function CompareView(): React.JSX.Element {
     const modelA = side === 'a' ? next : nudge
     const modelB = side === 'b' ? next : nudge
     if (modelA && modelB && modelA !== modelB) {
-      void load(scope, { modelA, modelB } satisfies ComparePair)
+      selectPair({ modelA, modelB } satisfies ComparePair)
     }
   }
 

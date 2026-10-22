@@ -1,3 +1,4 @@
+import { useAtomValue } from '@effect/atom-react'
 import { ExternalLink, EyeOff, Power, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
@@ -5,7 +6,7 @@ import { displayShortcutForAction } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { formatChartDate, formatChartValue, spendTrend } from '@/features/overview/lib'
-import { useSettingsStore } from '@/features/settings/store'
+import { activeCurrencyAtom } from '@/features/settings/atoms'
 import { SkeletonBars } from '@/shared/components/skeletons'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/shared/components/ui/card'
@@ -50,7 +51,7 @@ export function OrbPanel({ className }: { className?: string }) {
   const scanning = useScanStore(s => s.scanning)
   const refresh = useScanStore(s => s.refresh)
   // Re-render money values when the display currency changes (ADR 0009).
-  useSettingsStore(s => s.activeCurrency)
+  useAtomValue(activeCurrencyAtom)
 
   const trend = recent ? spendTrend(recent.daily) : null
 

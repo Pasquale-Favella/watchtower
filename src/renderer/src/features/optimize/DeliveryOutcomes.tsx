@@ -1,10 +1,12 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useState } from 'react'
 
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSession } from '@/app/navigation'
-import { useOptimizeStore } from '@/features/optimize/store'
+import { yieldQuery } from '@/features/optimize/atoms'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { formatUsd } from '@/shared/lib/models'
+import { keyOfScope } from '@/shared/lib/query-keys'
 import { cn } from '@/shared/lib/utils'
 
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
@@ -200,13 +202,7 @@ export function DeliveryEvidence({ payload, revertsOnly = false }: DeliveryEvide
 }
 
 export function DeliveryOutcomes({ scope, revertsOnly = false }: DeliveryOutcomesProps): React.JSX.Element {
-  const payload = useOptimizeStore(state => state.yieldData.data)
-  const error = useOptimizeStore(state => state.yieldData.error)
-  const load = useOptimizeStore(state => state.yieldData.load)
-
-  useEffect(() => {
-    void load(scope)
-  }, [scope, load])
+  const { data: payload, error } = useRemoteQuery(yieldQuery, scope, keyOfScope)
 
   if (error) return <ErrorPanel message={error} />
   if (payload === null)

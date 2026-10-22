@@ -1,28 +1,31 @@
-import { useEffect, useMemo } from 'react'
-import { useShallow } from 'zustand/react/shallow'
-
-import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from 'recharts'
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+import { useMemo } from 'react'
 import type { SankeyLinkProps, SankeyNodeProps } from 'recharts'
-import { cn } from '@/shared/lib/utils'
-import { Panel } from '@/shared/components/Panel'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from 'recharts'
+
+import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import { useScanStore } from '@/app/stores/scan-store'
+import { spendQuery } from '@/features/spend/atoms'
 import {
   formatDayLabel,
   providerLabel,
   sankeyData,
-  stackedRows,
-  type SpendRow,
   type SankeyNodeData,
+  type SpendRow,
+  stackedRows,
 } from '@/features/spend/lib'
-import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
-import { formatUsd, formatConverted } from '@/shared/lib/models'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { LoadingRegion, SkeletonCard, SkeletonBars } from '@/shared/components/skeletons'
-import { useSpendStore } from '@/features/spend/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
+import { Panel } from '@/shared/components/Panel'
+import { SegTabs } from '@/shared/components/SegTabs'
+import { LoadingRegion, SkeletonBars, SkeletonCard } from '@/shared/components/skeletons'
+import { formatConverted, formatUsd } from '@/shared/lib/models'
+import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
+import { motionClass } from '@/shared/lib/motion'
+import { keyOfScope } from '@/shared/lib/query-keys'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { cn } from '@/shared/lib/utils'
+
 import type { SpendDayEntry, SpendFlow } from '../../../../shared/schemas/spend.js'
 
 /** Projects have no model-series color, so segments cycle the theme's series
@@ -203,17 +206,11 @@ function SankeyFlow({ flow }: { flow: SpendFlow }) {
 }
 
 export function SpendView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = useSpendStore(s => s.data)
-  const error = useSpendStore(s => s.error)
-  const load = useSpendStore(s => s.load)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
+  const scope = useAtomValue(overviewScopeAtom)
+  const { data: payload, error } = useRemoteQuery(spendQuery, scope, keyOfScope)
+  const provider = useAtomValue(providerAtom)
+  const setProvider = useAtomSet(setProviderAtom)
   const detectedProviders = useScanStore(s => s.detectedProviders)
-
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
   const modelProvenance = useMemo(() => {

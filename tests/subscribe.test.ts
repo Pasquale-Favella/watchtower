@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setRouter } from '../src/renderer/src/app/navigation.js'
+import { registry } from '../src/renderer/src/app/renderer-runtime.js'
 import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
 import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
 import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
-import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
-import { useUpdatesStore } from '../src/renderer/src/features/settings/updates-store.js'
+import { activeCurrencyAtom } from '../src/renderer/src/features/settings/atoms.js'
+import { updatesMachineAtom } from '../src/renderer/src/features/settings/updates-atoms.js'
 
 /** Stub the preload surface: capture each on* callback for manual firing,
  * merging any extra (fetch) methods onto the same `window.api`. */
@@ -95,9 +96,9 @@ const analytics = {
 }
 
 beforeEach(() => {
-  useUpdatesStore.setState(useUpdatesStore.getInitialState(), true)
+  registry.set(updatesMachineAtom, { state: 'uninitialized' })
   useScanStore.setState(useScanStore.getInitialState(), true)
-  useSettingsStore.setState(useSettingsStore.getInitialState(), true)
+  registry.set(activeCurrencyAtom, { code: 'USD', symbol: '$', rate: 1 })
   useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
 })
 
@@ -122,10 +123,10 @@ describe('subscribeToIpc (ADR 0011)', () => {
       message: null,
     }
     listeners.onUpdateChanged?.(status)
-    expect(useUpdatesStore.getState().machine).toEqual({ state: 'synced', status })
+    expect(registry.get(updatesMachineAtom)).toEqual({ state: 'synced', status })
     listeners.onUpdateChanged?.({ ...status, revision: -1 })
     listeners.onUpdateChanged?.({ ...status, revision: 2, progress: 101 })
-    expect(useUpdatesStore.getState().machine).toEqual({ state: 'synced', status })
+    expect(registry.get(updatesMachineAtom)).toEqual({ state: 'synced', status })
     teardown()
   })
 
@@ -217,17 +218,17 @@ describe('subscribeToIpc (ADR 0011)', () => {
     teardown()
   })
 
-  it('feeds a currency:changed broadcast into the settings store, dropping malformed ones', () => {
+  it('feeds a currency:changed broadcast into the currency atom, dropping malformed ones', () => {
     const notifyNotice = vi.fn<(label: string, location: string) => Promise<void>>(() => Promise.resolve())
     vi.stubGlobal('api', { notifyNotice })
     const listeners = captureApi()
     const teardown = subscribeToIpc()
 
     listeners.onCurrencyChanged!({ code: 'EUR', symbol: '€', rate: 0.9 })
-    expect(useSettingsStore.getState().activeCurrency).toEqual({ code: 'EUR', symbol: '€', rate: 0.9 })
+    expect(registry.get(activeCurrencyAtom)).toEqual({ code: 'EUR', symbol: '€', rate: 0.9 })
 
     listeners.onCurrencyChanged!({ code: 123 })
-    expect(useSettingsStore.getState().activeCurrency.code).toBe('EUR')
+    expect(registry.get(activeCurrencyAtom).code).toBe('EUR')
     expect(notifyNotice).toHaveBeenCalledWith('currency changed', 'code')
     expect(notifyNotice).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything())
 

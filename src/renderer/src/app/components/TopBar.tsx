@@ -1,18 +1,27 @@
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+import { useRouterState } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
-import { cn } from '@/shared/lib/utils'
+import {
+  customRangeAtom,
+  periodAtom,
+  providerAtom,
+  setCustomRangeAtom,
+  setPeriodAtom,
+  setProviderAtom,
+} from '@/app/atoms/scope'
+import { CustomRangePicker } from '@/app/components/CustomRangePicker'
+import { sectionForPath } from '@/app/navigation'
+import { shortcutForAction } from '@/app/shortcuts'
+import { useScanStore } from '@/app/stores/scan-store'
 import { SegTabs } from '@/shared/components/SegTabs'
-import { DEFAULT_PERIOD_OPTIONS, PERIOD_LABELS } from '@/shared/lib/settings-constants'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { Separator } from '@/shared/components/ui/separator'
 import { SidebarTrigger } from '@/shared/components/ui/sidebar'
+import { DEFAULT_PERIOD_OPTIONS, PERIOD_LABELS } from '@/shared/lib/settings-constants'
 import { buildScopeCaption, providerOptionsFromDetected } from '@/shared/lib/shell'
-import { shortcutForAction } from '@/app/shortcuts'
-import { useRouterState } from '@tanstack/react-router'
-import { sectionForPath } from '@/app/navigation'
-import { useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
-import { CustomRangePicker } from '@/app/components/CustomRangePicker'
+import { cn } from '@/shared/lib/utils'
+
 import type { OverviewPeriod } from '../../../../shared/schemas/overview.js'
 
 /** TopBarShell — presentational top bar: title, scope caption, period SegTabs,
@@ -81,12 +90,12 @@ export function TopBarShell({
 export function TopBar() {
   const pathname = useRouterState({ select: s => s.location.pathname })
   const section = sectionForPath(pathname)
-  const period = useScopeStore(s => s.period)
-  const customRange = useScopeStore(s => s.customRange)
-  const provider = useScopeStore(s => s.provider)
-  const setPeriod = useScopeStore(s => s.setPeriod)
-  const setProvider = useScopeStore(s => s.setProvider)
-  const setCustomRange = useScopeStore(s => s.setCustomRange)
+  const period = useAtomValue(periodAtom)
+  const customRange = useAtomValue(customRangeAtom)
+  const provider = useAtomValue(providerAtom)
+  const setPeriod = useAtomSet(setPeriodAtom)
+  const setProvider = useAtomSet(setProviderAtom)
+  const setCustomRange = useAtomSet(setCustomRangeAtom)
   const detectedProviders = useScanStore(s => s.detectedProviders)
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)

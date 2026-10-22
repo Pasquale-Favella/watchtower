@@ -1,13 +1,25 @@
+import * as AsyncResult from 'effect/reactivity/AsyncResult'
+import * as Atom from 'effect/reactivity/Atom'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { calculateSessionDetail } from '../src/main/session-detail-calculation.js'
-import { useSessionsStore } from '../src/renderer/src/features/sessions/store.js'
+import { createSessionsAtoms } from '../src/renderer/src/features/sessions/atoms.js'
 import { fetchSession } from '../src/renderer/src/shared/lib/api.js'
 import type { SessionDetail } from '../src/shared/schemas/views.js'
 import { buildFixtureReport } from './fixtures/report.js'
 
+const registries: AtomRegistry.AtomRegistry[] = []
+function setup() {
+  const registry = AtomRegistry.make()
+  registries.push(registry)
+  const { sessionQuery } = createSessionsAtoms(Atom.context())
+  sessionQuery.pin(registry)
+  return { registry, sessionQuery }
+}
+
 afterEach(() => {
-  useSessionsStore.setState(useSessionsStore.getInitialState(), true)
+  for (const registry of registries.splice(0)) registry.dispose()
   vi.unstubAllGlobals()
 })
 
@@ -35,19 +47,23 @@ describe('source-aware session detail', () => {
     const pending: ((value: SessionDetail | null) => void)[] = []
     const getSession = vi.fn(() => new Promise<SessionDetail | null>(resolve => pending.push(resolve)))
     vi.stubGlobal('window', { api: { getSession } })
-    const first = useSessionsStore.getState().loadSession('duplicate', 1)
-    const second = useSessionsStore.getState().loadSession('duplicate', 2)
+    const { registry, sessionQuery } = setup()
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 1 })
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 2 })
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
     expect(getSession.mock.calls).toEqual([
       ['duplicate', 1],
       ['duplicate', 2],
     ])
     pending[1]?.({ ...detail, project: 'second-source' })
-    await second
-    expect(useSessionsStore.getState().session?.project).toBe('second-source')
+    await vi.waitFor(() =>
+      expect(AsyncResult.getOrThrow(registry.get(sessionQuery.resultAtom))?.project).toBe('second-source'),
+    )
     pending[0]?.({ ...detail, project: 'first-source' })
-    await first
-    expect(useSessionsStore.getState().session?.project).toBe('second-source')
-    expect(useSessionsStore.getState().sessionKey).toBe(JSON.stringify(['duplicate', 2]))
+    await Promise.resolve()
+    expect(AsyncResult.getOrThrow(registry.get(sessionQuery.resultAtom))?.project).toBe('second-source')
+    expect(registry.get(sessionQuery.requestAtom)).toEqual({ sessionId: 'duplicate', sourceId: 2 })
   })
 
   it('drops an in-flight response after clearing detail', async () => {
@@ -60,10 +76,13 @@ describe('source-aware session detail', () => {
           }),
       },
     })
-    const loading = useSessionsStore.getState().loadSession('duplicate', 1)
-    useSessionsStore.getState().clearSession()
+    const { registry, sessionQuery } = setup()
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 1 })
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+    registry.set(sessionQuery.resetAtom, undefined)
     resolve?.(null)
-    await loading
-    expect(useSessionsStore.getState()).toMatchObject({ sessionStatus: 'idle', sessionKey: null })
+    await Promise.resolve()
+    expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Initial')
+    expect(registry.get(sessionQuery.requestAtom)).toBeNull()
   })
 })

@@ -1,7 +1,12 @@
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+import { ArrowUp, Square } from 'lucide-react'
 import { useRef, useState } from 'react'
 
-import { ArrowUp, Square } from 'lucide-react'
-import { Button } from '@/shared/components/ui/button'
+import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
+import { useCoachSkillsStore } from '@/features/coach-skills/store'
+import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
+import { InfoTip } from '@/shared/components/InfoTip'
+import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,14 +17,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/shared/components/ui/alert-dialog'
-import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
+import { Button } from '@/shared/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
-import { InfoTip } from '@/shared/components/InfoTip'
 import { formatUsd } from '@/shared/lib/models'
-import { useCoachSkillsStore } from '@/features/coach-skills/store'
-import { useSettingsStore } from '@/features/settings/store'
-import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
+
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
 import { HarnessModelPicker } from './harness-model-picker'
 import { Thread } from './thread'
@@ -35,8 +37,8 @@ import { Thread } from './thread'
 function ClaudeAuthHint() {
   const harnessKind = useCoachSkillsStore(s => s.harnessKind)
   const active = useCoachSkillsStore(s => s.harnesses.find(h => h.instanceId === harnessKind))
-  const allowApiKeyEnv = useSettingsStore(s => s.allowHarnessApiKeyEnv)
-  const setAllowHarnessApiKeyEnv = useSettingsStore(s => s.setAllowHarnessApiKeyEnv)
+  const allowApiKeyEnv = useAtomValue(preferencesAtom).allowHarnessApiKeyEnv
+  const setPreferences = useAtomSet(setPreferencesAtom)
   if (active?.kind !== 'claude') return null
   const signedOut = active.auth.status !== 'configured'
   const infoText = allowApiKeyEnv
@@ -47,7 +49,7 @@ function ClaudeAuthHint() {
     : 'On an API key instead of stored login?'
   const toggleLabel = `API-key passthrough: ${allowApiKeyEnv ? 'On' : 'Off'}`
   const togglePassthrough = (): void => {
-    setAllowHarnessApiKeyEnv(!allowApiKeyEnv)
+    setPreferences({ allowHarnessApiKeyEnv: !allowApiKeyEnv })
   }
   // Pill radius follows the golden ratio from the card's rounded-xl (12px):
   // 12 × φ ≈ 19px on the top corners only (the bottom edge hides behind

@@ -2,21 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { OrbPlacement } from '../src/shared/schemas/orb.js'
 
-// The settings store's persist API exists only when `localStorage` does at
-// module load (see settings-store.test.ts): install a memory storage BEFORE
-// the dynamic imports, since the orb wiring rehydrates through it.
-const memory = new Map<string, string>()
-vi.stubGlobal('localStorage', {
-  getItem: (key: string) => memory.get(key) ?? null,
-  setItem: (key: string, value: string) => void memory.set(key, value),
-  removeItem: (key: string) => void memory.delete(key),
-})
-
 const { subscribeToOrbBeacon } = await import('../src/renderer/src/orb/beacon-wiring.js')
 const { subscribeToOrbPanel } = await import('../src/renderer/src/orb/panel-wiring.js')
 const { useOrbPlacementStore } = await import('../src/renderer/src/orb/placement-store.js')
 const { useScanStore } = await import('../src/renderer/src/app/stores/scan-store.js')
-const { useSettingsStore } = await import('../src/renderer/src/features/settings/store.js')
+const { initializeRendererWindow } = await import('../src/renderer/src/app/renderer-root.js')
+const { createRendererRuntimeOwner } = await import('../src/renderer/src/app/renderer-runtime.js')
+const { preferencesAtom } = await import('../src/renderer/src/features/settings/preferences-atoms.js')
 
 const placement = { expanded: false, peek: false, horizontal: 'left', vertical: 'top' } satisfies OrbPlacement
 const storeChanged = {
@@ -34,6 +26,7 @@ const storeChanged = {
 function orbWindow() {
   const listeners: Record<string, (payload?: unknown) => void> = {}
   const events = new Map<string, (event: unknown) => void>()
+  const storage = new Map<string, string>()
   const unsub = vi.fn()
   const capture =
     (name: string) =>
@@ -58,6 +51,18 @@ function orbWindow() {
   }
   vi.stubGlobal('window', {
     api,
+    document: { documentElement: { classList: { toggle: vi.fn() } } },
+    matchMedia: () => ({ matches: false }),
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+      removeItem: (key: string) => void storage.delete(key),
+      clear: () => storage.clear(),
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size
+      },
+    },
     addEventListener: (type: string, cb: (event: unknown) => void) => events.set(type, cb),
     removeEventListener: (type: string) => events.delete(type),
   })
@@ -120,17 +125,23 @@ describe('subscribeToOrbPanel (ADR 0011)', () => {
     teardown()
   })
 
-  it('rehydrates the persisted settings when the main window writes them', () => {
-    const { events } = orbWindow()
-    const rehydrate = vi.spyOn(useSettingsStore.persist, 'rehydrate').mockResolvedValue()
+  it('uses the root-owned preference storage listener without adding a duplicate', () => {
+    const browser = orbWindow()
+    const owner = createRendererRuntimeOwner()
+    const disposeRoot = initializeRendererWindow(window, owner)
+    const storageListener = browser.events.get('storage')
+    expect(storageListener).toBeDefined()
     const teardown = subscribeToOrbPanel()
-    events.get('storage')?.({ key: 'unrelated' })
-    expect(rehydrate).not.toHaveBeenCalled()
-    events.get('storage')?.({ key: useSettingsStore.persist.getOptions().name })
-    expect(rehydrate).toHaveBeenCalledTimes(1)
+    expect(browser.events.get('storage')).toBe(storageListener)
+    storageListener?.({
+      key: 'watchtower:settings',
+      newValue: JSON.stringify({ state: { theme: 'dark' }, version: 0 }),
+    })
+    expect(owner.registry.get(preferencesAtom).theme).toBe('dark')
     teardown()
-    expect(events.has('storage')).toBe(false)
-    rehydrate.mockRestore()
+    expect(browser.events.get('storage')).toBe(storageListener)
+    disposeRoot()
+    expect(browser.events.has('storage')).toBe(false)
   })
 
   it('teardown unsubscribes every channel', () => {

@@ -1,17 +1,20 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
+import { useMemo, useState } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { useModelsStore } from '@/features/models/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { useScanStore } from '@/app/stores/scan-store'
+import { modelsQuery } from '@/features/models/atoms'
 import { usePricingStore } from '@/features/models/pricing-store'
+import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { motionClass } from '@/shared/lib/motion'
+import { keyOfScope } from '@/shared/lib/query-keys'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { cn } from '@/shared/lib/utils'
+
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { AuditTable } from './audit-table'
 import { ModelsByTaskTable, ModelsTable, type PricingRowActions } from './models-table'
@@ -26,20 +29,14 @@ const LENSES: SegOption[] = [
 ]
 
 export function ModelsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = useModelsStore(s => s.data)
-  const error = useModelsStore(s => s.error)
-  const load = useModelsStore(s => s.load)
-  const reload = useModelsStore(s => s.reload)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
+  const scope = useAtomValue(overviewScopeAtom)
+  const { data: payload, error } = useRemoteQuery(modelsQuery, scope, keyOfScope)
+  const reload = useAtomSet(modelsQuery.refreshAtom)
+  const provider = useAtomValue(providerAtom)
+  const setProvider = useAtomSet(setProviderAtom)
   const detectedProviders = useScanStore(s => s.detectedProviders)
   const [lens, setLens] = useState<ModelsLens>('model')
   const [quickAdd, setQuickAdd] = useState<QuickAddTarget | null>(null)
-
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
 
@@ -56,7 +53,7 @@ export function ModelsView(): React.JSX.Element {
 
   const onSaved = (): void => {
     setQuickAdd(null)
-    void reload()
+    reload()
   }
 
   // Inline pricing management for aliased/repriced rows: the original name
@@ -77,7 +74,7 @@ export function ModelsView(): React.JSX.Element {
     onRemoveAlias: sourceModel => {
       void (async () => {
         await removeAlias(sourceModel)
-        void reload()
+        reload()
       })()
     },
     onEditOverride: target =>
@@ -92,7 +89,7 @@ export function ModelsView(): React.JSX.Element {
     onRemoveOverride: model => {
       void (async () => {
         await removeOverride(model)
-        void reload()
+        reload()
       })()
     },
   }

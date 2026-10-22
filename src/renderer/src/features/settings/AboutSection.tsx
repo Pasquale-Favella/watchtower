@@ -1,23 +1,28 @@
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { Download, ExternalLink, RefreshCcw } from 'lucide-react'
 
 import { releasePageUrl, REPO_URL } from '@/features/settings/updates'
 import {
   canRequestUpdate,
+  checkForUpdatesAtom,
+  downloadUpdateAtom,
+  installUpdateAtom,
+  loadUpdateStatusAtom,
   selectUpdateActivity,
   selectUpdateCommandVisible,
   selectUpdateError,
   selectUpdateStatus,
-  useUpdatesStore,
-} from '@/features/settings/updates-store'
+  updatesMachineAtom,
+} from '@/features/settings/updates-atoms'
 import { Button } from '@/shared/components/ui/button'
 import { openExternalUrl } from '@/shared/lib/api'
 
 export function AboutSection(): React.JSX.Element {
-  const machine = useUpdatesStore(s => s.machine)
-  const check = useUpdatesStore(s => s.check)
-  const download = useUpdatesStore(s => s.download)
-  const install = useUpdatesStore(s => s.install)
-  const load = useUpdatesStore(s => s.load)
+  const machine = useAtomValue(updatesMachineAtom)
+  const check = useAtomSet(checkForUpdatesAtom)
+  const download = useAtomSet(downloadUpdateAtom)
+  const install = useAtomSet(installUpdateAtom)
+  const load = useAtomSet(loadUpdateStatusAtom)
   const status = selectUpdateStatus(machine)
   const activity = selectUpdateActivity(machine)
   const error = selectUpdateError(machine)
@@ -35,7 +40,7 @@ export function AboutSection(): React.JSX.Element {
           variant="outline"
           size="sm"
           disabled={!canRequestUpdate(machine, 'check')}
-          onClick={() => void check()}
+          onClick={() => check(undefined)}
           className="text-[11px]"
         >
           <RefreshCcw className={activity === 'check' ? 'size-3.5 animate-spin' : 'size-3.5'} />
@@ -47,7 +52,7 @@ export function AboutSection(): React.JSX.Element {
             variant="outline"
             size="sm"
             disabled={!canRequestUpdate(machine, 'download')}
-            onClick={() => void download()}
+            onClick={() => download(undefined)}
             className="text-[11px]"
           >
             <Download className="size-3.5" />
@@ -59,7 +64,7 @@ export function AboutSection(): React.JSX.Element {
             type="button"
             size="sm"
             disabled={!canRequestUpdate(machine, 'install')}
-            onClick={() => void install()}
+            onClick={() => install(undefined)}
             className="text-[11px]"
           >
             Restart to install
@@ -67,7 +72,7 @@ export function AboutSection(): React.JSX.Element {
         )}
       </div>
       {machine.state === 'load-error' && (
-        <Button type="button" variant="outline" size="sm" onClick={() => void load()} className="mt-2 text-[11px]">
+        <Button type="button" variant="outline" size="sm" onClick={() => load(undefined)} className="mt-2 text-[11px]">
           Retry update status
         </Button>
       )}

@@ -1,8 +1,9 @@
+import { useAtomSet } from '@effect/atom-react'
 import { useHotkeys } from '@tanstack/react-hotkeys'
 
-import { SHORTCUTS } from '@/app/shortcuts'
+import { togglePaletteAtom } from '@/app/atoms/palette'
 import { navigateToSection } from '@/app/navigation'
-import { usePaletteStore } from '@/app/stores/palette-store'
+import { SHORTCUTS } from '@/app/shortcuts'
 import { useScanStore } from '@/app/stores/scan-store'
 
 /** Shortcut registration, relocated out of AppRoot (ADR 0011). Section
@@ -12,7 +13,7 @@ import { useScanStore } from '@/app/stores/scan-store'
  * working during the first-hydrate splash. */
 export function useAppHotkeys(): void {
   const refresh = useScanStore(s => s.refresh)
-  const togglePalette = usePaletteStore(s => s.toggle)
+  const togglePalette = useAtomSet(togglePaletteAtom)
   useHotkeys(
     // `global` shortcuts are the main process's (OS-wide), not this window's.
     SHORTCUTS.filter(def => def.action !== 'toggleSidebar' && def.scope !== 'global').map(def => ({
@@ -23,7 +24,7 @@ export function useAppHotkeys(): void {
             void refresh()
             break
           case 'commandPalette':
-            togglePalette()
+            togglePalette(undefined)
             break
           case 'toggleSidebar':
             break // owned by SidebarToggleShortcut, filtered above

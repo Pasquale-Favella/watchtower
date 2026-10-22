@@ -1,8 +1,10 @@
+import { registry } from '@/app/renderer-runtime'
+import { activeCurrencyAtom, currencyChangedAtom } from '@/features/settings/atoms'
 import { parseEvent } from '@/shared/lib/api'
+import { setActiveCurrency } from '@/shared/lib/currency'
 
 import { activeCurrencySchema } from '../../../../shared/schemas/fx.js'
 import { scanProgressMessageSchema, storeChangedMessageSchema } from '../../../../shared/schemas/ipc.js'
-import { useSettingsStore } from '../../features/settings/store'
 import { useScanStore } from './scan-store'
 
 /**
@@ -47,6 +49,7 @@ export function subscribeToScanLifecycle(onSettled: () => void): Teardown {
  * (ADR 0004 — the only refetch triggers), plus FX rate updates. */
 export function subscribeToDataPlane(): Teardown {
   return combine([
+    registry.subscribe(activeCurrencyAtom, setActiveCurrency, { immediate: true }),
     subscribeToScanLifecycle(() => void useScanStore.getState().applyChange()),
     // A config write (price override / model alias) lands: refetch via the
     // scan store's change path — no rebuild, no rescan.
@@ -58,7 +61,7 @@ export function subscribeToDataPlane(): Teardown {
     window.api.onCurrencyChanged(next => {
       const parsed = parseEvent(activeCurrencySchema, 'currency changed', next)
       if (!parsed) return
-      useSettingsStore.getState().onCurrencyChanged(parsed)
+      registry.set(currencyChangedAtom, parsed)
     }),
   ])
 }
@@ -68,10 +71,6 @@ export function subscribeToDataPlane(): Teardown {
  * file:// in a build), so they share localStorage, and a `storage` event is
  * how one window hears another write it. */
 export function subscribeToSettingsSync(): Teardown {
-  const settingsKey = useSettingsStore.persist.getOptions().name
-  const onStorage = (event: StorageEvent): void => {
-    if (event.key === settingsKey) void useSettingsStore.persist.rehydrate()
-  }
-  window.addEventListener('storage', onStorage)
-  return () => window.removeEventListener('storage', onStorage)
+  // The renderer root owns preference hydration and cross-window storage events.
+  return () => undefined
 }

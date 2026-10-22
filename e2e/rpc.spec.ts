@@ -1,13 +1,20 @@
 import { expect, test } from '@playwright/test'
 
+import type { Api } from '../src/preload/index.js'
+
 import { withApp } from './app'
 
 test('sandboxed preload carries RPC frames and replaces the connection after reload', async () => {
   await withApp(async ({ app, window }) => {
-    await window.waitForFunction(() => Boolean(window.api?.rpcV1))
+    await window.waitForFunction(() =>
+      Boolean((globalThis as typeof globalThis & { window: { api: Api } }).window.api?.rpcV1),
+    )
     const security = await app.evaluate(({ BrowserWindow }) => {
       const main = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('/index.html'))
-      const preferences = main?.webContents.getLastWebPreferences()
+      // Electron exposes this runtime introspection method without a public declaration.
+      const contents = main?.webContents as
+        (Electron.WebContents & { getLastWebPreferences(): Electron.WebPreferences }) | undefined
+      const preferences = contents?.getLastWebPreferences()
       return {
         sandbox: preferences?.sandbox,
         contextIsolation: preferences?.contextIsolation,
@@ -18,7 +25,7 @@ test('sandboxed preload carries RPC frames and replaces the connection after rel
 
     const query = () =>
       window.evaluate(async () => {
-        const bridge = window.api.rpcV1
+        const bridge = (globalThis as typeof globalThis & { window: { api: Api } }).window.api.rpcV1
         const connection = await bridge.connect()
         if (connection._tag !== 'Connected') throw new Error(`RPC connection failed: ${connection.code}`)
         const response = await new Promise<unknown>((resolve, reject) => {
@@ -44,7 +51,8 @@ test('sandboxed preload carries RPC frames and replaces the connection after rel
               reject(error)
             })
         })
-        return { connection, response, rawIpc: 'ipcRenderer' in window, nodeRequire: 'require' in window }
+        const browser = (globalThis as typeof globalThis & { window: object }).window
+        return { connection, response, rawIpc: 'ipcRenderer' in browser, nodeRequire: 'require' in browser }
       })
     const first = await query()
     expect(first).toMatchObject({
@@ -54,7 +62,9 @@ test('sandboxed preload carries RPC frames and replaces the connection after rel
       nodeRequire: false,
     })
     await window.reload()
-    await window.waitForFunction(() => Boolean(window.api?.rpcV1))
+    await window.waitForFunction(() =>
+      Boolean((globalThis as typeof globalThis & { window: { api: Api } }).window.api?.rpcV1),
+    )
     const second = await query()
     expect(second.response).toMatchObject({ _tag: 'Success' })
     expect(second.connection.generation).toBeGreaterThan(first.connection.generation)

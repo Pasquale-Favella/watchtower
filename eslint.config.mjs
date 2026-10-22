@@ -27,7 +27,6 @@ import { effectLintPlugin } from './scripts/lint/effect-rules.mjs'
 // entry is something the renderer must never import (ADR 0005).
 const bareNodeCores = builtinModules
   .filter(name => !name.startsWith('node:') && !name.startsWith('_'))
-  .flatMap(name => [name, `${name}/*`])
 
 // ── Composition-root policy (ADR 0032) ──
 // These files own a process runtime or adapt an external Promise/callback
@@ -185,7 +184,7 @@ export default tseslint.config(
           ],
           patterns: [
             {
-              group: [...bareNodeCores, 'node:*'],
+              regex: `^(?:node:|(?:${bareNodeCores.join('|')})(?:/|$))`,
               message:
                 'Renderer is sandboxed (ADR 0005) — Node APIs live in main/preload, exposed via the preload bridge.',
             },
