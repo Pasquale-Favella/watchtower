@@ -14,16 +14,38 @@ This establishes compatibility for the installed runtime and fixture layout only
 
 `NodeWorkerRunner` reports platform readiness as it attaches its message listener. The RPC initial message is a later protocol message. In the probe, the worker decodes this value with `RpcWorker.initialMessage(Schema.String)` and the application handler layer is not started until it equals `ledger-ready`. A worker that exits before platform readiness or exits after receiving an invalid startup value causes the waiting RPC to fail with `RpcClientError` containing `WorkerReceiveError`.
 
-Building the worker protocol layer did not itself reject on worker startup failure. The first pending call received the transport error, and the failed worker was not transparently replaced (`spawnCount` remained one). Therefore the platform's ready signal is not an application-ready acknowledgement, and this layer did not take over Watchtower's supervisor role. The probe intentionally observes the failed call rather than retrying it; admitted writes must not be replayed after a disconnect.
+Building the worker protocol layer did not itself reject on worker startup failure. The first pending call received the transport error, and the initial fixture observed one spawn. The platform's ready signal is therefore not an application-ready acknowledgement. This short observation did not prove that the official protocol has no internal recovery policy. Its installed implementation retries the worker backing loop at one-second intervals, and the Node adapter's finalizer permits five seconds for graceful exit before termination.
 
 For integration, keep the existing supervisor as the only owner of worker replacement. Build one scoped `size: 1` client protocol per worker generation, require an explicit application-level readiness handshake before exposing the worker client, and close/join that generation before acquiring its replacement. Treat `WorkerReceiveError` as a failed generation, retain no automatic command replay, and keep stable reads/coalescing and mutation revision fencing above the transport. A failed startup acknowledgement must abort that generation before it can accept application work.
+
+## Per-generation supervisor proof
+
+`tests/worker-rpc-supervision.test.ts` exercises that narrower composition with
+real Node workers. The supervisor creates the native worker; a one-shot Spawner
+returns that exact worker to the official protocol. The native exit callback
+closes the protocol scope immediately, before its internal retry interval.
+
+The three cases pass. Fatal initialization produces one exit and no replacement
+after waiting beyond the retry interval. A write increments a shared counter,
+then loses its response when the worker is terminated. The client fails once,
+the counter stays at one, scope cleanup finishes within one second, and there
+is one termination call. A manually created replacement starts after the old
+worker exits and its scope closes; at most one native worker is alive. Normal
+shutdown sends the application shutdown RPC before the official close handshake
+and needs no forced termination.
+
+This supports the per-generation composition without replacing Watchtower's
+supervisor policy. It does not yet exercise `DbWorkerContext`, synchronous SQL,
+stable-read coalescing, real abort drainage, or the packaged Watchtower worker.
+Those remain S12 integration requirements. The fixture's startup acknowledgement
+also does not substitute for the production ledger-ready handshake.
 
 ## Reproduction
 
 Run the focused Node test:
 
 ```powershell
-npm test -- --run tests/worker-rpc-compatibility.test.ts
+npm test -- --run tests/worker-rpc-compatibility.test.ts tests/worker-rpc-supervision.test.ts
 ```
 
 Run the Electron main-process test, which packages only the two fixture files into a temporary `.asar`, launches the installed Electron executable, verifies the result, then removes the temporary archive and JSON output:
