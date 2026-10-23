@@ -1,18 +1,17 @@
-import { useScanStore } from '@/app/stores/scan-store'
-import { combine, subscribeToScanLifecycle, subscribeToSettingsSync } from '@/app/stores/shared-wiring'
-import { onOrbPlacement } from '@/shared/lib/api'
+import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { useOrbPlacementStore } from './placement-store'
+import { registry } from '@/app/renderer-runtime'
+import { createWindowEventAtom } from '@/app/stores/shared-wiring'
 
-/** The orb window's IPC wiring (ADR 0011, amended: one wiring module per
- * window, composed from the shared one). Deliberately light: the orb shows
- * only the scan state and where it sits — it holds no ledger data, so a
- * finished scan just ends the spinner. Feeds store actions; returns the
- * teardown. */
-export function subscribeToOrbBeacon(): () => void {
-  return combine([
-    subscribeToScanLifecycle(() => useScanStore.getState().onIdle()),
-    subscribeToSettingsSync(),
-    onOrbPlacement(placement => useOrbPlacementStore.getState().onPlacement(placement)),
-  ])
+import { placementAtom } from './placement-atoms.js'
+
+const events = createWindowEventAtom('beacon', (event, owner) => {
+  if (event._tag === 'Placement') owner.set(placementAtom, event.placement)
+})
+
+export const beaconEventsReadyAtom = events.readyAtom
+
+export function subscribeToOrbBeacon(owner: AtomRegistry.AtomRegistry = registry): () => void {
+  if (owner.get(events.readyAtom) === 'inactive') owner.set(events.readyAtom, 'pending')
+  return owner.mount(events.eventsAtom)
 }

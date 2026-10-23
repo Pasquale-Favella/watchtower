@@ -7,7 +7,8 @@ derive their results from that ledger at query time.
 
 ## App map
 
-Each backend isolate owns its Effect runtime and resources. Solid arrows show
+Each backend isolate owns its Effect runtime and resources. Each renderer
+window owns an Atom registry and a shared Atom runtime factory. Solid arrows show
 calls, data, and events; dashed arrows show lifecycle ownership. The worker
 and MCP processes share application query code, but have separate service
 instances and SQLite connections.
@@ -15,9 +16,11 @@ instances and SQLite connections.
 ```mermaid
 flowchart TB
     subgraph renderer["Sandboxed renderer"]
-        ui["React views and Zustand stores"]
+        ui["React views and Effect atoms"]
+        workflows["Window-owned query and workflow atoms"]
         decoder["Synchronous Effect Schema decoder"]
-        ui ~~~ decoder
+        ui --> workflows
+        workflows ~~~ decoder
     end
 
     preload["Preload contextBridge<br/>Typed Promise API and event subscriptions"]
@@ -49,7 +52,7 @@ flowchart TB
     cache[("Session cache<br/>Per-file fingerprints")]
     ledger[("ledger.db<br/>Transcript facts and persisted settings")]
 
-    ui -->|"Requests"| preload
+    workflows -->|"RendererApi Effects"| preload
     preload -->|"Invoke IPC"| ipc
     ipc -->|"Results and events"| preload
     preload -->|"Incoming payloads"| decoder
@@ -97,12 +100,13 @@ and event paths are drawn explicitly.
    The first scan covers lifetime history. Later scans reuse fingerprints
    and cached calls, while each changed file commits atomically to the ledger.
 2. The worker sends progress and completion events to main for relay.
-   `store:changed` triggers the renderer's existing refresh flow. A section's
-   data request travels through the Promise IPC API to an application query
+   `store:changed` invalidates active queries in each window's Reactivity
+   service. A Section's data request travels through `RendererApi`, currently
+   adapted over the Promise IPC API, to an application query
    in the worker. That query obtains decoded facts and live settings through
    a focused repository capability, runs pure calculations, and validates
    the outgoing payload with Effect Schema. Main forwards the result and the
-   renderer decodes it again before updating its store.
+   renderer decodes it again before publishing the Atom's `AsyncResult`.
 3. An Alias or Price override edit follows a worker command route into
    `LedgerConfig`. Subsequent queries use the updated setting to reprice the
    existing facts. The edit requires no transcript rescan. Each repository
@@ -126,6 +130,21 @@ To trace these paths in source, start with the
 [Overview query](../src/main/application/overview-query.ts). The
 [MCP query runtime](../src/main/agents/ledger-mcp/query-runtime.ts) shows how
 the same application queries run with a separate read-only service graph.
+
+The renderer composition follows [ADR 0036](./adr/0036-effect-renderer-composition.md).
+Window roots own bootstrap, subscriptions and disposal across React remounts.
+Scope, preferences and workflow state use atoms. Query slots hold one current
+request per feature, discard previous data on identity changes and retain
+same-request data during refresh. Formatting reads an explicit currency
+snapshot and never refetches ledger data merely to change the display symbol.
+
+The versioned RPC implementation follows
+[ADR 0037](./adr/0037-versioned-effect-rpc-boundaries.md). Shared schemas,
+generated clients and an authenticated MessagePort adapter are present while
+production query selection and lifecycle migration continue. The existing
+application bridge remains active during that rollout. See the
+[adoption plan](./plans/effect-renderer-adoption.md) for the separate renderer,
+renderer/main RPC and main/worker RPC completion gates.
 
 ## Data flow
 

@@ -1,12 +1,12 @@
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useEffect, useRef } from 'react'
 
-import { useThemeEffect } from '@/app/hooks/use-theme-effect'
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
 import { orbControls } from '@/shared/lib/api'
 
 import { OrbPanel } from './OrbPanel'
 import { useOrbPanelBootstrap } from './panel-hooks'
-import { useOrbPlacementStore } from './placement-store'
+import { placementAtom, requestPlacementAtom } from './placement-atoms'
 
 /**
  * The panel window's composition root (see main/background-shell.ts): the
@@ -17,9 +17,8 @@ import { useOrbPlacementStore } from './placement-store'
  */
 export function OrbPanelApp() {
   useOrbPanelBootstrap()
-  useThemeEffect()
-  const expanded = useOrbPlacementStore(s => s.placement.expanded)
-  const request = useOrbPlacementStore(s => s.request)
+  const expanded = useAtomValue(placementAtom).expanded
+  const request = useAtomSet(requestPlacementAtom)
   const rootRef = useRef<HTMLDivElement>(null)
 
   // Open, the root takes DOM focus, so Escape folds a panel the user opened

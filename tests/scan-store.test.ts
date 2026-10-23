@@ -1,6 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Effect from 'effect/Effect'
+import type * as AsyncResult from 'effect/reactivity/AsyncResult'
+import * as Atom from 'effect/reactivity/Atom'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { subscribeToRefresh, useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
+import { createScanAtoms } from '../src/renderer/src/app/atoms/scan.js'
 
 /** Stub the preload surface for the fetch wrappers' IPC-call sites. The real
  * preload exposes `platform` inside the `api` object (preload/index.ts). */
@@ -47,26 +51,39 @@ const analytics = {
   subagents: [],
 }
 
+let registry: AtomRegistry.AtomRegistry
+let atoms: ReturnType<typeof createScanAtoms>
 beforeEach(() => {
-  useScanStore.setState(useScanStore.getInitialState(), true)
+  registry = AtomRegistry.make()
+  atoms = createScanAtoms(Atom.context())
 })
+afterEach(() => {
+  registry.dispose()
+  vi.unstubAllGlobals()
+})
+function read<A, E>(atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>): Promise<A> {
+  return Effect.runPromise(AtomRegistry.getResult(registry, atom, { suspendOnWaiting: true }))
+}
+function run<A, E>(atom: Atom.AtomResultFn<undefined, A, E>): Promise<A> {
+  registry.set(atom, undefined)
+  return read(atom)
+}
 
-describe('useScanStore scan lifecycle (ADR 0011)', () => {
+describe('native scan lifecycle (ADR 0011)', () => {
   it('starts unhydrated and idle', () => {
-    const s = useScanStore.getState()
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.hydrated).toBe(false)
     expect(s.scanning).toBe(false)
     expect(s.scanError).toBeNull()
-    expect(s.refreshVersion).toBe(0)
     expect(s.progress).toEqual([])
     expect(s.detectedProviders).toEqual([])
   })
 
   it('onProgress upserts the per-provider entry and marks scanning', () => {
-    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 10 })
-    useScanStore.getState().onProgress({ stage: 'parse', provider: 'cursor', processed: 5 })
-    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 40 })
-    const s = useScanStore.getState()
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'openai', processed: 10 })
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'cursor', processed: 5 })
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'openai', processed: 40 })
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanning).toBe(true)
     expect(s.progress).toHaveLength(2)
     expect(s.progress.find(p => p.provider === 'openai')).toEqual({
@@ -77,64 +94,59 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
   })
 
   it('onProgress settles a provider on its port-in event', () => {
-    useScanStore.getState().onProgress({ stage: 'port-in', provider: 'openai', processed: 100 })
-    expect(useScanStore.getState().progress[0]!.done).toBe(true)
+    registry.set(atoms.scanProgressAtom, { stage: 'port-in', provider: 'openai', processed: 100 })
+    expect(registry.get(atoms.scanStateAtom).progress[0]!.done).toBe(true)
   })
 
   it('onProgress with no provider only marks scanning (parity with AppRoot)', () => {
-    useScanStore.getState().onProgress({ stage: 'pricing' })
-    const s = useScanStore.getState()
+    registry.set(atoms.scanProgressAtom, { stage: 'pricing' })
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanning).toBe(true)
     expect(s.progress).toEqual([])
   })
 
   it('onProgress keeps insertion order and only moves the stage forward', () => {
-    const store = useScanStore.getState()
-    store.onProgress({ stage: 'pricing' })
-    expect(useScanStore.getState().stage).toBe('pricing')
-    store.onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
-    store.onProgress({ stage: 'parse', provider: 'cursor', processed: 1 })
-    store.onProgress({ stage: 'port-in', provider: 'openai', processed: 10 })
-    store.onProgress({ stage: 'parse', provider: 'cursor', processed: 20 })
-    const s = useScanStore.getState()
+    registry.set(atoms.scanProgressAtom, { stage: 'pricing' })
+    expect(registry.get(atoms.scanStateAtom).stage).toBe('pricing')
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'openai', processed: 1 })
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'cursor', processed: 1 })
+    registry.set(atoms.scanProgressAtom, { stage: 'port-in', provider: 'openai', processed: 10 })
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'cursor', processed: 20 })
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.progress.map(p => p.provider)).toEqual(['openai', 'cursor'])
     expect(s.stage).toBe('port-in')
   })
 
   it('onError surfaces the message and stops scanning', () => {
-    useScanStore.getState().onError('boom')
-    const s = useScanStore.getState()
+    registry.set(atoms.scanErrorAtom, 'boom')
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanError).toBe('boom')
     expect(s.scanning).toBe(false)
   })
 
   it('onIdle clears the non-blocking progress indicator', () => {
-    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
-    useScanStore.getState().onIdle()
-    const s = useScanStore.getState()
+    registry.set(atoms.scanProgressAtom, { stage: 'parse', provider: 'openai', processed: 1 })
+    registry.set(atoms.scanIdleAtom, undefined)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanning).toBe(false)
     expect(s.progress).toEqual([])
     expect(s.stage).toBeNull()
   })
 
-  it('applyChange hydrates, sums unparsed, loads providers and bumps the shared tick', async () => {
+  it('applyChange hydrates, sums unparsed, loads providers and clears completed activity', async () => {
     mockWindow({
       getScanStatus: () => Promise.resolve(statusScanned),
       getAnalytics: () => Promise.resolve(analytics),
     })
-    const reload = vi.fn()
-    subscribeToRefresh(reload)
 
-    await useScanStore.getState().applyChange()
+    await run(atoms.applyScanChangeAtom)
 
-    const s = useScanStore.getState()
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.hydrated).toBe(true)
     expect(s.unparsedTotal).toBe(3)
     expect(s.detectedProviders).toEqual(['openai'])
     expect(s.scanning).toBe(false)
     expect(s.progress).toEqual([])
-    expect(s.refreshVersion).toBe(1)
-    expect(reload).toHaveBeenCalledTimes(1)
   })
 
   it('applyChange with an unscanned status does not hydrate', async () => {
@@ -142,97 +154,96 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
       getScanStatus: () => Promise.resolve({ scanned: false }),
       getAnalytics: () => Promise.resolve(analytics),
     })
-    await useScanStore.getState().applyChange()
-    const s = useScanStore.getState()
+    await run(atoms.applyScanChangeAtom)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.hydrated).toBe(false)
-    expect(s.refreshVersion).toBe(1)
   })
 
   it('applyChange clears detected providers when analytics fails (parity with AppRoot)', async () => {
-    useScanStore.setState({ detectedProviders: ['openai'] })
+    registry.set(atoms.scanStateAtom, { ...registry.get(atoms.scanStateAtom), detectedProviders: ['openai'] })
     mockWindow({
       getScanStatus: () => Promise.resolve(statusScanned),
       getAnalytics: () => Promise.resolve({ ok: false, error: 'analytics unavailable' }),
     })
-    await useScanStore.getState().applyChange()
-    expect(useScanStore.getState().detectedProviders).toEqual([])
-    expect(useScanStore.getState().hydrated).toBe(true)
+    await run(atoms.applyScanChangeAtom)
+    expect(registry.get(atoms.scanStateAtom).detectedProviders).toEqual([])
+    expect(registry.get(atoms.scanStateAtom).hydrated).toBe(true)
   })
 
-  it('applyChange with a schema-invalid scan status is a no-op', async () => {
+  it('applyChange surfaces a schema-invalid scan status', async () => {
     mockWindow({ getScanStatus: () => Promise.resolve({ scanned: 'yes' }) })
-    await useScanStore.getState().applyChange()
-    const s = useScanStore.getState()
+    await run(atoms.applyScanChangeAtom)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.hydrated).toBe(false)
-    expect(s.refreshVersion).toBe(0)
+    expect(s.scanError).toMatch(/Invalid scan status payload/)
   })
 
   it('flags fdaNeeded on macOS when the last scan found zero sources (ADR 0015)', async () => {
     mockWindow({ getScanStatus: () => Promise.resolve(statusEmptyDarwin) }, 'darwin')
-    await useScanStore.getState().applyChange()
-    expect(useScanStore.getState().fdaNeeded).toBe(true)
+    await run(atoms.applyScanChangeAtom)
+    expect(registry.get(atoms.scanStateAtom).fdaNeeded).toBe(true)
   })
 
   it('never flags fdaNeeded on macOS when a scan found data', async () => {
     mockWindow({ getScanStatus: () => Promise.resolve(statusScanned) }, 'darwin')
-    await useScanStore.getState().applyChange()
-    expect(useScanStore.getState().fdaNeeded).toBe(false)
+    await run(atoms.applyScanChangeAtom)
+    expect(registry.get(atoms.scanStateAtom).fdaNeeded).toBe(false)
   })
 
   it('never flags fdaNeeded on non-macOS platforms, even for zero-source scans', async () => {
     mockWindow({ getScanStatus: () => Promise.resolve(statusEmptyDarwin) }, 'win32')
-    await useScanStore.getState().applyChange()
-    expect(useScanStore.getState().fdaNeeded).toBe(false)
+    await run(atoms.applyScanChangeAtom)
+    expect(registry.get(atoms.scanStateAtom).fdaNeeded).toBe(false)
   })
 
   it('refresh failure surfaces the error and stops scanning', async () => {
     mockWindow({ scan: () => Promise.resolve({ ok: false, error: 'provider unreadable' }) })
-    await useScanStore.getState().refresh()
-    const s = useScanStore.getState()
+    await run(atoms.refreshScanAtom)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanError).toBe('provider unreadable')
     expect(s.scanning).toBe(false)
   })
 
   it('refresh falls back to the generic failure message when the main gives none', async () => {
     mockWindow({ scan: () => Promise.resolve({ ok: false }) })
-    await useScanStore.getState().refresh()
-    expect(useScanStore.getState().scanError).toBe('Scan failed. Check your provider sources and try again.')
+    await run(atoms.refreshScanAtom)
+    expect(registry.get(atoms.scanStateAtom).scanError).toBe('Scan failed. Check your provider sources and try again.')
   })
 
   it('refresh keeps scanning when a scan is already running', async () => {
     mockWindow({ scan: () => Promise.resolve({ ok: true, alreadyRunning: true }) })
-    await useScanStore.getState().refresh()
-    const s = useScanStore.getState()
+    await run(atoms.refreshScanAtom)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanning).toBe(true)
     expect(s.scanError).toBeNull()
   })
 
   it('refresh never surfaces an aborted scan as an error', async () => {
     mockWindow({ scan: () => Promise.resolve({ ok: false, aborted: true }) })
-    await useScanStore.getState().refresh()
-    const s = useScanStore.getState()
+    await run(atoms.refreshScanAtom)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanning).toBe(true)
     expect(s.scanError).toBeNull()
   })
 
   it('refresh surfaces a schema-invalid scan result as an error', async () => {
     mockWindow({ scan: () => Promise.resolve({ ok: 'maybe' }) })
-    await useScanStore.getState().refresh()
-    const s = useScanStore.getState()
+    await run(atoms.refreshScanAtom)
+    const s = registry.get(atoms.scanStateAtom)
     expect(s.scanning).toBe(false)
     expect(s.scanError).toMatch(/Invalid scan payload/)
   })
 
   it('syncActivity adopts a scan already in flight in the main process', async () => {
     mockWindow({ getScanActive: vi.fn(async () => true) })
-    await useScanStore.getState().syncActivity()
-    expect(useScanStore.getState().scanning).toBe(true)
+    await run(atoms.syncScanActivityAtom)
+    expect(registry.get(atoms.scanStateAtom).scanning).toBe(true)
   })
 
   it('syncActivity leaves an idle store idle', async () => {
     mockWindow({ getScanActive: vi.fn(async () => false) })
-    await useScanStore.getState().syncActivity()
-    expect(useScanStore.getState().scanning).toBe(false)
+    await run(atoms.syncScanActivityAtom)
+    expect(registry.get(atoms.scanStateAtom).scanning).toBe(false)
   })
 
   it('hydrate: a ledger applies the change path and adopts a scan in flight', async () => {
@@ -241,25 +252,25 @@ describe('useScanStore scan lifecycle (ADR 0011)', () => {
       getAnalytics: vi.fn(async () => null),
       getScanActive: vi.fn(async () => true),
     })
-    await expect(useScanStore.getState().hydrate()).resolves.toBe('scanned')
-    expect(useScanStore.getState().hydrated).toBe(true)
-    expect(useScanStore.getState().scanning).toBe(true)
+    await expect(read(atoms.hydrateScanAtom)).resolves.toBe('scanned')
+    expect(registry.get(atoms.scanStateAtom).hydrated).toBe(true)
+    expect(registry.get(atoms.scanStateAtom).scanning).toBe(true)
   })
 
   it('hydrate: no ledger yet reports unscanned (the app window fires the first scan)', async () => {
     const getScanActive = vi.fn(async () => true)
     mockWindow({ getScanStatus: vi.fn(async () => ({ scanned: false })), getScanActive })
-    await expect(useScanStore.getState().hydrate()).resolves.toBe('unscanned')
-    expect(useScanStore.getState().hydrated).toBe(false)
+    await expect(read(atoms.hydrateScanAtom)).resolves.toBe('unscanned')
+    expect(registry.get(atoms.scanStateAtom).hydrated).toBe(false)
     // Another window's first scan already running still shows here.
     expect(getScanActive).toHaveBeenCalled()
-    expect(useScanStore.getState().scanning).toBe(true)
+    expect(registry.get(atoms.scanStateAtom).scanning).toBe(true)
   })
 
   it('hydrate: an unreadable status reports failed and touches nothing', async () => {
     const getScanActive = vi.fn(async () => true)
     mockWindow({ getScanStatus: vi.fn(async () => ({ bogus: 1 })), getScanActive })
-    await expect(useScanStore.getState().hydrate()).resolves.toBe('failed')
+    await expect(read(atoms.hydrateScanAtom)).resolves.toBe('failed')
     expect(getScanActive).not.toHaveBeenCalled()
   })
 })

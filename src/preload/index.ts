@@ -50,6 +50,7 @@ import type {
   SessionRow,
 } from '../shared/schemas/views.js'
 import type { YieldPayload } from '../shared/schemas/yield.js'
+import { createRpcBridge } from './rpc.js'
 
 export type {
   CoachEventEnvelope,
@@ -71,7 +72,14 @@ export type {
   StoreChangedMessage,
 } from '../shared/schemas/ipc.js'
 
+const rpcOwner = createRpcBridge(ipcRenderer)
+const preloadWindow = globalThis as typeof globalThis & {
+  addEventListener(type: 'unload', listener: () => void, options: { once: boolean }): void
+}
+preloadWindow.addEventListener('unload', rpcOwner.dispose, { once: true })
+
 const api = {
+  rpcV1: rpcOwner.bridge,
   versions: {
     electron: process.versions.electron,
     chrome: process.versions.chrome,

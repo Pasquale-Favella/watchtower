@@ -1,10 +1,12 @@
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useState } from 'react'
 
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSession } from '@/app/navigation'
-import { useOptimizeStore } from '@/features/optimize/store'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { yieldQuery } from '@/features/optimize/atoms'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { formatUsd } from '@/shared/lib/models'
+import { keyOfScope } from '@/shared/lib/query-keys'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
@@ -60,6 +62,7 @@ function OutcomeFilter({ selected, onSelect, children }: OutcomeFilterProps): Re
 }
 
 function EvidenceRow({ row }: EvidenceRowProps): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   return (
     <details className="border-border border-b py-2.5 last:border-b-0">
       <summary className="hover:bg-accent flex cursor-pointer items-center gap-3 rounded px-2 py-1">
@@ -119,6 +122,7 @@ function EvidenceRow({ row }: EvidenceRowProps): React.JSX.Element {
 }
 
 export function DeliveryEvidence({ payload, revertsOnly = false }: DeliveryEvidenceProps): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const [selected, setSelected] = useState<YieldCategory | 'all'>('all')
   const available = revertsOnly ? OUTCOMES.filter(outcome => isRevertOutcome(outcome.category)) : OUTCOMES
   const candidates = payload.details.filter(row => !revertsOnly || isRevertOutcome(row.category))
@@ -200,20 +204,20 @@ export function DeliveryEvidence({ payload, revertsOnly = false }: DeliveryEvide
 }
 
 export function DeliveryOutcomes({ scope, revertsOnly = false }: DeliveryOutcomesProps): React.JSX.Element {
-  const payload = useOptimizeStore(state => state.yieldData.data)
-  const error = useOptimizeStore(state => state.yieldData.error)
-  const load = useOptimizeStore(state => state.yieldData.load)
+  const { data: payload, error } = useRemoteQuery(yieldQuery, scope, keyOfScope)
 
-  useEffect(() => {
-    void load(scope)
-  }, [scope, load])
-
-  if (error) return <ErrorPanel message={error} />
-  if (payload === null)
+  if (payload === null) {
+    if (error) return <QueryErrorNotice error={error} hasData={false} />
     return (
       <LoadingRegion label="Loading delivery evidence…">
         <SkeletonRows rows={5} />
       </LoadingRegion>
     )
-  return <DeliveryEvidence key={revertsOnly ? 'reverts' : 'outcomes'} payload={payload} revertsOnly={revertsOnly} />
+  }
+  return (
+    <>
+      <QueryErrorNotice error={error} hasData />
+      <DeliveryEvidence key={revertsOnly ? 'reverts' : 'outcomes'} payload={payload} revertsOnly={revertsOnly} />
+    </>
+  )
 }

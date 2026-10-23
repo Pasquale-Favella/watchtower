@@ -36,7 +36,7 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
   })
 
   it('rejects Node imports in the renderer, bare and prefixed', async () => {
-    for (const source of ['node:fs', 'fs', 'node:path', 'buffer']) {
+    for (const source of ['node:fs', 'fs', 'fs/promises', 'stream', 'stream/web', 'node:path', 'buffer']) {
       const rules = await errorRules(
         `import { join } from '${source}'\nexport const probe = typeof join\n`,
         rendererProbe,
@@ -96,6 +96,11 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
       rendererProbe,
     )
     expect(rules).not.toContain('no-restricted-imports')
+    const streamRules = await errorRules(
+      `import * as Stream from 'effect/Stream'\nexport const probe = Stream.empty\n`,
+      rendererProbe,
+    )
+    expect(streamRules).not.toContain('no-restricted-imports')
   })
 
   it('allows a preload type import from main and rejects its value import at arbitrary depth', async () => {

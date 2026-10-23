@@ -1,22 +1,17 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { initialScanState } from '../src/renderer/src/app/atoms/scan.js'
 import type { OrbPlacement } from '../src/shared/schemas/orb.js'
-
-// The settings store's persist API exists only when `localStorage` does at
-// module load (see settings-store.test.ts): install a memory storage BEFORE
-// the dynamic imports, since the orb wiring rehydrates through it.
-const memory = new Map<string, string>()
-vi.stubGlobal('localStorage', {
-  getItem: (key: string) => memory.get(key) ?? null,
-  setItem: (key: string, value: string) => void memory.set(key, value),
-  removeItem: (key: string) => void memory.delete(key),
-})
 
 const { subscribeToOrbBeacon } = await import('../src/renderer/src/orb/beacon-wiring.js')
 const { subscribeToOrbPanel } = await import('../src/renderer/src/orb/panel-wiring.js')
-const { useOrbPlacementStore } = await import('../src/renderer/src/orb/placement-store.js')
-const { useScanStore } = await import('../src/renderer/src/app/stores/scan-store.js')
-const { useSettingsStore } = await import('../src/renderer/src/features/settings/store.js')
+const { placementAtom } = await import('../src/renderer/src/orb/placement-atoms.js')
+const { scanStateAtom } = await import('../src/renderer/src/app/atoms/scan.js')
+let registry: AtomRegistry.AtomRegistry
+const { initializeRendererWindow } = await import('../src/renderer/src/app/renderer-root.js')
+const { createRendererRuntimeOwner } = await import('../src/renderer/src/app/renderer-runtime.js')
+const { preferencesAtom } = await import('../src/renderer/src/features/settings/preferences-atoms.js')
 
 const placement = { expanded: false, peek: false, horizontal: 'left', vertical: 'top' } satisfies OrbPlacement
 const storeChanged = {
@@ -34,6 +29,7 @@ const storeChanged = {
 function orbWindow() {
   const listeners: Record<string, (payload?: unknown) => void> = {}
   const events = new Map<string, (event: unknown) => void>()
+  const storage = new Map<string, string>()
   const unsub = vi.fn()
   const capture =
     (name: string) =>
@@ -58,43 +54,68 @@ function orbWindow() {
   }
   vi.stubGlobal('window', {
     api,
+    document: { documentElement: { classList: { toggle: vi.fn() } } },
+    matchMedia: () => ({ matches: false }),
+    localStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+      removeItem: (key: string) => void storage.delete(key),
+      clear: () => storage.clear(),
+      key: (index: number) => Array.from(storage.keys())[index] ?? null,
+      get length() {
+        return storage.size
+      },
+    },
     addEventListener: (type: string, cb: (event: unknown) => void) => events.set(type, cb),
     removeEventListener: (type: string) => events.delete(type),
   })
   return { api, listeners, events, unsub }
 }
 
+afterEach(() => {
+  registry.dispose()
+  vi.unstubAllGlobals()
+})
 beforeEach(() => {
-  useOrbPlacementStore.setState(useOrbPlacementStore.getInitialState(), true)
-  useScanStore.setState(useScanStore.getInitialState(), true)
+  registry = AtomRegistry.make()
+  registry.set(scanStateAtom, initialScanState())
 })
 
 describe('subscribeToOrbBeacon — the light orb (ADR 0011)', () => {
-  it('follows any window’s scan, and a finished one only ends the spinner (no fetch)', () => {
+  it('follows any window’s scan, and a finished one only ends the spinner (no fetch)', async () => {
     const { api, listeners } = orbWindow()
-    const teardown = subscribeToOrbBeacon()
+    const teardown = subscribeToOrbBeacon(registry)
+    await flushEvents()
     listeners.onProgress?.({ stage: 'parse', provider: 'openai', processed: 1, total: 4 })
-    expect(useScanStore.getState().scanning).toBe(true)
+    await flushEvents()
+    expect(registry.get(scanStateAtom).scanning).toBe(true)
     listeners.onChanged?.(storeChanged)
-    expect(useScanStore.getState().scanning).toBe(false)
+    await flushEvents()
+    expect(registry.get(scanStateAtom).scanning).toBe(false)
     expect(api.getScanStatus).not.toHaveBeenCalled()
     expect(api.getOverview).not.toHaveBeenCalled()
     teardown()
+    await flushEvents()
   })
 
-  it('mirrors placements, dropping malformed ones', () => {
+  it('mirrors placements, dropping malformed ones', async () => {
     const { listeners } = orbWindow()
-    const teardown = subscribeToOrbBeacon()
+    const teardown = subscribeToOrbBeacon(registry)
+    await flushEvents()
     listeners.onPlacement?.(placement)
-    expect(useOrbPlacementStore.getState().placement).toEqual(placement)
+    await flushEvents()
+    expect(registry.get(placementAtom)).toEqual(placement)
     listeners.onPlacement?.({ expanded: 'yes' })
-    expect(useOrbPlacementStore.getState().placement).toEqual(placement)
+    await flushEvents()
+    expect(registry.get(placementAtom)).toEqual(placement)
     teardown()
+    await flushEvents()
   })
 
-  it('subscribes to no data-plane refetch channels', () => {
+  it('subscribes to no data-plane refetch channels', async () => {
     const { listeners } = orbWindow()
-    subscribeToOrbBeacon()()
+    subscribeToOrbBeacon(registry)()
+    await flushEvents()
     expect(listeners.onConfigChanged).toBeUndefined()
     expect(listeners.onCurrencyChanged).toBeUndefined()
   })
@@ -103,40 +124,60 @@ describe('subscribeToOrbBeacon — the light orb (ADR 0011)', () => {
 describe('subscribeToOrbPanel (ADR 0011)', () => {
   it('a finished scan refetches through the shared change path', async () => {
     const { api, listeners } = orbWindow()
-    const teardown = subscribeToOrbPanel()
+    const teardown = subscribeToOrbPanel(registry)
+    await flushEvents()
     listeners.onChanged?.(storeChanged)
+    await flushEvents()
     await vi.waitFor(() => expect(api.getScanStatus).toHaveBeenCalled())
     teardown()
+    await flushEvents()
   })
 
-  it('mirrors the placement — the peek flag included — into the placement store', () => {
+  it('mirrors the placement — the peek flag included — into the placement store', async () => {
     const { listeners } = orbWindow()
-    const teardown = subscribeToOrbPanel()
+    const teardown = subscribeToOrbPanel(registry)
+    await flushEvents()
     const peeking = { ...placement, expanded: true, peek: true } satisfies OrbPlacement
     listeners.onPlacement?.(peeking)
-    expect(useOrbPlacementStore.getState().placement).toEqual(peeking)
+    await flushEvents()
+    expect(registry.get(placementAtom)).toEqual(peeking)
     listeners.onPlacement?.(placement)
-    expect(useOrbPlacementStore.getState().placement).toEqual(placement)
+    await flushEvents()
+    expect(registry.get(placementAtom)).toEqual(placement)
     teardown()
+    await flushEvents()
   })
 
-  it('rehydrates the persisted settings when the main window writes them', () => {
-    const { events } = orbWindow()
-    const rehydrate = vi.spyOn(useSettingsStore.persist, 'rehydrate').mockResolvedValue()
-    const teardown = subscribeToOrbPanel()
-    events.get('storage')?.({ key: 'unrelated' })
-    expect(rehydrate).not.toHaveBeenCalled()
-    events.get('storage')?.({ key: useSettingsStore.persist.getOptions().name })
-    expect(rehydrate).toHaveBeenCalledTimes(1)
+  it('uses the root-owned preference storage listener without adding a duplicate', async () => {
+    const browser = orbWindow()
+    const owner = createRendererRuntimeOwner()
+    const disposeRoot = initializeRendererWindow(window, owner)
+    const storageListener = browser.events.get('storage')
+    expect(storageListener).toBeDefined()
+    const teardown = subscribeToOrbPanel(registry)
+    await flushEvents()
+    expect(browser.events.get('storage')).toBe(storageListener)
+    storageListener?.({
+      key: 'watchtower:settings',
+      newValue: JSON.stringify({ state: { theme: 'dark' }, version: 0 }),
+    })
+    expect(owner.registry.get(preferencesAtom).theme).toBe('dark')
     teardown()
-    expect(events.has('storage')).toBe(false)
-    rehydrate.mockRestore()
+    await flushEvents()
+    expect(browser.events.get('storage')).toBe(storageListener)
+    disposeRoot()
+    expect(browser.events.has('storage')).toBe(false)
   })
 
-  it('teardown unsubscribes every channel', () => {
+  it('teardown unsubscribes every channel', async () => {
     const { unsub } = orbWindow()
-    subscribeToOrbPanel()()
+    subscribeToOrbPanel(registry)()
+    await flushEvents()
     // Data plane: 4 scan lifecycle + config + currency; then placement.
     expect(unsub).toHaveBeenCalledTimes(7)
   })
 })
+
+async function flushEvents(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0))
+}

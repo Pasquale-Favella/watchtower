@@ -1,55 +1,32 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useAtomSet } from '@effect/atom-react'
 import { Database, KeyRound, ShieldCheck } from 'lucide-react'
+import { useState } from 'react'
 
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import { clearDataAtom, SETTINGS_INFO_REQUEST, settingsInfoQuery } from '@/features/settings/capability-atoms'
+import { formatBytes } from '@/features/settings/lib'
+import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
-import { Button } from '@/shared/components/ui/button'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
-import { formatBytes } from '@/features/settings/lib'
-import { fetchClearData, fetchSettings } from '@/shared/lib/api'
-import { subscribeToRefresh, useScanStore } from '@/app/stores/scan-store'
-import type { SettingsInfo } from '@/features/settings/settings-types'
 
 /** Settings › Privacy & data: the local-only/no-API-keys claims, the SQLite
  * store's location and size, and a clear-data action. No telemetry toggle —
  * there is no telemetry. */
 export function PrivacyPane() {
-  const [info, setInfo] = useState<SettingsInfo | null>(null)
   const [clearing, setClearing] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
-  const refresh = useScanStore(s => s.refresh)
-
-  const load = useCallback(async (): Promise<void> => {
-    const result = await fetchSettings()
-    setInfo(result.ok ? result.data : null)
-  }, [])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  // A clear triggers a rescan, so re-read the on-disk sizes whenever a scan
-  // (or config change) settles — otherwise the pane keeps showing the
-  // post-clear payload while the store refills underneath it.
-  useEffect(
-    () =>
-      subscribeToRefresh(() => {
-        void load()
-      }),
-    [load],
-  )
+  const { data: info } = useRemoteQuery(settingsInfoQuery, SETTINGS_INFO_REQUEST, () => 'settings-info')
+  const clearData = useAtomSet(clearDataAtom, { mode: 'promise' })
 
   const clear = async (): Promise<void> => {
     setClearError(null)
     setClearing(true)
-    const result = await fetchClearData()
-    if (result.ok) {
-      setInfo(result.data)
-      void refresh()
-    } else {
-      setClearError(result.error)
+    try {
+      const result = await clearData(undefined)
+      if (!result.ok) setClearError(result.message)
+    } finally {
+      setClearing(false)
     }
-    setClearing(false)
   }
 
   return (

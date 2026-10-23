@@ -1,14 +1,27 @@
-import React from 'react'
-import ReactDOM from 'react-dom/client'
+import './assets/main.css'
+
 import { HotkeysProvider } from '@tanstack/react-hotkeys'
 import { RouterProvider } from '@tanstack/react-router'
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+
+import { initializeRendererWindow, RendererRoot } from './app/renderer-root'
 import { router } from './app/router'
-import './assets/main.css'
+
+const disposeRenderer = initializeRendererWindow(window)
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    disposeRenderer()
+    window.location.reload()
+  })
+}
 
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
-    <HotkeysProvider>
-      <RouterProvider router={router} />
-    </HotkeysProvider>
+    <RendererRoot>
+      <HotkeysProvider>
+        <RouterProvider router={router} />
+      </HotkeysProvider>
+    </RendererRoot>
   </React.StrictMode>,
 )

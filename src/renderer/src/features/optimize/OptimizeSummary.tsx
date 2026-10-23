@@ -1,7 +1,7 @@
 import { Info } from 'lucide-react'
 
 import { healthBar, healthClass } from '@/features/optimize/lib'
-import { formatUsd } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import type { OptimizePayload } from '../../../../shared/schemas/optimize.js'
@@ -76,6 +76,7 @@ function SetupHealth({ summary }: { summary: OptimizePayload['summary'] }): Reac
 }
 
 export function OptimizeSummary({ payload }: OptimizeSummaryProps): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const { summary, findings } = payload
   const highPriority = findings.filter(finding => finding.severity === 'high').length
   const findingDetail = highPriority > 0 ? `${highPriority} high priority` : 'None high priority'

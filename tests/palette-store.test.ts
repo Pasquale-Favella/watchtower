@@ -1,27 +1,24 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { usePaletteStore } from '../src/renderer/src/app/stores/palette-store.js'
-
+import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '../src/renderer/src/app/atoms/palette.js'
+import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
+let owner: ReturnType<typeof createRendererRuntimeOwner>
 beforeEach(() => {
-  usePaletteStore.setState(usePaletteStore.getInitialState(), true)
+  owner = createRendererRuntimeOwner()
 })
-
-describe('usePaletteStore (ADR 0028)', () => {
-  it('starts closed', () => {
-    expect(usePaletteStore.getState().open).toBe(false)
+afterEach(() => owner.dispose())
+describe('command palette atoms', () => {
+  it('opens and closes explicitly', () => {
+    expect(owner.registry.get(paletteOpenAtom)).toBe(false)
+    owner.registry.set(setPaletteOpenAtom, true)
+    expect(owner.registry.get(paletteOpenAtom)).toBe(true)
+    owner.registry.set(setPaletteOpenAtom, false)
+    expect(owner.registry.get(paletteOpenAtom)).toBe(false)
   })
-
-  it('setOpen opens and closes explicitly', () => {
-    usePaletteStore.getState().setOpen(true)
-    expect(usePaletteStore.getState().open).toBe(true)
-    usePaletteStore.getState().setOpen(false)
-    expect(usePaletteStore.getState().open).toBe(false)
-  })
-
-  it('toggle flips from either state (Mod+K route)', () => {
-    usePaletteStore.getState().toggle()
-    expect(usePaletteStore.getState().open).toBe(true)
-    usePaletteStore.getState().toggle()
-    expect(usePaletteStore.getState().open).toBe(false)
+  it('toggles from either state for the global launcher shortcut', () => {
+    owner.registry.set(togglePaletteAtom, undefined)
+    expect(owner.registry.get(paletteOpenAtom)).toBe(true)
+    owner.registry.set(togglePaletteAtom, undefined)
+    expect(owner.registry.get(paletteOpenAtom)).toBe(false)
   })
 })

@@ -1,17 +1,17 @@
-import { combine, subscribeToDataPlane, subscribeToSettingsSync } from '@/app/stores/shared-wiring'
-import { onOrbPlacement } from '@/shared/lib/api'
+import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { useOrbPlacementStore } from './placement-store'
+import { registry } from '@/app/renderer-runtime'
+import { createWindowEventAtom } from '@/app/stores/shared-wiring'
 
-/** The panel window's IPC wiring (ADR 0011, amended: one wiring module per
- * window, composed from the shared one): the full data plane — it refetches
- * on the same triggers as the app — settings sync, and the placement it
- * mirrors (open/fold and the peek are the main process's). Feeds store
- * actions; returns the teardown. */
-export function subscribeToOrbPanel(): () => void {
-  return combine([
-    subscribeToDataPlane(),
-    subscribeToSettingsSync(),
-    onOrbPlacement(placement => useOrbPlacementStore.getState().onPlacement(placement)),
-  ])
+import { placementAtom } from './placement-atoms.js'
+
+const events = createWindowEventAtom('panel', (event, owner) => {
+  if (event._tag === 'Placement') owner.set(placementAtom, event.placement)
+})
+
+export const panelEventsReadyAtom = events.readyAtom
+
+export function subscribeToOrbPanel(owner: AtomRegistry.AtomRegistry = registry): () => void {
+  if (owner.get(events.readyAtom) === 'inactive') owner.set(events.readyAtom, 'pending')
+  return owner.mount(events.eventsAtom)
 }

@@ -1,14 +1,12 @@
+import { useAtomValue } from '@effect/atom-react'
 import { useEffect } from 'react'
 
+import { preferencesAtom } from '@/features/settings/preferences-atoms'
 import { themeIsDark } from '@/shared/lib/shell'
-import { useSettingsStore } from '@/features/settings/store'
 
-/** The theme DOM side-effect, relocated out of AppRoot (ADR 0011):
- * toggles the `dark` class from the settings store's persisted `theme`, and
- * follows the OS while in 'system' mode. The persist middleware owns the
- * storage write — no hand-rolled localStorage here. */
+/** The window root owns theme updates and the scoped system appearance listener. */
 export function useThemeEffect(): void {
-  const theme = useSettingsStore(s => s.theme)
+  const theme = useAtomValue(preferencesAtom).theme
   useEffect(() => {
     const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
     document.documentElement.classList.toggle('dark', themeIsDark(theme, prefersDark))

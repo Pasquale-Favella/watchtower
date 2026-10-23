@@ -1,18 +1,19 @@
+import { useAtomValue } from '@effect/atom-react'
 import { Outlet } from '@tanstack/react-router'
 
-import { TooltipProvider } from '@/shared/components/ui/tooltip'
+import { scanStateAtom } from '@/app/atoms/scan'
+import { preferencesAtom } from '@/features/settings/preferences-atoms'
 import { SidebarInset, SidebarProvider } from '@/shared/components/ui/sidebar'
-import { useAppBootstrap } from './hooks/use-app-bootstrap'
-import { useThemeEffect } from './hooks/use-theme-effect'
-import { useAppHotkeys } from './hooks/use-app-hotkeys'
-import { Splash } from './components/splash/Splash'
-import { Onboarding } from './components/Onboarding'
+import { TooltipProvider } from '@/shared/components/ui/tooltip'
+
 import { AppSidebar } from './components/app-sidebar'
+import { CommandPalette } from './components/CommandPalette'
+import { Onboarding } from './components/Onboarding'
 import { ScanIndicator } from './components/ScanIndicator'
 import { SidebarToggleShortcut } from './components/SidebarToggleShortcut'
-import { CommandPalette } from './components/CommandPalette'
-import { useScanStore } from './stores/scan-store'
-import { useSettingsStore } from '@/features/settings/store'
+import { Splash } from './components/splash/Splash'
+import { useAppBootstrap } from './hooks/use-app-bootstrap'
+import { useAppHotkeys } from './hooks/use-app-hotkeys'
 
 /** The root route component — the app frame (ADR 0014). Runs the bootstrap,
  * theme, and hotkey hooks; shows the Splash until the store hydrates; then
@@ -22,11 +23,10 @@ import { useSettingsStore } from '@/features/settings/store'
  * store. */
 export function AppRoot() {
   useAppBootstrap()
-  useThemeEffect()
   useAppHotkeys()
 
-  const hydrated = useScanStore(s => s.hydrated)
-  const onboarded = useSettingsStore(s => s.onboarded)
+  const hydrated = useAtomValue(scanStateAtom).hydrated
+  const onboarded = useAtomValue(preferencesAtom).onboarded
 
   if (!hydrated) {
     return <Splash />

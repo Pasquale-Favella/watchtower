@@ -2,7 +2,8 @@ import { useState } from 'react'
 
 import { navigateToSession } from '@/app/navigation'
 import { impactDot, trendLabel } from '@/features/optimize/lib'
-import { formatCompact, formatUsd } from '@/shared/lib/models'
+import { formatCompact } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import type { OptimizeFinding, WasteAction } from '../../../../shared/schemas/optimize.js'
@@ -28,6 +29,7 @@ function quantityLabel(finding: OptimizeFinding): string {
 }
 
 function FindingEvidence({ finding }: FindingProps): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   return (
     <div className="flex flex-col gap-2.5 text-[11.5px]">
       <p className="text-muted-foreground leading-relaxed">{finding.explanation}</p>
@@ -113,6 +115,7 @@ function FixBlock({ finding }: FindingProps): React.JSX.Element {
 }
 
 export function FindingRow({ finding, defaultExpanded = false }: FindingRowProps): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const [expanded, setExpanded] = useState(defaultExpanded)
   return (
     <div className="border-border border-b last:border-b-0">

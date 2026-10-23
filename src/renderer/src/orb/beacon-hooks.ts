@@ -1,20 +1,36 @@
+import * as Stream from 'effect/Stream'
+import * as Effect from 'effect/Effect'
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 
-import { useScanStore } from '@/app/stores/scan-store'
+import { syncScanActivityAtom } from '@/app/atoms/scan'
+import { pinWindowAtom } from '@/app/hooks/use-remote-query'
+import { registry, runtime } from '@/app/renderer-runtime'
 import { orbControls } from '@/shared/lib/api'
+import { RendererApi } from '@/shared/lib/renderer-api'
 
-import { subscribeToOrbBeacon } from './beacon-wiring'
-import { useOrbPlacementStore } from './placement-store'
+import { beaconEventsReadyAtom, subscribeToOrbBeacon } from './beacon-wiring'
+import { syncPlacementAtom } from './placement-atoms'
 
-/** The orb window's bootstrap: its light wiring, then the two things it
- * shows — where it sits and whether a scan is running (asked once, so an orb
- * that appears mid-scan spins at once; the lifecycle broadcasts take over). */
+const beaconBootstrapAtom = runtime(RendererApi.layer).atom(get => {
+  get.addFinalizer(subscribeToOrbBeacon(get.registry))
+  return Effect.gen(function* () {
+    yield* Stream.runDrain(
+      get.stream(beaconEventsReadyAtom).pipe(
+        Stream.filter(state => state === 'ready' || state === 'failed'),
+        Stream.take(1),
+      ),
+    )
+    yield* Effect.all(
+      [Effect.ignore(get.setResult(syncPlacementAtom, undefined)), get.setResult(syncScanActivityAtom, undefined)],
+      { concurrency: 'unbounded' },
+    )
+    return yield* Effect.never
+  })
+})
+
 export function useOrbBeaconBootstrap(): void {
   useEffect(() => {
-    const unsubscribe = subscribeToOrbBeacon()
-    void useOrbPlacementStore.getState().sync()
-    void useScanStore.getState().syncActivity()
-    return unsubscribe
+    pinWindowAtom(registry, beaconBootstrapAtom)
   }, [])
 }
 

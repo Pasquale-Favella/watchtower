@@ -1,11 +1,13 @@
 import { cn } from '@/shared/lib/utils'
-import { formatCompact, formatUsd, isAuditEstimated } from '@/shared/lib/models'
+import { formatCompact, isAuditEstimated } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/shared/components/ui/table'
 import type { AuditRow } from '../../../../shared/schemas/models.js'
 import { AliasLines, ModelDot, MUT_CELL, NUM_CELL, OverrideLine, TH } from './table-parts'
 import type { PricingRowActions } from './models-table'
 
 export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: PricingRowActions }) {
+  const { formatUsd } = useCurrencyFormatter()
   return (
     <Table>
       <TableHeader>
