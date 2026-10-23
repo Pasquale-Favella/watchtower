@@ -1,0 +1,6 @@
+{
+  "name": "watchtower-worker-rpc-probe",
+  "private": true,
+  "type": "module",
+  "main": "../worker-rpc-electron.mjs"
+}
