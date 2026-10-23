@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import { _electron as electron, expect, type Page, test } from '@playwright/test'
@@ -42,8 +41,22 @@ type TransportDiagnostics = {
 
 test('real sandboxed MessagePort transport passes the production RPC port boundary', async () => {
   test.setTimeout(90_000)
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-rpc-transport-'))
+  const directory = mkdtempSync(join(resolve('.'), '.watchtower-rpc-transport-'))
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined
+  const mainOutput: string[] = []
+  const rendererOutput: string[] = []
+  const observedPages = new WeakSet<object>()
+  const observePage = (page: Page) => {
+    if (observedPages.has(page)) return
+    observedPages.add(page)
+    page.on('pageerror', error => rendererOutput.push(`pageerror: ${error.stack ?? error.message}`))
+    page.on('console', message => {
+      if (message.type() === 'error') rendererOutput.push(`console error: ${message.text()}`)
+    })
+    page.on('crash', () => rendererOutput.push('renderer process crashed'))
+  }
+  const diagnosticDetails = () =>
+    `\nElectron stdout/stderr:\n${mainOutput.join('') || '(empty)'}\nRenderer diagnostics:\n${rendererOutput.join('\n') || '(empty)'}`
   try {
     const fixtureRoot = resolve('e2e/fixtures')
     await build({
@@ -79,8 +92,14 @@ test('real sandboxed MessagePort transport passes the production RPC port bounda
       ],
     })
     app = electronApp
+    const child = electronApp.process()
+    child.stdout?.on('data', chunk => mainOutput.push(String(chunk)))
+    child.stderr?.on('data', chunk => mainOutput.push(String(chunk)))
+    child.on('exit', (code, signal) => mainOutput.push(`Electron process exited: code=${code}, signal=${signal}\n`))
+    electronApp.on('window', observePage)
     await expect.poll(() => electronApp.windows().length).toBe(4)
     const pages = electronApp.windows()
+    pages.forEach(observePage)
     await Promise.all(pages.map(page => page.waitForFunction(() => document.documentElement.dataset.ready === 'true')))
     const fixturePages = new Map<string, Page>()
     for (const page of pages) {
@@ -363,6 +382,8 @@ test('real sandboxed MessagePort transport passes the production RPC port bounda
     expect(afterForeignNavigation.acceptedConnections).toBe(beforeForeignNavigation.acceptedConnections)
     expect(afterForeignNavigation.activeConnections).toBe(0)
     expect(afterForeignNavigation.activeServerFibers).toBe(0)
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}${diagnosticDetails()}`)
   } finally {
     await app?.close()
     rmSync(directory, { recursive: true, force: true })

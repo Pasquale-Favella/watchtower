@@ -1,13 +1,26 @@
 import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { _electron as electron, expect, test } from '@playwright/test'
+import { _electron as electron, expect, type Page, test } from '@playwright/test'
 import { build } from 'vite'
 
 test('development StrictMode shares bootstrap ownership and disposes the window registry', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-lifecycle-'))
+  const directory = mkdtempSync(join(resolve('.'), '.watchtower-lifecycle-'))
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined
+  const mainOutput: string[] = []
+  const rendererOutput: string[] = []
+  const observedPages = new WeakSet<object>()
+  const observePage = (page: Page) => {
+    if (observedPages.has(page)) return
+    observedPages.add(page)
+    page.on('pageerror', error => rendererOutput.push(`pageerror: ${error.stack ?? error.message}`))
+    page.on('console', message => {
+      if (message.type() === 'error') rendererOutput.push(`console error: ${message.text()}`)
+    })
+    page.on('crash', () => rendererOutput.push('renderer process crashed'))
+  }
+  const diagnosticDetails = () =>
+    `\nElectron stdout/stderr:\n${mainOutput.join('') || '(empty)'}\nRenderer diagnostics:\n${rendererOutput.join('\n') || '(empty)'}`
   try {
     await build({
       configFile: false,
@@ -31,7 +44,13 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
         `--user-data-dir=${join(directory, 'profile')}`,
       ],
     })
+    const child = app.process()
+    child.stdout?.on('data', chunk => mainOutput.push(String(chunk)))
+    child.stderr?.on('data', chunk => mainOutput.push(String(chunk)))
+    child.on('exit', (code, signal) => mainOutput.push(`Electron process exited: code=${code}, signal=${signal}\n`))
+    app.on('window', observePage)
     const page = await app.firstWindow()
+    observePage(page)
     const errors: string[] = []
     page.on('pageerror', error => errors.push(error.message))
     await expect(page.locator('[data-ready="true"]')).toHaveText('$10.00')
@@ -82,6 +101,8 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
     await expect.poll(async () => (await state()).nodes).toBe(0)
     expect(await state()).toMatchObject({ effectCleanups: 2, detaches: 10, listeners: 0 })
     expect(errors).toEqual([])
+  } catch (error) {
+    throw new Error(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}${diagnosticDetails()}`)
   } finally {
     await app?.close()
     rmSync(directory, { recursive: true, force: true })
