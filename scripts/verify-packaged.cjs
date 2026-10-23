@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { prepareProviderFixture } = require('./fixtures/provider.cjs')
 const { createRequire } = require('node:module')
 const fromRepo = createRequire(path.join(process.cwd(), 'package.json'))
 const { _electron: electron, expect } = fromRepo('@playwright/test')
@@ -48,84 +49,6 @@ function ledgerMcpEntry(resourcesPath) {
   const archive = path.join(resourcesPath, 'app.asar')
   assert.ok(fs.statSync(archive).isFile(), `Packaged ASAR archive does not exist: ${archive}`)
   return path.join(archive, 'out', 'main', 'ledger-mcp.js')
-}
-
-function prepareProviderFixture(profile) {
-  const home = path.join(profile, 'isolated-home')
-  const codexHome = path.join(profile, 'provider-fixtures', 'codex')
-  const projectPath = path.join(profile, 'provider-fixtures', 'workspace', 'packaged-project')
-  const now = new Date().toISOString()
-  const year = now.slice(0, 4)
-  const month = now.slice(5, 7)
-  const day = now.slice(8, 10)
-  const sessionPath = path.join(codexHome, 'sessions', year, month, day, 'rollout-packaged-acceptance.jsonl')
-  fs.mkdirSync(home, { recursive: true })
-  fs.mkdirSync(projectPath, { recursive: true })
-  fs.mkdirSync(path.dirname(sessionPath), { recursive: true })
-  const tokenUsage = {
-    input_tokens: 32,
-    cached_input_tokens: 0,
-    output_tokens: 16,
-    reasoning_output_tokens: 0,
-    total_tokens: 48,
-  }
-  const entries = [
-    {
-      type: 'session_meta',
-      timestamp: now,
-      payload: {
-        session_id: 'watchtower-packaged-session',
-        cwd: projectPath,
-        originator: 'Codex CLI',
-        model: 'gpt-5.2-codex',
-      },
-    },
-    {
-      type: 'response_item',
-      timestamp: now,
-      payload: {
-        type: 'message',
-        role: 'user',
-        content: [{ type: 'input_text', text: 'watchtower-packaged-unique-search-needle' }],
-      },
-    },
-    {
-      type: 'response_item',
-      timestamp: now,
-      payload: {
-        type: 'message',
-        role: 'assistant',
-        content: [{ type: 'output_text', text: 'Packaged scan fixture response.' }],
-      },
-    },
-    {
-      type: 'event_msg',
-      timestamp: now,
-      payload: {
-        type: 'token_count',
-        info: {
-          model: 'gpt-5.2-codex',
-          last_token_usage: tokenUsage,
-          total_token_usage: tokenUsage,
-        },
-      },
-    },
-  ]
-  fs.writeFileSync(sessionPath, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n')
-  return {
-    env: {
-      ...process.env,
-      HOME: home,
-      USERPROFILE: home,
-      APPDATA: path.join(profile, 'isolated-appdata'),
-      CODEX_HOME: codexHome,
-      LOCALAPPDATA: path.join(profile, 'isolated-localappdata'),
-      XDG_CONFIG_HOME: path.join(profile, 'isolated-xdg-config'),
-      XDG_DATA_HOME: path.join(profile, 'isolated-xdg-data'),
-      CLAUDE_CONFIG_DIRS: path.join(profile, 'isolated-claude-config'),
-      WATCHTOWER_DESKTOP_SESSIONS_DIR: path.join(profile, 'isolated-claude-desktop'),
-    },
-  }
 }
 
 async function checkMcp(executablePath, entryPath, dbPath) {
@@ -261,6 +184,53 @@ async function checkMcpHttp(executablePath, entryPath, dbPath) {
     }
   }
 }
+async function checkRendererRpc(window) {
+  const result = await window.evaluate(async () => {
+    const bridge = window.api.rpcV1
+    const connection = await bridge.connect()
+    if (connection._tag !== 'Connected') throw new Error('Packaged RPC connection failed')
+    const invoke = (id, tag, payload) =>
+      new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          unsubscribe()
+          reject(new Error('Packaged RPC timed out'))
+        }, 10000)
+        const unsubscribe = bridge.onMessage(raw => {
+          const frame = JSON.parse(raw)
+          if (frame._tag !== 'Exit' || frame.requestId !== id) return
+          clearTimeout(timeout)
+          unsubscribe()
+          if (frame.exit._tag === 'Success') resolve(frame.exit.value)
+          else reject(new Error('Packaged RPC request failed'))
+        }, connection.generation)
+        bridge
+          .send(JSON.stringify({ _tag: 'Request', id, tag, payload, headers: [] }), connection.generation)
+          .catch(error => {
+            clearTimeout(timeout)
+            unsubscribe()
+            reject(error)
+          })
+      })
+    const name = 'watchtower-packaged-rpc-model'
+    const status = await invoke('packaged-rpc-status', 'store:status', null)
+    await invoke('packaged-rpc-price', 'models:setPrice', {
+      model: name,
+      inputPricePerMillion: 0,
+      outputPricePerMillion: 2,
+    })
+    const prices = await invoke('packaged-rpc-prices', 'models:getPriceOverrides', null)
+    await invoke('packaged-rpc-remove', 'models:removePriceOverride', { model: name })
+    return { status, price: prices.find(price => price.model === name) }
+  })
+  assert.equal(result.status.scanned, true)
+  assert.deepEqual(result.price, {
+    model: 'watchtower-packaged-rpc-model',
+    inputPricePerMillion: 0,
+    outputPricePerMillion: 2,
+  })
+  console.log('Packaged sandbox RPC query and admitted configuration write passed over MessagePort.')
+}
+
 async function main() {
   const options = parseOptions(process.argv.slice(2))
   if (options.help) {
@@ -290,6 +260,7 @@ async function main() {
       assert.equal(await retry.isVisible(), false)
       await skip.click()
       await expect(skip).toBeHidden()
+      await checkRendererRpc(window)
       await window.getByRole('button', { name: 'Sessions', exact: true }).click()
       await expect(
         window
