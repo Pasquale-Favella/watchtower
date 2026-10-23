@@ -50,7 +50,13 @@ interface ActiveConnection {
 }
 
 /** Builds the fixed preload capability. It never returns the Electron port or IPC object. */
-export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_000): RpcBridge => {
+export const createRpcBridge = (
+  ipc: RpcIpcRenderer,
+  connectionTimeoutMs = 10_000,
+): {
+  readonly bridge: RpcBridge
+  readonly dispose: () => void
+} => {
   let nextRequestId = 1
   let pending: PendingConnection | undefined
   let active: ActiveConnection | undefined
@@ -58,11 +64,11 @@ export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_00
   let disposeTimer: ReturnType<typeof setTimeout> | undefined
   const cancelledRequests = new Set<number>()
   let listenerAttached = false
-  const messageListeners = new Set<(frame: unknown) => void>()
-  const closeListeners = new Set<() => void>()
+  const messageListeners = new Set<{ readonly generation: number; readonly receive: (frame: unknown) => void }>()
+  const closeListeners = new Set<{ readonly generation: number; readonly close: () => void }>()
 
-  const notifyClosed = (): void => {
-    for (const listener of [...closeListeners]) listener()
+  const notifyClosed = (generation: number): void => {
+    for (const listener of [...closeListeners]) if (listener.generation === generation) listener.close()
   }
 
   const closeActive = (notify: boolean): void => {
@@ -73,7 +79,7 @@ export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_00
     connection.port.removeEventListener('close', connection.onClose)
     connection.port.removeEventListener('messageerror', connection.onClose)
     connection.port.close()
-    if (notify) notifyClosed()
+    if (notify) notifyClosed(connection.generation)
   }
 
   const onPort = (event: RpcPreloadEvent, raw: unknown): void => {
@@ -116,7 +122,8 @@ export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_00
       port,
       generation: data.generation,
       onMessage: message => {
-        for (const listener of [...messageListeners]) listener(message.data)
+        for (const listener of [...messageListeners])
+          if (listener.generation === connection.generation) listener.receive(message.data)
       },
       onClose: () => {
         if (active !== connection) return
@@ -144,7 +151,7 @@ export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_00
   ipc.on(PORT_CHANNEL, onPort)
   listenerAttached = true
 
-  return {
+  const bridge: RpcBridge = {
     connect: () => {
       if (disposed) return Promise.resolve({ _tag: 'Failed', code: 'closed' })
       if (active) return Promise.resolve({ _tag: 'Connected', generation: active.generation })
@@ -170,9 +177,10 @@ export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_00
       }
       return promise
     },
-    send: frame => {
+    send: (frame, generation) => {
       const connection = active
-      if (disposed || !connection) return Promise.reject(new Error('RPC connection unavailable'))
+      if (disposed || !connection || connection.generation !== generation)
+        return Promise.reject(new Error('RPC connection unavailable'))
       try {
         connection.port.postMessage(frame)
         return Promise.resolve()
@@ -181,35 +189,50 @@ export const createRpcBridge = (ipc: RpcIpcRenderer, connectionTimeoutMs = 10_00
         return Promise.reject(new Error('RPC send failed'))
       }
     },
-    onMessage: listener => {
+    onMessage: (receive, generation) => {
+      const listener = { generation, receive }
       messageListeners.add(listener)
-      return () => messageListeners.delete(listener)
+      return () => {
+        messageListeners.delete(listener)
+      }
     },
-    onClose: listener => {
+    onClose: (close, generation) => {
+      if (active?.generation !== generation) {
+        close()
+        return () => undefined
+      }
+      const listener = { generation, close }
       closeListeners.add(listener)
-      return () => closeListeners.delete(listener)
+      return () => {
+        closeListeners.delete(listener)
+      }
     },
-    disconnect: () => {
-      if (disposed) return
-      disposed = true
-      if (pending) {
-        clearTimeout(pending.timeout)
-        cancelledRequests.add(pending.requestId)
-        pending.resolve({ _tag: 'Failed', code: 'closed' })
-        pending = undefined
-      }
-      if (cancelledRequests.size > 0) {
-        disposeTimer = setTimeout(() => {
-          cancelledRequests.clear()
-          disposeTimer = undefined
-          detachListener()
-        }, connectionTimeoutMs)
-      } else {
-        detachListener()
-      }
-      closeActive(true)
-      messageListeners.clear()
-      closeListeners.clear()
+    disconnect: generation => {
+      if (active?.generation === generation) closeActive(true)
     },
   }
+
+  const dispose = (): void => {
+    if (disposed) return
+    disposed = true
+    if (pending) {
+      clearTimeout(pending.timeout)
+      cancelledRequests.add(pending.requestId)
+      pending.resolve({ _tag: 'Failed', code: 'closed' })
+      pending = undefined
+    }
+    if (cancelledRequests.size > 0) {
+      disposeTimer = setTimeout(() => {
+        cancelledRequests.clear()
+        disposeTimer = undefined
+        detachListener()
+      }, connectionTimeoutMs)
+    } else {
+      detachListener()
+    }
+    closeActive(true)
+    messageListeners.clear()
+    closeListeners.clear()
+  }
+  return { bridge, dispose }
 }

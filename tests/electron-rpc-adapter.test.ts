@@ -119,7 +119,7 @@ const createMain = (ipc: FakeIpcRenderer) => {
 
 const setup = (resolveRole: (url: string) => RpcWindowRole | undefined = () => 'app') => {
   const ipc = new FakeIpcRenderer()
-  const bridge = createRpcBridge(ipc as never)
+  const { bridge, dispose } = createRpcBridge(ipc as never)
   const { sender, ipcMain } = createMain(ipc)
   const connections: Array<{ port: RpcMessagePort; role: RpcWindowRole; sender: FakeWebContents }> = []
   const teardowns: number[] = []
@@ -136,14 +136,14 @@ const setup = (resolveRole: (url: string) => RpcWindowRole | undefined = () => '
       return () => teardowns.push(generation)
     },
   })
-  return { ipc, bridge, sender, connections, teardowns, unregister }
+  return { ipc, bridge, dispose, sender, connections, teardowns, unregister }
 }
 
 describe('Electron RPC adapters', () => {
   it('connects through fixed channels and exposes only the narrow bridge capability', async () => {
     const { ipc, bridge, connections } = setup()
     const frames: unknown[] = []
-    bridge.onMessage(frame => frames.push(frame))
+    bridge.onMessage(frame => frames.push(frame), 1)
     const connection = await bridge.connect()
 
     expect(connection).toEqual({ _tag: 'Connected', generation: 1 })
@@ -152,10 +152,10 @@ describe('Electron RPC adapters', () => {
     expect(connections[0]?.role).toBe('app')
     expect(Object.keys(bridge).sort()).toEqual(['connect', 'disconnect', 'onClose', 'onMessage', 'send'])
 
-    await bridge.send('{"_tag":"Ping"}')
+    await bridge.send('{"_tag":"Ping"}', 1)
     await Effect.runPromise(connections[0]!.port.send('{"_tag":"Pong"}'))
     expect(frames).toEqual(['{"_tag":"Pong"}'])
-    bridge.disconnect()
+    bridge.disconnect(1)
   })
 
   it('refuses an unknown document and a subframe without creating a port', async () => {
@@ -173,9 +173,9 @@ describe('Electron RPC adapters', () => {
 
   it('rejects pending connection readiness on local disposal', async () => {
     const ipc = new FakeIpcRenderer()
-    const bridge = createRpcBridge(ipc as never)
+    const { bridge, dispose } = createRpcBridge(ipc as never)
     const pending = bridge.connect()
-    bridge.disconnect()
+    dispose()
     await expect(pending).resolves.toEqual({ _tag: 'Failed', code: 'closed' })
     const latePort = new FakeMessagePort()
     ipc.deliver(PORT, { _tag: 'Ready', version: 1, requestId: 1, generation: 1 }, [latePort])
@@ -185,9 +185,9 @@ describe('Electron RPC adapters', () => {
 
   it('fails readiness when main never returns a port', async () => {
     const ipc = new FakeIpcRenderer()
-    const bridge = createRpcBridge(ipc as never, 2)
+    const { bridge, dispose } = createRpcBridge(ipc as never, 2)
     expect(await bridge.connect()).toEqual({ _tag: 'Failed', code: 'unavailable' })
-    bridge.disconnect()
+    dispose()
   })
 
   it('closes old generations on navigation and reconnects with a new generation', async () => {
@@ -195,7 +195,7 @@ describe('Electron RPC adapters', () => {
     expect(await bridge.connect()).toEqual({ _tag: 'Connected', generation: 1 })
     const firstPort = connections[0]!.port
     let closed = false
-    bridge.onClose(() => (closed = true))
+    bridge.onClose(() => (closed = true), 1)
     sender.emit('did-start-navigation', {}, 'file:///app/index.html', false, true)
     expect(teardowns).toHaveLength(1)
     // Main-initiated navigation closes the transferred endpoint and notifies preload.
@@ -204,7 +204,7 @@ describe('Electron RPC adapters', () => {
     expect(connections).toHaveLength(2)
     expect(teardowns).toHaveLength(1)
     await expect(Effect.runPromise(firstPort.send('stale'))).rejects.toMatchObject({ code: 'closed' })
-    bridge.disconnect()
+    bridge.disconnect(2)
   })
 
   it('closes all ports and scoped handlers when the adapter unregisters', async () => {
@@ -216,7 +216,7 @@ describe('Electron RPC adapters', () => {
     expect(connections[0]?.sender.listenerCount('did-start-navigation')).toBe(0)
     expect(connections[0]?.sender.listenerCount('destroyed')).toBe(0)
     expect(connections[0]?.sender.listenerCount('render-process-gone')).toBe(0)
-    await expect(bridge.send('late')).rejects.toBeInstanceOf(Error)
+    await expect(bridge.send('late', 1)).rejects.toBeInstanceOf(Error)
   })
 
   it('rejects unsupported protocol versions through the fixed response channel', async () => {
@@ -226,5 +226,24 @@ describe('Electron RPC adapters', () => {
     ipc.onConnect?.(ipc.event as FakeIpcEvent, { version: 2, requestId })
     await expect(pending).resolves.toEqual({ _tag: 'Failed', code: 'protocol' })
     unregister()
+  })
+
+  it('reconnects after scoped close and isolates new ports from stale listeners and cleanup', async () => {
+    const { bridge, connections, dispose } = setup()
+    await bridge.connect()
+    const staleFrames: unknown[] = []
+    bridge.onMessage(frame => staleFrames.push(frame), 1)
+    bridge.disconnect(1)
+    expect(await bridge.connect()).toEqual({ _tag: 'Connected', generation: 2 })
+    bridge.disconnect(1)
+    await expect(bridge.send('stale request', 1)).rejects.toBeInstanceOf(Error)
+    await expect(bridge.send('{"_tag":"Ping"}', 2)).resolves.toBeUndefined()
+    const currentFrames: unknown[] = []
+    bridge.onMessage(frame => currentFrames.push(frame), 2)
+    await Effect.runPromise(connections[1]!.port.send('{"_tag":"Pong"}'))
+    expect(staleFrames).toEqual([])
+    expect(currentFrames).toEqual(['{"_tag":"Pong"}'])
+    dispose()
+    expect(await bridge.connect()).toEqual({ _tag: 'Failed', code: 'closed' })
   })
 })

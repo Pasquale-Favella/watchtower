@@ -40,10 +40,11 @@ test('sandboxed preload carries RPC frames and replaces the connection after rel
             clearTimeout(timer)
             unsubscribe()
             resolve(frame.exit)
-          })
+          }, connection.generation)
           bridge
             .send(
               JSON.stringify({ _tag: 'Request', id: 'sandbox-probe', tag: 'store:status', payload: null, headers: [] }),
+              connection.generation,
             )
             .catch(error => {
               clearTimeout(timer)

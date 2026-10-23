@@ -6,7 +6,7 @@ import type { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Schema from 'effect/Schema'
 
 import { ApplicationRpcGroup } from '../../../../shared/rpc/application.js'
-import { type RpcBridge, type RpcConnectionResult } from '../../../../shared/rpc/bridge.js'
+import type { RpcBridge } from '../../../../shared/rpc/bridge.js'
 import { AnalyticsRpcError, ConfigRpcError } from '../../../../shared/rpc/errors.js'
 import { clientProtocolLayer } from '../../../../shared/rpc/port-protocol.js'
 import type { ComparePair } from '../../../../shared/schemas/compare.js'
@@ -34,8 +34,6 @@ const method =
     )
   }
 
-const unavailableConnection = (connection: RpcConnectionResult | undefined): boolean => connection?._tag !== 'Connected'
-
 /** Builds the renderer service with RPC-backed analytics/config calls and explicit legacy adapters elsewhere. */
 export const rendererRpcApiLayer = (bridge: RpcBridge): Layer.Layer<RendererApi> =>
   Layer.effect(
@@ -45,9 +43,9 @@ export const rendererRpcApiLayer = (bridge: RpcBridge): Layer.Layer<RendererApi>
         try: () => bridge.connect(),
         catch: () => undefined,
       }).pipe(Effect.catch(() => Effect.succeed(undefined)))
-      if (unavailableConnection(connection)) return { ...legacyRendererApi, ...rpcMethods(undefined) }
+      if (connection?._tag !== 'Connected') return { ...legacyRendererApi, ...rpcMethods(undefined) }
 
-      const protocol = yield* Layer.build(clientProtocolLayer(rpcMessagePortFromBridge(bridge)))
+      const protocol = yield* Layer.build(clientProtocolLayer(rpcMessagePortFromBridge(bridge, connection.generation)))
       const client = yield* RpcClient.make(ApplicationRpcGroup).pipe(
         Effect.provideService(RpcClient.Protocol, Context.get(protocol, RpcClient.Protocol)),
       )

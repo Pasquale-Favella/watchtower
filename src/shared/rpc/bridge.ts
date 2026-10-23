@@ -33,8 +33,8 @@ export type RpcConnectionResult =
 /** The only RPC capability exposed to the isolated renderer world. */
 export interface RpcBridge {
   readonly connect: () => Promise<RpcConnectionResult>
-  readonly send: (frame: string) => Promise<void>
-  readonly onMessage: (listener: (frame: unknown) => void) => () => void
-  readonly onClose: (listener: () => void) => () => void
-  readonly disconnect: () => void
+  readonly send: (frame: string, generation: number) => Promise<void>
+  readonly onMessage: (listener: (frame: unknown) => void, generation: number) => () => void
+  readonly onClose: (listener: () => void, generation: number) => () => void
+  readonly disconnect: (generation: number) => void
 }
