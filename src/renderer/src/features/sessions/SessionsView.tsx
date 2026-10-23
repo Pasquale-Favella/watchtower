@@ -1,10 +1,10 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useMemo, useState } from 'react'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
 import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSession } from '@/app/navigation'
-import { useScanStore } from '@/app/stores/scan-store'
 import { sessionRowsQuery } from '@/features/sessions/atoms'
 import type { SessionRow } from '@/features/sessions/drilldown'
 import {
@@ -14,14 +14,14 @@ import {
   sortSessions,
   summarizeSessions,
 } from '@/features/sessions/sessions-lib'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { formatUsd } from '@/shared/lib/models'
 import { motionClass } from '@/shared/lib/motion'
 import { keyOfScope } from '@/shared/lib/query-keys'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 const SORT_OPTIONS: SegOption[] = [
@@ -69,6 +69,7 @@ function ColumnHeaders(): React.JSX.Element {
 }
 
 function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: string) => void }): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const provenance = row.modelProvenance ?? {}
   const merged = row.models.filter(model => provenance[model]?.length)
   return (
@@ -113,11 +114,12 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
 }
 
 export function SessionsView(): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const scope = useAtomValue(overviewScopeAtom)
   const { data: rows, error } = useRemoteQuery(sessionRowsQuery, scope, keyOfScope)
   const provider = useAtomValue(providerAtom)
   const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)
@@ -138,7 +140,7 @@ export function SessionsView(): React.JSX.Element {
 
       {rows === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading sessions…" className="border-border bg-card overflow-hidden rounded-lg border">
             <div className="border-border flex flex-wrap items-center gap-2.5 border-b px-3.5 py-3">
@@ -150,11 +152,15 @@ export function SessionsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : rows.length === 0 ? (
-        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
-          No sessions in this range yet.
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
+            No sessions in this range yet.
+          </div>
+        </>
       ) : (
         <>
+          <QueryErrorNotice error={error} hasData />
           <div className="flex flex-wrap items-center gap-2.5">
             <input
               aria-label="Search sessions"

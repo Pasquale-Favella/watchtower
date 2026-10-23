@@ -2,12 +2,27 @@ import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import * as Option from 'effect/Option'
 import * as Predicate from 'effect/Predicate'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
+import type * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { useContext, useEffect } from 'react'
 
 import type { RemoteQuerySlot } from '../atoms/remote-query.js'
 
 const windowPins = new WeakMap<AtomRegistry.AtomRegistry, Map<object, () => void>>()
+
+function pinWindowResource(registry: AtomRegistry.AtomRegistry, key: object, acquire: () => () => void): void {
+  let pins = windowPins.get(registry)
+  if (!pins) {
+    pins = new Map()
+    windowPins.set(registry, pins)
+  }
+  if (!pins.has(key)) pins.set(key, acquire())
+}
+
+/** Owns an activated workflow until the renderer root disposes its window. */
+export function pinWindowAtom<A>(registry: AtomRegistry.AtomRegistry, atom: Atom.Atom<A>): void {
+  pinWindowResource(registry, atom, () => registry.mount(atom))
+}
 
 export function releaseWindowQueries(registry: AtomRegistry.AtomRegistry): void {
   const pins = windowPins.get(registry)
@@ -47,12 +62,7 @@ export function useRemoteQuery<Request, Value, Error>(
   const result = useAtomValue(slot.resultAtom)
   const select = useAtomSet(slot.requestAtom)
   useEffect(() => {
-    let pins = windowPins.get(registry)
-    if (!pins) {
-      pins = new Map()
-      windowPins.set(registry, pins)
-    }
-    if (!pins.has(slot)) pins.set(slot, slot.pin(registry))
+    pinWindowResource(registry, slot, () => slot.pin(registry))
     select(request)
   }, [registry, request, select, slot])
   if (request === null || selected === null || key(selected) !== key(request))

@@ -35,6 +35,16 @@ export interface RemoteQuerySlot<Request, Value, Error> {
   readonly pin: (registry: AtomRegistry.AtomRegistry) => () => void
 }
 
+/** Discards prior data while keeping an activated slot on its current request. */
+export function restartRemoteQuery<Request, Value, Error>(
+  registry: AtomRegistry.AtomRegistry,
+  query: RemoteQuerySlot<Request, Value, Error>,
+): void {
+  const request = registry.get(query.requestAtom)
+  registry.set(query.resetAtom, undefined)
+  if (request !== null) registry.set(query.requestAtom, request)
+}
+
 /** Builds one bounded query slot. Each new identity owns a fresh query descriptor. */
 export const createRemoteQuerySlot = <Request, Value, Error, Services, RuntimeError>(
   options: RemoteQuerySlotOptions<Request, Value, Error, Services, RuntimeError>,

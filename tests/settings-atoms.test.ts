@@ -3,7 +3,7 @@ import * as Layer from 'effect/Layer'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import { createSettingsAtoms } from '../src/renderer/src/features/settings/atoms.js'
 import { legacyRendererApi, RendererApi, RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
@@ -19,12 +19,18 @@ type SettingsOverrides = Partial<
   Pick<RendererApi['Service'], 'getCadence' | 'setCadence' | 'getCurrency' | 'setCurrency' | 'getCurrencies'>
 >
 
+const registries: AtomRegistry.AtomRegistry[] = []
+afterEach(() => {
+  for (const registry of registries.splice(0)) registry.dispose()
+})
+
 function makeHarness(overrides: SettingsOverrides = {}) {
   const runtime = Atom.context()
   const service = { ...legacyRendererApi, ...overrides }
   const apiLayer = Layer.succeed(RendererApi, service)
   const atoms = createSettingsAtoms(runtime, apiLayer)
   const registry = AtomRegistry.make()
+  registries.push(registry)
   return { atoms, registry }
 }
 
@@ -72,7 +78,75 @@ describe('settings atoms', () => {
     expect(registry.get(atoms.currencyOptionsAtom)).toEqual(currencies)
   })
 
-  it('applies cadence optimistically and replaces it with the server confirmation', async () => {
+  it('does not let a cadence snapshot overwrite a newer command confirmation', async () => {
+    let resolveSnapshot!: (value: string) => void
+    let markReadStarted!: () => void
+    const readStarted = new Promise<void>(resolve => {
+      markReadStarted = resolve
+    })
+    const { atoms, registry } = makeHarness({
+      getCadence: () =>
+        Effect.promise(() => {
+          markReadStarted()
+          return new Promise<string>(resolve => {
+            resolveSnapshot = resolve
+          })
+        }),
+      setCadence: () => Effect.succeed('5m'),
+    })
+
+    const loading = dispatch(registry, atoms.loadCadenceAtom, undefined)
+    await readStarted
+    const writing = dispatch(registry, atoms.setCadenceAtom, '10m')
+    await writing
+    resolveSnapshot('1m')
+    await loading
+
+    expect(registry.get(atoms.cadenceAtom)).toBe('5m')
+  })
+
+  it('does not let a cadence snapshot started during a write regress after commit', async () => {
+    let resolveSnapshot!: (value: string) => void
+    let resolveWrite!: (value: string) => void
+    let markReadStarted!: () => void
+    let markWriteStarted!: () => void
+    const readStarted = new Promise<void>(resolve => {
+      markReadStarted = resolve
+    })
+    const writeStarted = new Promise<void>(resolve => {
+      markWriteStarted = resolve
+    })
+    const { atoms, registry } = makeHarness({
+      getCadence: () =>
+        Effect.promise(() => {
+          markReadStarted()
+          return new Promise<string>(resolve => {
+            resolveSnapshot = resolve
+          })
+        }),
+      setCadence: () =>
+        Effect.promise(() => {
+          markWriteStarted()
+          return new Promise<string>(resolve => {
+            resolveWrite = resolve
+          })
+        }),
+    })
+
+    const writing = dispatch(registry, atoms.setCadenceAtom, '5m')
+    await writeStarted
+    const loading = dispatch(registry, atoms.loadCadenceAtom, undefined)
+    await readStarted
+
+    resolveWrite('5m')
+    await writing
+    resolveSnapshot('1m')
+    await loading
+
+    expect(registry.get(atoms.cadenceAtom)).toBe('5m')
+  })
+
+  it('uses the cadence value confirmed by the server', async () => {
     const { atoms, registry } = makeHarness({ setCadence: () => Effect.succeed('5m') })
     const result = await dispatch(registry, atoms.setCadenceAtom, '10m')
 
@@ -80,13 +154,13 @@ describe('settings atoms', () => {
     expect(registry.get(atoms.cadenceAtom)).toBe('5m')
   })
 
-  it('keeps the optimistic cadence after a failed write', async () => {
+  it('restores the confirmed cadence after a failed write', async () => {
     const failure = new RendererApiError({ operation: 'cadence:set', message: 'offline' })
     const { atoms, registry } = makeHarness({ setCadence: () => Effect.fail(failure) })
     const result = await dispatch(registry, atoms.setCadenceAtom, '10m')
 
     expect(AsyncResult.isFailure(result)).toBe(true)
-    expect(registry.get(atoms.cadenceAtom)).toBe('10m')
+    expect(registry.get(atoms.cadenceAtom)).toBe('1m')
   })
 
   it('changes currency only after the main process confirms it', async () => {
@@ -144,5 +218,95 @@ describe('settings atoms', () => {
 
     expect(started).toEqual(['2m', '3m'])
     expect(finished).toEqual(['2m', '3m'])
+    expect(registry.get(atoms.cadenceAtom)).toBe('3m')
+  })
+
+  it('keeps cadence write locks isolated between registries', async () => {
+    let releaseFirst!: (value: string) => void
+    let markFirstStarted!: () => void
+    const firstStarted = new Promise<void>(resolve => {
+      markFirstStarted = resolve
+    })
+    const { atoms, registry: firstRegistry } = makeHarness({
+      setCadence: value =>
+        Effect.promise(() => {
+          if (value !== '2m') return Promise.resolve(value)
+          markFirstStarted()
+          return new Promise<string>(resolve => {
+            releaseFirst = resolve
+          })
+        }),
+    })
+    const secondRegistry = AtomRegistry.make()
+    registries.push(secondRegistry)
+
+    const firstWrite = dispatch(firstRegistry, atoms.setCadenceAtom, '2m')
+    await firstStarted
+    const secondWrite = dispatch(secondRegistry, atoms.setCadenceAtom, '3m')
+    await secondWrite
+    expect(secondRegistry.get(atoms.cadenceAtom)).toBe('3m')
+
+    releaseFirst('2m')
+    await firstWrite
+    expect(firstRegistry.get(atoms.cadenceAtom)).toBe('2m')
+  })
+
+  it('does not let a currency snapshot overwrite a newer CurrencyChanged event', async () => {
+    let resolveSnapshot!: (value: ActiveCurrency) => void
+    let markReadStarted!: () => void
+    const readStarted = new Promise<void>(resolve => {
+      markReadStarted = resolve
+    })
+    const { atoms, registry } = makeHarness({
+      getCurrency: () =>
+        Effect.promise(() => {
+          markReadStarted()
+          return new Promise<ActiveCurrency>(resolve => {
+            resolveSnapshot = resolve
+          })
+        }),
+    })
+
+    const loading = dispatch(registry, atoms.loadCurrencyAtom, undefined)
+    await readStarted
+    const changed: ActiveCurrency = { code: 'GBP', symbol: '£', rate: 0.8 }
+    registry.set(atoms.currencyChangedAtom, changed)
+    resolveSnapshot(eur)
+    await loading
+
+    expect(registry.get(atoms.activeCurrencyAtom)).toEqual(changed)
+  })
+
+  it('serializes currency writes so the final UI agrees with the backend', async () => {
+    const started: string[] = []
+    let releaseFirst!: (value: ActiveCurrency) => void
+    let markFirstStarted!: () => void
+    const firstStarted = new Promise<void>(resolve => {
+      markFirstStarted = resolve
+    })
+    const { atoms, registry } = makeHarness({
+      setCurrency: code =>
+        Effect.promise(() => {
+          started.push(code)
+          if (code === 'EUR') {
+            markFirstStarted()
+            return new Promise<ActiveCurrency>(resolve => {
+              releaseFirst = resolve
+            })
+          }
+          return Promise.resolve({ code: 'GBP', symbol: '£', rate: 0.8 })
+        }),
+    })
+
+    const firstWrite = dispatch(registry, atoms.setCurrencyAtom, 'EUR')
+    await firstStarted
+    const secondWrite = dispatch(registry, atoms.setCurrencyAtom, 'GBP')
+    expect(started).toEqual(['EUR'])
+
+    releaseFirst(eur)
+    await Promise.all([firstWrite, secondWrite])
+
+    expect(started).toEqual(['EUR', 'GBP'])
+    expect(registry.get(atoms.activeCurrencyAtom)).toEqual({ code: 'GBP', symbol: '£', rate: 0.8 })
   })
 })

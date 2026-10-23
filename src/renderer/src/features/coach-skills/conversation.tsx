@@ -2,8 +2,20 @@ import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ArrowUp, Square } from 'lucide-react'
 import { useRef, useState } from 'react'
 
+import { querySnapshot } from '@/app/hooks/use-remote-query'
+import {
+  cancelCoachAtom,
+  coachDetection,
+  coachStateAtom,
+  inspectHarnessAtom,
+  resetSessionAtom,
+  sendCoachAtom,
+  setHarnessAtom,
+  setModeIdAtom,
+  setModelIdAtom,
+} from '@/features/coach-skills/atoms'
+import { useCoachState } from '@/features/coach-skills/hooks'
 import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
-import { useCoachSkillsStore } from '@/features/coach-skills/store'
 import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
 import { InfoTip } from '@/shared/components/InfoTip'
 import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
@@ -20,7 +32,7 @@ import {
 import { Button } from '@/shared/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
-import { formatUsd } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 import type { SkillCandidate } from '../../../../shared/schemas/skills.js'
 import { HarnessModelPicker } from './harness-model-picker'
@@ -35,8 +47,8 @@ import { Thread } from './thread'
  *  env-key sign-in is invisible to the CLI's login probe). Off by default
  *  (ADR 0012). */
 function ClaudeAuthHint() {
-  const harnessKind = useCoachSkillsStore(s => s.harnessKind)
-  const active = useCoachSkillsStore(s => s.harnesses.find(h => h.instanceId === harnessKind))
+  const harnessKind = useCoachState(s => s.harnessKind)
+  const active = useCoachState(s => s.harnesses.find(h => h.instanceId === harnessKind))
   const allowApiKeyEnv = useAtomValue(preferencesAtom).allowHarnessApiKeyEnv
   const setPreferences = useAtomSet(setPreferencesAtom)
   if (active?.kind !== 'claude') return null
@@ -108,7 +120,9 @@ export function PatternChips({
   onCraft: (draft: SkillCandidate) => void
   disabled?: boolean
 }) {
-  const detection = useCoachSkillsStore(s => s.detection)
+  const { formatUsd } = useCurrencyFormatter()
+  const detectionResult = useAtomValue(coachDetection.resultAtom)
+  const detection = querySnapshot(detectionResult)
   const drafts = detection.data?.drafts ?? []
 
   if (detection.status === 'loading' && detection.data === null) {
@@ -178,8 +192,8 @@ export function ConversationWelcome({
   onSend: (text: string) => void
   canSend: boolean
 }) {
-  const hydrated = useCoachSkillsStore(s => s.hydrated)
-  const harnessCount = useCoachSkillsStore(s => s.harnesses.length)
+  const hydrated = useCoachState(s => s.hydrated)
+  const harnessCount = useCoachState(s => s.harnesses.length)
   return (
     <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-8 overflow-y-auto px-6 py-12">
       <div className="flex flex-col items-center gap-3 text-center">
@@ -227,7 +241,7 @@ export function ConversationWelcome({
  *  state and an active conversation. The thread is a shadcn
  *  MessageScroller (height-constrained; the scroller fills the flex-1 slot). */
 export function ConversationThread() {
-  const messages = useCoachSkillsStore(s => s.messages)
+  const messages = useCoachState(s => s.messages)
 
   return (
     <div className="min-h-0 flex-1">
@@ -254,20 +268,20 @@ export function ConversationComposer({
   onSend: (text: string) => void
   onStop: () => void
 }) {
-  const harnesses = useCoachSkillsStore(s => s.harnesses)
-  const harnessKind = useCoachSkillsStore(s => s.harnessKind)
-  const setHarness = useCoachSkillsStore(s => s.setHarness)
-  const resetSession = useCoachSkillsStore(s => s.resetSession)
-  const hasConversation = useCoachSkillsStore(s => s.messages.length > 0)
-  const inspectHarness = useCoachSkillsStore(s => s.inspectHarness)
-  const sessionModels = useCoachSkillsStore(s => s.sessionModels)
-  const sessionModes = useCoachSkillsStore(s => s.sessionModes)
-  const modelsByKind = useCoachSkillsStore(s => s.modelsByKind)
-  const inspectingKind = useCoachSkillsStore(s => s.inspectingKind)
-  const modelId = useCoachSkillsStore(s => s.modelId)
-  const modeId = useCoachSkillsStore(s => s.modeId)
-  const setModelId = useCoachSkillsStore(s => s.setModelId)
-  const setModeId = useCoachSkillsStore(s => s.setModeId)
+  const harnesses = useCoachState(s => s.harnesses)
+  const harnessKind = useCoachState(s => s.harnessKind)
+  const hasConversation = useCoachState(s => s.messages.length > 0)
+  const sessionModels = useCoachState(s => s.sessionModels)
+  const sessionModes = useCoachState(s => s.sessionModes)
+  const modelsByKind = useCoachState(s => s.modelsByKind)
+  const inspectingKind = useCoachState(s => s.inspectingKind)
+  const modelId = useCoachState(s => s.modelId)
+  const modeId = useCoachState(s => s.modeId)
+  const setHarness = useAtomSet(setHarnessAtom)
+  const resetSession = useAtomSet(resetSessionAtom)
+  const inspectHarness = useAtomSet(inspectHarnessAtom)
+  const setModelId = useAtomSet(setModelIdAtom)
+  const setModeId = useAtomSet(setModeIdAtom)
 
   const [prompt, setPrompt] = useState('')
   const [pendingSwitch, setPendingSwitch] = useState<{ kind: string; modelId: string | null } | null>(null)
@@ -313,7 +327,7 @@ export function ConversationComposer({
     if (!pendingSwitch) return
     setHarness(pendingSwitch.kind)
     setModelId(pendingSwitch.modelId)
-    resetSession()
+    resetSession(undefined)
     setPendingSwitch(null)
   }
 
@@ -478,17 +492,18 @@ export function ConversationComposer({
  *  the in-app MCP server; the current UI scope rides the briefing as the
  *  suggested default window for the agent's queries. */
 export function ConversationView() {
-  const harnessKind = useCoachSkillsStore(s => s.harnessKind)
-  const messages = useCoachSkillsStore(s => s.messages)
-  const running = useCoachSkillsStore(s => s.running)
-  const error = useCoachSkillsStore(s => s.error)
-  const sendCoach = useCoachSkillsStore(s => s.sendCoach)
-  const cancel = useCoachSkillsStore(s => s.cancel)
-  const resetSession = useCoachSkillsStore(s => s.resetSession)
+  const state = useAtomValue(coachStateAtom)
+  const harnessKind = state.harnessKind
+  const messages = state.messages
+  const running = state.running
+  const error = state.error
+  const sendCoach = useAtomSet(sendCoachAtom)
+  const cancel = useAtomSet(cancelCoachAtom)
+  const resetSession = useAtomSet(resetSessionAtom)
 
   const start = (seed: string): void => {
     if (!harnessKind || running) return
-    void sendCoach(seed)
+    sendCoach(seed)
   }
 
   // A suggested-skill chip is a CHAT-STARTER: it sends a normal coach run
@@ -513,7 +528,7 @@ export function ConversationView() {
               type="button"
               variant="outline"
               size="sm"
-              onClick={resetSession}
+              onClick={() => resetSession(undefined)}
               className="text-foreground h-7 gap-1.5 text-[11.5px] font-medium"
             >
               New conversation
@@ -528,7 +543,12 @@ export function ConversationView() {
           tucked behind the textarea card. */}
       <div>
         <ClaudeAuthHint />
-        <ConversationComposer running={running} canSend={!!harnessKind} onSend={text => start(text)} onStop={cancel} />
+        <ConversationComposer
+          running={running}
+          canSend={!!harnessKind}
+          onSend={text => start(text)}
+          onStop={() => cancel(undefined)}
+        />
       </div>
 
       {error && <p className="text-destructive px-0.5 pt-1 text-[10.5px]">{error}</p>}

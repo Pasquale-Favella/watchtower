@@ -156,11 +156,12 @@ describe('queryCompareView (aggregation seam scope)', () => {
 
 describe('compare lib helpers', () => {
   it('formats each metric value by its format function', () => {
-    expect(compareValue(1234, 'number')).toBe('1,234')
-    expect(compareValue(3.5, 'cost')).toBe('$3.50')
-    expect(compareValue(71, 'percent')).toBe('71%')
-    expect(compareValue(1.234, 'decimal')).toBe('1.23')
-    expect(compareValue(152600000, 'compact')).toBe('152.6M')
-    expect(compareValue(null, 'percent')).toBe('—')
+    const currency = { code: 'USD', symbol: '$', rate: 1 } as const
+    expect(compareValue(1234, 'number', currency)).toBe('1,234')
+    expect(compareValue(3.5, 'cost', currency)).toBe('$3.50')
+    expect(compareValue(71, 'percent', currency)).toBe('71%')
+    expect(compareValue(1.234, 'decimal', currency)).toBe('1.23')
+    expect(compareValue(152600000, 'compact', currency)).toBe('152.6M')
+    expect(compareValue(null, 'percent', currency)).toBe('—')
   })
 })

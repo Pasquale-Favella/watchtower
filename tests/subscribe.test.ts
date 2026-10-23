@@ -1,10 +1,12 @@
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { initialScanState } from '../src/renderer/src/app/atoms/scan.js'
+import { configInvalidationRevisionAtom } from '../src/renderer/src/app/atoms/config-change.js'
+import { refreshScanAtom, scanProgressAtom, scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
 import { setRouter } from '../src/renderer/src/app/navigation.js'
-import { registry } from '../src/renderer/src/app/renderer-runtime.js'
-import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
-import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
+import { appEventsReadyAtom, subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
+import { coachStateAtom } from '../src/renderer/src/features/coach-skills/atoms.js'
 import { activeCurrencyAtom } from '../src/renderer/src/features/settings/atoms.js'
 import { updatesMachineAtom } from '../src/renderer/src/features/settings/updates-atoms.js'
 
@@ -95,22 +97,44 @@ const analytics = {
   subagents: [],
 }
 
+let registry: AtomRegistry.AtomRegistry
 beforeEach(() => {
+  registry = AtomRegistry.make()
   registry.set(updatesMachineAtom, { state: 'uninitialized' })
-  useScanStore.setState(useScanStore.getInitialState(), true)
+  registry.set(scanStateAtom, initialScanState())
   registry.set(activeCurrencyAtom, { code: 'USD', symbol: '$', rate: 1 })
-  useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
 })
 
 afterEach(() => {
+  registry.dispose()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
 
 describe('subscribeToIpc (ADR 0011)', () => {
-  it('routes validated update events into the app-owned store and drops malformed snapshots', () => {
+  it('settles failed readiness and reconnects before a user retries a scan', async () => {
+    captureApi({
+      onNavigate: () => {
+        throw new Error('bridge unavailable')
+      },
+    })
+    const teardown = subscribeToIpc(registry)
+    await vi.waitFor(() => expect(registry.get(appEventsReadyAtom)).toBe('failed'))
+    expect(registry.get(scanStateAtom).scanError).toContain('Unable to subscribe')
+    const scan = vi.fn(async () => ({ ok: true, alreadyRunning: true }))
+    captureApi({ scan })
+    registry.set(refreshScanAtom, undefined)
+    await vi.waitFor(() => {
+      expect(registry.get(appEventsReadyAtom)).toBe('ready')
+      expect(scan).toHaveBeenCalledTimes(1)
+    })
+    teardown()
+    await flushEvents()
+  })
+  it('routes validated update events into the app-owned store and drops malformed snapshots', async () => {
     const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
     const status = {
       revision: 1,
       currentVersion: '0.2.6',
@@ -123,63 +147,82 @@ describe('subscribeToIpc (ADR 0011)', () => {
       message: null,
     }
     listeners.onUpdateChanged?.(status)
+    await flushEvents()
     expect(registry.get(updatesMachineAtom)).toEqual({ state: 'synced', status })
     listeners.onUpdateChanged?.({ ...status, revision: -1 })
+    await flushEvents()
     listeners.onUpdateChanged?.({ ...status, revision: 2, progress: 101 })
+    await flushEvents()
     expect(registry.get(updatesMachineAtom)).toEqual({ state: 'synced', status })
     teardown()
+    await flushEvents()
   })
 
-  it('decodes Coach events and forwards only valid, stripped envelopes', () => {
+  it('decodes Coach events and forwards only valid, stripped envelopes', async () => {
     const listeners = captureApi()
-    const onEvent = vi.spyOn(useCoachSkillsStore.getState(), 'onEvent').mockImplementation(() => {})
+    registry.set(coachStateAtom, { ...registry.get(coachStateAtom), running: true })
     const notifyNotice = vi.fn(() => Promise.resolve())
     vi.stubGlobal('api', { notifyNotice })
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onCoachEvent!({
       runId: 'run-1',
       event: { kind: 'text', delta: 'Hello', extra: 'discarded' },
       extra: 'discarded',
     })
-    expect(onEvent).toHaveBeenCalledExactlyOnceWith({ runId: 'run-1', event: { kind: 'text', delta: 'Hello' } })
+    await flushEvents()
+    expect(registry.get(coachStateAtom).pendingEvents['run-1']).toEqual([
+      { runId: 'run-1', event: { kind: 'text', delta: 'Hello' } },
+    ])
 
     listeners.onCoachEvent!({ runId: 'run-1', event: { kind: 'text', delta: 42 } })
-    expect(onEvent).toHaveBeenCalledTimes(1)
+    await flushEvents()
+    expect(registry.get(coachStateAtom).pendingEvents['run-1']).toHaveLength(1)
     expect(notifyNotice).toHaveBeenCalledWith('coach event', 'event.delta')
     teardown()
+    await flushEvents()
   })
-  it('feeds scan progress into the scan store, dropping malformed broadcasts', () => {
+  it('feeds scan progress into the scan store, dropping malformed broadcasts', async () => {
     const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onProgress!({ stage: 'parse', provider: 'openai', processed: 5, total: 9 })
-    expect(useScanStore.getState().scanning).toBe(true)
-    expect(useScanStore.getState().progress).toEqual([{ provider: 'openai', processed: 5, done: false }])
+    await flushEvents()
+    expect(registry.get(scanStateAtom).scanning).toBe(true)
+    expect(registry.get(scanStateAtom).progress).toEqual([{ provider: 'openai', processed: 5, done: false }])
 
     listeners.onProgress!({ stage: 'port-in', provider: 'openai', processed: 9, total: 9 })
-    expect(useScanStore.getState().progress[0]!.done).toBe(true)
+    await flushEvents()
+    expect(registry.get(scanStateAtom).progress[0]!.done).toBe(true)
 
     listeners.onProgress!({ stage: 'nope' })
-    expect(useScanStore.getState().progress).toHaveLength(1)
+    await flushEvents()
+    expect(registry.get(scanStateAtom).progress).toHaveLength(1)
 
     teardown()
+    await flushEvents()
   })
 
-  it('feeds scan errors and idle events into the scan store', () => {
+  it('feeds scan errors and idle events into the scan store', async () => {
     const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onError!('boom')
-    expect(useScanStore.getState().scanError).toBe('boom')
-    expect(useScanStore.getState().scanning).toBe(false)
+    await flushEvents()
+    expect(registry.get(scanStateAtom).scanError).toBe('boom')
+    expect(registry.get(scanStateAtom).scanning).toBe(false)
 
-    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
+    registry.set(scanProgressAtom, { stage: 'parse', provider: 'openai', processed: 1 })
     listeners.onIdle!()
-    expect(useScanStore.getState().scanning).toBe(false)
-    expect(useScanStore.getState().progress).toEqual([])
+    await flushEvents()
+    expect(registry.get(scanStateAtom).scanning).toBe(false)
+    expect(registry.get(scanStateAtom).progress).toEqual([])
 
     teardown()
+    await flushEvents()
   })
 
   it('applies a store:changed broadcast through applyChange', async () => {
@@ -187,22 +230,29 @@ describe('subscribeToIpc (ADR 0011)', () => {
       getScanStatus: () => Promise.resolve(statusScanned),
       getAnalytics: () => Promise.resolve(analytics),
     })
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onChanged!(storeChanged)
-    await vi.waitFor(() => expect(useScanStore.getState().hydrated).toBe(true))
-    expect(useScanStore.getState().unparsedTotal).toBe(3)
-    expect(useScanStore.getState().refreshVersion).toBe(1)
+    await flushEvents()
+    await vi.waitFor(() => expect(registry.get(scanStateAtom).hydrated).toBe(true))
+    expect(registry.get(scanStateAtom).unparsedTotal).toBe(3)
 
     teardown()
+    await flushEvents()
   })
 
   it('drops a malformed store:changed broadcast', async () => {
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const getScanStatus = vi.fn(async () => statusScanned)
+    const listeners = captureApi({ getScanStatus })
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
     listeners.onChanged!({ bogus: 1 })
-    expect(useScanStore.getState().refreshVersion).toBe(0)
+    await flushEvents()
+    expect(getScanStatus).not.toHaveBeenCalled()
+    expect(registry.get(scanStateAtom).hydrated).toBe(false)
     teardown()
+    await flushEvents()
   })
 
   it('applies a config:changed broadcast through applyChange', async () => {
@@ -210,32 +260,39 @@ describe('subscribeToIpc (ADR 0011)', () => {
       getScanStatus: () => Promise.resolve(statusScanned),
       getAnalytics: () => Promise.resolve(analytics),
     })
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onConfigChanged!()
-    await vi.waitFor(() => expect(useScanStore.getState().refreshVersion).toBe(1))
+    await flushEvents()
+    await vi.waitFor(() => expect(registry.get(configInvalidationRevisionAtom)).toBe(1))
 
     teardown()
+    await flushEvents()
   })
 
-  it('feeds a currency:changed broadcast into the currency atom, dropping malformed ones', () => {
+  it('feeds a currency:changed broadcast into the currency atom, dropping malformed ones', async () => {
     const notifyNotice = vi.fn<(label: string, location: string) => Promise<void>>(() => Promise.resolve())
     vi.stubGlobal('api', { notifyNotice })
     const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onCurrencyChanged!({ code: 'EUR', symbol: '€', rate: 0.9 })
+    await flushEvents()
     expect(registry.get(activeCurrencyAtom)).toEqual({ code: 'EUR', symbol: '€', rate: 0.9 })
 
     listeners.onCurrencyChanged!({ code: 123 })
+    await flushEvents()
     expect(registry.get(activeCurrencyAtom).code).toBe('EUR')
     expect(notifyNotice).toHaveBeenCalledWith('currency changed', 'code')
     expect(notifyNotice).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything())
 
     teardown()
+    await flushEvents()
   })
 
-  it('teardown unsubscribes every listener', () => {
+  it('shares one ready subscription and cleans listeners after the last owner releases it', async () => {
     const unsub = vi.fn(() => {})
     const listeners: Record<string, (payload?: unknown) => void> = {}
     mockWindow({
@@ -280,14 +337,23 @@ describe('subscribeToIpc (ADR 0011)', () => {
         return unsub
       },
     })
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    const releaseSecondOwner = subscribeToIpc(registry)
+    await flushEvents()
+    expect(registry.get(appEventsReadyAtom)).toBe('ready')
+    expect(Object.keys(listeners)).toHaveLength(10)
     teardown()
+    await flushEvents()
+    expect(unsub).not.toHaveBeenCalled()
+    releaseSecondOwner()
+    await flushEvents()
     expect(unsub).toHaveBeenCalledTimes(10)
   })
 
-  it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', () => {
+  it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', async () => {
     const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
     const row = {
       instanceId: 'codex',
       kind: 'codex',
@@ -297,26 +363,37 @@ describe('subscribeToIpc (ADR 0011)', () => {
     }
 
     listeners.onCoachHarnessesChanged!([{ bogus: 1 }])
-    expect(useCoachSkillsStore.getState().harnesses).toEqual([])
+    await flushEvents()
+    expect(registry.get(coachStateAtom).harnesses).toEqual([])
 
     listeners.onCoachHarnessesChanged!([row])
-    expect(useCoachSkillsStore.getState().harnesses).toEqual([row])
+    await flushEvents()
+    expect(registry.get(coachStateAtom).harnesses).toEqual([row])
 
     teardown()
+    await flushEvents()
   })
 
-  it('opens the section the orb asked for through navigation, dropping unknown ones', () => {
+  it('opens the section the orb asked for through navigation, dropping unknown ones', async () => {
     const navigate = vi.fn()
     setRouter(navigate)
     const listeners = captureApi()
-    const teardown = subscribeToIpc()
+    const teardown = subscribeToIpc(registry)
+    await flushEvents()
 
     listeners.onNavigate!('optimize')
+    await flushEvents()
     expect(navigate).toHaveBeenCalledExactlyOnceWith('/optimize')
 
     listeners.onNavigate!('/etc/passwd')
+    await flushEvents()
     expect(navigate).toHaveBeenCalledTimes(1)
     teardown()
+    await flushEvents()
     setRouter(() => {})
   })
 })
+
+async function flushEvents(): Promise<void> {
+  await new Promise(resolve => setTimeout(resolve, 0))
+}

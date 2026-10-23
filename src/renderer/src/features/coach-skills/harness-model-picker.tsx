@@ -12,7 +12,7 @@ import { HarnessSetup } from './harness-setup'
 import { HarnessStatusDot, harnessTooltip } from './harness-status'
 import { harnessBadge } from './lib'
 import type { CoachHarnessRow, CoachModelInfo } from '../../../../shared/schemas/agents.js'
-import type { CoachKindCache } from './store'
+import type { CoachKindCache } from './atoms'
 
 /** One selectable model row: the agent-declared model, plus a synthetic
  *  "default" row (value null) that resets the pick to the agent's own choice. */

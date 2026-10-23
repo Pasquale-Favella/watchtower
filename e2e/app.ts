@@ -4,17 +4,19 @@ import { join } from 'node:path'
 
 import { _electron as electron, type ElectronApplication, expect, type Locator, type Page } from '@playwright/test'
 
+import { prepareProviderFixture } from '../scripts/fixtures/provider.cjs'
+
 /**
  * Shared Electron launch + first-run helpers for `e2e/*.spec.ts` (tracks
  * #133). Every spec boots the BUILT app (`npm run build` first — wired into
  * `npm run test:e2e`) against a fresh `--user-data-dir` under the OS temp
  * root, so the suite never touches the developer's real Watchtower data and
- * always exercises the first-launch path (Splash → onboarding).
+ * always exercises the first-launch path (Splash → onboarding). A controlled
+ * Codex history lives in that profile; provider discovery does not read the
+ * developer's real assistant history.
  *
- * Rules for new specs (keeps the suite host-independent — the boot scan reads
- * the machine's real sources READ-ONLY into the isolated ledger, so content
- * varies):
- * - never assert on data values, row counts, or URLs (memory-history router);
+ * Rules for new specs:
+ * - use fixture data for content checks; routing uses memory history;
  * - key readiness off `dismissOnboarding`, not the splash (pre-mount DOM also
  *   matches "hidden" checks);
  * - assert each view via `waitForAnyVisible` with content-OR-empty markers;
@@ -29,6 +31,7 @@ export interface LaunchedApp {
 
 export async function launchApp(): Promise<LaunchedApp> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'watchtower-e2e-'))
+  const fixture = prepareProviderFixture(userDataDir)
   const args = [
     // Root-owned Linux CI (and Docker) needs the Chromium sandbox off;
     // Windows and macOS run with the default sandbox.
@@ -37,7 +40,7 @@ export async function launchApp(): Promise<LaunchedApp> {
     `--user-data-dir=${userDataDir}`,
   ]
 
-  const app = await electron.launch({ args, timeout: 60_000 })
+  const app = await electron.launch({ args, env: fixture.env, timeout: 60_000 })
   const window = await app.firstWindow({ timeout: 60_000 })
   const pageErrors: Error[] = []
   window.on('pageerror', error => {

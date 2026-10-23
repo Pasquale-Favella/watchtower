@@ -1,8 +1,9 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ExternalLink, ShieldAlert, X } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 
-import { useScanStore } from '@/app/stores/scan-store'
+import { scanStateAtom } from '@/app/atoms/scan'
+import { querySnapshot, useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { AboutSection } from '@/features/settings/AboutSection'
 import {
   activeCurrencyAtom,
@@ -11,11 +12,12 @@ import {
   setCadenceAtom,
   setCurrencyAtom,
 } from '@/features/settings/atoms'
+import { SETTINGS_INFO_REQUEST, settingsInfoQuery } from '@/features/settings/capability-atoms'
+import { openSystemSettingsAtom } from '@/features/settings/capability-atoms'
 import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
-import { fetchSettings } from '@/shared/lib/api'
 import { DEFAULT_PERIOD_OPTIONS } from '@/shared/lib/settings-constants'
 import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
 
@@ -29,7 +31,7 @@ const THEME_OPTIONS = [
  * currency dropdown (ADR 0009), and the About/version area (ADR 0012).
  * Deliberately no daily-budget row (lives in Plans) and no Scope row. */
 export function GeneralPane() {
-  const fdaNeeded = useScanStore(s => s.fdaNeeded)
+  const fdaNeeded = useAtomValue(scanStateAtom).fdaNeeded
   const [fdaDismissed, setFdaDismissed] = useState(false)
   const preferences = useAtomValue(preferencesAtom)
   const cadence = useAtomValue(cadenceAtom)
@@ -38,18 +40,13 @@ export function GeneralPane() {
   const setPreferences = useAtomSet(setPreferencesAtom)
   const setCadence = useAtomSet(setCadenceAtom)
   const setCurrency = useAtomSet(setCurrencyAtom)
-  const [claudeConfigDirs, setClaudeConfigDirs] = useState<string[] | undefined>()
-
-  useEffect(() => {
-    let cancelled = false
-    void fetchSettings().then(result => {
-      if (cancelled) return
-      setClaudeConfigDirs(result.ok ? result.data.claudeConfigDirs : undefined)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const cadenceChange = useAtomValue(setCadenceAtom)
+  const currencyChange = useAtomValue(setCurrencyAtom)
+  const cadenceError = querySnapshot(cadenceChange).error
+  const currencyError = querySnapshot(currencyChange).error
+  const openSystemSettings = useAtomSet(openSystemSettingsAtom, { mode: 'promise' })
+  const [fdaError, setFdaError] = useState<string | null>(null)
+  const { data: settingsInfo } = useRemoteQuery(settingsInfoQuery, SETTINGS_INFO_REQUEST, () => 'settings-info')
 
   const choosePeriod = (value: string): void => {
     setPreferences({ defaultPeriod: value as typeof preferences.defaultPeriod })
@@ -58,7 +55,7 @@ export function GeneralPane() {
   // The Claude-config row is conditional: shown when a
   // Claude config dir is available, and nullable — absent `claudeConfigDirs`
   // hides the row rather than erroring.
-  const showClaudeConfigRow = (claudeConfigDirs?.length ?? 0) > 0
+  const showClaudeConfigRow = (settingsInfo?.claudeConfigDirs?.length ?? 0) > 0
 
   return (
     <div className="flex max-w-md flex-col gap-5">
@@ -79,10 +76,16 @@ export function GeneralPane() {
             <button
               type="button"
               className="text-brand-text mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium"
-              onClick={() => void window.api.openSystemSettings()}
+              onClick={() => {
+                setFdaError(null)
+                void openSystemSettings(undefined).catch(error =>
+                  setFdaError(error instanceof Error ? error.message : String(error)),
+                )
+              }}
             >
               Open System Settings <ExternalLink className="size-3" />
             </button>
+            {fdaError && <p className="text-destructive mt-1 text-[10.5px]">{fdaError}</p>}
           </div>
           <button
             type="button"
@@ -120,6 +123,7 @@ export function GeneralPane() {
           <div className="flex items-center gap-2">
             <Select
               value={currency.code}
+              disabled={currencyChange.waiting}
               onValueChange={value => {
                 if (value) setCurrency(value)
               }}
@@ -140,12 +144,17 @@ export function GeneralPane() {
               variant="outline"
               size="sm"
               className="mt-1 shrink-0 text-[11px]"
-              disabled={currency.code === 'USD'}
+              disabled={currency.code === 'USD' || currencyChange.waiting}
               onClick={() => setCurrency('USD')}
             >
               Reset to USD
             </Button>
           </div>
+          {currencyError && (
+            <p role="alert" className="text-destructive text-[11px]">
+              {currencyError}
+            </p>
+          )}
           {currency.code !== 'USD' && currency.updatedAt && (
             <p className="text-muted-foreground text-[10.5px]">
               Rate fetched{' '}
@@ -192,6 +201,7 @@ export function GeneralPane() {
           </p>
           <Select
             value={cadence}
+            disabled={cadenceChange.waiting}
             onValueChange={value => {
               if (value) setCadence(value)
             }}
@@ -207,6 +217,11 @@ export function GeneralPane() {
               ))}
             </SelectContent>
           </Select>
+          {cadenceError && (
+            <p role="alert" className="text-destructive text-[11px]">
+              {cadenceError}
+            </p>
+          )}
         </div>
       </div>
 

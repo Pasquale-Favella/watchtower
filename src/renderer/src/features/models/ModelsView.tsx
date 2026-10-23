@@ -1,12 +1,12 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useMemo, useState } from 'react'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
 import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { useScanStore } from '@/app/stores/scan-store'
 import { modelsQuery } from '@/features/models/atoms'
-import { usePricingStore } from '@/features/models/pricing-store'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { removeAliasAtom, removeOverrideAtom } from '@/features/models/pricing-atoms'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { Skeleton } from '@/shared/components/ui/skeleton'
@@ -31,10 +31,11 @@ const LENSES: SegOption[] = [
 export function ModelsView(): React.JSX.Element {
   const scope = useAtomValue(overviewScopeAtom)
   const { data: payload, error } = useRemoteQuery(modelsQuery, scope, keyOfScope)
-  const reload = useAtomSet(modelsQuery.refreshAtom)
+  const removeAlias = useAtomSet(removeAliasAtom, { mode: 'promise' })
+  const removeOverride = useAtomSet(removeOverrideAtom, { mode: 'promise' })
   const provider = useAtomValue(providerAtom)
   const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
   const [lens, setLens] = useState<ModelsLens>('model')
   const [quickAdd, setQuickAdd] = useState<QuickAddTarget | null>(null)
 
@@ -53,15 +54,12 @@ export function ModelsView(): React.JSX.Element {
 
   const onSaved = (): void => {
     setQuickAdd(null)
-    reload()
   }
 
   // Inline pricing management for aliased/repriced rows: the original name
   // stays visible with its alias target or rates, and each can be retargeted
   // (prefilled dialog — writes upsert) or removed (the row reverts to its
   // honest original treatment on the next query, no rescan).
-  const removeAlias = usePricingStore(s => s.removeAlias)
-  const removeOverride = usePricingStore(s => s.removeOverride)
   const pricingActions: PricingRowActions = {
     onEditAlias: (source, currentTarget) =>
       setQuickAdd({
@@ -72,10 +70,7 @@ export function ModelsView(): React.JSX.Element {
         initialAliasTarget: currentTarget,
       }),
     onRemoveAlias: sourceModel => {
-      void (async () => {
-        await removeAlias(sourceModel)
-        reload()
-      })()
+      void removeAlias(sourceModel)
     },
     onEditOverride: target =>
       setQuickAdd({
@@ -87,10 +82,7 @@ export function ModelsView(): React.JSX.Element {
         initialOutputPrice: String(target.outputPricePerMillion),
       }),
     onRemoveOverride: model => {
-      void (async () => {
-        await removeOverride(model)
-        reload()
-      })()
+      void removeOverride(model)
     },
   }
 
@@ -111,7 +103,7 @@ export function ModelsView(): React.JSX.Element {
 
       {payload === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading models…" className="border-border bg-card overflow-hidden rounded-lg border">
             <div className="border-border flex items-center gap-3 border-b px-3.5 py-2.5">
@@ -124,29 +116,38 @@ export function ModelsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : lens === 'audit' ? (
-        <div className="border-border bg-card overflow-hidden rounded-lg border">
-          {audit.length ? (
-            <AuditTable rows={audit} actions={pricingActions} />
-          ) : (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
-          )}
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card overflow-hidden rounded-lg border">
+            {audit.length ? (
+              <AuditTable rows={audit} actions={pricingActions} />
+            ) : (
+              <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+            )}
+          </div>
+        </>
       ) : lens === 'task' ? (
-        <div className="border-border bg-card overflow-hidden rounded-lg border">
-          {byTask.length ? (
-            <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} />
-          ) : (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
-          )}
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card overflow-hidden rounded-lg border">
+            {byTask.length ? (
+              <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} />
+            ) : (
+              <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+            )}
+          </div>
+        </>
       ) : (
-        <div className="border-border bg-card overflow-hidden rounded-lg border">
-          {byModel.length ? (
-            <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} />
-          ) : (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
-          )}
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card overflow-hidden rounded-lg border">
+            {byModel.length ? (
+              <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} />
+            ) : (
+              <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+            )}
+          </div>
+        </>
       )}
 
       {quickAdd && (

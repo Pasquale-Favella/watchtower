@@ -1,4 +1,4 @@
-import { RegistryContext } from '@effect/atom-react'
+import { RegistryContext, useAtomSet } from '@effect/atom-react'
 import { useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, GitBranch, Link2, Tag } from 'lucide-react'
 import type { MouseEvent } from 'react'
@@ -9,14 +9,15 @@ import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSection } from '@/app/navigation'
 import { sessionQuery } from '@/features/sessions/atoms'
 import type { SessionDetail } from '@/features/sessions/drilldown'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { formatUsd } from '@/shared/lib/models'
+import { openExternalAtom } from '@/shared/lib/native-capabilities'
 import { sessionRequestKey } from '@/shared/lib/query-keys'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 function formatDate(iso: string): string {
@@ -27,10 +28,10 @@ function formatDate(iso: string): string {
 // IPC channel (http/https only, main-process enforced) — the same pattern
 // the pull requests section uses. A bare <a href target="_blank"> would
 // navigate the Electron window away from the app / open an in-app window.
-function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
+function openPr(event: MouseEvent<HTMLAnchorElement>, url: string, open: (url: string) => void): void {
   event.preventDefault()
   event.stopPropagation()
-  void window.api.openExternal(url)
+  open(url)
 }
 
 function Stat({ label, value }: { label: string; value: string }): React.JSX.Element {
@@ -43,6 +44,7 @@ function Stat({ label, value }: { label: string; value: string }): React.JSX.Ele
 }
 
 function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCalls'][number] }): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const [open, setOpen] = useState(false)
   return (
     <div className="bg-muted/30 rounded-md border">
@@ -92,6 +94,7 @@ function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCal
 }
 
 function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Element {
+  const openExternal = useAtomSet(openExternalAtom)
   const [open, setOpen] = useState(false)
   return (
     <div className="bg-card rounded-md border">
@@ -130,7 +133,7 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
                   key={pr}
                   href={pr}
                   title={pr}
-                  onClick={event => openPr(event, pr)}
+                  onClick={event => openPr(event, pr, openExternal)}
                   className="text-brand-text inline-flex items-center gap-0.5 text-xs hover:underline"
                 >
                   <Link2 className="h-3 w-3" />
@@ -156,6 +159,8 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
 }
 
 export function SessionView(): React.JSX.Element {
+  const openExternal = useAtomSet(openExternalAtom)
+  const { formatUsd } = useCurrencyFormatter()
   const { sessionId } = useParams({ strict: false })
   const { sourceId } = useSearch({ from: '/dashboard/sessions/$sessionId' })
   const request = useMemo(() => (sessionId ? { sessionId, sourceId } : null), [sessionId, sourceId])
@@ -169,8 +174,8 @@ export function SessionView(): React.JSX.Element {
   // container always renders — error/loading/content all sit inside it.
   return (
     <div className="w-full max-w-[1180px] space-y-4">
-      {error ? (
-        <ErrorPanel message={error} />
+      {!session && error ? (
+        <QueryErrorNotice error={error} hasData={false} />
       ) : !session ? (
         <LoadingRegion label="Loading session…" className="flex flex-col gap-4">
           <div className="flex items-center gap-3">
@@ -194,6 +199,7 @@ export function SessionView(): React.JSX.Element {
         </LoadingRegion>
       ) : (
         <>
+          <QueryErrorNotice error={queryError} hasData />
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="sm" onClick={() => navigateToSection('sessions')}>
               <ArrowLeft className="h-4 w-4" /> Back
@@ -213,7 +219,7 @@ export function SessionView(): React.JSX.Element {
                   key={pr}
                   href={pr}
                   title={pr}
-                  onClick={event => openPr(event, pr)}
+                  onClick={event => openPr(event, pr, openExternal)}
                   className="text-brand-text hover:bg-muted inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs"
                 >
                   <Link2 className="h-3 w-3" />

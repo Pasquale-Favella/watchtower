@@ -1,17 +1,23 @@
-import { useCallback, useEffect, useState, type JSX } from 'react'
-import { Check, Copy, KeyRound, Server, RotateCcw } from 'lucide-react'
+import { RegistryContext, useAtomSet } from '@effect/atom-react'
+import * as Atom from 'effect/reactivity/Atom'
+import { Check, Copy, KeyRound, RotateCcw, Server } from 'lucide-react'
+import { type JSX, useContext, useEffect, useRef, useState } from 'react'
 
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import { pinWindowAtom } from '@/app/hooks/use-remote-query'
+import {
+  getMcpConnectionAtom,
+  MCP_STATUS_REQUEST,
+  mcpStatusQuery,
+  regenerateMcpTokenAtom,
+  setMcpStartupModeAtom,
+} from '@/features/settings/capability-atoms'
+import { PaneHeader } from '@/features/settings/pane-parts'
 import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
-import { PaneHeader } from '@/features/settings/pane-parts'
-import {
-  fetchLedgerMcpConnection,
-  fetchLedgerMcpStatus,
-  fetchRegenerateLedgerMcpToken,
-  fetchSetLedgerMcpStartupMode,
-} from '@/shared/lib/api'
-import type { LedgerMcpStartupMode, LedgerMcpStatus } from '../../../../shared/schemas/ledger-mcp.js'
+
+import type { LedgerMcpStartupMode } from '../../../../shared/schemas/ledger-mcp.js'
 
 const STARTUP_OPTIONS: Array<{ value: LedgerMcpStartupMode; label: string }> = [
   { value: 'on-demand', label: 'On demand' },
@@ -22,59 +28,75 @@ const STARTUP_OPTIONS: Array<{ value: LedgerMcpStartupMode; label: string }> = [
  * and explicitly configured local MCP clients. The token is never persisted;
  * copying the config is the explicit action that reveals it to the user. */
 export function McpPane(): JSX.Element {
-  const [status, setStatus] = useState<LedgerMcpStatus | null>(null)
+  const registry = useContext(RegistryContext)
+  const copiedTimer = useRef<number | undefined>(undefined)
+  const { data: status, error: statusError } = useRemoteQuery(mcpStatusQuery, MCP_STATUS_REQUEST, () => 'mcp-status')
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(async (): Promise<void> => {
-    const result = await fetchLedgerMcpStatus()
-    if (result.ok) setStatus(result.data)
-    else setError(result.error)
-  }, [])
+  const setStartupModeCommand = useAtomSet(setMcpStartupModeAtom, { mode: 'promise' })
+  const getConnection = useAtomSet(getMcpConnectionAtom, { mode: 'promise' })
+  const clearConnection = useAtomSet(getMcpConnectionAtom)
+  const regenerateTokenCommand = useAtomSet(regenerateMcpTokenAtom, { mode: 'promise' })
 
   useEffect(() => {
-    void load()
-  }, [load])
+    pinWindowAtom(registry, setMcpStartupModeAtom)
+    pinWindowAtom(registry, regenerateMcpTokenAtom)
+    return () => {
+      if (copiedTimer.current !== undefined) window.clearTimeout(copiedTimer.current)
+      clearConnection(Atom.Reset)
+    }
+  }, [registry, clearConnection])
 
   const setStartupMode = async (value: string): Promise<void> => {
     const mode = value as LedgerMcpStartupMode
     setBusy(true)
     setError(null)
-    const result = await fetchSetLedgerMcpStartupMode(mode)
-    if (result.ok) setStatus(result.data)
-    else setError(result.error)
-    setBusy(false)
+    try {
+      const result = await setStartupModeCommand(mode)
+      if (!result.ok) setError(result.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   const copyConfig = async (): Promise<void> => {
     setBusy(true)
     setCopied(false)
     setError(null)
-    const result = await fetchLedgerMcpConnection()
-    if (result.ok) {
-      try {
-        await navigator.clipboard.writeText(result.data.config)
-        setCopied(true)
-        void load()
-        window.setTimeout(() => setCopied(false), 1800)
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err))
+    try {
+      const result = await getConnection(undefined)
+      if (result.ok) {
+        try {
+          await navigator.clipboard.writeText(result.connection.config)
+          setCopied(true)
+          if (copiedTimer.current !== undefined) window.clearTimeout(copiedTimer.current)
+          copiedTimer.current = window.setTimeout(() => {
+            copiedTimer.current = undefined
+            setCopied(false)
+          }, 1800)
+        } catch (err) {
+          setError(err instanceof Error ? err.message : String(err))
+        }
+      } else {
+        setError(result.message)
       }
-    } else {
-      setError(result.error)
+    } finally {
+      clearConnection(Atom.Reset)
+      setBusy(false)
     }
-    setBusy(false)
   }
 
   const regenerateToken = async (): Promise<void> => {
     setBusy(true)
     setCopied(false)
     setError(null)
-    const result = await fetchRegenerateLedgerMcpToken()
-    if (result.ok) setStatus(result.data)
-    else setError(result.error)
-    setBusy(false)
+    try {
+      const result = await regenerateTokenCommand(undefined)
+      if (!result.ok) setError(result.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -149,7 +171,7 @@ export function McpPane(): JSX.Element {
           The copied config contains a local bearer token. Treat it like a password; regenerating it disconnects
           existing clients.
         </p>
-        {error && <p className="text-destructive text-[11px]">{error}</p>}
+        {(error ?? statusError) && <p className="text-destructive text-[11px]">{error ?? statusError}</p>}
       </Card>
     </div>
   )

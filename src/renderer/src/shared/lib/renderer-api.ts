@@ -29,6 +29,14 @@ function adapt<Args extends unknown[], A>(
 }
 
 export const legacyRendererApi = {
+  getPlatform: () => Effect.sync(() => window.api?.platform ?? ''),
+  openSystemSettings: () =>
+    Effect.tryPromise({
+      try: () => window.api.openSystemSettings(),
+      catch: () => new RendererApiError({ operation: 'open-fda-settings', message: 'Unable to open System Settings.' }),
+    }),
+  cancelCoachRun: (runId: string) => Effect.sync(() => window.api.cancelCoachRun(runId)),
+  resetCoachWorkspace: () => Effect.sync(() => window.api.resetCoachWorkspace()),
   getScanStatus: adapt('store:status', bridge.fetchScanStatus),
   getScanActive: adapt('scan:active', bridge.fetchScanActive),
   getViews: adapt('store:views', bridge.fetchViews),

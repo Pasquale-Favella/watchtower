@@ -1,5 +1,3 @@
-import { useThemeEffect } from '@/app/hooks/use-theme-effect'
-
 import { useOrbBeaconBootstrap } from './beacon-hooks'
 import { OrbBeacon } from './OrbBeacon'
 
@@ -10,7 +8,6 @@ import { OrbBeacon } from './OrbBeacon'
  */
 export function OrbApp() {
   useOrbBeaconBootstrap()
-  useThemeEffect()
   return (
     <div className="text-foreground h-full w-full font-sans">
       <OrbBeacon />

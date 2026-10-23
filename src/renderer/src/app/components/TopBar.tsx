@@ -2,6 +2,7 @@ import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useRouterState } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import {
   customRangeAtom,
   periodAtom,
@@ -13,7 +14,6 @@ import {
 import { CustomRangePicker } from '@/app/components/CustomRangePicker'
 import { sectionForPath } from '@/app/navigation'
 import { shortcutForAction } from '@/app/shortcuts'
-import { useScanStore } from '@/app/stores/scan-store'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
 import { Separator } from '@/shared/components/ui/separator'
@@ -96,7 +96,7 @@ export function TopBar() {
   const setPeriod = useAtomSet(setPeriodAtom)
   const setProvider = useAtomSet(setProviderAtom)
   const setCustomRange = useAtomSet(setCustomRangeAtom)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider

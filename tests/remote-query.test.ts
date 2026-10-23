@@ -8,7 +8,7 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import { describe, expect, it, vi } from 'vitest'
 
-import { createRemoteQuerySlot } from '../src/renderer/src/app/atoms/remote-query.js'
+import { createRemoteQuerySlot, restartRemoteQuery } from '../src/renderer/src/app/atoms/remote-query.js'
 
 const makeRuntime = () => Atom.context()(Layer.empty)
 
@@ -62,6 +62,37 @@ const deferredFetcher = () => {
 }
 
 describe('remote query slot', () => {
+  it('discards cleared data and pending refreshes without activating unopened queries', async () => {
+    const registry = AtomRegistry.make()
+    const deferred = deferredFetcher()
+    const slot = createRemoteQuerySlot({
+      runtime: makeRuntime(),
+      key: (request: string) => request,
+      fetch: deferred.fetch,
+    })
+    const release = slot.pin(registry)
+    Atom.batch(() => restartRemoteQuery(registry, slot))
+    expect(registry.get(slot.requestAtom)).toBeNull()
+    expect(deferred.resolvers).toHaveLength(0)
+
+    registry.set(slot.requestAtom, 'A')
+    await waitForCount(() => deferred.resolvers.length, 1)
+    deferred.resolvers[0]('before clear')
+    await waitForSuccess(registry, slot.resultAtom, 'A:before clear')
+    registry.set(slot.refreshAtom, undefined)
+    await waitForCount(() => deferred.resolvers.length, 2)
+
+    Atom.batch(() => restartRemoteQuery(registry, slot))
+    expect(registry.get(slot.requestAtom)).toBe('A')
+    expect(registry.get(slot.resultAtom)._tag).toBe('Initial')
+    await waitForCount(() => deferred.resolvers.length, 3)
+    deferred.resolvers[1]('late pre-clear response')
+    expect(registry.get(slot.resultAtom)._tag).toBe('Initial')
+    deferred.resolvers[2]('after clear')
+    await waitForSuccess(registry, slot.resultAtom, 'A:after clear')
+    release()
+    registry.dispose()
+  })
   it('does not fetch before selection and reading, then pins its current member', async () => {
     const registry = AtomRegistry.make()
     let fetches = 0

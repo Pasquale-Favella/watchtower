@@ -3,6 +3,8 @@ import { useState } from 'react'
 import { cn } from '@/shared/lib/utils'
 import { seriesColorForModel } from '@/shared/lib/modelSeries'
 import { formatCompact, formatUsd, isUnpriced } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+import type { ActiveCurrency } from '@/shared/lib/currency'
 import { TableCell, TableHead, TableRow } from '@/shared/components/ui/table'
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 
@@ -141,9 +143,9 @@ export function tokenValue(_row: ModelReportRow, value: number): string {
   return formatCompact(value)
 }
 
-export function savedCell(row: ModelReportRow): string {
+export function savedCell(row: ModelReportRow, currency: ActiveCurrency): string {
   if (isUnpriced(row)) return '—'
-  return row.savingsUSD > 0 ? formatUsd(row.savingsUSD) : formatUsd(0)
+  return row.savingsUSD > 0 ? formatUsd(row.savingsUSD, currency) : formatUsd(0, currency)
 }
 
 /** The Calls/Input/Output/Cache read/Cost/Saved header cells shared by the
@@ -166,6 +168,7 @@ export function MetricHeaders({ firstLabel }: { firstLabel: string }) {
  * always shown (even when unpriced), only cost/saved collapse to dashes
  * with the dimming treatment from `cellClass`. */
 export function MetricCells({ row }: { row: ModelReportRow }) {
+  const { currency, formatUsd } = useCurrencyFormatter()
   const dim = isUnpriced(row)
   return (
     <>
@@ -193,7 +196,7 @@ export function MetricCells({ row }: { row: ModelReportRow }) {
           dim && 'opacity-50',
         )}
       >
-        {savedCell(row)}
+        {savedCell(row, currency)}
       </TableCell>
     </>
   )

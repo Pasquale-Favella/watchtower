@@ -1,8 +1,8 @@
 # Effect renderer and RPC adoption plan
 
-Status: proposed implementation sequence. Based on checkout `5187054df75a5bbd98ccbb81e82469b762d5ad7b`, assessed on 2026-10-22. Read [the accompanying research](../research/effect-renderer-adoption-2026-10-22.md) for findings, upstream references and completed verification.
+Status: implementation in progress in [PR #175](https://github.com/Pasquale-Favella/watchtower/pull/175), tracked by [issue #174](https://github.com/Pasquale-Favella/watchtower/issues/174). The original assessment used checkout `5187054df75a5bbd98ccbb81e82469b762d5ad7b` on 2026-10-22. Read [the accompanying research](../research/effect-renderer-adoption-2026-10-22.md) for findings and upstream references. Current verification evidence belongs in the issue and PR.
 
-This file is the technical adoption sequence. GitHub remains the authority for executable issues and PRDs under [the issue-tracker convention](../agents/issue-tracker.md). The slice IDs below are proposed ticket boundaries, not created issues, assignments or accepted architecture decisions. Start a new adoption issue rather than reopening the completed backend migrations #148 or #156.
+This file is the technical adoption sequence. GitHub remains the authority for executable issues and PRDs under [the issue-tracker convention](../agents/issue-tracker.md). Slice IDs identify review boundaries within #174. ADRs 0036 and 0037 authorize the renderer and versioned RPC changes. The completed backend migrations #148 and #156 remain closed.
 
 ## Intended result and scope
 
@@ -279,7 +279,7 @@ Use separate review units for thin stores, Sessions, Compare and Optimize. They 
 
 Dependencies: S4. Files: settings/pricing stores, browser preference adapter, currency formatters, Settings consumers and Coach threshold bridge.
 
-Replace Zustand persist with the compatible synchronous preference adapter and atoms. Migrate cadence/currency/options through Effect services. Preserve current cadence selection behavior and currency confirmation semantics. Move priced/unpriced calculations to stable derived reads. Replace pricing command execution with explicit admission/serialization and one authoritative invalidation cycle. Remove current post-write duplicate reads only after their immediate picker-update behavior passes. Migrate detection-threshold observation to a root-owned subscription rather than a module-level listener.
+Replace Zustand persist with the compatible synchronous preference adapter and atoms. Migrate cadence/currency/options through Effect services. Serialize cadence writes and publish server-confirmed values only; a failed write retains the last confirmed selection. Fence late hydration responses and currency events so stale snapshots cannot overwrite newer confirmed state. Move priced/unpriced calculations to stable derived reads. Replace pricing command execution with explicit admission/serialization and one authoritative invalidation cycle. Remove current post-write duplicate reads only after their immediate picker-update behavior passes. Migrate detection-threshold observation to a root-owned subscription rather than a module-level listener.
 
 Move Settings info/providers reads and MCP settings commands out of component-owned Promise chains into the same services/query model. Preserve conditional Full Disk Access/config-directory behavior, successful clear/rescan ordering, token regeneration and on-demand connection copying. Clear credential-bearing connection data after use and invalidate it on token regeneration. Route direct external-link/system-settings calls through the native-capability adapter. Keep browser-only presentation state in React.
 
@@ -354,6 +354,8 @@ Acceptance for M3: all worker boot, SQL ownership, query dispatch, stable-read, 
 If the official transport cannot meet lifecycle policy without adding another competing supervisor, stop this slice at a documented compatibility result and retain the existing typed application adapter over the old wire. Record M3 as incomplete. M1/M2 remain valid outcomes.
 
 ## Verification and release gates
+
+The initial owner assessment adds explicit consistency requirements to these gates. A successful ledger event must invalidate queries even when metadata hydration fails. Currency has one reactive owner and pure formatting dependencies. Settings writes must reconcile with persisted state under failure and concurrency. A failed refresh must show a nonblocking error beside any retained payload; it must not silently present that payload as current. Transport acceptance requires real lifecycle, backpressure, role and packaging evidence before selecting RPC in production. Tests for these properties take precedence over counts of converted stores or passing test cases.
 
 Tests should assert user-visible outcomes, request identities and resource ownership. Use a fresh registry per unit test, injected fake bridge/preferences services and deterministic Effect clocks. Most state/workflow tests remain headless; no DOM environment is required merely to replace Zustand. Add a few actual React/Electron tests for the provider/hooks, StrictMode and sandbox boundary. `RpcTest` helps handler tests but bypasses serialization and cannot replace transport tests.
 

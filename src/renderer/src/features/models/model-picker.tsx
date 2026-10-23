@@ -56,13 +56,13 @@ export function dedupeGroups(groups: ModelPickerGroup[]): ModelPickerGroup[] {
 /** One recognized-model row (from the lifetime usage payload) shaped for
  * the model picker's item contract — the "Recognized models" candidates the
  * Settings › Aliases/Pricing panes offer. */
-export function usagePickerItem(model: ModelReportRow): ModelPickerItem {
+export function usagePickerItem(model: ModelReportRow, currency: Parameters<typeof formatUsd>[1]): ModelPickerItem {
   return {
     id: `known:${model.provider}:${model.model}`,
     value: model.model,
     label: model.modelDisplayName,
     dot: model.modelDisplayName,
-    sub: `${providerTitle(model.provider)} · ${model.calls.toLocaleString('en-US')} calls · ${formatUsd(model.costUSD)}`,
+    sub: `${providerTitle(model.provider)} · ${model.calls.toLocaleString('en-US')} calls · ${formatUsd(model.costUSD, currency)}`,
   }
 }
 

@@ -2,12 +2,12 @@ import { useAtomValue } from '@effect/atom-react'
 import { useRouterState } from '@tanstack/react-router'
 import type { ComponentProps, ReactNode } from 'react'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import { customRangeAtom, periodAtom, providerAtom } from '@/app/atoms/scope'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
 import { navigateToSection, sectionForPath } from '@/app/navigation'
 import { SECTION_ICONS } from '@/app/section-icons'
 import { displayShortcutForAction, type Section, shortcutForAction } from '@/app/shortcuts'
-import { useScanStore } from '@/app/stores/scan-store'
 import {
   Sidebar,
   SidebarContent,
@@ -116,7 +116,7 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const period = useAtomValue(periodAtom)
   const customRange = useAtomValue(customRangeAtom)
   const provider = useAtomValue(providerAtom)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider

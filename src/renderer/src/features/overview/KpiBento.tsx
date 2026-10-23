@@ -2,7 +2,7 @@ import { cn } from '@/shared/lib/utils'
 import { Card } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { SkeletonBars } from '@/shared/components/skeletons'
-import { formatUsd } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { navigateToSection } from '@/app/navigation'
 import type { OverviewPayload } from '../../../../shared/schemas/overview.js'
 import { Sparkline } from '@/features/overview/Sparkline'
@@ -30,6 +30,7 @@ function HeroShell({ className, children }: { className?: string; children: Reac
  * and the estimates / local-models breakdown as flat sections. Covers the
  * old "Total spend", "Estimated" and "Saved" metric cards without loss. */
 function SpendHero({ payload }: { payload: OverviewPayload }) {
+  const { formatUsd } = useCurrencyFormatter()
   const trend = spendTrend(payload.daily)
   const estimated = payload.kpis.estimatedCostUSD
   const saved = payload.kpis.savingsUSD

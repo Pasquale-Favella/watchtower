@@ -1,9 +1,9 @@
 import { useMemo } from 'react'
 
 import { cn } from '@/shared/lib/utils'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import {
   categoryLabel,
-  formatUsd,
   groupTaskRows,
   isUnpriced,
   providerTitle,
@@ -150,6 +150,7 @@ function ModelsByTaskGroup({
   onAddAlias: (row: ModelReportRow) => void
   actions: PricingRowActions
 }) {
+  const { formatUsd } = useCurrencyFormatter()
   const lead = group.rows[0]!
   const total = sumGroup(group)
   const unpriced = isUnpriced(total)

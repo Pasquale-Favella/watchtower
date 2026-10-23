@@ -1,30 +1,19 @@
-import { useEffect, useState } from 'react'
-
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import { PROVIDERS_REQUEST, providersQuery } from '@/features/settings/capability-atoms'
+import { PaneHeader } from '@/features/settings/pane-parts'
+import { LoadingRegion } from '@/shared/components/skeletons'
 import { Card } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion } from '@/shared/components/skeletons'
-import { PaneHeader } from '@/features/settings/pane-parts'
-import { formatUsd } from '@/shared/lib/currency'
 import { providerTitle } from '@/shared/lib/models'
 import { seriesColorForModel } from '@/shared/lib/modelSeries'
-import { fetchAnalytics } from '@/shared/lib/api'
-import type { ProviderRow } from '@/features/settings/settings-types'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 /** Settings › Providers: a read-only list of the providers detected on this
  * machine (auto-detected from local session files — no setup needed). */
 export function ProvidersPane() {
-  const [providers, setProviders] = useState<ProviderRow[] | null>(null)
-
-  useEffect(() => {
-    let cancelled = false
-    void fetchAnalytics().then(result => {
-      if (cancelled) return
-      setProviders(result.ok && result.data ? result.data.providers : [])
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const { data, error } = useRemoteQuery(providersQuery, PROVIDERS_REQUEST, () => 'providers')
+  const { formatUsd } = useCurrencyFormatter()
+  const providers = error ? [] : (data?.providers ?? null)
 
   return (
     <div className="flex max-w-md flex-col gap-3">

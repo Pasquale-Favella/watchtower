@@ -15,9 +15,10 @@ import {
   updatesMachineAtom,
 } from '@/features/settings/updates-atoms'
 import { Button } from '@/shared/components/ui/button'
-import { openExternalUrl } from '@/shared/lib/api'
+import { openExternalAtom } from '@/shared/lib/native-capabilities'
 
 export function AboutSection(): React.JSX.Element {
+  const open = useAtomSet(openExternalAtom)
   const machine = useAtomValue(updatesMachineAtom)
   const check = useAtomSet(checkForUpdatesAtom)
   const download = useAtomSet(downloadUpdateAtom)
@@ -94,7 +95,7 @@ export function AboutSection(): React.JSX.Element {
         <button
           type="button"
           className="decoration-brand-text/40 text-brand-text inline underline underline-offset-2"
-          onClick={() => void openExternalUrl(releaseUrl)}
+          onClick={() => open(releaseUrl)}
         >
           Open release page <ExternalLink className="inline size-3" />
         </button>
@@ -104,7 +105,7 @@ export function AboutSection(): React.JSX.Element {
         <button
           type="button"
           className="decoration-brand-text/40 text-brand-text inline underline underline-offset-2"
-          onClick={() => void openExternalUrl(REPO_URL)}
+          onClick={() => open(REPO_URL)}
         >
           GitHub repository <ExternalLink className="inline size-3" />
         </button>

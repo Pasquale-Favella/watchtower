@@ -1,6 +1,7 @@
 import { useAtomValue } from '@effect/atom-react'
 import { Outlet } from '@tanstack/react-router'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import { preferencesAtom } from '@/features/settings/preferences-atoms'
 import { SidebarInset, SidebarProvider } from '@/shared/components/ui/sidebar'
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
@@ -13,8 +14,6 @@ import { SidebarToggleShortcut } from './components/SidebarToggleShortcut'
 import { Splash } from './components/splash/Splash'
 import { useAppBootstrap } from './hooks/use-app-bootstrap'
 import { useAppHotkeys } from './hooks/use-app-hotkeys'
-import { useThemeEffect } from './hooks/use-theme-effect'
-import { useScanStore } from './stores/scan-store'
 
 /** The root route component — the app frame (ADR 0014). Runs the bootstrap,
  * theme, and hotkey hooks; shows the Splash until the store hydrates; then
@@ -24,10 +23,9 @@ import { useScanStore } from './stores/scan-store'
  * store. */
 export function AppRoot() {
   useAppBootstrap()
-  useThemeEffect()
   useAppHotkeys()
 
-  const hydrated = useScanStore(s => s.hydrated)
+  const hydrated = useAtomValue(scanStateAtom).hydrated
   const onboarded = useAtomValue(preferencesAtom).onboarded
 
   if (!hydrated) {

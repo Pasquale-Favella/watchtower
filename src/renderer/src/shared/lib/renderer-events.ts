@@ -53,6 +53,7 @@ export function legacyRendererEvents(
   role: RendererWindowRole,
   bridge: () => EventBridge = () => window.api,
   capacity = 256,
+  onReady?: () => void,
 ): Stream.Stream<RendererEvent, RendererEventError> {
   return Stream.callback<RendererEvent, RendererEventError>(
     Effect.fnUntraced(function* (queue) {
@@ -132,6 +133,7 @@ export function legacyRendererEvents(
           }),
         )
       }
+      yield* Effect.sync(() => onReady?.())
     }),
     { bufferSize: capacity },
   )
@@ -140,8 +142,13 @@ export function legacyRendererEvents(
 export class RendererEvents extends Context.Service<
   RendererEvents,
   {
-    readonly events: (role: RendererWindowRole) => Stream.Stream<RendererEvent, RendererEventError>
+    readonly events: (
+      role: RendererWindowRole,
+      onReady?: () => void,
+    ) => Stream.Stream<RendererEvent, RendererEventError>
   }
 >()('watchtower/renderer/RendererEvents') {
-  static readonly layer = Layer.succeed(RendererEvents, { events: legacyRendererEvents })
+  static readonly layer = Layer.succeed(RendererEvents, {
+    events: (role, onReady) => legacyRendererEvents(role, () => window.api, 256, onReady),
+  })
 }

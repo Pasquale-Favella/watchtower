@@ -1,46 +1,79 @@
-import { useAtomSet } from '@effect/atom-react'
+import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import { useEffect } from 'react'
 
-import { registry } from '@/app/renderer-runtime'
-import { useScanStore } from '@/app/stores/scan-store'
-import { subscribeToIpc } from '@/app/stores/subscribe'
-import { useCoachSkillsStore } from '@/features/coach-skills/store'
-import { loadCadenceAtom, loadCurrencyAtom, loadCurrencyOptionsAtom } from '@/features/settings/atoms'
+import { hydrateScanAtom, refreshScanAtom, scanStateAtom } from '@/app/atoms/scan'
+import { registry, runtime } from '@/app/renderer-runtime'
+import { appEventsReadyAtom, subscribeToIpc } from '@/app/stores/subscribe'
+import { coachDetection, mountCoachWorkflow } from '@/features/coach-skills/atoms'
+import {
+  loadCadenceAtom,
+  loadCurrencyAtom,
+  loadCurrencyOptionsAtom,
+  setCadenceAtom,
+  setCurrencyAtom,
+} from '@/features/settings/atoms'
+import { mountSettingsCapabilityWorkflow } from '@/features/settings/capability-atoms'
 import { preferencesAtom } from '@/features/settings/preferences-atoms'
 import { loadUpdateStatusAtom } from '@/features/settings/updates-atoms'
+import { RendererApi } from '@/shared/lib/renderer-api'
 
-/** The initial hydration flow + subscription lifecycle, relocated out of
- * AppRoot (ADR 0011): wires the app's IPC subscriptions, then hydrates
- * the shell from the scan status — an existing report applies the change path
- * (status + providers + unparsed total), otherwise the first scan fires — and
- * loads the server-fed settings. */
+import { pinWindowAtom } from './use-remote-query.js'
+
+export const appBootstrapAtom = runtime(RendererApi.layer).atom(get => {
+  get.mount(refreshScanAtom)
+  get.mount(setCadenceAtom)
+  get.mount(setCurrencyAtom)
+  get.mount(loadUpdateStatusAtom)
+  get.addFinalizer(mountCoachWorkflow(get.registry))
+  get.addFinalizer(mountSettingsCapabilityWorkflow(get.registry))
+  get.addFinalizer(subscribeToIpc(get.registry))
+  const preferences = get.registry.get(preferencesAtom)
+  let thresholdKey = `${preferences.skillsFrequency}\0${preferences.skillsSpread}`
+  get.subscribe(preferencesAtom, next => {
+    const nextKey = `${next.skillsFrequency}\0${next.skillsSpread}`
+    if (nextKey === thresholdKey) return
+    thresholdKey = nextKey
+    const request = get.registry.get(coachDetection.requestAtom)
+    if (request)
+      get.registry.set(coachDetection.requestAtom, {
+        ...request,
+        frequency: next.skillsFrequency,
+        spread: next.skillsSpread,
+      })
+  })
+  get.registry.set(loadUpdateStatusAtom, undefined)
+  return Effect.gen(function* () {
+    yield* Stream.runDrain(
+      get.stream(appEventsReadyAtom).pipe(
+        Stream.filter(state => state === 'ready' || state === 'failed'),
+        Stream.take(1),
+      ),
+    )
+    const hydrated = yield* get.result(hydrateScanAtom)
+    if (hydrated === 'failed') {
+      yield* Stream.runDrain(
+        get.stream(scanStateAtom).pipe(
+          Stream.filter(state => state.hydrated),
+          Stream.take(1),
+        ),
+      )
+    } else if (hydrated === 'unscanned') yield* get.setResult(refreshScanAtom, undefined)
+    yield* Effect.all(
+      [
+        get.setResult(loadCadenceAtom, undefined),
+        get.setResult(loadCurrencyAtom, undefined),
+        get.setResult(loadCurrencyOptionsAtom, undefined),
+      ],
+      { concurrency: 'unbounded' },
+    )
+    return yield* Effect.never
+  })
+})
+
+/** The window root owns bootstrap and event subscriptions across React remounts. */
 export function useAppBootstrap(): void {
-  const loadCadence = useAtomSet(loadCadenceAtom, { mode: 'promiseExit' })
-  const loadCurrency = useAtomSet(loadCurrencyAtom, { mode: 'promiseExit' })
-  const loadCurrencyOptions = useAtomSet(loadCurrencyOptionsAtom, { mode: 'promiseExit' })
-  const loadUpdateStatus = useAtomSet(loadUpdateStatusAtom)
-
   useEffect(() => {
-    const unsubscribe = subscribeToIpc()
-    let thresholdKey = `${registry.get(preferencesAtom).skillsFrequency}\0${registry.get(preferencesAtom).skillsSpread}`
-    const unsubscribePreferences = registry.subscribe(preferencesAtom, preferences => {
-      const nextKey = `${preferences.skillsFrequency}\0${preferences.skillsSpread}`
-      if (nextKey === thresholdKey) return
-      thresholdKey = nextKey
-      void useCoachSkillsStore.getState().detection.reload()
-    })
-    // Reads local updater state only. Checking GitHub still requires a click.
-    loadUpdateStatus(undefined)
-    void (async () => {
-      const hydrated = await useScanStore.getState().hydrate()
-      if (hydrated === 'failed') return
-      // The app window owns the first scan.
-      if (hydrated === 'unscanned') await useScanStore.getState().refresh()
-      await Promise.all([loadCadence(undefined), loadCurrency(undefined), loadCurrencyOptions(undefined)])
-    })()
-    return () => {
-      unsubscribePreferences()
-      unsubscribe()
-    }
-  }, [loadCadence, loadCurrency, loadCurrencyOptions, loadUpdateStatus])
+    pinWindowAtom(registry, appBootstrapAtom)
+  }, [])
 }

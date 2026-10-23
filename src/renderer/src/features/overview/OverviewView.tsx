@@ -9,12 +9,12 @@ import { type BarItem, BarList } from '@/features/overview/BarList'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
 import { formatChartDate, formatChartValue } from '@/features/overview/lib'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { Panel } from '@/shared/components/Panel'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonBars, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
-import { formatUsd } from '@/shared/lib/models'
 import { motionClass } from '@/shared/lib/motion'
 import { keyOfScope } from '@/shared/lib/query-keys'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import type { OverviewPayload } from '../../../../shared/schemas/overview.js'
@@ -39,6 +39,7 @@ function emptyNote(text: string) {
 }
 
 function ModelsTable({ payload }: { payload: OverviewPayload }) {
+  const { formatUsd } = useCurrencyFormatter()
   if (!payload.models.length) return emptyNote('No model usage in this range yet.')
   return (
     <div className="flex flex-col">
@@ -72,6 +73,7 @@ function ModelsTable({ payload }: { payload: OverviewPayload }) {
 }
 
 function ActivitiesPanel({ payload }: { payload: OverviewPayload }) {
+  const { formatUsd } = useCurrencyFormatter()
   if (!payload.activities.length) return emptyNote('No activity in this range yet.')
   const items: BarItem[] = payload.activities.map(activity => ({
     name: activity.name,
@@ -82,6 +84,7 @@ function ActivitiesPanel({ payload }: { payload: OverviewPayload }) {
 }
 
 function EfficiencyPanel({ payload }: { payload: OverviewPayload }) {
+  const { formatUsd } = useCurrencyFormatter()
   const eff = payload.efficiency
   const cachePct = Math.round(payload.kpis.cacheHitPercent)
   const pricingPct = Math.min(99, Math.round(eff.pricingCoverage * 100))
@@ -191,6 +194,7 @@ function WorkflowPanel({ payload }: { payload: OverviewPayload }) {
 }
 
 function BreakdownPanel({ payload }: { payload: OverviewPayload }) {
+  const { formatUsd } = useCurrencyFormatter()
   const rows: Array<{ label: string; name: string; detail: string }> = [
     ...payload.tools.map(t => ({ label: 'Tools', name: t.name, detail: `${t.calls} calls` })),
     ...payload.mcpServers.map(m => ({ label: 'MCP', name: m.name, detail: `${m.calls} calls` })),
@@ -221,6 +225,7 @@ function BreakdownPanel({ payload }: { payload: OverviewPayload }) {
 }
 
 function LocalSavingsPanel({ payload }: { payload: OverviewPayload }) {
+  const { formatUsd } = useCurrencyFormatter()
   const savings = payload.localModelSavings
   if (!savings.totalUSD) return emptyNote('No local-model savings in this range yet.')
   return (
@@ -242,6 +247,7 @@ function LocalSavingsPanel({ payload }: { payload: OverviewPayload }) {
 }
 
 export function OverviewView() {
+  const { currency } = useCurrencyFormatter()
   const scope = useAtomValue(overviewScopeAtom)
   const { data: payload, error } = useRemoteQuery(overviewQuery, scope, keyOfScope)
 
@@ -252,7 +258,7 @@ export function OverviewView() {
     <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-4', 'section-fade'))}>
       {payload === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading overview…" className="flex flex-col gap-4">
             <KpiBentoSkeleton />
@@ -279,13 +285,18 @@ export function OverviewView() {
         )
       ) : (
         <>
+          <QueryErrorNotice error={error} hasData />
           <KpiBento payload={payload} />
 
           <Panel title="Spend over time" right={topModel ? `Biggest driver: ${topModel.name}` : 'No model driver yet'}>
             {chartData.length === 0 ? (
               emptyNote('No spend yet.')
             ) : (
-              <DailySpendChart data={chartData} formatDate={formatChartDate} formatValue={formatChartValue} />
+              <DailySpendChart
+                data={chartData}
+                formatDate={formatChartDate}
+                formatValue={value => formatChartValue(value, currency)}
+              />
             )}
             {payload.dataStart !== null && (chartData[0]?.date ?? '') < payload.dataStart && (
               <p className="text-muted-foreground mt-1.5 text-[10.5px]">

@@ -1,19 +1,33 @@
-import { useEffect, useMemo, useState } from 'react'
+import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
+import { useContext, useEffect, useMemo, useState } from 'react'
 
+import { pinWindowAtom } from '@/app/hooks/use-remote-query'
+import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import {
+  dedupeGroups,
+  ModelPickerCombobox,
+  type ModelPickerGroup,
+  uniqueAliasTargets,
+  usagePickerItem,
+} from '@/features/models/model-picker'
+import {
+  aliasesPricingCommands,
+  KNOWN_MODELS_REQUEST,
+  pricedModelsAtom,
+  PRICING_REQUEST,
+  pricingAliasesQuery,
+  pricingCommandErrorsAtom,
+  pricingKnownModelsQuery,
+  pricingOverridesQuery,
+  unpricedModelsAtom,
+} from '@/features/models/pricing-atoms'
+import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
+import { LoadingRegion } from '@/shared/components/skeletons'
 import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion } from '@/shared/components/skeletons'
-import {
-  dedupeGroups,
-  ModelPickerCombobox,
-  uniqueAliasTargets,
-  usagePickerItem,
-  type ModelPickerGroup,
-} from '@/features/models/model-picker'
-import { usePricingStore } from '@/features/models/pricing-store'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 /** Settings › Model aliases: full CRUD against the store's alias config
  * table. An alias maps an unrecognized model name to a priced model so its
@@ -22,37 +36,36 @@ import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
  * side lists the not-yet-mapped models, the priced side the already-priced
  * models. */
 export function AliasesPane() {
-  const aliases = usePricingStore(s => s.aliases)
-  const overrides = usePricingStore(s => s.overrides)
-  const storeError = usePricingStore(s => s.error)
-  const loadAliases = usePricingStore(s => s.loadAliases)
-  const loadOverrides = usePricingStore(s => s.loadOverrides)
-  const loadKnownModels = usePricingStore(s => s.loadKnownModels)
-  const addAlias = usePricingStore(s => s.addAlias)
-  const removeAlias = usePricingStore(s => s.removeAlias)
-  // The usage models split by price status — fetched (lifetime) and split in
-  // the pricing store, so the pickers always see the same "Recognized
-  // models" list as the Models quick-add popup. Stable references, so the
-  // item memos below only re-run when the store actually reloads.
-  const unpriced = usePricingStore(s => s.unpriced)
-  const priced = usePricingStore(s => s.priced)
+  const registry = useContext(RegistryContext)
+  useEffect(() => {
+    pinWindowAtom(registry, aliasesPricingCommands.addAliasAtom)
+    pinWindowAtom(registry, aliasesPricingCommands.removeAliasAtom)
+  }, [registry])
+  const aliases = useRemoteQuery(pricingAliasesQuery, PRICING_REQUEST, () => 'aliases')
+  const overrides = useRemoteQuery(pricingOverridesQuery, PRICING_REQUEST, () => 'overrides')
+  const knownModels = useRemoteQuery(pricingKnownModelsQuery, KNOWN_MODELS_REQUEST, () => 'known-models')
+  const addAlias = useAtomSet(aliasesPricingCommands.addAliasAtom, { mode: 'promise' })
+  const removeAlias = useAtomSet(aliasesPricingCommands.removeAliasAtom, { mode: 'promise' })
+  const commandErrors = useAtomValue(pricingCommandErrorsAtom)
+  const { currency } = useCurrencyFormatter()
+  // The lifetime models split by price status are shared with the Models
+  // quick-add picker.
+  const unpriced = useAtomValue(unpricedModelsAtom)
+  const priced = useAtomValue(pricedModelsAtom)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    void loadAliases()
-    void loadOverrides()
-    void loadKnownModels()
-  }, [loadAliases, loadOverrides, loadKnownModels])
+  const aliasRows = aliases.data
+  const overrideRows = overrides.data
 
-  const aliasedModels = useMemo(() => new Set((aliases ?? []).map(alias => alias.model)), [aliases])
+  const aliasedModels = useMemo(() => new Set((aliasRows ?? []).map(alias => alias.model)), [aliasRows])
 
-  // The two disjoint sets each combobox shows, shaped from the store-derived
+  // The two disjoint sets each combobox shows, shaped from the query-derived
   // split: the unpriced usage models (the Models view's "add alias" rows) for
   // "unrecognized", and the priced ones (cost > 0) for the target.
-  const unpricedItems = useMemo(() => unpriced.map(usagePickerItem), [unpriced])
-  const pricedItems = useMemo(() => priced.map(usagePickerItem), [priced])
+  const unpricedItems = useMemo(() => unpriced.map(model => usagePickerItem(model, currency)), [unpriced, currency])
+  const pricedItems = useMemo(() => priced.map(model => usagePickerItem(model, currency)), [priced, currency])
 
   // Unrecognized model candidates: models already aliased plus the usage
   // models that are not mapped yet (the unpriced ones).
@@ -60,7 +73,7 @@ export function AliasesPane() {
     () => [
       {
         label: 'Already mapped',
-        items: (aliases ?? []).map(alias => ({
+        items: (aliasRows ?? []).map(alias => ({
           id: `mapped:${alias.model}`,
           value: alias.model,
           label: alias.model,
@@ -73,7 +86,7 @@ export function AliasesPane() {
         items: unpricedItems.filter(item => !aliasedModels.has(item.value)),
       },
     ],
-    [aliases, unpricedItems, aliasedModels],
+    [aliasRows, unpricedItems, aliasedModels],
   )
 
   // Priced model candidates: targets already aliased (deduped) plus the
@@ -84,7 +97,7 @@ export function AliasesPane() {
       dedupeGroups([
         {
           label: 'Already mapped',
-          items: uniqueAliasTargets(aliases ?? []).map(alias => ({
+          items: uniqueAliasTargets(aliasRows ?? []).map(alias => ({
             id: `mapped:${alias.aliasOf}`,
             value: alias.aliasOf,
             label: alias.aliasOf,
@@ -95,7 +108,7 @@ export function AliasesPane() {
         {
           label: 'Priced models',
           items: [
-            ...(overrides ?? []).map(override => ({
+            ...(overrideRows ?? []).map(override => ({
               id: `override:${override.model}`,
               value: override.model,
               label: override.model,
@@ -106,7 +119,7 @@ export function AliasesPane() {
           ],
         },
       ]),
-    [aliases, overrides, pricedItems],
+    [aliasRows, overrideRows, pricedItems],
   )
 
   const add = async (): Promise<void> => {
@@ -115,8 +128,8 @@ export function AliasesPane() {
     if (!model || !aliasOf) return
     setBusy(true)
     try {
-      const ok = await addAlias(model, aliasOf)
-      if (ok) {
+      const result = await addAlias({ model, aliasOf })
+      if (result.ok) {
         setFrom('')
         setTo('')
       }
@@ -132,7 +145,7 @@ export function AliasesPane() {
         subtitle="Map an unrecognized model name to a priced model so its cost shows up."
       />
       <Card className="px-4 py-3">
-        {aliases === null ? (
+        {aliasRows === null ? (
           <LoadingRegion label="Loading aliases…" className="flex flex-col gap-3">
             {Array.from({ length: 4 }).map((_, i) => (
               <div key={i} className="flex items-center gap-2">
@@ -143,13 +156,13 @@ export function AliasesPane() {
               </div>
             ))}
           </LoadingRegion>
-        ) : aliases.length === 0 ? (
+        ) : aliasRows.length === 0 ? (
           <p className="text-muted-foreground text-[11.5px]">
             No aliases configured. Unknown models are priced at $0 until aliased.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {aliases.map(alias => (
+            {aliasRows.map(alias => (
               <li key={alias.model} className="flex items-center gap-2">
                 <code className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{alias.model}</code>
                 <span className="text-muted-foreground">→</span>
@@ -189,7 +202,19 @@ export function AliasesPane() {
             Add
           </Button>
         </div>
-        {storeError && <p className="text-destructive mt-2 text-[11px]">{storeError}</p>}
+        {(aliases.error ??
+          overrides.error ??
+          knownModels.error ??
+          commandErrors.addAlias ??
+          commandErrors.removeAlias) && (
+          <p className="text-destructive mt-2 text-[11px]">
+            {aliases.error ??
+              overrides.error ??
+              knownModels.error ??
+              commandErrors.addAlias ??
+              commandErrors.removeAlias}
+          </p>
+        )}
       </Card>
       <p className="text-muted-foreground text-[11px]">
         Unknown models are priced at $0 until aliased. A local model can instead be credited with what it would have

@@ -23,12 +23,5 @@
     ],
     "types": ["node"]
   },
-  "include": [
-    "electron.vite.config.ts",
-    "playwright.config.ts",
-    "e2e/**/*",
-    "src/main/**/*",
-    "src/preload/**/*",
-    "src/shared/**/*"
-  ]
+  "include": ["electron.vite.config.ts", "playwright.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"]
 }

@@ -3,31 +3,32 @@ import { ChevronRight, GitPullRequest } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent } from 'react'
 import { useMemo, useState } from 'react'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
 import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { useScanStore } from '@/app/stores/scan-store'
 import { MetricCard } from '@/features/overview/MetricCard'
 import { pullRequestsQuery } from '@/features/pull-requests/atoms'
 import { payloadSpan, sessionWord, spanLabel, summarizePullRequests } from '@/features/pull-requests/lib'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { InfoTip } from '@/shared/components/InfoTip'
 import { Panel } from '@/shared/components/Panel'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonCard, SkeletonMetricCard, SkeletonRows } from '@/shared/components/skeletons'
 import { Card } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { formatUsd } from '@/shared/lib/models'
 import { motionClass } from '@/shared/lib/motion'
+import { openExternalAtom } from '@/shared/lib/native-capabilities'
 import { keyOfScope } from '@/shared/lib/query-keys'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import type { PullRequestRow, PullRequestsPayload } from '../../../../shared/schemas/pull-requests.js'
 
-function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
+function openPr(event: MouseEvent<HTMLAnchorElement>, url: string, open: (url: string) => void): void {
   event.preventDefault()
   event.stopPropagation()
-  void window.api.openExternal(url)
+  open(url)
 }
 
 // Keyboard activation for the button-role row, guarded so Enter/Space fired on
@@ -74,6 +75,8 @@ function ModelChips({ models, provenance }: ModelChipsProps) {
 }
 
 function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: boolean; onToggle: () => void }) {
+  const open = useAtomSet(openExternalAtom)
+  const { formatUsd } = useCurrencyFormatter()
   const models = pr.models ?? []
   const categories = pr.categories ?? []
   const catMax = categories.length ? Math.max(...categories.map(cat => cat.cost)) : 0
@@ -95,7 +98,7 @@ function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: b
               className="text-foreground hover:text-primary truncate text-[12.5px] font-medium hover:underline"
               href={pr.url}
               title={pr.url}
-              onClick={event => openPr(event, pr.url)}
+              onClick={event => openPr(event, pr.url, open)}
             >
               {pr.label}
             </a>
@@ -181,6 +184,8 @@ function HeroMini({ label, info, children }: { label: string; info?: string; chi
 }
 
 function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
+  const open = useAtomSet(openExternalAtom)
+  const { formatUsd } = useCurrencyFormatter()
   const { attributedCost } = useMemo(() => summarizePullRequests(payload.rows), [payload])
   const top = payload.rows[0]
   const coveragePct =
@@ -249,7 +254,7 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
                   className="text-foreground hover:text-primary truncate font-medium hover:underline"
                   href={top.url}
                   title={top.url}
-                  onClick={event => openPr(event, top.url)}
+                  onClick={event => openPr(event, top.url, open)}
                 >
                   {top.label}
                 </a>
@@ -299,11 +304,12 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
 }
 
 export function PullRequestsView(): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const scope = useAtomValue(overviewScopeAtom)
   const { data: payload, error } = useRemoteQuery(pullRequestsQuery, scope, keyOfScope)
   const provider = useAtomValue(providerAtom)
   const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
@@ -318,7 +324,7 @@ export function PullRequestsView(): React.JSX.Element {
 
       {payload === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading pull requests…" className="flex flex-col gap-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -357,13 +363,17 @@ export function PullRequestsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : payload.rows.length === 0 ? (
-        <Panel title="Pull request spend">
-          <p className="text-muted-foreground py-3 text-center text-[11.5px]">
-            PR links are captured as sessions are parsed. Once a session references a pull request, it appears here.
-          </p>
-        </Panel>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <Panel title="Pull request spend">
+            <p className="text-muted-foreground py-3 text-center text-[11.5px]">
+              PR links are captured as sessions are parsed. Once a session references a pull request, it appears here.
+            </p>
+          </Panel>
+        </>
       ) : (
         <>
+          <QueryErrorNotice error={error} hasData />
           <SummaryBento payload={payload} />
           <Panel title="Pull request spend">
             <div className="flex items-center justify-between">

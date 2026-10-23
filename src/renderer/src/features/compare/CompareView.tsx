@@ -3,13 +3,13 @@ import * as Option from 'effect/Option'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import { useContext, useEffect, useMemo } from 'react'
 
+import { scanStateAtom } from '@/app/atoms/scan'
 import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
 import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { useScanStore } from '@/app/stores/scan-store'
 import { compareQuery, compareRequestKey, compareSelectionAtom, pairFromPayload } from '@/features/compare/atoms'
 import { compareValue } from '@/features/compare/lib'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { Panel } from '@/shared/components/Panel'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
@@ -18,6 +18,7 @@ import { categoryLabel } from '@/shared/lib/models'
 import { seriesColorForModel } from '@/shared/lib/modelSeries'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import type {
@@ -54,6 +55,7 @@ function CompareRows({
   modelB: string
   showWinners: boolean
 }) {
+  const { currency } = useCurrencyFormatter()
   return (
     <div className="flex flex-col">
       <div className={cn(ROW_GRID, 'border-border border-b pb-1.5')}>
@@ -75,12 +77,12 @@ function CompareRows({
             <span
               className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'a') : 'text-foreground')}
             >
-              {compareValue(row.valueA, row.formatFn)}
+              {compareValue(row.valueA, row.formatFn, currency)}
             </span>
             <span
               className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'b') : 'text-foreground')}
             >
-              {compareValue(row.valueB, row.formatFn)}
+              {compareValue(row.valueB, row.formatFn, currency)}
             </span>
           </div>
         )
@@ -156,13 +158,14 @@ function BarRow({
   winner: boolean
   color: string
 }) {
+  const { currency } = useCurrencyFormatter()
   return (
     <div className="flex items-center gap-2">
       <span className="bg-muted h-[6px] flex-1 overflow-hidden rounded-full">
         <span className="block h-full rounded-full" style={{ width: `${rate ?? 0}%`, background: color }} />
       </span>
       <span className={cn(VALUE_CELL, 'w-[72px] text-[10.5px]', winner ? 'text-success' : 'text-muted-foreground')}>
-        {compareValue(rate, 'percent')} <span className="text-muted-foreground">({turns})</span>
+        {compareValue(rate, 'percent', currency)} <span className="text-muted-foreground">({turns})</span>
       </span>
     </div>
   )
@@ -226,7 +229,7 @@ export function CompareView(): React.JSX.Element {
   const pair = request.pair ?? pairFromPayload(payload)
   const provider = useAtomValue(providerAtom)
   const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
 
   // On each payload, keep the current pair if it is still detectable, otherwise
   // fall back to the top two by cost (the builder's own default).
@@ -267,7 +270,7 @@ export function CompareView(): React.JSX.Element {
 
       {payload === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading comparison…" className="flex flex-col gap-4">
             <div className="flex items-center justify-center gap-2.5">
@@ -289,11 +292,15 @@ export function CompareView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : models.length < 2 ? (
-        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-center text-[12px]">
-          Need at least two models with usage in this range to compare.
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-center text-[12px]">
+            Need at least two models with usage in this range to compare.
+          </div>
+        </>
       ) : (
         <>
+          <QueryErrorNotice error={error} hasData />
           <div className="flex items-center justify-center gap-2.5" aria-label="Models being compared">
             <ModelPicker
               models={models}

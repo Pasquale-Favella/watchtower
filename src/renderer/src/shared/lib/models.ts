@@ -1,6 +1,6 @@
 import type { AuditRow, ModelReportRow } from '../../../../shared/schemas/models.js'
 
-export { formatUsd, formatConverted, getActiveCurrency, setActiveCurrency } from './currency'
+export { formatUsd, formatConverted } from './currency'
 
 import type { ModelTaskGroup } from '../../../../shared/schemas/renderer.js'
 export type { ModelTaskGroup }
