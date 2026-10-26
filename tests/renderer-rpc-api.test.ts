@@ -61,9 +61,13 @@ describe('renderer RPC service', () => {
       if (operation === 'models:setPrice') return { ok: true }
       throw new Error(`private-path:${args}`)
     })
-    const server = RpcServer.layer(ApplicationRpcGroup, { disableTracing: true }).pipe(
+    const server = RpcServer.layer(ApplicationRpcGroup.omit('app:events'), { disableTracing: true }).pipe(
       Layer.provide(
-        Layer.mergeAll(serverProtocolLayer(ports.server), analyticsHandlers({ request }), configHandlers({ request })),
+        Layer.mergeAll(
+          serverProtocolLayer(ports.server),
+          analyticsHandlers({ request }),
+          configHandlers({ request }, Effect.succeed(0)),
+        ),
       ),
     )
     const result = await Effect.runPromise(

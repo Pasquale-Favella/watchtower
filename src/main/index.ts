@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
@@ -12,7 +13,7 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 
 import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
-import { ApplicationRpcGroup, PanelRpcGroup } from '../shared/rpc/application.js'
+import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '../shared/rpc/application.js'
 import { serverProtocolLayer } from '../shared/rpc/port-protocol.js'
 import type { ComparePair } from '../shared/schemas/compare.js'
 import type { ExportResult } from '../shared/schemas/export.js'
@@ -28,6 +29,7 @@ import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds }
 import type { UpdateStatus } from '../shared/schemas/updates.js'
 import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { registerAgentsIpc } from './agents/ipc.js'
+import { HarnessSnapshot } from './agents/snapshot.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
 import { exportCsvZip as exportCsvZipEffect } from './application/export-csv-zip.js'
@@ -48,6 +50,14 @@ import {
 import { createQuitCoordinator } from './quit-coordinator.js'
 import { registerElectronRpc, type RpcWindowRole } from './rpc/electron.js'
 import { analyticsHandlers, configHandlers } from './rpc/handlers.js'
+import {
+  LifecycleHub,
+  type LifecycleHubService,
+  lifecycleHandlers,
+  lifecycleLayer,
+  type LifecyclePublishEvent,
+} from './rpc/lifecycle.js'
+import { lifecycleEventFromWorker } from './rpc/worker-events.js'
 import { AppUpdates, updatesLayer } from './updates.js'
 
 /**
@@ -55,8 +65,8 @@ import { AppUpdates, updatesLayer } from './updates.js'
  * harness-agent surface. All data work — the ledger, the scan pipeline, and
  * every query-time view builder — lives on the db-worker thread behind
  * `DbWorkerClient`, so a scan or a heavy aggregation can never freeze the
- * main event loop (and with it every window). The renderer wire contract is
- * unchanged: same channels, same payloads.
+ * main event loop (and with it every window). Legacy channels retain their
+ * payloads while callers migrate to the versioned RPC boundary.
  */
 
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
@@ -66,11 +76,47 @@ let dbClient: DbWorkerClient | null = null
 const rendererRoles = new WeakMap<Electron.WebContents, RpcWindowRole>()
 const rendererRpcFibers = new Set<Fiber.Fiber<never>>()
 let disposeRendererRpc: (() => void) | undefined
+let lifecycleHub: LifecycleHubService | undefined
+const appUpdatesLayer = updatesLayer({
+  currentVersion: app.getVersion(),
+  source: acquireElectronUpdates({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    appPath: app.getAppPath(),
+    executablePath: process.execPath,
+    appImage: process.env['APPIMAGE'],
+    onInstallError: showUpdateInstallError,
+  }),
+  onChange: status => {
+    publishLifecycle({ _tag: 'UpdateChanged', status })
+    broadcast('updates:changed', status)
+  },
+  requestInstall: install => quitCoordinator.requestInstall(install),
+})
+
+const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
+  epoch: randomUUID(),
+  readSnapshot: {
+    scanStatus: () => readWorkerSnapshot('store:status'),
+    scanActivity: () =>
+      readWorkerSnapshot('scan:active').pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.Boolean)),
+        Effect.map(scanning => ({ scanning, progress: null, error: null })),
+      ),
+    currency: () => readWorkerSnapshot('currency:get'),
+    updater: () => Effect.flatMap(AppUpdates, updates => updates.status),
+    harnesses: () => Effect.flatMap(HarnessSnapshot, snapshot => snapshot.list()),
+  },
+}).pipe(Layer.provideMerge(appUpdatesLayer))
+
 const mainRuntime = makeMainRuntime(
   {
     clientVersion: app.getVersion(),
     appPath: app.getAppPath(),
-    onHarnessChange: rows => broadcast('coach:harnesses-changed', rows),
+    onHarnessChange: rows => {
+      publishLifecycle({ _tag: 'HarnessesChanged', rows })
+      broadcast('coach:harnesses-changed', rows)
+    },
   },
   {},
   Layer.merge(
@@ -83,19 +129,7 @@ const mainRuntime = makeMainRuntime(
       createMainWindow: createWindow,
       requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
     }),
-    updatesLayer({
-      currentVersion: app.getVersion(),
-      source: acquireElectronUpdates({
-        isPackaged: app.isPackaged,
-        platform: process.platform,
-        appPath: app.getAppPath(),
-        executablePath: process.execPath,
-        appImage: process.env['APPIMAGE'],
-        onInstallError: showUpdateInstallError,
-      }),
-      onChange: status => broadcast('updates:changed', status),
-      requestInstall: install => quitCoordinator.requestInstall(install),
-    }),
+    rendererLifecycleLayer,
   ),
 )
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
@@ -124,6 +158,20 @@ function broadcast(channel: string, data?: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (!win.isDestroyed()) win.webContents.send(channel, data)
   }
+}
+
+function publishLifecycle(event: LifecyclePublishEvent): void {
+  if (lifecycleHub) mainRuntime.runSync(lifecycleHub.publish(event))
+}
+
+function readWorkerSnapshot(operation: string): Effect.Effect<unknown, Error> {
+  return Effect.tryPromise({
+    try: () => {
+      if (!dbClient) return Promise.reject(new Error('Data worker unavailable'))
+      return dbClient.request(operation)
+    },
+    catch: () => new Error('Data worker unavailable'),
+  })
 }
 
 /** Single IPC failure seam: operation name + short code only, never args. */
@@ -181,6 +229,13 @@ function relayWorkerEvents(db: DbWorkerClient): void {
     // Boot handshake (`ready` / `init-error`) is consumed by the client
     // itself — never relayed to windows.
     if (event.event === 'ready' || event.event === 'init-error') return
+    const lifecycle = lifecycleEventFromWorker(event)
+    if (lifecycle._tag === 'Failure') {
+      safeLogOperationalEvent('warn', 'rpc.worker-event.invalid', {
+        op: lifecycle.failure.event,
+        code: lifecycle.failure.code,
+      })
+    } else if (lifecycle.success) publishLifecycle(lifecycle.success)
     switch (event.event) {
       case 'scan:progress':
         broadcast('scan:progress', event.progress)
@@ -543,6 +598,7 @@ app.whenReady().then(async () => {
     ),
   )
   initAppPaths(appPathSnapshot)
+  lifecycleHub = await mainRuntime.runPromise(LifecycleHub)
   const db = new DbWorkerClient(
     { dbPath: join(dataDir, 'ledger.db'), dataDir, cacheDir: appPathSnapshot.cacheDir },
     join(__dirname, 'db-worker.js'),
@@ -554,9 +610,8 @@ app.whenReady().then(async () => {
     ipcMain,
     resolveRole: ({ webContents, url }) => {
       const role = rendererRoles.get(webContents)
-      // Beacon RPC remains unavailable until its lifecycle-only contract is installed.
-      if (!role || role === 'beacon') return undefined
-      const filename = role === 'app' ? 'index.html' : 'orb-panel.html'
+      if (!role) return undefined
+      const filename = { app: 'index.html', panel: 'orb-panel.html', beacon: 'orb.html' }[role]
       const rendererUrl = process.env['ELECTRON_RENDERER_URL']
       const expected = rendererUrl
         ? role === 'app'
@@ -566,13 +621,29 @@ app.whenReady().then(async () => {
       return new URL(url).href === expected ? role : undefined
     },
     onConnection: (port, role) => {
-      const handlers = Layer.merge(analyticsHandlers(db, role === 'panel' ? 'panel' : 'app'), configHandlers(db))
+      const handlers = Layer.mergeAll(
+        analyticsHandlers(db, role === 'panel' ? 'panel' : 'app'),
+        configHandlers(
+          db,
+          Effect.flatMap(LifecycleHub, hub => hub.currentConfigRevision),
+        ),
+        lifecycleHandlers,
+      )
       const protocol = serverProtocolLayer(port)
       const options = { disableTracing: true, disableFatalDefects: true } as const
-      const program =
-        role === 'panel'
-          ? RpcServer.make(PanelRpcGroup, options).pipe(Effect.provide(Layer.merge(handlers, protocol)))
-          : RpcServer.make(ApplicationRpcGroup, options).pipe(Effect.provide(Layer.merge(handlers, protocol)))
+      const provideHandlers = Effect.provide(Layer.merge(handlers, protocol))
+      let program: Effect.Effect<never, never, LifecycleHub>
+      switch (role) {
+        case 'app':
+          program = RpcServer.make(ApplicationRpcGroup, options).pipe(provideHandlers)
+          break
+        case 'panel':
+          program = RpcServer.make(PanelRpcGroup, options).pipe(provideHandlers)
+          break
+        case 'beacon':
+          program = RpcServer.make(BeaconRpcGroup, options).pipe(provideHandlers)
+          break
+      }
       const fiber = mainRuntime.runFork(program)
       rendererRpcFibers.add(fiber)
       fiber.addObserver(() => rendererRpcFibers.delete(fiber))

@@ -11,6 +11,10 @@ const modelRequestSchema = Schema.Struct({ model: Schema.String })
 const cadenceRequestSchema = Schema.Struct({ value: cadenceValueSchema })
 const currencyRequestSchema = Schema.Struct({ code: Schema.String })
 export const okResultSchema = Schema.Struct({ ok: Schema.Literal(true) })
+export const configWriteReceiptSchema = Schema.Struct({
+  ok: Schema.Literal(true),
+  configRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+})
 
 /** Local configuration and settings calls, retaining the existing channel as
  * each RPC tag. */
@@ -19,16 +23,24 @@ export const ConfigRpcGroup = RpcGroup.make(
     success: Schema.mutable(Schema.Array(modelAliasSchema)),
     error: ConfigRpcError,
   }),
-  Rpc.make('models:addAlias', { payload: modelAliasSchema, success: okResultSchema, error: ConfigRpcError }),
-  Rpc.make('models:removeAlias', { payload: modelRequestSchema, success: okResultSchema, error: ConfigRpcError }),
+  Rpc.make('models:addAlias', { payload: modelAliasSchema, success: configWriteReceiptSchema, error: ConfigRpcError }),
+  Rpc.make('models:removeAlias', {
+    payload: modelRequestSchema,
+    success: configWriteReceiptSchema,
+    error: ConfigRpcError,
+  }),
   Rpc.make('models:getPriceOverrides', {
     success: Schema.mutable(Schema.Array(priceOverrideSchema)),
     error: ConfigRpcError,
   }),
-  Rpc.make('models:setPrice', { payload: priceOverrideSchema, success: okResultSchema, error: ConfigRpcError }),
+  Rpc.make('models:setPrice', {
+    payload: priceOverrideSchema,
+    success: configWriteReceiptSchema,
+    error: ConfigRpcError,
+  }),
   Rpc.make('models:removePriceOverride', {
     payload: modelRequestSchema,
-    success: okResultSchema,
+    success: configWriteReceiptSchema,
     error: ConfigRpcError,
   }),
   Rpc.make('cadence:get', { success: cadenceValueSchema, error: ConfigRpcError }),

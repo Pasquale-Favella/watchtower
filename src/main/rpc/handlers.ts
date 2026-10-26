@@ -56,7 +56,7 @@ export function analyticsHandlers(worker: RpcDataWorker, role: 'app' | 'panel' =
   })
 }
 
-export function configHandlers(worker: RpcDataWorker) {
+export function configHandlers<R>(worker: RpcDataWorker, configRevision: Effect.Effect<number, never, R>) {
   function request<S extends Schema.ConstraintDecoder<unknown>>(schema: S, operation: string, ...args: unknown[]) {
     return Effect.tryPromise({
       try: () => worker.request(operation, ...args),
@@ -67,15 +67,21 @@ export function configHandlers(worker: RpcDataWorker) {
     )
   }
   const ok = okResultSchema
+  const write = Effect.fn('configHandlers.write')(function* (operation: string, ...args: unknown[]) {
+    yield* request(ok, operation, ...args)
+    // Worker events precede its acknowledgement on the same port. This revision
+    // therefore includes this write, even when another window also changed config.
+    return { ok: true as const, configRevision: yield* configRevision }
+  })
   return ConfigRpcGroup.toLayer({
     'models:getAliases': () => request(Schema.mutable(Schema.Array(modelAliasSchema)), 'models:getAliases'),
-    'models:addAlias': ({ model, aliasOf }) => request(ok, 'models:addAlias', model, aliasOf),
-    'models:removeAlias': ({ model }) => request(ok, 'models:removeAlias', model),
+    'models:addAlias': ({ model, aliasOf }) => write('models:addAlias', model, aliasOf),
+    'models:removeAlias': ({ model }) => write('models:removeAlias', model),
     'models:getPriceOverrides': () =>
       request(Schema.mutable(Schema.Array(priceOverrideSchema)), 'models:getPriceOverrides'),
     'models:setPrice': ({ model, inputPricePerMillion, outputPricePerMillion }) =>
-      request(ok, 'models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
-    'models:removePriceOverride': ({ model }) => request(ok, 'models:removePriceOverride', model),
+      write('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
+    'models:removePriceOverride': ({ model }) => write('models:removePriceOverride', model),
     'cadence:get': () => request(cadenceValueSchema, 'cadence:get'),
     'cadence:set': ({ value }) => request(cadenceValueSchema, 'cadence:set', value),
     'currency:get': () => request(activeCurrencySchema, 'currency:get'),
