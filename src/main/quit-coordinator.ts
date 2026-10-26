@@ -5,6 +5,22 @@ export interface QuitCoordinatorOptions {
   readonly installFailed: () => void
 }
 
+export interface MainResourceClosures {
+  readonly stopCoach: () => Promise<unknown>
+  readonly stopWorker: () => Promise<unknown>
+  readonly disposeRuntime: () => Promise<void>
+}
+
+/** Producers may publish their final events until they have drained. */
+export async function closeMainResources(closures: MainResourceClosures): Promise<void> {
+  const producers = await Promise.allSettled([
+    Promise.resolve().then(closures.stopCoach),
+    Promise.resolve().then(closures.stopWorker),
+  ])
+  const runtime = await Promise.allSettled([Promise.resolve().then(closures.disposeRuntime)])
+  if ([...producers, ...runtime].some(result => result.status === 'rejected')) throw new Error('Shutdown failed')
+}
+
 /** The updater may start an artifact only after every app-owned resource closes. */
 export function createQuitCoordinator(options: QuitCoordinatorOptions): {
   requestInstall: (install: () => void) => void

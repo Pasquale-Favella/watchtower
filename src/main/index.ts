@@ -47,7 +47,7 @@ import {
   logIpcError,
   safeLogOperationalEvent,
 } from './operational-log.js'
-import { createQuitCoordinator } from './quit-coordinator.js'
+import { closeMainResources, createQuitCoordinator } from './quit-coordinator.js'
 import { registerElectronRpc, type RpcWindowRole } from './rpc/electron.js'
 import { analyticsHandlers, configHandlers } from './rpc/handlers.js'
 import {
@@ -712,17 +712,22 @@ const quitCoordinator = createQuitCoordinator({
   cleanup: async () => {
     disposeRendererRpc?.()
     await Promise.all(Array.from(rendererRpcFibers, fiber => mainRuntime.runPromise(Fiber.interrupt(fiber))))
-    const coachShutdown = mainRuntime
-      .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
-      .finally(() => agentsCleanup?.dispose())
-      .finally(() => mainRuntime.dispose())
-    const results = await Promise.allSettled([coachShutdown, dbClient?.shutdown()])
     try {
-      closeOperationalLog()
-    } catch {
-      /* best effort */
+      await closeMainResources({
+        stopCoach: () =>
+          mainRuntime
+            .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
+            .finally(() => agentsCleanup?.dispose()),
+        stopWorker: () => dbClient?.shutdown() ?? Promise.resolve(),
+        disposeRuntime: () => mainRuntime.dispose(),
+      })
+    } finally {
+      try {
+        closeOperationalLog()
+      } catch {
+        /* best effort */
+      }
     }
-    if (results.some(result => result.status === 'rejected')) throw new Error('Shutdown failed')
   },
   quit: () => app.quit(),
   installFailed: showUpdateInstallError,
