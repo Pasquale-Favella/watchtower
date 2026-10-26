@@ -43,6 +43,7 @@ export type DbWorkerEvent =
   | { event: 'scan:progress'; manual: boolean; progress: unknown }
   | { event: 'scan:error'; manual: boolean; message: string }
   | { event: 'store:changed'; metadata: unknown }
+  | { event: 'ledger:reset' }
   | { event: 'scan:idle' }
   | { event: 'config:changed' }
   | { event: 'currency:changed'; currency: unknown }

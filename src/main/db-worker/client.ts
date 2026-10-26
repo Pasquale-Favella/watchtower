@@ -107,6 +107,8 @@ export const RESPAWN_BACKOFF_RESET_AFTER_MS = 60_000
  * If that never arrives, kill the owning thread under the same bound as
  * graceful shutdown; only then may its replacement receive requests. */
 export const SCAN_ABORT_DRAIN_TIMEOUT_MS = 2_000
+/** Bounds distinct ordinary logical requests, including requests awaiting recovery. */
+export const DB_WORKER_REQUEST_CAPACITY = 128
 
 /** Capped exponential respawn backoff with jitter: attempt N (1-based) waits
  * `min(base * 2^(N-1), cap)`, scaled by `jittered` (±20%, mean-preserving) so
@@ -148,6 +150,8 @@ export class DbWorkerClient {
   private nextId = 1
   private pending = new Map<number, { resolve: (data: unknown) => void; reject: (err: Error) => void }>()
   private inflightReads = new Map<string, Promise<unknown>>()
+  private admittedRequests = 0
+  private abortFlight: Promise<unknown> | null = null
   /** Advances when a broadcast means an in-flight read may have gone stale. */
   private dataRevision = 0
   private eventListeners = new Set<(event: DbWorkerEvent) => void>()
@@ -267,7 +271,8 @@ export class DbWorkerClient {
         handshake.reject(new Error(raw.error))
         return
       }
-      if (raw.event === 'store:changed' || raw.event === 'config:changed') this.dataRevision++
+      if (raw.event === 'store:changed' || raw.event === 'config:changed' || raw.event === 'ledger:reset')
+        this.dataRevision++
       for (const listener of this.eventListeners) listener(raw)
     }
   }
@@ -284,6 +289,29 @@ export class DbWorkerClient {
         return this.sendTo(this.worker, op, args)
       })
     return this.sendTo(this.worker, op, args)
+  }
+
+  private admitOrdinaryRequest(start: () => Promise<unknown>): Promise<unknown> {
+    if (this.admittedRequests >= DB_WORKER_REQUEST_CAPACITY)
+      return Promise.reject(new Error('too many outstanding database worker requests'))
+
+    this.admittedRequests++
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      this.admittedRequests--
+    }
+
+    let request: Promise<unknown>
+    try {
+      request = start()
+    } catch (cause) {
+      release()
+      return Promise.reject(cause instanceof Error ? cause : new Error(String(cause)))
+    }
+    request.then(release, release)
+    return request
   }
 
   /** Repeat a read if a mutation broadcast overtook its worker response. */
@@ -309,7 +337,12 @@ export class DbWorkerClient {
     const id = this.nextId++
     return new Promise<unknown>((resolve, reject) => {
       this.pending.set(id, { resolve: resolve as (data: unknown) => void, reject })
-      worker.postMessage({ id, op, args })
+      try {
+        worker.postMessage({ id, op, args })
+      } catch (cause) {
+        this.pending.delete(id)
+        reject(cause instanceof Error ? cause : new Error(String(cause)))
+      }
     })
   }
 
@@ -317,18 +350,19 @@ export class DbWorkerClient {
    * mutation overtakes its response, that flight re-reads before resolving. */
   request(op: string, ...args: unknown[]): Promise<unknown> {
     if (op === 'scan:abort') return this.abortScan(args)
-    if (!DEDUPABLE_OPS.has(op)) return this.send(op, args)
+    if (op === 'shutdown') return this.send(op, args)
+    if (!DEDUPABLE_OPS.has(op)) return this.admitOrdinaryRequest(() => this.send(op, args))
     let flightArgs: unknown[]
     let key: string
     try {
       flightArgs = structuredClone(args)
       key = `${op}\n${JSON.stringify(flightArgs)}`
     } catch {
-      return this.send(op, args)
+      return this.admitOrdinaryRequest(() => this.send(op, args))
     }
     const hit = this.inflightReads.get(key)
     if (hit) return hit
-    const flight = Effect.runPromise(this.stableReadEffect(op, flightArgs))
+    const flight = this.admitOrdinaryRequest(() => Effect.runPromise(this.stableReadEffect(op, flightArgs)))
     this.inflightReads.set(key, flight)
     const forget = (): void => {
       if (this.inflightReads.get(key) === flight) this.inflightReads.delete(key)
@@ -357,7 +391,17 @@ export class DbWorkerClient {
         return Effect.tryPromise({ try: () => ongoingRecovery, catch: cause => cause }).pipe(Effect.as(null))
 
       const worker = this.worker
-      const sendAbort = (): Promise<unknown> => this.sendTo(worker, 'scan:abort', args)
+      const sendAbort = (): Promise<unknown> => {
+        const hit = this.abortFlight
+        if (hit) return hit
+        const flight = this.sendTo(worker, 'scan:abort', args)
+        this.abortFlight = flight
+        const clear = (): void => {
+          if (this.abortFlight === flight) this.abortFlight = null
+        }
+        flight.then(clear, clear)
+        return flight
+      }
       const recover = (target: DbWorkerPort | null): Effect.Effect<void, unknown> =>
         this.recoverStuckWorker(target, replacementTimeoutMs)
       return Effect.gen(function* () {

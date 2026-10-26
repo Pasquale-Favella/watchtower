@@ -15,6 +15,7 @@ import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  DB_WORKER_REQUEST_CAPACITY,
   DbWorkerClient,
   type DbWorkerPort,
   nextRespawnAttempt,
@@ -187,6 +188,20 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     const info = (await open().dispatch('settings:info', [])) as { dataDir: string; dbSize: number }
     expect(info.dataDir).toBe(dir)
     expect(info.dbSize).toBeGreaterThan(0)
+  })
+
+  it('emits ledger reset after the clear commits even when post-clear settings info fails', async () => {
+    dir = tempDataDir()
+    const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
+    runtime = openWorkerRuntime(init.dbPath)
+    ctx = new DbWorkerContext(init, event => events.push(event), {
+      runtime,
+      readSettingsInfo: () => Effect.fail(new Error('post-clear settings info failed')),
+    })
+
+    await expect(ctx.dispatch('settings:clear', [])).rejects.toThrow('post-clear settings info failed')
+    expect(events).toContainEqual({ event: 'ledger:reset' })
+    expect(await ctx.dispatch('store:status', [])).toEqual({ scanned: false })
   })
 
   it('scan:abort is a no-op without a running scan and unknown ops throw', async () => {
@@ -859,6 +874,136 @@ describe('DbWorkerClient request/response correlation', () => {
     await client.terminate()
   })
 
+  it('bounds distinct logical requests, reuses shared-read admission, and releases on success or error', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const sharedRead = client.request('overview:query', { period: 'today' })
+    const observer = Effect.runFork(Effect.tryPromise({ try: () => sharedRead, catch: cause => cause }))
+    await Effect.runPromise(Fiber.interrupt(observer))
+    const writes = Array.from({ length: DB_WORKER_REQUEST_CAPACITY - 1 }, (_, index) =>
+      client.request('models:addAlias', [`alias-${index}`]),
+    )
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
+
+    expect(client.request('overview:query', { period: 'today' })).toBe(sharedRead)
+    await expect(client.request('models:addAlias', ['over-capacity'])).rejects.toThrow(
+      'too many outstanding database worker requests',
+    )
+    expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY)
+
+    const firstRequest = worker.posted[0] as { id: number }
+    worker.emit('message', { id: firstRequest.id, ok: true, data: 'shared result' })
+    await expect(sharedRead).resolves.toBe('shared result')
+    const afterSuccess = client.request('models:addAlias', ['after-success'])
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
+
+    const failedWrite = worker.posted[1] as { id: number }
+    worker.emit('message', { id: failedWrite.id, ok: false, error: 'write failed' })
+    await expect(writes[0]).rejects.toThrow('write failed')
+    const afterError = client.request('models:addAlias', ['after-error'])
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 2))
+
+    for (const raw of worker.posted.slice(2) as { id: number }[]) {
+      worker.emit('message', { id: raw.id, ok: true, data: null })
+    }
+    await Promise.all([...writes.slice(1), afterSuccess, afterError])
+    await client.terminate()
+  })
+
+  it('keeps scan abort available at ordinary capacity and coalesces concurrent aborts', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const requests = Array.from({ length: DB_WORKER_REQUEST_CAPACITY }, (_, index) =>
+      client.request('models:addAlias', [`alias-${index}`]),
+    )
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
+
+    const firstAbort = client.request('scan:abort')
+    const secondAbort = client.request('scan:abort')
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
+    expect((worker.posted as { op: string }[]).filter(request => request.op === 'scan:abort')).toHaveLength(1)
+    const abortRequest = worker.posted.at(-1) as { id: number; op: string }
+    expect(abortRequest.op).toBe('scan:abort')
+    worker.emit('message', { id: abortRequest.id, ok: true, data: null })
+    await expect(Promise.all([firstAbort, secondAbort])).resolves.toEqual([null, null])
+    await expect(client.request('models:addAlias', ['still-full'])).rejects.toThrow(
+      'too many outstanding database worker requests',
+    )
+
+    for (const raw of worker.posted.slice(0, DB_WORKER_REQUEST_CAPACITY) as { id: number }[]) {
+      worker.emit('message', { id: raw.id, ok: true, data: null })
+    }
+    await Promise.all(requests)
+    await client.terminate()
+  })
+
+  it('bounds requests waiting behind recovery and releases them after replacement readiness', async () => {
+    const { client, fakes } = makeClient((fake, request) => {
+      if (request.op !== 'scan:abort') echoResponder(fake, request)
+    })
+    const retiringWorker = fakes[0]!
+    retiringWorker.emit('message', { event: 'ready' })
+    await client.ready
+
+    let finishTermination!: (exitCode: number) => void
+    const termination = new Promise<number>(resolve => (finishTermination = resolve))
+    const terminate = vi.spyOn(retiringWorker, 'terminate').mockReturnValue(termination)
+    const abort = Effect.runPromise(client.scanAbortEffect([], 1, 5_000)).catch(() => undefined)
+    await vi.waitFor(() => expect(terminate).toHaveBeenCalledTimes(1))
+
+    const queued = Array.from({ length: DB_WORKER_REQUEST_CAPACITY }, (_, index) =>
+      client.request('models:addAlias', [`queued-${index}`]),
+    )
+    await expect(client.request('models:addAlias', ['over-capacity'])).rejects.toThrow(
+      'too many outstanding database worker requests',
+    )
+    expect(retiringWorker.posted).toHaveLength(1)
+
+    finishTermination(0)
+    await vi.waitFor(() => expect(fakes).toHaveLength(2))
+    const replacement = fakes[1]!
+    replacement.emit('message', { event: 'ready' })
+    await abort
+    await Promise.all(queued)
+    expect(replacement.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY)
+    await client.shutdown()
+  })
+
+  it('keeps graceful shutdown available at ordinary request capacity', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const requests = Array.from({ length: DB_WORKER_REQUEST_CAPACITY }, (_, index) =>
+      client.request('models:addAlias', [`alias-${index}`]),
+    )
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
+    const settled = Promise.all(requests.map(request => request.catch(error => error)))
+
+    const closing = client.shutdown(0)
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
+    expect(worker.posted.at(-1)).toMatchObject({ op: 'shutdown', args: [] })
+    await closing
+    const failures = await settled
+    expect(failures.every(error => error instanceof Error && error.message === 'data worker shut down')).toBe(true)
+  })
+
+  it('removes a pending slot and releases admission when postMessage throws', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    vi.spyOn(worker, 'postMessage').mockImplementationOnce(() => {
+      throw new Error('post failed')
+    })
+
+    await expect(client.request('models:addAlias', ['first'])).rejects.toThrow('post failed')
+    expect((client as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0)
+
+    const next = client.request('models:addAlias', ['second'])
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    const request = worker.posted[0] as { id: number }
+    worker.emit('message', { id: request.id, ok: true, data: null })
+    await expect(next).resolves.toBeNull()
+    await client.terminate()
+  })
+
   it('keeps one coalesced flight while retrying reads overtaken by multiple mutations', async () => {
     const { client, fakes } = makeClient(() => {})
     const worker = fakes[0]!
@@ -888,6 +1033,29 @@ describe('DbWorkerClient request/response correlation', () => {
       'overview:query',
       'overview:query',
     ])
+    await client.terminate()
+  })
+
+  it('does not resolve an in-flight read with data from before ledger reset', async () => {
+    const { client, fakes } = makeClient(() => {})
+    const worker = fakes[0]!
+    const pending = client.request('overview:query', { period: 'today' })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+
+    worker.emit('message', { event: 'ledger:reset' })
+    worker.emit('message', {
+      id: (worker.posted[0] as { id: number }).id,
+      ok: true,
+      data: { source: 'before-clear' },
+    })
+    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    worker.emit('message', {
+      id: (worker.posted[1] as { id: number }).id,
+      ok: true,
+      data: { source: 'after-clear' },
+    })
+
+    await expect(pending).resolves.toEqual({ source: 'after-clear' })
     await client.terminate()
   })
 

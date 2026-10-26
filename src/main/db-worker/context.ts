@@ -37,6 +37,8 @@ function abortedScanError(): ScanAbortedError {
  */
 export interface DbWorkerDeps {
   readonly runtime: WorkerRuntime
+  /** Testable boundary for the fallible post-clear response hydration. */
+  readonly readSettingsInfo?: (dataDir: string, cacheDir: string) => Effect.Effect<unknown, unknown>
 }
 
 interface ActiveScan {
@@ -61,6 +63,7 @@ export class DbWorkerContext {
   private dataDir: string
   private cacheDir: string
   private emit: DbWorkerEmit
+  private readSettingsInfo: NonNullable<DbWorkerDeps['readSettingsInfo']>
   /** The most recent completed scan's metadata — the `getScanStatus()` answer
    * and the `store:changed` payload (ADR 0004). In-memory only. */
   private lastScanMetadata: ScanMetadata | null = null
@@ -82,6 +85,7 @@ export class DbWorkerContext {
     this.cacheDir = init.cacheDir
     this.emit = emit
     this.runtime = deps.runtime
+    this.readSettingsInfo = deps.readSettingsInfo ?? settingsInfoEffect
     void this.scheduleCadence()
     // Prime the FX side-table for the persisted display currency at startup,
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
@@ -456,14 +460,16 @@ export class DbWorkerContext {
         return this.runtime.runPromise(settingsInfoEffect(this.dataDir, this.cacheDir))
 
       case 'settings:clear': {
+        const emit = this.emit
         const resetMetadata = Effect.sync(() => {
           this.lastScanMetadata = null
         })
-        const settingsInfo = settingsInfoEffect(this.dataDir, this.cacheDir)
+        const settingsInfo = Effect.suspend(() => this.readSettingsInfo(this.dataDir, this.cacheDir))
         return this.runtime.runPromise(
           Effect.gen(function* () {
             yield* clearLedger()
             yield* resetMetadata
+            yield* Effect.sync(() => emit({ event: 'ledger:reset' }))
             return yield* settingsInfo
           }),
         )
