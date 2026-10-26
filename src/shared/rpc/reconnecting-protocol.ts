@@ -10,7 +10,7 @@ import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import type { RpcBridge, RpcConnectionResult } from './bridge.js'
+import type { RpcBridge } from './bridge.js'
 import { clientProtocolLayer, type RpcMessagePort, RpcPortError } from './port-protocol.js'
 
 export type RendererConnectionState =
@@ -44,11 +44,17 @@ interface GenerationProtocol {
 const connectionError = (message: string, cause: unknown): RpcClientError =>
   new RpcClientError({ reason: new RpcClientDefect({ message, cause }) })
 
-const safeReason = (result: RpcConnectionResult | unknown): string => {
-  if (typeof result === 'object' && result !== null && '_tag' in result) {
-    if (result._tag === 'Failed' && 'code' in result) return String(result.code)
+const isSameConnectionState = (left: RendererConnectionState, right: RendererConnectionState): boolean => {
+  switch (right._tag) {
+    case 'Connecting':
+      return left._tag === 'Connecting'
+    case 'Connected':
+      return left._tag === 'Connected' && left.generation === right.generation
+    case 'Disconnected':
+      return left._tag === 'Disconnected' && left.reason === right.reason
+    case 'Failed':
+      return left._tag === 'Failed' && left.reason === right.reason
   }
-  return 'unavailable'
 }
 
 const disconnectBridge = (bridge: RpcBridge, generation: number): void => {
@@ -114,26 +120,24 @@ export const reconnectingRendererProtocolLayer = (
       let active: GenerationProtocol | undefined
       let failClients: (error: RpcClientError) => Effect.Effect<void> = () => Effect.void
 
-      const publish = (next: RendererConnectionState) =>
-        Effect.gen(function* () {
-          if (JSON.stringify(state) === JSON.stringify(next)) return
-          state = next
-          yield* PubSub.publish(stateBus, next)
-        })
+      const publish = Effect.fnUntraced(function* (next: RendererConnectionState) {
+        if (isSameConnectionState(state, next)) return
+        state = next
+        yield* PubSub.publish(stateBus, next)
+      })
 
-      const closeGeneration = (record: GenerationProtocol, reason: string) =>
-        Effect.gen(function* () {
-          if (record.lifecycle.closed) return
-          record.lifecycle.closed = true
-          if (active === record) active = undefined
-          yield* failClients(connectionError('RPC port disconnected', new Error(reason)))
-          yield* Scope.close(record.scope, Exit.void)
-          if (!record.lifecycle.disconnectRequested) {
-            record.lifecycle.disconnectRequested = true
-            disconnectBridge(bridge, record.generation)
-          }
-          if (!disposed) yield* publish({ _tag: 'Disconnected', reason })
-        })
+      const closeGeneration = Effect.fnUntraced(function* (record: GenerationProtocol, reason: string) {
+        if (record.lifecycle.closed) return
+        record.lifecycle.closed = true
+        if (active === record) active = undefined
+        yield* failClients(connectionError('RPC port disconnected', new Error(reason)))
+        yield* Scope.close(record.scope, Exit.void)
+        if (!record.lifecycle.disconnectRequested) {
+          record.lifecycle.disconnectRequested = true
+          disconnectBridge(bridge, record.generation)
+        }
+        if (!disposed) yield* publish({ _tag: 'Disconnected', reason })
+      })
 
       const protocol = yield* RpcClient.Protocol.make((writeResponse, clientIds) => {
         failClients = error =>
@@ -189,13 +193,13 @@ export const reconnectingRendererProtocolLayer = (
               return pending
             },
             catch: () => ({ _tag: 'Failed', code: 'unavailable' }) as const,
-          })
+          }).pipe(Effect.catch(failure => Effect.succeed(failure)))
           if (disposed) {
             if (result._tag === 'Connected') disconnectBridge(bridge, result.generation)
             return 'disposed' as const
           }
           if (result._tag !== 'Connected') {
-            yield* publish({ _tag: 'Failed', reason: safeReason(result) })
+            yield* publish({ _tag: 'Failed', reason: result.code })
             return 'failed' as const
           }
 
@@ -215,7 +219,10 @@ export const reconnectingRendererProtocolLayer = (
           const built = yield* Effect.exit(Layer.buildWithScope(clientProtocolLayer(port), lowerScope))
           if (Exit.isFailure(built) || disposed) {
             lifecycle.closed = true
-            disconnectBridge(bridge, result.generation)
+            if (!lifecycle.disconnectRequested) {
+              lifecycle.disconnectRequested = true
+              disconnectBridge(bridge, result.generation)
+            }
             if (disposed) return 'disposed' as const
             yield* publish({ _tag: 'Failed', reason: 'protocol' })
             return 'failed' as const

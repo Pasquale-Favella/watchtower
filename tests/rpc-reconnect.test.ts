@@ -364,4 +364,40 @@ describe('reconnecting Effect RPC protocol', () => {
     expect(transport.handlers(1)).toBe(0)
     expect(transport.connectAttempts()).toBe(1)
   })
+
+  it.each(['throw', 'reject'] as const)(
+    'recovers from a %s during readiness without exposing its details',
+    async mode => {
+      const transport = makeBridge()
+      let attempts = 0
+      const bridge: RpcBridge = {
+        ...transport.bridge,
+        connect: () => {
+          attempts += 1
+          if (attempts !== 1) return transport.bridge.connect()
+          const error = new Error('private initialization details')
+          if (mode === 'throw') throw error
+          return Promise.reject(error)
+        },
+      }
+      const result = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* RendererConnection
+            const failure = yield* Stream.runHead(
+              connection.changes.pipe(Stream.filter(state => state._tag === 'Failed')),
+            )
+            yield* awaitGeneration(transport, 1)
+            const client = yield* RpcClient.make(Group)
+            const value = yield* client.Read(undefined)
+            return { failure, value }
+          }),
+        ).pipe(Effect.provide(protocolLayer(bridge, { initialRetryDelayMs: 10 }))),
+      )
+      expect(result.failure).toMatchObject({ _tag: 'Some', value: { _tag: 'Failed', reason: 'unavailable' } })
+      expect(result.value).toBe('generation-1')
+      expect(attempts).toBe(2)
+      expect(transport.handlers(1)).toBe(0)
+    },
+  )
 })

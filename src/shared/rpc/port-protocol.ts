@@ -73,6 +73,7 @@ const serverFrameSchema = Schema.Union([
 
 const MAX_FRAME_CHARS = 16 * 1024 * 1024
 const INBOX_CAPACITY = 64
+const MAX_ACTIVE_REQUESTS_PER_PORT = 64
 const json = RpcSerialization.json
 
 type ClientFrame = Schema.Schema.Type<typeof clientFrameSchema>
@@ -81,12 +82,11 @@ type ServerFrame = Schema.Schema.Type<typeof serverFrameSchema>
 const protocolError = (code: 'closed' | 'send-failed' | 'invalid-frame' = 'closed'): RpcClientError =>
   new RpcClientError({
     reason: new RpcClientDefect({
-      message:
-        code === 'closed'
-          ? 'RPC port disconnected'
-          : code === 'invalid-frame'
-            ? 'Invalid RPC frame received'
-            : 'RPC port send failed',
+      message: {
+        closed: 'RPC port disconnected',
+        'invalid-frame': 'Invalid RPC frame received',
+        'send-failed': 'RPC port send failed',
+      }[code],
       cause: code,
     }),
   })
@@ -151,11 +151,9 @@ export const clientProtocolLayer = (port: RpcMessagePort): Layer.Layer<RpcClient
         const onClose = () => {
           Queue.failCauseUnsafe(inbox, Cause.fail(new RpcPortError({ code: 'closed' })))
         }
-        const unsubscribe = yield* port.subscribe(onFrame)
-        const unsubscribeClose = yield* port.subscribeClose(onClose)
-        yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe))
-        yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeClose))
         yield* Scope.addFinalizer(scope, closeQuietly(port))
+        yield* Effect.acquireRelease(port.subscribe(onFrame), unsubscribe => Effect.sync(unsubscribe))
+        yield* Effect.acquireRelease(port.subscribeClose(onClose), unsubscribe => Effect.sync(unsubscribe))
         yield* Effect.forkScoped(
           Effect.gen(function* () {
             while (true) {
@@ -217,7 +215,13 @@ export const clientProtocolLayer = (port: RpcMessagePort): Layer.Layer<RpcClient
 }
 
 /** Creates the server-side Effect RPC protocol for one injected port. */
-export const serverProtocolLayer = (port: RpcMessagePort): Layer.Layer<RpcServer.Protocol> => {
+export const serverProtocolLayer = (
+  port: RpcMessagePort,
+  maxActiveRequests = MAX_ACTIVE_REQUESTS_PER_PORT,
+): Layer.Layer<RpcServer.Protocol> => {
+  if (!Number.isSafeInteger(maxActiveRequests) || maxActiveRequests < 1) {
+    throw new RangeError('maxActiveRequests must be a positive safe integer')
+  }
   const protocol: Effect.Effect<RpcServer.Protocol['Service'], never, Scope.Scope> = RpcServer.Protocol.make(
     writeRequest =>
       Effect.gen(function* () {
@@ -225,26 +229,27 @@ export const serverProtocolLayer = (port: RpcMessagePort): Layer.Layer<RpcServer
         const inbox = yield* Queue.bounded<unknown, RpcPortError>(INBOX_CAPACITY)
         const disconnects = yield* Queue.unbounded<number>()
         const clientIds = new Set<number>([0])
+        const activeRequests = new Set<string | number>()
         let closed = false
         const disconnect = () => {
           if (closed) return
           closed = true
+          activeRequests.clear()
           clientIds.delete(0)
           Queue.failCauseUnsafe(inbox, Cause.fail(new RpcPortError({ code: 'closed' })))
           Queue.offerUnsafe(disconnects, 0)
         }
         const closeConnection = Effect.andThen(Effect.sync(disconnect), closeQuietly(port))
         const onFrame = (frame: unknown) => {
+          if (closed) return
           if (!Queue.offerUnsafe(inbox, frame)) {
             Queue.failCauseUnsafe(inbox, Cause.fail(new RpcPortError({ code: 'send-failed' })))
           }
         }
         const onClose = disconnect
-        const unsubscribe = yield* port.subscribe(onFrame)
-        const unsubscribeClose = yield* port.subscribeClose(onClose)
-        yield* Scope.addFinalizer(scope, Effect.sync(unsubscribe))
-        yield* Scope.addFinalizer(scope, Effect.sync(unsubscribeClose))
         yield* Scope.addFinalizer(scope, closeConnection)
+        yield* Effect.acquireRelease(port.subscribe(onFrame), unsubscribe => Effect.sync(unsubscribe))
+        yield* Effect.acquireRelease(port.subscribeClose(onClose), unsubscribe => Effect.sync(unsubscribe))
         yield* Effect.forkScoped(
           Effect.gen(function* () {
             while (true) {
@@ -255,6 +260,18 @@ export const serverProtocolLayer = (port: RpcMessagePort): Layer.Layer<RpcServer
               } catch {
                 yield* closeConnection
                 return
+              }
+              if (closed) return
+              if (frame._tag === 'Request') {
+                if (
+                  frame.isNotification === true ||
+                  activeRequests.has(frame.id) ||
+                  activeRequests.size >= maxActiveRequests
+                ) {
+                  yield* closeConnection
+                  return
+                }
+                activeRequests.add(frame.id)
               }
               yield* writeRequest(0, frame as RpcMessage.FromClientEncoded)
             }
@@ -271,7 +288,14 @@ export const serverProtocolLayer = (port: RpcMessagePort): Layer.Layer<RpcServer
             } catch {
               return closeConnection
             }
-            return port.send(frame).pipe(Effect.catchCause(() => closeConnection))
+            return port.send(frame).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  if (response._tag === 'Exit') activeRequests.delete(response.requestId)
+                }),
+              ),
+              Effect.catchCause(() => closeConnection),
+            )
           },
           end() {
             return closeConnection

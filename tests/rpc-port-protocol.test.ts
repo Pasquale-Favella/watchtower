@@ -21,9 +21,10 @@ const Numbers = Rpc.make('Numbers', {
   stream: true,
 })
 const Wait = Rpc.make('Wait', { success: Schema.String })
+const WaitUninterruptible = Rpc.make('WaitUninterruptible', { success: Schema.String })
 const Defect = Rpc.make('Defect', { success: Schema.String })
 const TestRpcs = Rpc.make('Noop', { success: Schema.Void })
-const group = RpcGroup.make(Query, Fail, Numbers, Wait, Defect, TestRpcs)
+const group = RpcGroup.make(Query, Fail, Numbers, Wait, WaitUninterruptible, Defect, TestRpcs)
 
 interface PortState {
   closed: boolean
@@ -91,9 +92,13 @@ const makePortPair = (): readonly [RpcMessagePort, RpcMessagePort, readonly [Por
   return [makePort(left, right), makePort(right, left), [left, right]]
 }
 
-const makeHarness = (clientPort: RpcMessagePort, serverPort: RpcMessagePort) => {
+const makeHarness = (clientPort: RpcMessagePort, serverPort: RpcMessagePort, maxActiveRequests?: number) => {
   const started = Deferred.makeUnsafe<undefined>()
+  const uninterruptibleStarted = Deferred.makeUnsafe<undefined>()
+  const releaseUninterruptible = Deferred.makeUnsafe<undefined>()
   let waitInterrupted = false
+  let waitCalls = 0
+  let uninterruptibleCalls = 0
   let noopCalls = 0
   const handlers = group.toLayer(
     group.of({
@@ -101,10 +106,21 @@ const makeHarness = (clientPort: RpcMessagePort, serverPort: RpcMessagePort) => 
       Fail: () => Effect.fail(new QueryFailure({ code: 'expected' })),
       Numbers: ({ count }) =>
         Stream.fromIterable(Array.from({ length: count }, (_, index) => index + 1)).pipe(Stream.rechunk(1)),
-      Wait: () =>
-        Effect.andThen(Deferred.succeed(started, undefined), Effect.never).pipe(
+      Wait: () => {
+        waitCalls += 1
+        return Effect.andThen(Deferred.succeed(started, undefined), Effect.never).pipe(
           Effect.onInterrupt(() => Effect.sync(() => (waitInterrupted = true))),
-        ),
+        )
+      },
+      WaitUninterruptible: () => {
+        uninterruptibleCalls += 1
+        return Effect.uninterruptible(
+          Effect.andThen(
+            Deferred.succeed(uninterruptibleStarted, undefined),
+            Effect.as(Deferred.await(releaseUninterruptible), 'finished'),
+          ),
+        )
+      },
       Defect: () => Effect.die(new Error('secret C:\\private\\ledger.db stack trace')),
       Noop: () =>
         Effect.sync(() => {
@@ -112,9 +128,22 @@ const makeHarness = (clientPort: RpcMessagePort, serverPort: RpcMessagePort) => 
         }),
     }),
   )
-  const serverLayer = Layer.provide(RpcServer.layer(group), Layer.merge(serverProtocolLayer(serverPort), handlers))
+  const serverLayer = Layer.provide(
+    RpcServer.layer(group),
+    Layer.merge(serverProtocolLayer(serverPort, maxActiveRequests), handlers),
+  )
   const clientLayer = clientProtocolLayer(clientPort)
-  return { started, waitInterrupted: () => waitInterrupted, noopCalls: () => noopCalls, serverLayer, clientLayer }
+  return {
+    started,
+    uninterruptibleStarted,
+    releaseUninterruptible,
+    waitInterrupted: () => waitInterrupted,
+    waitCalls: () => waitCalls,
+    uninterruptibleCalls: () => uninterruptibleCalls,
+    noopCalls: () => noopCalls,
+    serverLayer,
+    clientLayer,
+  }
 }
 
 describe('Effect RPC port protocol', () => {
@@ -151,6 +180,130 @@ describe('Effect RPC port protocol', () => {
     expect(states[0].sent.every(frame => typeof frame === 'string')).toBe(true)
     expect(JSON.parse(states[0].sent[0] ?? '{}')).toMatchObject({ _tag: 'Request', tag: 'Query' })
     expect(states[0].sent.some(frame => JSON.parse(frame)._tag === 'Ack')).toBe(true)
+  })
+
+  it('closes before dispatching requests above the active-request bound', async () => {
+    const [clientPort, serverPort, states] = makePortPair()
+    const harness = makeHarness(clientPort, serverPort, 2)
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* RpcClient.make(group)
+          const pending = yield* Effect.forkChild(Effect.exit(client.Wait(undefined)))
+          yield* Deferred.await(harness.started)
+          const request = states[0].sent.map(frame => JSON.parse(frame)).find(frame => frame.tag === 'Wait')
+          if (!request) throw new Error('Wait request frame was not sent')
+          yield* clientPort.send(JSON.stringify({ ...request, id: 'second-request' }))
+          yield* clientPort.send(JSON.stringify({ ...request, id: 'third-request' }))
+          const outcome = yield* Fiber.join(pending)
+          return {
+            failed: Exit.isFailure(outcome),
+            requestFrames: states[0].sent.filter(frame => JSON.parse(frame).tag === 'Wait').length,
+            handlerCalls: harness.waitCalls(),
+          }
+        }),
+      ).pipe(Effect.provide(Layer.merge(harness.clientLayer, harness.serverLayer))),
+    )
+
+    expect(result).toEqual({ failed: true, requestFrames: 3, handlerCalls: 2 })
+  })
+
+  it('closes on a duplicate active request id without invoking its handler twice', async () => {
+    const [clientPort, serverPort, states] = makePortPair()
+    const harness = makeHarness(clientPort, serverPort, 2)
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* RpcClient.make(group)
+          const pending = yield* Effect.forkChild(Effect.exit(client.Wait(undefined)))
+          yield* Deferred.await(harness.started)
+          const request = states[0].sent.map(frame => JSON.parse(frame)).find(frame => frame.tag === 'Wait')
+          if (!request) throw new Error('Wait request frame was not sent')
+          yield* clientPort.send(JSON.stringify(request))
+          const outcome = yield* Fiber.join(pending)
+          return { failed: Exit.isFailure(outcome), handlerCalls: harness.waitCalls() }
+        }),
+      ).pipe(Effect.provide(Layer.merge(harness.clientLayer, harness.serverLayer))),
+    )
+
+    expect(result).toEqual({ failed: true, handlerCalls: 1 })
+  })
+
+  it('closes unsupported notifications without invoking a handler', async () => {
+    const [clientPort, serverPort, states] = makePortPair()
+    const harness = makeHarness(clientPort, serverPort, 2)
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* RpcClient.make(group)
+          const pending = yield* Effect.forkChild(Effect.exit(client.Wait(undefined)))
+          yield* Deferred.await(harness.started)
+          yield* clientPort.send(
+            JSON.stringify({
+              _tag: 'Request',
+              id: 'unsupported-notification',
+              tag: 'Noop',
+              payload: null,
+              headers: [],
+              isNotification: true,
+            }),
+          )
+          const outcome = yield* Fiber.join(pending)
+          return {
+            failed: Exit.isFailure(outcome),
+            notificationWasSent: states[0].sent.some(frame => JSON.parse(frame).isNotification === true),
+            waitCalls: harness.waitCalls(),
+            noopCalls: harness.noopCalls(),
+          }
+        }),
+      ).pipe(Effect.provide(Layer.merge(harness.clientLayer, harness.serverLayer))),
+    )
+
+    expect(result).toEqual({ failed: true, notificationWasSent: true, waitCalls: 1, noopCalls: 0 })
+  })
+
+  it('releases an active slot after terminal Exit', async () => {
+    const [clientPort, serverPort] = makePortPair()
+    const harness = makeHarness(clientPort, serverPort, 1)
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* RpcClient.make(group)
+          return [yield* client.Query({ value: 'first' }), yield* client.Query({ value: 'second' })]
+        }),
+      ).pipe(Effect.provide(Layer.merge(harness.clientLayer, harness.serverLayer))),
+    )
+
+    expect(result).toEqual(['answer:first', 'answer:second'])
+  })
+
+  it('keeps a cancelled uninterruptible request admitted until its terminal Exit', async () => {
+    const [clientPort, serverPort, states] = makePortPair()
+    const harness = makeHarness(clientPort, serverPort, 1)
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* RpcClient.make(group)
+          const pending = yield* Effect.forkChild(Effect.exit(client.WaitUninterruptible(undefined)))
+          yield* Deferred.await(harness.uninterruptibleStarted)
+          const request = states[0].sent
+            .map(frame => JSON.parse(frame))
+            .find(frame => frame.tag === 'WaitUninterruptible')
+          if (!request) throw new Error('uninterruptible request frame was not sent')
+          yield* clientPort.send(JSON.stringify({ _tag: 'Interrupt', requestId: request.id }))
+          yield* clientPort.send(
+            JSON.stringify({ _tag: 'Request', id: 'over-limit', tag: 'Noop', payload: null, headers: [] }),
+          )
+          yield* Effect.sleep('10 millis')
+          const noAdmission = harness.noopCalls() === 0 && harness.uninterruptibleCalls() === 1
+          yield* Deferred.succeed(harness.releaseUninterruptible, undefined)
+          const outcome = yield* Fiber.join(pending)
+          return { noAdmission, failedAfterClose: Exit.isFailure(outcome) }
+        }),
+      ).pipe(Effect.provide(Layer.merge(harness.clientLayer, harness.serverLayer))),
+    )
+
+    expect(result).toEqual({ noAdmission: true, failedAfterClose: true })
   })
 
   it('sanitizes defects on the RPC boundary while preserving typed failures', async () => {
@@ -314,5 +467,24 @@ describe('Effect RPC port protocol', () => {
 
     expect(outcome).toBe(true)
     expect(harness.noopCalls()).toBe(0)
+  })
+
+  it.each(['client', 'server'] as const)('releases the %s port when close-listener acquisition fails', async side => {
+    const [clientPort, serverPort, states] = makePortPair()
+    const base = side === 'client' ? clientPort : serverPort
+    const state = states[side === 'client' ? 0 : 1]
+    const port: RpcMessagePort = {
+      ...base,
+      subscribeClose: () => Effect.die(new Error('Close listener unavailable')),
+    }
+    const build =
+      side === 'client'
+        ? Layer.build(clientProtocolLayer(port)).pipe(Effect.asVoid)
+        : Layer.build(serverProtocolLayer(port)).pipe(Effect.asVoid)
+    const result = await Effect.runPromise(Effect.exit(Effect.scoped(build)))
+    expect(Exit.isFailure(result)).toBe(true)
+    expect(state.receive.size).toBe(0)
+    expect(state.closeListeners.size).toBe(0)
+    expect(state.closeCalls).toBe(1)
   })
 })
