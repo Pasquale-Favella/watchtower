@@ -249,13 +249,13 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(c.dispatch('shutdown', [])).resolves.toBeNull()
   })
 
-  it('waits for the scoped scan before closing the ledger', async () => {
+  it('interrupts a manual scan and waits for parser drainage before closing the ledger', async () => {
     const c = open()
     let resolveScan!: (metadata: ScanMetadata) => void
     const scanResult = new Promise<ScanMetadata>(resolve => {
       resolveScan = resolve
     })
-    const scanEffect = Effect.tryPromise({ try: () => scanResult, catch: cause => cause })
+    const scanEffect = Effect.uninterruptible(Effect.tryPromise({ try: () => scanResult, catch: cause => cause }))
     const performScan = vi
       .spyOn(c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> }, 'performScan')
       .mockReturnValue(scanEffect)
@@ -289,12 +289,12 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       perProvider: [],
       aborted: false,
     })
-    await expect(request).resolves.toEqual({ ok: true })
+    await expect(request).resolves.toMatchObject({ ok: false, aborted: true, error: 'scan aborted' })
     await closing
     expect(closed).toBe(true)
   })
 
-  it('emits background scan completion before closing the scan scope', async () => {
+  it('interrupts a background scan and waits for parser drainage before closing the scan scope', async () => {
     const c = open()
     let resolveScan!: (metadata: ScanMetadata) => void
     const scanResult = new Promise<ScanMetadata>(resolve => {
@@ -303,7 +303,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     vi.spyOn(
       c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
       'performScan',
-    ).mockReturnValue(Effect.tryPromise({ try: () => scanResult, catch: cause => cause }))
+    ).mockReturnValue(Effect.uninterruptible(Effect.tryPromise({ try: () => scanResult, catch: cause => cause })))
 
     const worker = c as unknown as { triggerBackgroundScanEffect(): Effect.Effect<void> }
     const activeRuntime = runtime
@@ -330,8 +330,8 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     })
     await closing
 
-    expect(eventsAtClose).toContainEqual(expect.objectContaining({ event: 'store:changed' }))
-    expect(eventsAtClose).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.finish' }))
+    expect(eventsAtClose).not.toContainEqual(expect.objectContaining({ event: 'store:changed' }))
+    expect(eventsAtClose).not.toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.finish' }))
     expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
 
@@ -357,7 +357,9 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   it('rolls back manual scan admission when the start event defects', async () => {
     const c = open()
     const startFailure = new Error('manual scan start event failed')
+    let closing: Promise<void> | undefined
     vi.spyOn(c as unknown as { emitScanStart: (provider?: string) => void }, 'emitScanStart').mockImplementation(() => {
+      closing = c.close()
       throw startFailure
     })
     const performScan = vi.spyOn(
@@ -366,6 +368,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     )
 
     await expect(c.dispatch('scan:start', [])).rejects.toBe(startFailure)
+    await closing
     expect(performScan).not.toHaveBeenCalled()
     expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
@@ -422,6 +425,109 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
     await expect(c.dispatch('scan:active', [])).resolves.toBe(false)
     expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+  })
+
+  it('close interrupts admitted scan work before closing the SQL runtime', async () => {
+    const c = open()
+    let requestSignal: AbortSignal | undefined
+    let scanSignalListener: ((signal: AbortSignal) => void) | undefined
+    const scanResult = new Promise<ScanMetadata>((_resolve, reject) => {
+      // Model parser I/O that only returns when its Effect interruption reaches
+      // the Promise boundary.
+      const listen = (signal: AbortSignal): void => {
+        requestSignal = signal
+        signal.addEventListener('abort', () => reject(new ScanAbortedError({ message: 'scan aborted' })), {
+          once: true,
+        })
+      }
+      scanSignalListener = listen
+    })
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(
+      Effect.tryPromise({
+        try: signal => {
+          scanSignalListener?.(signal)
+          return scanResult
+        },
+        catch: cause => cause,
+      }),
+    )
+
+    const request = c.dispatch('scan:start', [])
+    await vi.waitFor(() => expect(requestSignal).toBeDefined())
+    await c.close()
+
+    expect(requestSignal?.aborted).toBe(true)
+    await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'scan aborted' })
+  })
+
+  it('close waits for an uninterruptible parser Promise to drain before releasing SQL', async () => {
+    const c = open()
+    let finishScan!: (error: Error) => void
+    let scanStarted = false
+    const scanResult = new Promise<ScanMetadata>((_resolve, reject) => {
+      finishScan = reject
+    })
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(
+      Effect.uninterruptible(
+        Effect.tryPromise({
+          try: () => {
+            scanStarted = true
+            return scanResult
+          },
+          catch: cause => cause,
+        }),
+      ),
+    )
+
+    const request = c.dispatch('scan:start', [])
+    await vi.waitFor(() => expect(scanStarted).toBe(true))
+    let closeFinished = false
+    const closing = c.close().then(() => {
+      closeFinished = true
+    })
+    await vi.waitFor(() =>
+      expect((c as unknown as { activeScan: { aborted: boolean } }).activeScan?.aborted).toBe(true),
+    )
+
+    expect(closeFinished).toBe(false)
+    finishScan(new ScanAbortedError({ message: 'scan aborted' }))
+    await closing
+    await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
+    expect(closeFinished).toBe(true)
+  })
+
+  it('close before manual work registration marks the owner aborted without starting work', async () => {
+    const c = open()
+    const activeRuntime = runtime
+    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
+    const performScan = vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    )
+    const runSync = activeRuntime.runSync.bind(activeRuntime)
+    const runSyncSpy = vi.spyOn(activeRuntime, 'runSync')
+    let closeRequest: Promise<void> | undefined
+    let stopAtFork = true
+    runSyncSpy.mockImplementation(effect => {
+      if (stopAtFork) {
+        stopAtFork = false
+        closeRequest = c.close()
+      }
+      return runSync(effect)
+    })
+
+    await expect(c.dispatch('scan:start', [])).resolves.toMatchObject({ ok: false, aborted: true })
+    await closeRequest
+
+    expect(performScan).not.toHaveBeenCalled()
+    expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
   })
 
   it('reports an abort before manual work registration without starting the scan', async () => {

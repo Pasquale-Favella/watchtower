@@ -1,4 +1,5 @@
 import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -46,6 +47,16 @@ interface ActiveScan {
   aborted: boolean
   workFiber: Fiber.Fiber<ScanMetadata, unknown> | null
   fiber: Fiber.Fiber<unknown, unknown> | null
+  readonly fiberReady: Deferred.Deferred<undefined>
+  readonly markFiberReady: () => void
+}
+
+function makeActiveScan(manual: boolean): ActiveScan {
+  const fiberReady = Deferred.makeUnsafe<undefined>()
+  const markFiberReady = (): void => {
+    Deferred.doneUnsafe(fiberReady, Effect.succeed(undefined))
+  }
+  return { manual, aborted: false, workFiber: null, fiber: null, fiberReady, markFiberReady }
 }
 
 type ScanRequirements = ReturnType<typeof scanLedger> extends Effect.Effect<unknown, unknown, infer R> ? R : never
@@ -131,6 +142,10 @@ export class DbWorkerContext {
         if (owner.aborted) return yield* reportFailure(abortedScanError())
         const workFiber = yield* Effect.forkChild(restore(this.performScan(options, emit, owner)))
         owner.workFiber = workFiber
+        // close()/scan:abort may win while the work fiber is being admitted.
+        // Recheck after registration so that a null workFiber observed by the
+        // abort path cannot leave newly admitted scan work running.
+        if (owner.aborted) yield* Fiber.interrupt(workFiber).pipe(Effect.asVoid)
         const scanExit = yield* Fiber.await(workFiber)
         owner.workFiber = null
         if (Exit.isFailure(scanExit)) return yield* reportFailure(Cause.squash(scanExit.cause))
@@ -211,6 +226,20 @@ export class DbWorkerContext {
     }
   }
 
+  /** Interrupt scan work using the same ownership rule for manual and
+   * background scans. A missing manual work fiber means admission has not
+   * completed yet; manualScanEffect observes `aborted` before it starts work. */
+  private interruptActiveScanEffect(waitForRegistration = false): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const owner = this.activeScan
+      if (!owner) return
+      owner.aborted = true
+      if (waitForRegistration && !owner.fiber) yield* Deferred.await(owner.fiberReady)
+      const fiber = owner.workFiber ?? (owner.manual ? null : owner.fiber)
+      if (fiber) yield* Fiber.interrupt(fiber).pipe(Effect.asVoid)
+    })
+  }
+
   /** Fires on the configured cadence (ADR 0004). The scan fiber owns both the
    * work and its completion events, so shutdown joins the whole lifecycle. */
   private triggerBackgroundScanEffect(): Effect.Effect<void, never, ScanRequirements> {
@@ -218,7 +247,7 @@ export class DbWorkerContext {
       Effect.suspend(() => {
         if (this.closed || this.activeScan !== null) return Effect.void
 
-        const owner: ActiveScan = { manual: false, aborted: false, workFiber: null, fiber: null }
+        const owner = makeActiveScan(false)
         const emit = (progress: ScanProgress): void =>
           this.emit({ event: 'scan:progress', manual: owner.manual, progress })
         const complete = Effect.uninterruptibleMask(restore =>
@@ -255,10 +284,12 @@ export class DbWorkerContext {
           this.emitScanStart()
           const fiber = yield* Effect.forkIn(complete, this.scanScope, { startImmediately: false })
           owner.fiber = fiber
+          owner.markFiberReady()
         })
         return admit.pipe(
           Effect.onExit(exit =>
             Effect.sync(() => {
+              owner.markFiberReady()
               if (Exit.isFailure(exit) && owner.fiber === null && this.activeScan === owner) {
                 this.activeScan = null
               }
@@ -384,12 +415,13 @@ export class DbWorkerContext {
         // button for it — hence the explicit flag instead of an error string.
         // Coalescing retains ownership through parser Promise drainage.
         if (this.activeScan !== null) return { ok: false, alreadyRunning: true }
-        const owner: ActiveScan = { manual: true, aborted: false, workFiber: null, fiber: null }
+        const owner = makeActiveScan(true)
         this.activeScan = owner
         try {
           this.emitScanStart(options?.provider)
         } catch (error) {
           if (this.activeScan === owner) this.activeScan = null
+          owner.markFiberReady()
           throw error
         }
         let fiber: Fiber.Fiber<unknown, unknown>
@@ -402,10 +434,15 @@ export class DbWorkerContext {
           // boundary can await the owned fiber. If registration fails, roll
           // back the owner here and leave the failure at the Promise edge.
           if (this.activeScan === owner) this.activeScan = null
+          owner.markFiberReady()
           throw error
         }
         owner.fiber = fiber
-        return this.runtime.runPromise(Fiber.join(fiber))
+        try {
+          return this.runtime.runPromise(Fiber.join(fiber))
+        } finally {
+          owner.markFiberReady()
+        }
       }
 
       /** Whether a scan (manual or background) is in flight — the worker owns
@@ -417,10 +454,7 @@ export class DbWorkerContext {
       case 'scan:abort': {
         // Set the cooperative stop state before interruption. The scan owner
         // remains active until the underlying parser Promise has drained.
-        const owner = this.activeScan
-        if (owner) owner.aborted = true
-        const fiber = owner?.workFiber ?? (owner?.manual ? null : owner?.fiber)
-        if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
+        await Effect.runPromise(this.interruptActiveScanEffect())
         return null
       }
 
@@ -535,10 +569,19 @@ export class DbWorkerContext {
     const scanScope = this.scanScope
     const currentScan = (): Fiber.Fiber<unknown, unknown> | null => activeScan?.fiber ?? null
     const disposeRuntime = this.runtime.disposeEffect
-    const shutdown = Effect.gen(function* () {
+    const shutdown = Effect.gen({ self: this }, function* () {
       yield* Scope.close(backgroundScope, Exit.void)
+      // Setting the abort flag alone does not wake an Effect awaiting scan
+      // work. Interrupt the owned work fiber and wait for its finalizers before
+      // closing the scan scope or releasing the SQL runtime.
+      yield* this.interruptActiveScanEffect(true)
       const scan = yield* Effect.sync(currentScan)
-      if (scan) yield* Fiber.join(scan).pipe(Effect.catch(() => Effect.void))
+      if (scan) yield* Fiber.await(scan).pipe(Effect.asVoid)
+      if (activeScan) {
+        yield* Effect.sync(() => {
+          if (this.activeScan === activeScan) this.activeScan = null
+        })
+      }
       yield* Scope.close(scanScope, Exit.void)
       // Release the SQL client only after background work and parser callbacks drain.
       yield* disposeRuntime
