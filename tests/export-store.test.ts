@@ -1,10 +1,10 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
 import {
   createExportAtoms,
   type ExportMachine,
@@ -13,13 +13,19 @@ import {
   selectExportMessage,
   transitionExport,
 } from '../src/renderer/src/features/settings/export-atoms.js'
-import { legacyRendererApi, RendererApi, RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
 import type { ExportResult } from '../src/shared/schemas/export.js'
+import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 
-function makeHarness(exportData: RendererApi['Service']['exportData']) {
+function makeHarness(exportData: NativeRpcCapabilities['exportData']) {
   const runtime = Atom.context()
-  const layer = Layer.succeed(RendererApi, { ...legacyRendererApi, exportData })
-  const atoms = createExportAtoms(runtime, layer)
+  const client = makeSettingsRpcTestClient(
+    runtime,
+    async () => {
+      throw new Error('Unexpected worker operation in an export test')
+    },
+    { exportData },
+  )
+  const atoms = createExportAtoms(client)
   const registry = AtomRegistry.make()
   return { atoms, registry }
 }
@@ -138,16 +144,14 @@ describe('native export atoms', () => {
   })
 
   it('captures the selected format and maps a typed failure to a safe message', async () => {
-    const exportData = vi.fn((format: 'csv' | 'json') => {
-      void format
-      return Effect.fail(new RendererApiError({ operation: 'export', message: 'Unable to reach the application.' }))
-    })
+    const exportData = vi.fn(() => Effect.fail(new Error('unavailable')))
     const { atoms, registry } = makeHarness(exportData)
     registry.set(atoms.selectFormatAtom, 'json')
 
     await dispatch(registry, atoms.exportNowAtom, undefined)
 
-    expect(exportData).toHaveBeenCalledWith('json')
+    expect(exportData).toHaveBeenCalledWith({ format: 'json' })
+    expect(exportData).toHaveBeenCalledTimes(1)
     expect(registry.get(atoms.machineAtom)).toEqual({
       state: 'failed',
       format: 'json',

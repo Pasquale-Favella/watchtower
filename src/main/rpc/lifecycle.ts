@@ -53,16 +53,20 @@ export interface LifecycleHubService {
     (
       role: 'app',
       categories?: readonly LifecycleAppEventCategory[],
+      snapshot?: 'versions' | 'state',
     ): Stream.Stream<AppLifecycleFrame, LifecycleRpcError>
     (role: 'panel'): Stream.Stream<PanelLifecycleFrame, LifecycleRpcError>
     (role: 'beacon'): Stream.Stream<BeaconLifecycleFrame, LifecycleRpcError>
     (
       role: 'app' | 'panel' | 'beacon',
       categories?: readonly LifecycleAppEventCategory[],
+      snapshot?: 'versions' | 'state',
     ): Stream.Stream<AppLifecycleFrame | PanelLifecycleFrame | BeaconLifecycleFrame, LifecycleRpcError>
   }
   readonly publish: (event: LifecyclePublishEvent) => Effect.Effect<void>
   readonly currentConfigRevision: Effect.Effect<number>
+  readonly currentLedgerGeneration: Effect.Effect<number>
+  readonly workerReplaced: Effect.Effect<void>
   /** Diagnostic count used by lifecycle integration tests. */
   readonly subscriberCount: Effect.Effect<number>
 }
@@ -359,6 +363,7 @@ const makeLifecycleHub = Effect.fnUntraced(function* <R>(
     revisions: { scanStatus: 0, scanActivity: 0, currency: 0, updater: 0, harnesses: 0 },
   }
   const subscribers = new Set<Subscriber>()
+  let workerGeneration = 0
 
   const snapshot = (role: Subscriber['role'], categories: ReadonlySet<LifecycleAppEventCategory>) =>
     Effect.gen(function* () {
@@ -426,31 +431,42 @@ const makeLifecycleHub = Effect.fnUntraced(function* <R>(
   function events(
     role: 'app',
     categories?: readonly LifecycleAppEventCategory[],
+    snapshot?: 'versions' | 'state',
   ): Stream.Stream<AppLifecycleFrame, LifecycleRpcError>
   function events(role: 'panel'): Stream.Stream<PanelLifecycleFrame, LifecycleRpcError>
   function events(role: 'beacon'): Stream.Stream<BeaconLifecycleFrame, LifecycleRpcError>
   function events(
     role: 'app' | 'panel' | 'beacon',
     categories?: readonly LifecycleAppEventCategory[],
+    snapshot?: 'versions' | 'state',
   ): Stream.Stream<AppLifecycleFrame | PanelLifecycleFrame | BeaconLifecycleFrame, LifecycleRpcError>
   function events(
     role: Subscriber['role'],
     categories?: readonly LifecycleAppEventCategory[],
+    snapshotMode: 'versions' | 'state' = 'state',
   ): Stream.Stream<AppLifecycleFrame | PanelLifecycleFrame | BeaconLifecycleFrame, LifecycleRpcError> {
     const selectedCategories = new Set(categories ?? ALL_CATEGORIES)
+    const snapshotCategories =
+      role === 'app' && snapshotMode === 'versions' ? new Set<LifecycleAppEventCategory>() : selectedCategories
     return Stream.unwrap(
       Effect.gen(function* () {
         const queue = yield* Queue.bounded<LifecycleEnvelope, LifecycleRpcError>(capacity)
         const subscriber: Subscriber = { role, categories: selectedCategories, queue }
-        subscribers.add(subscriber)
-        yield* Effect.acquireRelease(Effect.void, () =>
+        const generation = yield* Effect.acquireRelease(
           Effect.sync(() => {
-            subscribers.delete(subscriber)
-            Queue.shutdownUnsafe(queue)
+            subscribers.add(subscriber)
+            return workerGeneration
           }),
+          () =>
+            Effect.sync(() => {
+              subscribers.delete(subscriber)
+              Queue.shutdownUnsafe(queue)
+            }),
         )
-        const current = yield* snapshot(role, selectedCategories)
-        const frame = buildFrame(current, role, selectedCategories)
+        const current = yield* snapshot(role, snapshotCategories)
+        if (generation !== workerGeneration)
+          return yield* Effect.fail(new LifecycleRpcError({ code: 'resnapshot', message: 'Lifecycle state changed' }))
+        const frame = buildFrame(current, role, snapshotCategories)
         const stream = Stream.fromQueue(queue).pipe(
           Stream.filter(
             envelope => envelope.sequence > current.sequence && accepts(role, envelope.event, selectedCategories),
@@ -489,6 +505,22 @@ const makeLifecycleHub = Effect.fnUntraced(function* <R>(
     events,
     publish,
     currentConfigRevision: Effect.sync(() => state.configRevision),
+    currentLedgerGeneration: Effect.sync(() => state.ledgerGeneration),
+    workerReplaced: Effect.gen(function* () {
+      workerGeneration++
+      state.sequence++
+      state.ledgerGeneration++
+      for (const field of Object.keys(state.revisions) as SnapshotField[]) state.revisions[field]++
+      const previousSubscribers = Array.from(subscribers)
+      subscribers.clear()
+      for (const subscriber of previousSubscribers) {
+        yield* Queue.clear(subscriber.queue).pipe(Effect.ignore)
+        Queue.failCauseUnsafe(
+          subscriber.queue,
+          Cause.fail(new LifecycleRpcError({ code: 'resnapshot', message: 'Lifecycle state changed' })),
+        )
+      }
+    }),
     subscriberCount: Effect.sync(() => subscribers.size),
   }
 })
@@ -500,7 +532,7 @@ export const lifecycleHandlers = LifecycleRpcGroup.toLayer(
   Effect.gen(function* () {
     const hub = yield* LifecycleHub
     return {
-      'app:events': ({ categories }) => hub.events('app', categories),
+      'app:events': ({ categories, snapshot }) => hub.events('app', categories, snapshot),
       'panel:events': () => hub.events('panel'),
       'beacon:events': () => hub.events('beacon'),
     }

@@ -920,6 +920,35 @@ describe('DbWorkerClient request/response correlation', () => {
     await client.terminate()
   })
 
+  it('notifies replacement readiness once without replaying a possibly committed write', async () => {
+    let committed = 0
+    const { client, fakes } = makeClient((fake, request) => {
+      if (request.op === 'models:addAlias') committed += 1
+      else fake.emit('message', { id: request.id, ok: true, data: committed })
+    })
+    const replaced = vi.fn()
+    const removed = vi.fn()
+    client.onReplaced(replaced)
+    client.onReplaced(removed)()
+    fakes[0]!.emit('message', { event: 'ready' })
+    await client.ready
+    expect(replaced).not.toHaveBeenCalled()
+    const write = client.request('models:addAlias', 'raw', 'known')
+    await vi.waitFor(() => expect(committed).toBe(1))
+    fakes[0]!.emit('exit', 1)
+    await expect(write).rejects.toThrow('exited unexpectedly')
+    await vi.waitFor(() => expect(fakes).toHaveLength(2), { timeout: 5000 })
+    expect(replaced).not.toHaveBeenCalled()
+    fakes[1]!.emit('message', { event: 'ready' })
+    fakes[1]!.emit('message', { event: 'ready' })
+    fakes[0]!.emit('message', { event: 'ready' })
+    expect(replaced).toHaveBeenCalledTimes(1)
+    expect(removed).not.toHaveBeenCalled()
+    await expect(client.request('currency:get')).resolves.toBe(1)
+    expect(committed).toBe(1)
+    await client.terminate()
+  })
+
   it('never respawns a worker that failed to boot and rejects with its error', async () => {
     const spawn = vi.fn()
     const { client, fakes } = makeClient(echoResponder, () => {

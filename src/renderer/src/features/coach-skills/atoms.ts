@@ -1,14 +1,18 @@
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Predicate from 'effect/Predicate'
+import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import type { RpcClientError } from 'effect/rpc/RpcClientError'
 
-import { createRemoteQuerySlot } from '@/app/atoms/remote-query'
+import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
 import { overviewScopeAtom } from '@/app/atoms/scope'
 import { preferencesAtom } from '@/features/settings/preferences-atoms'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 import { RendererApi } from '@/shared/lib/renderer-api'
 
+import type { AnalyticsRpcError } from '../../../../shared/rpc/errors.js'
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
@@ -78,6 +82,18 @@ export interface CoachDetectionRequest {
   readonly spread: number
 }
 
+type CoachDetectionQuery = (
+  request: CoachDetectionRequest,
+  selectionId: string,
+) => Atom.Atom<AsyncResult.AsyncResult<SkillsPayload | null, AnalyticsRpcError | RpcClientError>>
+
+const applicationCoachDetectionQuery: CoachDetectionQuery = (request, selectionId) =>
+  ApplicationClient.query(
+    'skills:view',
+    { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
+    { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+  )
+
 const initialCoachState = (): CoachState => ({
   hydrated: false,
   harnesses: [],
@@ -137,23 +153,16 @@ const emptyAssistant = (state: CoachState): ChatMessage => ({
 export const createCoachAtoms = (
   runtime: Atom.RegistryRuntimeFactory,
   apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
+  detectionQuery: CoachDetectionQuery = applicationCoachDetectionQuery,
 ) => {
   const api = runtime(apiLayer)
   const coachStateAtom = Atom.keepAlive(Atom.make(initialCoachState()))
-  const detection = createRemoteQuerySlot<CoachDetectionRequest, SkillsPayload | null, unknown, RendererApi, never>({
-    runtime: api,
-    key: request => `${JSON.stringify(request.scope)}:${request.frequency}:${request.spread}`,
-    fetch: request =>
-      Effect.gen(function* () {
-        const rendererApi = yield* RendererApi
-        const data = yield* rendererApi.getSkills(request.scope, {
-          frequency: request.frequency,
-          spread: request.spread,
-        })
-        return data
-      }),
-    reactivityKeys: ['ledger', 'pricing'],
-  })
+  const detection = createRpcQuerySlot<CoachDetectionRequest, SkillsPayload | null, AnalyticsRpcError | RpcClientError>(
+    {
+      key: request => `${JSON.stringify(request.scope)}:${request.frequency}:${request.spread}`,
+      query: detectionQuery,
+    },
+  )
 
   const loadHarnessesAtom = api.fn<undefined>()(
     (_, get) =>

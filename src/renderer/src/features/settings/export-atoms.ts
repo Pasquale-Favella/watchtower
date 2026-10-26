@@ -1,9 +1,7 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 
-import { runtime as sharedRuntime } from '@/app/renderer-runtime'
-import { RendererApi } from '@/shared/lib/renderer-api'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 
 import type { ExportResult } from '../../../../shared/schemas/export.js'
 
@@ -58,11 +56,9 @@ export function transitionExport(machine: ExportMachine, event: ExportEvent): Ex
   }
 }
 
-export const createExportAtoms = (
-  runtime: Atom.RegistryRuntimeFactory,
-  apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
-) => {
-  const api = runtime(apiLayer)
+type ExportClient = Pick<typeof ApplicationClient, 'runtime' | 'mutation'>
+
+export const createExportAtoms = (client: ExportClient = ApplicationClient) => {
   const machineAtom = Atom.keepAlive(Atom.make<ExportMachine>({ state: 'idle', format: 'csv' }))
   let nextRequestId = 0
 
@@ -82,7 +78,8 @@ export const createExportAtoms = (
     },
   )
 
-  const exportNowAtom = api.fn<undefined>()(
+  const exportMutation = client.mutation('export')
+  const exportNowAtom = client.runtime.fn<undefined>()(
     (_, get) =>
       Effect.gen(function* () {
         const requestId = ++nextRequestId
@@ -90,13 +87,16 @@ export const createExportAtoms = (
         const machine = get.registry.get(machineAtom)
         if (machine.state !== 'exporting' || machine.requestId !== requestId) return
 
-        const rendererApi = yield* RendererApi
-        const result = yield* Effect.result(rendererApi.exportData(machine.format))
+        const result = yield* Effect.result(get.setResult(exportMutation, { payload: { format: machine.format } }))
         send(
           get,
           result._tag === 'Success'
             ? { type: 'completed', requestId, outcome: { ok: true, data: result.success } }
-            : { type: 'completed', requestId, outcome: { ok: false, message: result.failure.message } },
+            : {
+                type: 'completed',
+                requestId,
+                outcome: { ok: false, message: 'Unable to reach the application.' },
+              },
         )
       }),
     { concurrent: true },
@@ -105,7 +105,7 @@ export const createExportAtoms = (
   return { machineAtom, selectFormatAtom, exportNowAtom }
 }
 
-const defaultExportAtoms = createExportAtoms(sharedRuntime)
+const defaultExportAtoms = createExportAtoms()
 
 export const {
   machineAtom: exportMachineAtom,

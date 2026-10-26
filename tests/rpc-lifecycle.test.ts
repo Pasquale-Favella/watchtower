@@ -7,15 +7,24 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { configInvalidationRevisionAtom } from '../src/renderer/src/app/atoms/config-change.js'
 import {
+  appliedLedgerGenerationAtom,
+  configInvalidationRevisionAtom,
+} from '../src/renderer/src/app/atoms/config-change.js'
+import {
+  APP_LIFECYCLE_CATEGORIES,
   type AppLifecycleReadiness,
   applyLifecycleFrame,
   createRpcLifecycleAtom,
+  dispatchAppLifecycleEvent,
   type LifecycleCursor,
 } from '../src/renderer/src/app/atoms/rpc-lifecycle.js'
+import { initialScanState, scanHydrationStateAtom, scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
+import { coachStateAtom } from '../src/renderer/src/features/coach-skills/atoms.js'
+import { activeCurrencyAtom } from '../src/renderer/src/features/settings/atoms.js'
+import { updatesMachineAtom } from '../src/renderer/src/features/settings/updates-atoms.js'
 import type { AppLifecycleFrame } from '../src/shared/rpc/lifecycle.js'
 import { RendererConnection, type RendererConnectionState } from '../src/shared/rpc/reconnecting-protocol.js'
 
@@ -135,6 +144,8 @@ function makeLifecycleAtom(
     readinessAtom,
     invalidate: callbacks.invalidate,
     resetLedger: callbacks.resetLedger,
+    onSnapshot: () => Effect.void as never,
+    onEvent: () => Effect.void as never,
   })
   return { ...created, readinessAtom }
 }
@@ -157,8 +168,114 @@ const viWaitFor = async (assertion: () => void): Promise<void> => {
 }
 
 describe('root RPC lifecycle subscription', () => {
+  it('requests every app category with a version-only first snapshot', () => {
+    expect(APP_LIFECYCLE_CATEGORIES).toEqual(['scan', 'store', 'reset', 'config', 'currency', 'updates', 'harnesses'])
+    expect(APP_LIFECYCLE_CATEGORIES).not.toContain('coach')
+  })
+
+  it('dispatches all app lifecycle categories through their single native owner', async () => {
+    const registry = AtomRegistry.make()
+    registry.set(scanStateAtom, initialScanState())
+    registry.set(updatesMachineAtom, { state: 'uninitialized' })
+    const metadata = {
+      scanId: 'scan-2',
+      startedAt: '2026-01-01T00:00:00Z',
+      completedAt: '2026-01-01T00:00:01Z',
+      portedFiles: 1,
+      unchangedFiles: 0,
+      failedFiles: 0,
+      perProvider: [{ provider: 'codex', ported: 1, unchanged: 0, failed: 0, unparsed: 2 }],
+      aborted: false,
+    }
+    const harness = {
+      instanceId: 'codex',
+      kind: 'codex' as const,
+      displayName: 'Codex',
+      status: 'ready' as const,
+      auth: { status: 'configured' as const },
+    }
+    const applyStoreChanged = vi.fn(() => Effect.void)
+    const events: AppLifecycleFrame[] = [
+      {
+        _tag: 'Event',
+        envelope: {
+          epoch: 'e',
+          sequence: 1,
+          ledgerGeneration: 0,
+          configRevision: 0,
+          event: { _tag: 'ScanProgress', progress: { stage: 'parse', provider: 'codex', processed: 3 } },
+        },
+      },
+      {
+        _tag: 'Event',
+        envelope: {
+          epoch: 'e',
+          sequence: 2,
+          ledgerGeneration: 0,
+          configRevision: 0,
+          event: { _tag: 'StoreChanged', metadata },
+        },
+      },
+      {
+        _tag: 'Event',
+        envelope: {
+          epoch: 'e',
+          sequence: 3,
+          ledgerGeneration: 0,
+          configRevision: 4,
+          event: { _tag: 'ConfigChanged', configRevision: 4 },
+        },
+      },
+      {
+        _tag: 'Event',
+        envelope: {
+          epoch: 'e',
+          sequence: 4,
+          ledgerGeneration: 0,
+          configRevision: 4,
+          event: { _tag: 'CurrencyChanged', currency },
+        },
+      },
+      {
+        _tag: 'Event',
+        envelope: {
+          epoch: 'e',
+          sequence: 5,
+          ledgerGeneration: 0,
+          configRevision: 4,
+          event: { _tag: 'UpdateChanged', status: { ...updater, revision: 2 } },
+        },
+      },
+      {
+        _tag: 'Event',
+        envelope: {
+          epoch: 'e',
+          sequence: 6,
+          ledgerGeneration: 0,
+          configRevision: 4,
+          event: { _tag: 'HarnessesChanged', rows: [harness] },
+        },
+      },
+    ]
+    for (const frame of events) {
+      if (frame._tag === 'Event')
+        await Effect.runPromise(dispatchAppLifecycleEvent(registry, frame.envelope.event, applyStoreChanged))
+    }
+    expect(registry.get(scanStateAtom)).toMatchObject({
+      scanning: true,
+      progress: [{ provider: 'codex', processed: 3 }],
+    })
+    expect(applyStoreChanged).toHaveBeenCalledExactlyOnceWith(metadata)
+    expect(registry.get(configInvalidationRevisionAtom)).toBe(0)
+    expect(registry.get(activeCurrencyAtom)).toEqual(currency)
+    expect(registry.get(updatesMachineAtom)).toMatchObject({ state: 'synced', status: { revision: 2 } })
+    expect(registry.get(coachStateAtom).harnesses).toEqual([harness])
+    registry.dispose()
+  })
+
   it('invalidates before publishing authoritative revisions and ignores stale frames', async () => {
     const registry = AtomRegistry.make()
+    registry.set(appliedLedgerGenerationAtom, 9)
     const readiness = Atom.keepAlive(Atom.make<AppLifecycleReadiness>({ state: 'inactive', message: null }))
     let invalidations = 0
     let resets = 0
@@ -182,6 +299,7 @@ describe('root RPC lifecycle subscription', () => {
       Effect.runPromise(Effect.provide(applyLifecycleFrame(cursor, callbacks, frame), Reactivity.layer))
 
     await runFrame(snapshot(5, 4))
+    await runFrame(snapshot(4, 99))
     await runFrame(configEvent(6, 5))
     await runFrame(configEvent(6, 99))
     await runFrame(resetEvent(7, 1))
@@ -192,7 +310,33 @@ describe('root RPC lifecycle subscription', () => {
     expect(resetBeforeInvalidation).toBe(true)
     expect(resets).toBe(2)
     expect(registry.get(configInvalidationRevisionAtom)).toBe(2)
+    expect(registry.get(appliedLedgerGenerationAtom)).toBe(0)
     expect(cursor).toEqual({ epoch: 'epoch-b', generation: 0, sequence: 0 })
+    registry.dispose()
+  })
+
+  it('resets scan hydration before invalidating a replacement ledger snapshot', async () => {
+    const registry = AtomRegistry.make()
+    const readinessAtom = Atom.keepAlive(Atom.make<AppLifecycleReadiness>({ state: 'inactive', message: null }))
+    registry.set(scanStateAtom, { ...initialScanState(), hydrated: true, detectedProviders: ['old'] })
+    registry.set(scanHydrationStateAtom, 'scanned')
+    const cursor: LifecycleCursor = { epoch: undefined, generation: undefined, sequence: -1 }
+    const callbacks = {
+      registry,
+      readinessAtom,
+      invalidate: () => Effect.void,
+      resetLedger: () => undefined,
+    }
+    const runFrame = (frame: AppLifecycleFrame) =>
+      Effect.runPromise(Effect.provide(applyLifecycleFrame(cursor, callbacks, frame), Reactivity.layer))
+
+    await runFrame(snapshot(5, 1))
+    expect(registry.get(scanHydrationStateAtom)).toBe('scanned')
+    registry.set(scanStateAtom, { ...registry.get(scanStateAtom), hydrated: true, detectedProviders: ['old'] })
+    await runFrame(snapshot(0, 2, 'epoch-b', 0))
+
+    expect(registry.get(scanHydrationStateAtom)).toBe('pending')
+    expect(registry.get(scanStateAtom)).toMatchObject({ hydrated: false, detectedProviders: [] })
     registry.dispose()
   })
 
@@ -265,6 +409,60 @@ describe('root RPC lifecycle subscription', () => {
       unmount()
       registry.dispose()
     }
+    expect(eventSource.active.size).toBe(0)
+  })
+
+  it('cancels scoped snapshot hydration when a subscription ends without blocking snapshot handling', async () => {
+    let subscription = 0
+    const eventSource = makeEventSource(offer => {
+      subscription++
+      offer(snapshot(0, subscription))
+    })
+    const connection = await makeConnection({ _tag: 'Connected', generation: 1 })
+    const readinessAtom = Atom.keepAlive(Atom.make<AppLifecycleReadiness>({ state: 'inactive', message: null }))
+    let snapshots = 0
+    let started = 0
+    let finalized = 0
+    const lifecycle = createRpcLifecycleAtom({
+      runtime: Atom.context(),
+      layer: connection.layer,
+      events: () => eventSource.events(),
+      readinessAtom,
+      invalidate: () => Effect.void,
+      onSnapshot: () =>
+        Effect.gen(function* () {
+          snapshots++
+          yield* Effect.forkScoped(
+            Effect.acquireRelease(
+              Effect.sync(() => started++),
+              () => Effect.sync(() => finalized++),
+            ).pipe(Effect.andThen(Effect.never)),
+          )
+        }) as never,
+      onEvent: () => Effect.void as never,
+    })
+    const registry = AtomRegistry.make()
+    const unmount = registry.mount(lifecycle.atom)
+    try {
+      await waitForReadiness(registry, readinessAtom, 'ready')
+      await viWaitFor(() => expect(started).toBe(1))
+      expect(snapshots).toBe(1)
+
+      for (const subscriber of eventSource.active) subscriber.fail()
+      await viWaitFor(() => expect(finalized).toBe(1))
+      await waitForReadiness(registry, readinessAtom, 'failed')
+
+      await connection.set({ _tag: 'Disconnected', reason: 'reconnect' })
+      await connection.set({ _tag: 'Connected', generation: 2 })
+      await waitForReadiness(registry, readinessAtom, 'ready')
+      expect(snapshots).toBe(2)
+      expect(subscription).toBe(2)
+      expect(finalized).toBe(1)
+    } finally {
+      unmount()
+      registry.dispose()
+    }
+    expect(finalized).toBe(2)
     expect(eventSource.active.size).toBe(0)
   })
 })

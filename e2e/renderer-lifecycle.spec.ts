@@ -7,8 +7,10 @@ import { build } from 'vite'
 test('development StrictMode shares bootstrap ownership and disposes the window registry', async () => {
   const directory = mkdtempSync(join(resolve('.'), '.watchtower-lifecycle-'))
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined
+  let page: Page | undefined
   const mainOutput: string[] = []
   const rendererOutput: string[] = []
+  let readFixtureDiagnostics: () => Promise<string> = async () => '(fixture unavailable)'
   const observedPages = new WeakSet<object>()
   const observePage = (page: Page) => {
     if (observedPages.has(page)) return
@@ -49,13 +51,13 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
     child.stderr?.on('data', chunk => mainOutput.push(String(chunk)))
     child.on('exit', (code, signal) => mainOutput.push(`Electron process exited: code=${code}, signal=${signal}\n`))
     app.on('window', observePage)
-    const page = await app.firstWindow()
-    observePage(page)
+    const activePage = await app.firstWindow()
+    page = activePage
+    observePage(activePage)
     const errors: string[] = []
-    page.on('pageerror', error => errors.push(error.message))
-    await expect(page.locator('[data-ready="true"]')).toHaveText('$10.00')
+    activePage.on('pageerror', error => errors.push(error.message))
     const state = () =>
-      page.evaluate(() => {
+      activePage.evaluate(() => {
         const probe = (
           globalThis as typeof globalThis & {
             lifecycleProbe: {
@@ -63,7 +65,8 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
                 effectSetups: number
                 effectCleanups: number
                 scanCalls: number
-                currencyReads: number
+                nativeReads: Record<string, number>
+                unexpectedRequests: string[]
                 attaches: number
                 detaches: number
                 rpcConnects: number
@@ -77,27 +80,55 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
         ).lifecycleProbe
         return { ...probe.counts, listeners: probe.listeners(), nodes: probe.nodes() }
       })
-    await expect.poll(async () => (await state()).currencyReads).toBe(1)
+    readFixtureDiagnostics = async () => {
+      if (!page) return '(page unavailable)'
+      try {
+        return JSON.stringify(
+          await page.evaluate(() =>
+            (
+              globalThis as typeof globalThis & {
+                lifecycleProbe: { diagnostics(): unknown }
+              }
+            ).lifecycleProbe.diagnostics(),
+          ),
+          null,
+          2,
+        )
+      } catch (error) {
+        return `diagnostics unavailable: ${error instanceof Error ? error.message : String(error)}`
+      }
+    }
+    await expect(activePage.locator('[data-ready="true"]')).toHaveText('$10.00', { timeout: 10_000 })
+    await expect.poll(async () => (await state()).nativeReads['currency:get']).toBe(1)
     expect(await state()).toMatchObject({
       effectSetups: 2,
       effectCleanups: 1,
       scanCalls: 1,
-      attaches: 9,
-      listeners: 9,
+      nativeReads: expect.objectContaining({
+        'scan:start': 1,
+        'scan:active': 1,
+        'store:status': 1,
+        'currency:get': 1,
+        'updates:status': 1,
+        'coach:harnesses': 1,
+      }),
+      unexpectedRequests: [],
+      attaches: 2,
+      listeners: 2,
       rpcConnects: 1,
       lifecycleSubscriptions: 1,
       activeLifecycleSubscriptions: 1,
     })
-    await page.evaluate(() =>
+    await activePage.evaluate(() =>
       (
         globalThis as typeof globalThis & {
           lifecycleProbe: { setCurrency(currency: { code: string; symbol: string; rate: number }): void }
         }
       ).lifecycleProbe.setCurrency({ code: 'EUR', symbol: '€', rate: 0.9 }),
     )
-    await expect(page.locator('[data-ready="true"]')).toHaveText('€9.00')
-    expect((await state()).currencyReads).toBe(1)
-    await page.evaluate(() =>
+    await expect(activePage.locator('[data-ready="true"]')).toHaveText('€9.00')
+    expect((await state()).nativeReads['currency:get']).toBe(1)
+    await activePage.evaluate(() =>
       (
         globalThis as typeof globalThis & {
           lifecycleProbe: { dispose(): void }
@@ -107,13 +138,15 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
     await expect.poll(async () => (await state()).nodes).toBe(0)
     expect(await state()).toMatchObject({
       effectCleanups: 2,
-      detaches: 9,
+      detaches: 2,
       listeners: 0,
       activeLifecycleSubscriptions: 0,
     })
     expect(errors).toEqual([])
   } catch (error) {
-    throw new Error(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}${diagnosticDetails()}`)
+    throw new Error(
+      `${error instanceof Error ? (error.stack ?? error.message) : String(error)}${diagnosticDetails()}\nFixture state:\n${await readFixtureDiagnostics()}`,
+    )
   } finally {
     await app?.close()
     rmSync(directory, { recursive: true, force: true })

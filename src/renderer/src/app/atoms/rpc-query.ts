@@ -13,7 +13,7 @@ interface Selection<Request, Value, Error> {
 
 export interface RpcQuerySlotOptions<Request, Value, Error> {
   readonly key: (request: Request) => string
-  /** Must return an AtomRpc.query atom, preserving the RPC boundary's typed result. */
+  /** Returns a native RPC result atom, normally from AtomRpc.query. */
   readonly query: (request: Request, selectionId: string) => Atom.Atom<AsyncResult.AsyncResult<Value, Error>>
 }
 

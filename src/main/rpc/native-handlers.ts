@@ -20,28 +20,28 @@ import type { AppVersion, UpdateStatus } from '../../shared/schemas/updates.js'
 
 /** Explicit main-process capabilities. Implementations stay with the owners of
  * dialogs, updater state, credentials, the ledger, and harness processes. */
-export interface NativeRpcCapabilities {
-  readonly startScan: (options: { readonly provider?: string }) => Effect.Effect<ScanResult, unknown>
-  readonly isScanActive: () => Effect.Effect<boolean, unknown>
-  readonly getUpdateStatus: () => Effect.Effect<UpdateStatus, unknown>
-  readonly checkForUpdates: () => Effect.Effect<UpdateStatus, unknown>
-  readonly downloadUpdate: () => Effect.Effect<UpdateStatus, unknown>
-  readonly installUpdate: () => Effect.Effect<UpdateStatus, unknown>
+export interface NativeRpcCapabilities<R = never> {
+  readonly startScan: (options: { readonly provider?: string }) => Effect.Effect<ScanResult, unknown, R>
+  readonly isScanActive: () => Effect.Effect<boolean, unknown, R>
+  readonly getUpdateStatus: () => Effect.Effect<UpdateStatus, unknown, R>
+  readonly checkForUpdates: () => Effect.Effect<UpdateStatus, unknown, R>
+  readonly downloadUpdate: () => Effect.Effect<UpdateStatus, unknown, R>
+  readonly installUpdate: () => Effect.Effect<UpdateStatus, unknown, R>
   readonly exportData: (request: {
     readonly format: 'csv' | 'json'
     readonly destination?: string
-  }) => Effect.Effect<ExportResult, unknown>
-  readonly getLedgerMcpStatus: () => Effect.Effect<LedgerMcpStatus, unknown>
-  readonly setLedgerMcpStartupMode: (mode: LedgerMcpStartupMode) => Effect.Effect<LedgerMcpStatus, unknown>
-  readonly getLedgerMcpConnection: () => Effect.Effect<LedgerMcpConnection, unknown>
-  readonly regenerateLedgerMcpToken: () => Effect.Effect<LedgerMcpStatus, unknown>
-  readonly getAppVersion: () => Effect.Effect<AppVersion, unknown>
-  readonly dismissSkill: (request: SkillsDismissalRequest) => Effect.Effect<SkillsDismissalResult, unknown>
-  readonly saveSkill: (request: SkillsSaveRequest) => Effect.Effect<SkillsSaveResult, unknown>
-  readonly getCoachHarnesses: () => Effect.Effect<CoachHarnessesResult, unknown>
-  readonly refreshCoachHarnesses: () => Effect.Effect<CoachHarnessesResult, unknown>
-  readonly inspectCoachHarness: (request: CoachInspectRequest) => Effect.Effect<CoachInspectResult, unknown>
-  readonly openCoachLoginTerminal: (instanceId: string) => Effect.Effect<CoachLoginTerminalResult, unknown>
+  }) => Effect.Effect<ExportResult, unknown, R>
+  readonly getLedgerMcpStatus: () => Effect.Effect<LedgerMcpStatus, unknown, R>
+  readonly setLedgerMcpStartupMode: (mode: LedgerMcpStartupMode) => Effect.Effect<LedgerMcpStatus, unknown, R>
+  readonly getLedgerMcpConnection: () => Effect.Effect<LedgerMcpConnection, unknown, R>
+  readonly regenerateLedgerMcpToken: () => Effect.Effect<LedgerMcpStatus, unknown, R>
+  readonly getAppVersion: () => Effect.Effect<AppVersion, unknown, R>
+  readonly dismissSkill: (request: SkillsDismissalRequest) => Effect.Effect<SkillsDismissalResult, unknown, R>
+  readonly saveSkill: (request: SkillsSaveRequest) => Effect.Effect<SkillsSaveResult, unknown, R>
+  readonly getCoachHarnesses: () => Effect.Effect<CoachHarnessesResult, unknown, R>
+  readonly refreshCoachHarnesses: () => Effect.Effect<CoachHarnessesResult, unknown, R>
+  readonly inspectCoachHarness: (request: CoachInspectRequest) => Effect.Effect<CoachInspectResult, unknown, R>
+  readonly openCoachLoginTerminal: (instanceId: string) => Effect.Effect<CoachLoginTerminalResult, unknown, R>
 }
 
 const operationFailed = new NativeRpcError({ code: 'operation-failed', message: 'Native operation failed' })
@@ -49,14 +49,14 @@ const operationFailed = new NativeRpcError({ code: 'operation-failed', message: 
 /** Convert failures crossing the native boundary to a fixed, secret-free wire
  * error. Interruption remains interruption so closing a caller can cancel its
  * scoped operation. */
-function invoke<A>(operation: () => Effect.Effect<A, unknown>): Effect.Effect<A, NativeRpcError> {
+function invoke<A, R>(operation: () => Effect.Effect<A, unknown, R>): Effect.Effect<A, NativeRpcError, R> {
   return Effect.suspend(operation).pipe(
     Effect.catch(() => Effect.fail(operationFailed)),
     Effect.catchDefect(() => Effect.fail(operationFailed)),
   )
 }
 
-export function nativeHandlers(capabilities: NativeRpcCapabilities) {
+export function nativeHandlers<R>(capabilities: NativeRpcCapabilities<R>) {
   return NativeRpcGroup.toLayer({
     'scan:start': options => invoke(() => capabilities.startScan(options)),
     'scan:active': () => invoke(capabilities.isScanActive),

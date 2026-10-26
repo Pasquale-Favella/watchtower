@@ -1,32 +1,50 @@
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
 import { useEffect } from 'react'
 
 import { appLifecycleReadinessAtom, appRpcLifecycleAtom } from '@/app/atoms/rpc-lifecycle'
-import { hydrateScanAtom, refreshScanAtom, scanStateAtom } from '@/app/atoms/scan'
-import { registry, runtime } from '@/app/renderer-runtime'
-import { appEventsReadyAtom, subscribeToIpc } from '@/app/stores/subscribe'
-import { coachDetection, mountCoachWorkflow } from '@/features/coach-skills/atoms'
 import {
-  loadCadenceAtom,
-  loadCurrencyAtom,
-  loadCurrencyOptionsAtom,
-  setCadenceAtom,
-  setCurrencyAtom,
-} from '@/features/settings/atoms'
+  hydrateScanProvidersAtom,
+  refreshScanAtom,
+  rehydrateScanAtom,
+  type ScanHydrationState,
+  scanStateAtom,
+} from '@/app/atoms/scan'
+import { registry, runtime } from '@/app/renderer-runtime'
+import { subscribeToIpc } from '@/app/stores/subscribe'
+import { coachDetection, mountCoachWorkflow } from '@/features/coach-skills/atoms'
+import { loadCadenceAtom, loadCurrencyOptionsAtom, setCadenceAtom, setCurrencyAtom } from '@/features/settings/atoms'
 import { mountSettingsCapabilityWorkflow } from '@/features/settings/capability-atoms'
 import { preferencesAtom } from '@/features/settings/preferences-atoms'
-import { loadUpdateStatusAtom } from '@/features/settings/updates-atoms'
-import { RendererApi } from '@/shared/lib/renderer-api'
+import { ApplicationClient, ApplicationProtocolLayer } from '@/shared/lib/application-rpc'
 
 import { pinWindowAtom } from './use-remote-query.js'
 
-export const appBootstrapAtom = runtime(RendererApi.layer).atom(get => {
-  get.mount(refreshScanAtom)
+export function shouldStartInitialScan(hydration: ScanHydrationState, scanning: boolean): boolean {
+  return hydration === 'unscanned' && !scanning
+}
+
+export function bootstrapInitialScan<R>(
+  waitForNativeEvents: Effect.Effect<unknown, never, R>,
+  hydrateScan: Effect.Effect<ScanHydrationState, unknown, R>,
+  isScanning: () => boolean,
+  startScan: () => Effect.Effect<unknown, unknown, R>,
+): Effect.Effect<void, unknown, R> {
+  return Effect.gen(function* () {
+    yield* waitForNativeEvents
+    const hydration = yield* hydrateScan
+    if (shouldStartInitialScan(hydration, isScanning())) yield* startScan()
+  })
+}
+
+export const appBootstrapAtom = runtime(get =>
+  Layer.merge(get(ApplicationClient.runtime.layer), ApplicationProtocolLayer),
+).atom(get => {
+  get.mount(hydrateScanProvidersAtom)
   get.mount(appRpcLifecycleAtom)
   get.mount(setCadenceAtom)
   get.mount(setCurrencyAtom)
-  get.mount(loadUpdateStatusAtom)
   get.addFinalizer(mountCoachWorkflow(get.registry))
   get.addFinalizer(mountSettingsCapabilityWorkflow(get.registry))
   get.addFinalizer(subscribeToIpc(get.registry))
@@ -44,36 +62,18 @@ export const appBootstrapAtom = runtime(RendererApi.layer).atom(get => {
         spread: next.skillsSpread,
       })
   })
-  get.registry.set(loadUpdateStatusAtom, undefined)
   return Effect.gen(function* () {
-    yield* Stream.runHead(
-      get
-        .stream(appLifecycleReadinessAtom)
-        .pipe(Stream.filter(state => state.state === 'ready' || state.state === 'failed')),
+    // The native event subscriber owns scan readiness. Coach/navigation
+    // subscriptions can recover independently and never gate the first scan.
+    yield* bootstrapInitialScan(
+      Stream.runHead(get.stream(appLifecycleReadinessAtom).pipe(Stream.filter(state => state.state === 'ready'))),
+      Effect.suspend(() => get.setResult(rehydrateScanAtom, undefined)),
+      () => get.registry.get(scanStateAtom).scanning,
+      () => get.setResult(refreshScanAtom, undefined),
     )
-    yield* Stream.runDrain(
-      get.stream(appEventsReadyAtom).pipe(
-        Stream.filter(state => state === 'ready' || state === 'failed'),
-        Stream.take(1),
-      ),
-    )
-    const hydrated = yield* get.result(hydrateScanAtom)
-    if (hydrated === 'failed') {
-      yield* Stream.runDrain(
-        get.stream(scanStateAtom).pipe(
-          Stream.filter(state => state.hydrated),
-          Stream.take(1),
-        ),
-      )
-    } else if (hydrated === 'unscanned') yield* get.setResult(refreshScanAtom, undefined)
-    yield* Effect.all(
-      [
-        get.setResult(loadCadenceAtom, undefined),
-        get.setResult(loadCurrencyAtom, undefined),
-        get.setResult(loadCurrencyOptionsAtom, undefined),
-      ],
-      { concurrency: 'unbounded' },
-    )
+    yield* Effect.all([get.setResult(loadCadenceAtom, undefined), get.setResult(loadCurrencyOptionsAtom, undefined)], {
+      concurrency: 'unbounded',
+    })
     return yield* Effect.never
   })
 })

@@ -155,6 +155,8 @@ export class DbWorkerClient {
   /** Advances when a broadcast means an in-flight read may have gone stale. */
   private dataRevision = 0
   private eventListeners = new Set<(event: DbWorkerEvent) => void>()
+  private replacementListeners = new Set<() => void>()
+  private hasOwnedLedger = false
   private intentionalTeardown = false
   /** Non-null while a stuck abort is terminating the old worker and booting
    * its replacement. Requests queue behind this exact ownership transition. */
@@ -262,7 +264,14 @@ export class DbWorkerClient {
     if (isDbWorkerEvent(raw)) {
       // Boot handshake — consumed here, never relayed to windows.
       if (raw.event === 'ready') {
+        if (this.becameReady) return
+        const replaced = this.hasOwnedLedger
         this.becameReady = true
+        this.hasOwnedLedger = true
+        if (replaced && !this.intentionalTeardown) {
+          this.dataRevision++
+          for (const listener of this.replacementListeners) listener()
+        }
         handshake.resolve()
         return
       }
@@ -277,7 +286,7 @@ export class DbWorkerClient {
     }
   }
 
-  private send(op: string, args: unknown[] = []): Promise<unknown> {
+  private send(op: string, args: unknown[] = [], beforeDispatch?: () => void): Promise<unknown> {
     const isShutdown = op === 'shutdown'
     if (this.intentionalTeardown && !isShutdown && this.worker)
       return Promise.reject(new Error('data worker shut down'))
@@ -286,8 +295,10 @@ export class DbWorkerClient {
       return recovery.then(() => {
         if (this.intentionalTeardown && !isShutdown && this.worker)
           return Promise.reject(new Error('data worker shut down'))
+        beforeDispatch?.()
         return this.sendTo(this.worker, op, args)
       })
+    beforeDispatch?.()
     return this.sendTo(this.worker, op, args)
   }
 
@@ -318,11 +329,16 @@ export class DbWorkerClient {
   private stableReadEffect(op: string, args: unknown[]): Effect.Effect<unknown, unknown> {
     const isShuttingDown = (): boolean => this.intentionalTeardown
     const revision = (): number => this.dataRevision
-    const send = (): Promise<unknown> => this.send(op, args)
+    let requestedRevision = 0
+    const send = (): Promise<unknown> =>
+      this.send(op, args, () => {
+        // Recovery may replace the ledger owner before this read is dispatched.
+        // Only changes after dispatch can make its response stale.
+        requestedRevision = revision()
+      })
     return Effect.gen(function* () {
       while (true) {
         if (isShuttingDown()) return yield* Effect.fail(new Error('data worker shut down'))
-        const requestedRevision = revision()
         const value = yield* Effect.tryPromise({
           try: send,
           catch: cause => cause,
@@ -536,6 +552,14 @@ export class DbWorkerClient {
     this.eventListeners.add(listener)
     return () => {
       this.eventListeners.delete(listener)
+    }
+  }
+
+  /** Fires once a replacement owns the ledger, including recovery after a lost write acknowledgement. */
+  onReplaced(listener: () => void): () => void {
+    this.replacementListeners.add(listener)
+    return () => {
+      this.replacementListeners.delete(listener)
     }
   }
 

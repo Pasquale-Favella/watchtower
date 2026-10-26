@@ -15,6 +15,7 @@ import type {
   CoachSessionModels,
   CoachSessionModes,
 } from '../src/shared/schemas/agents.js'
+import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 
 const harnesses: CoachHarnessRow[] = [
   { instanceId: 'claude', kind: 'claude', displayName: 'Claude Code', status: 'ready', auth: { status: 'configured' } },
@@ -42,7 +43,16 @@ function setup(overrides: Partial<RendererApi['Service']> = {}) {
     getSkills: () => Effect.succeed(null),
     ...overrides,
   }
-  const atoms = createCoachAtoms(runtime, Layer.succeed(RendererApi, service))
+  const client = makeAnalyticsRpcTestClient(runtime, {
+    skills: (scope, thresholds) => Effect.runPromise(service.getSkills(scope, thresholds)),
+  })
+  const atoms = createCoachAtoms(runtime, Layer.succeed(RendererApi, service), (request, selectionId) =>
+    client.query(
+      'skills:view',
+      { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
+      { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+    ),
+  )
   registry.mount(atoms.coachStateAtom)
   const release = mountCoachAtoms(registry, atoms)
   return { registry, atoms, service, release }

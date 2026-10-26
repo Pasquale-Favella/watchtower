@@ -20,6 +20,7 @@ import {
 } from '../src/renderer/src/features/models/pricing-atoms.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import type { ModelReportRow, ModelsPayload } from '../src/shared/schemas/models.js'
+import { unexpectedNativeHandlers } from './fixtures/unexpected-native-rpc.js'
 
 const registries: AtomRegistry.AtomRegistry[] = []
 afterEach(() => {
@@ -44,6 +45,7 @@ function setup(options: PricingSetupOptions) {
     },
   })
   const handlers = Layer.mergeAll(
+    unexpectedNativeHandlers,
     analyticsHandlers({ request: options.request }),
     configHandlers({ request: options.request }, Effect.sync(options.configRevision ?? (() => 0))),
     lifecycleHandlers.pipe(Layer.provide(lifecycle)),

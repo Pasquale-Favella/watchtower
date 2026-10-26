@@ -7,13 +7,21 @@ import { calculateSessionDetail } from '../src/main/session-detail-calculation.j
 import { createSessionsAtoms } from '../src/renderer/src/features/sessions/atoms.js'
 import { fetchSession } from '../src/renderer/src/shared/lib/api.js'
 import type { SessionDetail } from '../src/shared/schemas/views.js'
+import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 import { buildFixtureReport } from './fixtures/report.js'
 
 const registries: AtomRegistry.AtomRegistry[] = []
-function setup() {
+function setup(session: (request: { sessionId: string; sourceId?: number }) => Promise<SessionDetail | null>) {
   const registry = AtomRegistry.make()
   registries.push(registry)
-  const { sessionQuery } = createSessionsAtoms(Atom.context())
+  const factory = Atom.context()
+  const client = makeAnalyticsRpcTestClient(factory, { session })
+  const { sessionQuery } = createSessionsAtoms(undefined, (request, selectionId) =>
+    client.query('store:session', request, {
+      serializationKey: selectionId,
+      reactivityKeys: ['ledger', 'pricing'],
+    }),
+  )
   sessionQuery.pin(registry)
   return { registry, sessionQuery }
 }
@@ -40,27 +48,36 @@ describe('source-aware session detail', () => {
     expect(getSession).not.toHaveBeenCalled()
   })
 
-  it('drops an old source response after navigating to another source with the same public ID', async () => {
+  it('does not coerce sourceId zero to an unspecified source at the RPC boundary', async () => {
+    const loadSession = vi.fn(() => Promise.resolve(null))
+    const { registry, sessionQuery } = setup(loadSession)
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 0 })
+    await vi.waitFor(() => expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Failure'))
+    expect(loadSession).not.toHaveBeenCalled()
+  })
+
+  it('forwards explicit source identity through RPC and drops an old source response', async () => {
     const base = buildFixtureReport()[0]?.sessions[0]
     if (!base) throw new Error('Missing session fixture')
     const detail = calculateSessionDetail(base)
-    const pending: ((value: SessionDetail | null) => void)[] = []
-    const getSession = vi.fn(() => new Promise<SessionDetail | null>(resolve => pending.push(resolve)))
-    vi.stubGlobal('window', { api: { getSession } })
-    const { registry, sessionQuery } = setup()
+    const pending: Array<{
+      request: { sessionId: string; sourceId?: number }
+      resolve: (value: SessionDetail | null) => void
+    }> = []
+    const { registry, sessionQuery } = setup(request => new Promise(resolve => pending.push({ request, resolve })))
     registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 1 })
     await vi.waitFor(() => expect(pending).toHaveLength(1))
     registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 2 })
     await vi.waitFor(() => expect(pending).toHaveLength(2))
-    expect(getSession.mock.calls).toEqual([
-      ['duplicate', 1],
-      ['duplicate', 2],
+    expect(pending.map(item => item.request)).toEqual([
+      { sessionId: 'duplicate', sourceId: 1 },
+      { sessionId: 'duplicate', sourceId: 2 },
     ])
-    pending[1]?.({ ...detail, project: 'second-source' })
+    pending[1]?.resolve({ ...detail, project: 'second-source' })
     await vi.waitFor(() =>
       expect(AsyncResult.getOrThrow(registry.get(sessionQuery.resultAtom))?.project).toBe('second-source'),
     )
-    pending[0]?.({ ...detail, project: 'first-source' })
+    pending[0]?.resolve({ ...detail, project: 'first-source' })
     await Promise.resolve()
     expect(AsyncResult.getOrThrow(registry.get(sessionQuery.resultAtom))?.project).toBe('second-source')
     expect(registry.get(sessionQuery.requestAtom)).toEqual({ sessionId: 'duplicate', sourceId: 2 })
@@ -68,15 +85,12 @@ describe('source-aware session detail', () => {
 
   it('drops an in-flight response after clearing detail', async () => {
     let resolve: ((value: SessionDetail | null) => void) | undefined
-    vi.stubGlobal('window', {
-      api: {
-        getSession: () =>
-          new Promise<SessionDetail | null>(done => {
-            resolve = done
-          }),
-      },
-    })
-    const { registry, sessionQuery } = setup()
+    const { registry, sessionQuery } = setup(
+      () =>
+        new Promise(done => {
+          resolve = done
+        }),
+    )
     registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 1 })
     await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
     registry.set(sessionQuery.resetAtom, undefined)

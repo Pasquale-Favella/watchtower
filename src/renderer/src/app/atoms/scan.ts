@@ -1,10 +1,14 @@
 import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
 
-import { RendererApi } from '@/shared/lib/renderer-api'
+import { runtime as rendererRuntime } from '@/app/renderer-runtime'
+import { ApplicationClient, ApplicationProtocolLayer } from '@/shared/lib/application-rpc'
+import { getPlatform } from '@/shared/lib/native-shell'
 
+import type { StoreChangedMessage } from '../../../../shared/schemas/ipc.js'
 import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
 import {
   SCAN_STAGE_ORDER,
@@ -12,9 +16,7 @@ import {
   type ScanProgress,
   type ScanStage,
 } from '../../../../shared/schemas/scan.js'
-import { runtime } from '../renderer-runtime.js'
 import { configInvalidationRevisionAtom } from './config-change.js'
-import { eventConnectionAtom, retryRendererEventsAtom } from './event-connection.js'
 
 export interface ScanState {
   readonly hydrated: boolean
@@ -26,6 +28,8 @@ export interface ScanState {
   readonly stage: ScanStage | null
   readonly fdaNeeded: boolean
 }
+
+export type ScanHydrationState = 'pending' | 'scanned' | 'unscanned' | 'failed'
 
 export function initialScanState(): ScanState {
   return {
@@ -59,12 +63,21 @@ function needsFullDiskAccess(platform: string, metadata?: ScanMetadata): boolean
   )
 }
 
-export function createScanAtoms(factory: Atom.RegistryRuntimeFactory, layer = RendererApi.layer) {
-  const remote = factory(layer)
+type ScanClient = typeof ApplicationClient
+
+export function createScanAtoms(
+  client: ScanClient = ApplicationClient,
+  runtime: Atom.RegistryRuntimeFactory = rendererRuntime,
+) {
+  const scanHydrationStateAtom = Atom.keepAlive(Atom.make<ScanHydrationState>('pending'))
   const scanStateAtom = Atom.keepAlive(Atom.make(initialScanState()))
   const activityRevisionAtom = Atom.keepAlive(Atom.make(0))
   const changeRevisionAtom = Atom.keepAlive(Atom.make(0))
   const scanCommandBusyAtom = Atom.keepAlive(Atom.make(false))
+  const providerHydrationRevisionAtom = Atom.keepAlive(Atom.make(0))
+  const atomRuntime = runtime((get: Atom.AtomContext) =>
+    Layer.merge(get(client.runtime.layer), ApplicationProtocolLayer),
+  )
   const update = (get: Atom.FnContext | Atom.AtomContext, patch: Partial<ScanState>): void => {
     const registry = get.registry
     registry.set(scanStateAtom, { ...registry.get(scanStateAtom), ...patch })
@@ -90,82 +103,144 @@ export function createScanAtoms(factory: Atom.RegistryRuntimeFactory, layer = Re
     stage: null,
   }))
 
-  const applyChange = (get: Atom.FnContext | Atom.AtomContext, configChanged = false) =>
+  const invalidateChanges = (get: Atom.FnContext | Atom.AtomContext, configChanged = false) =>
     Effect.gen(function* () {
-      // A metadata failure must never suppress invalidation of committed ledger/config changes.
+      // Always invalidate committed ledger/config changes before fallible hydration.
       yield* Reactivity.invalidate(['ledger', 'pricing'])
       if (configChanged)
         get.registry.set(configInvalidationRevisionAtom, get.registry.get(configInvalidationRevisionAtom) + 1)
-      const changeRevision = get.registry.get(changeRevisionAtom) + 1
-      get.registry.set(changeRevisionAtom, changeRevision)
-      const api = yield* RendererApi
-      const revision = get.registry.get(activityRevisionAtom)
-      const status = yield* Effect.result(api.getScanStatus())
-      if (changeRevision !== get.registry.get(changeRevisionAtom)) return
-      const activity =
-        !configChanged && revision === get.registry.get(activityRevisionAtom)
-          ? { scanning: false, progress: [], stage: null }
-          : {}
-      if (status._tag === 'Failure') {
-        update(get, { ...activity, scanError: status.failure.message })
-        return
-      }
-      const platform = yield* api.getPlatform()
-      const current = get.registry.get(scanStateAtom)
-      update(get, {
-        ...activity,
-        hydrated: status.success.scanned,
-        unparsedTotal:
-          status.success.metadata?.perProvider.reduce((count, provider) => count + provider.unparsed, 0) ?? 0,
-        scanError: status.success.scanned ? null : current.scanError,
-        fdaNeeded: needsFullDiskAccess(platform, status.success.metadata),
-      })
-      const analytics = yield* Effect.result(api.getAnalytics())
-      if (changeRevision !== get.registry.get(changeRevisionAtom)) return
-      update(get, {
-        detectedProviders:
-          analytics._tag === 'Success' && analytics.success
-            ? analytics.success.providers.map(provider => provider.name)
-            : [],
-      })
+      get.registry.set(changeRevisionAtom, get.registry.get(changeRevisionAtom) + 1)
     })
 
-  const syncActivity = (get: Atom.FnContext | Atom.AtomContext) =>
+  const applyMetadata = (
+    get: Atom.FnContext | Atom.AtomContext,
+    metadata: ScanMetadata | undefined,
+    statusScanned?: boolean,
+    activityRevisionAtStart?: number,
+  ) =>
     Effect.gen(function* () {
-      const revision = get.registry.get(activityRevisionAtom)
-      const api = yield* RendererApi
-      const active = yield* Effect.result(api.getScanActive())
-      if (active._tag === 'Success' && active.success && revision === get.registry.get(activityRevisionAtom))
-        update(get, { scanning: true })
+      const revision = get.registry.get(changeRevisionAtom)
+      const activityRevision = activityRevisionAtStart ?? get.registry.get(activityRevisionAtom)
+      const api = yield* client
+      const [status, platform] = yield* Effect.all([
+        statusScanned === undefined
+          ? Effect.result(api('store:status', undefined))
+          : Effect.succeed({ _tag: 'Success' as const, success: { scanned: statusScanned } }),
+        getPlatform,
+      ])
+      if (revision !== get.registry.get(changeRevisionAtom)) return
+      const current = get.registry.get(scanStateAtom)
+      const scanned = status._tag === 'Success' ? status.success.scanned : current.hydrated
+      const statusMetadata =
+        status._tag === 'Success' && 'metadata' in status.success ? status.success.metadata : undefined
+      const resolvedMetadata = metadata ?? statusMetadata
+      update(get, {
+        hydrated: scanned || metadata !== undefined,
+        unparsedTotal: resolvedMetadata?.perProvider.reduce((count, provider) => count + provider.unparsed, 0) ?? 0,
+        scanError:
+          status._tag === 'Failure'
+            ? typeof status.failure.message === 'string'
+              ? status.failure.message
+              : 'Unable to read scan status.'
+            : scanned
+              ? null
+              : current.scanError,
+        fdaNeeded: needsFullDiskAccess(platform, resolvedMetadata),
+        ...(activityRevision === get.registry.get(activityRevisionAtom) && status._tag === 'Success'
+          ? { scanning: false, progress: [], stage: null }
+          : {}),
+        detectedProviders: current.detectedProviders,
+      })
+      get.registry.set(providerHydrationRevisionAtom, get.registry.get(providerHydrationRevisionAtom) + 1)
     })
 
-  const applyScanChangeAtom = remote.fn((_: undefined, get) => applyChange(get))
-  const applyConfigChangeAtom = remote.fn((_: undefined, get) => applyChange(get, true))
-  const syncScanActivityAtom = remote.fn((_: undefined, get) => syncActivity(get))
-  const refreshScanAtom = remote.fn(
-    (_: undefined, get) =>
+  const applyStoreMetadataAtom = Atom.writable(
+    get => get(scanStateAtom),
+    (context, metadata: StoreChangedMessage) => {
+      // StoreChanged carries validated metadata already. Apply it synchronously so
+      // the lifecycle stream can move on to later frames while provider analytics
+      // hydrates in the single root-owned, revision-coalescing worker.
+      context.set(changeRevisionAtom, context.get(changeRevisionAtom) + 1)
+      context.set(activityRevisionAtom, context.get(activityRevisionAtom) + 1)
+      context.set(scanHydrationStateAtom, 'scanned')
+      const current = context.get(scanStateAtom)
+      const platform = typeof window === 'undefined' ? '' : (window.api?.platform ?? '')
+      context.set(scanStateAtom, {
+        ...current,
+        hydrated: true,
+        scanning: false,
+        scanError: null,
+        progress: [],
+        stage: null,
+        unparsedTotal: metadata.perProvider.reduce((count, provider) => count + provider.unparsed, 0),
+        fdaNeeded: needsFullDiskAccess(platform, metadata),
+      })
+      context.set(providerHydrationRevisionAtom, context.get(providerHydrationRevisionAtom) + 1)
+    },
+  )
+  const resetScanMetadataAtom = Atom.writable(
+    get => get(scanStateAtom),
+    context => {
+      const current = context.get(scanStateAtom)
+      context.set(changeRevisionAtom, context.get(changeRevisionAtom) + 1)
+      context.set(activityRevisionAtom, context.get(activityRevisionAtom) + 1)
+      context.set(providerHydrationRevisionAtom, context.get(providerHydrationRevisionAtom) + 1)
+      context.set(scanHydrationStateAtom, 'pending')
+      context.set(scanStateAtom, {
+        ...current,
+        hydrated: false,
+        scanError: null,
+        unparsedTotal: 0,
+        detectedProviders: [],
+        progress: [],
+        stage: null,
+        fdaNeeded: false,
+      })
+    },
+  )
+  const applyScanChangeAtom = client.runtime.fn<undefined>()((_, get) =>
+    invalidateChanges(get).pipe(Effect.andThen(applyMetadata(get, undefined))),
+  )
+  const applyConfigChangeAtom = client.runtime.fn<undefined>()((_, get) => invalidateChanges(get, true))
+  const syncActivity = (get: Atom.FnContext, revision = get.registry.get(activityRevisionAtom)) =>
+    Effect.gen(function* () {
+      const api = yield* client
+      const activity = yield* Effect.result(api('scan:active', undefined))
+      if (activity._tag === 'Failure') {
+        if (revision === get.registry.get(activityRevisionAtom))
+          update(get, {
+            scanError:
+              typeof activity.failure.message === 'string'
+                ? activity.failure.message
+                : 'Unable to determine whether a scan is active.',
+          })
+        return false
+      }
+      if (revision === get.registry.get(activityRevisionAtom))
+        update(get, activity.success ? { scanning: true } : { scanning: false, progress: [], stage: null })
+      return true
+    })
+  const syncActivityAtom = client.runtime.fn<undefined>()((_, get) => syncActivity(get))
+  const refreshScanAtom = client.runtime.fn<undefined>()(
+    (_, get) =>
       Effect.suspend(() => {
         if (get.registry.get(scanCommandBusyAtom)) return Effect.void
         get.registry.set(scanCommandBusyAtom, true)
         const admission = get.registry.getNodes().get(scanCommandBusyAtom)
         get.registry.set(activityRevisionAtom, get.registry.get(activityRevisionAtom) + 1)
         return Effect.gen(function* () {
-          const connection = get.registry.get(eventConnectionAtom)
-          if (connection === 'failed' || connection === 'pending') {
-            if (connection === 'failed') get.registry.set(retryRendererEventsAtom, undefined)
-            const settled = yield* Stream.runCollect(
-              get.stream(eventConnectionAtom).pipe(
-                Stream.filter(state => state === 'ready' || state === 'failed'),
-                Stream.take(1),
-              ),
-            )
-            if (settled[0] !== 'ready') return
+          update(get, { scanError: null })
+          const api = yield* client
+          const result = yield* Effect.result(api('scan:start', {}))
+          if (result._tag === 'Failure') {
+            if (result.failure._tag === 'NativeRpcError') update(get, { scanError: 'Unable to start the scan.' })
+            return
           }
-          update(get, { scanning: true, scanError: null })
-          const api = yield* RendererApi
-          const result = yield* Effect.result(api.scan())
-          if (result._tag === 'Failure') update(get, { scanError: result.failure.message, scanning: false })
-          else if (!result.success.ok && !result.success.aborted)
+          if (result.success.alreadyRunning) {
+            update(get, { scanning: true })
+            return
+          }
+          if (!result.success.ok && !result.success.aborted)
             update(get, {
               scanError: result.success.error ?? 'Scan failed. Check your provider sources and try again.',
               scanning: false,
@@ -182,46 +257,97 @@ export function createScanAtoms(factory: Atom.RegistryRuntimeFactory, layer = Re
     { concurrent: true },
   )
 
-  // One hydration per registry, shared by StrictMode remounts and window bootstrap consumers.
-  const hydrateScanAtom = Atom.keepAlive(
-    remote.atom(get =>
+  const rehydrateScanAtom = client.runtime.fn<undefined>()(
+    (_, get) =>
       Effect.gen(function* () {
-        const api = yield* RendererApi
-        const status = yield* Effect.result(api.getScanStatus())
+        const revision = get.registry.get(changeRevisionAtom)
+        const activityRevision = get.registry.get(activityRevisionAtom)
+        const api = yield* client
+        const status = yield* Effect.result(api('store:status', undefined))
+        if (revision !== get.registry.get(changeRevisionAtom)) return 'failed' as const
         if (status._tag === 'Failure') {
-          update(get, { scanError: status.failure.message })
+          update(get, {
+            scanError:
+              typeof status.failure.message === 'string' ? status.failure.message : 'Unable to read scan status.',
+          })
+          get.registry.set(scanHydrationStateAtom, 'failed')
           return 'failed' as const
         }
-        if (status.success.scanned) {
-          update(get, { hydrated: true })
-          yield* applyChange(get)
+        update(get, { hydrated: status.success.scanned })
+        yield* applyMetadata(get, status.success.metadata, status.success.scanned, activityRevision)
+        const activityConfirmed = yield* syncActivity(get, activityRevision)
+        if (revision !== get.registry.get(changeRevisionAtom)) return get.registry.get(scanHydrationStateAtom)
+        if (!activityConfirmed) {
+          get.registry.set(scanHydrationStateAtom, 'failed')
+          return 'failed' as const
         }
-        yield* syncActivity(get)
+        get.registry.set(scanHydrationStateAtom, status.success.scanned ? 'scanned' : 'unscanned')
         return status.success.scanned ? ('scanned' as const) : ('unscanned' as const)
       }),
-    ),
+    { concurrent: true },
   )
+
+  const hydrateScanProvidersAtom = Atom.keepAlive(
+    atomRuntime.atom(get => {
+      let completedRevision = 0
+      const hydrateLatest = Effect.gen(function* () {
+        while (completedRevision < get.registry.get(providerHydrationRevisionAtom)) {
+          const requestedRevision = get.registry.get(providerHydrationRevisionAtom)
+          const changeRevision = get.registry.get(changeRevisionAtom)
+          const api = yield* client
+          const analytics = yield* Effect.result(api('store:analytics', undefined))
+          if (requestedRevision !== get.registry.get(providerHydrationRevisionAtom)) continue
+          completedRevision = requestedRevision
+          if (changeRevision !== get.registry.get(changeRevisionAtom)) continue
+          const current = get.registry.get(scanStateAtom)
+          if (analytics._tag === 'Success' && analytics.success) {
+            update(get, {
+              detectedProviders: analytics.success.providers.map(provider => provider.name),
+            })
+          } else {
+            update(get, {
+              detectedProviders: [],
+              scanError:
+                analytics._tag === 'Failure' && typeof analytics.failure.message === 'string'
+                  ? analytics.failure.message
+                  : current.scanError,
+            })
+          }
+        }
+      })
+      return Stream.runForEach(get.stream(providerHydrationRevisionAtom), () => hydrateLatest)
+    }),
+  )
+
   return {
     scanStateAtom,
+    scanHydrationStateAtom,
     scanProgressAtom,
     scanErrorAtom,
     scanIdleAtom,
     applyScanChangeAtom,
     applyConfigChangeAtom,
-    syncScanActivityAtom,
+    applyStoreMetadataAtom,
+    resetScanMetadataAtom,
+    syncActivityAtom,
     refreshScanAtom,
-    hydrateScanAtom,
+    rehydrateScanAtom,
+    hydrateScanProvidersAtom,
   }
 }
 
 export const {
   scanStateAtom,
+  scanHydrationStateAtom,
   scanProgressAtom,
   scanErrorAtom,
   scanIdleAtom,
   applyScanChangeAtom,
   applyConfigChangeAtom,
-  syncScanActivityAtom,
+  applyStoreMetadataAtom,
+  resetScanMetadataAtom,
+  syncActivityAtom,
   refreshScanAtom,
-  hydrateScanAtom,
-} = createScanAtoms(runtime)
+  rehydrateScanAtom,
+  hydrateScanProvidersAtom,
+} = createScanAtoms()

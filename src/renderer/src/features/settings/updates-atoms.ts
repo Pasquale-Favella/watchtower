@@ -1,9 +1,8 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 
-import { runtime as sharedRuntime } from '@/app/renderer-runtime'
-import { RendererApi } from '@/shared/lib/renderer-api'
+import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 
 import type { UpdateStatus } from '../../../../shared/schemas/updates.js'
 
@@ -102,13 +101,17 @@ export function transitionUpdates(machine: UpdatesMachine, event: UpdatesEvent):
   }
 }
 
-export const createUpdatesAtoms = (
-  runtime: Atom.RegistryRuntimeFactory,
-  apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
-) => {
-  const api = runtime(apiLayer)
+type UpdatesClient = Pick<typeof ApplicationClient, 'runtime' | 'mutation' | 'query'>
+const UPDATE_STATUS_REQUEST = {}
+
+export const createUpdatesAtoms = (client: UpdatesClient = ApplicationClient) => {
   const machineAtom = Atom.keepAlive(Atom.make<UpdatesMachine>({ state: 'uninitialized' }))
   let nextRequestId = 0
+  const statusQuery = createRpcQuerySlot({
+    key: () => 'updates-status',
+    query: (_request: typeof UPDATE_STATUS_REQUEST, selectionId) =>
+      client.query('updates:status', undefined, { serializationKey: selectionId }),
+  })
 
   const send = (get: Atom.FnContext, event: UpdatesEvent): void => {
     // Async command contexts retain their invocation snapshot; reducers need the live state.
@@ -117,7 +120,7 @@ export const createUpdatesAtoms = (
     if (next !== current) get.registry.set(machineAtom, next)
   }
 
-  const loadUpdateStatusAtom = api.fn<undefined>()(
+  const loadUpdateStatusAtom = client.runtime.fn<undefined>()(
     (_, get) =>
       Effect.gen(function* () {
         const requestId = ++nextRequestId
@@ -125,8 +128,9 @@ export const createUpdatesAtoms = (
         const machine = get.registry.get(machineAtom)
         if (machine.state !== 'loading' || machine.requestId !== requestId) return
 
-        const rendererApi = yield* RendererApi
-        const result = yield* Effect.result(rendererApi.getUpdateStatus())
+        get.registry.set(statusQuery.resetAtom, undefined)
+        get.registry.set(statusQuery.requestAtom, UPDATE_STATUS_REQUEST)
+        const result = yield* Effect.result(get.result(statusQuery.resultAtom, { suspendOnWaiting: true }))
         send(
           get,
           result._tag === 'Success'
@@ -137,8 +141,14 @@ export const createUpdatesAtoms = (
     { concurrent: true },
   )
 
+  const mutations = {
+    check: client.mutation('updates:check'),
+    download: client.mutation('updates:download'),
+    install: client.mutation('updates:install'),
+  }
+
   const makeCommandAtom = (command: UpdateCommand) =>
-    api.fn<undefined>()(
+    client.runtime.fn<undefined>()(
       (_, get) =>
         Effect.gen(function* () {
           const requestId = ++nextRequestId
@@ -146,14 +156,7 @@ export const createUpdatesAtoms = (
           const machine = get.registry.get(machineAtom)
           if (machine.state !== 'requesting' || machine.requestId !== requestId) return
 
-          const rendererApi = yield* RendererApi
-          const effect =
-            command === 'check'
-              ? rendererApi.checkForUpdates()
-              : command === 'download'
-                ? rendererApi.downloadUpdate()
-                : rendererApi.installUpdate()
-          const result = yield* Effect.result(effect)
+          const result = yield* Effect.result(get.setResult(mutations[command], { payload: undefined }))
           send(
             get,
             result._tag === 'Success'
@@ -183,7 +186,7 @@ export const createUpdatesAtoms = (
   }
 }
 
-const defaultUpdatesAtoms = createUpdatesAtoms(sharedRuntime)
+const defaultUpdatesAtoms = createUpdatesAtoms()
 
 export const {
   machineAtom: updatesMachineAtom,

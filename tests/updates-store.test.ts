@@ -1,18 +1,18 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
+import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
 import {
   createUpdatesAtoms,
   selectUpdateActivity,
   selectUpdateCommandVisible,
   selectUpdateStatus,
 } from '../src/renderer/src/features/settings/updates-atoms.js'
-import { legacyRendererApi, RendererApi, RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
 import type { UpdateStatus } from '../src/shared/schemas/updates.js'
+import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 
 function status(phase: UpdateStatus['phase'] = 'idle', revision = 0): UpdateStatus {
   const updateAvailable = ['available', 'downloading', 'ready', 'installing'].includes(phase)
@@ -30,13 +30,19 @@ function status(phase: UpdateStatus['phase'] = 'idle', revision = 0): UpdateStat
 }
 
 type Overrides = Partial<
-  Pick<RendererApi['Service'], 'getUpdateStatus' | 'checkForUpdates' | 'downloadUpdate' | 'installUpdate'>
+  Pick<NativeRpcCapabilities, 'getUpdateStatus' | 'checkForUpdates' | 'downloadUpdate' | 'installUpdate'>
 >
 
 function makeHarness(overrides: Overrides = {}) {
   const runtime = Atom.context()
-  const layer = Layer.succeed(RendererApi, { ...legacyRendererApi, ...overrides })
-  const atoms = createUpdatesAtoms(runtime, layer)
+  const client = makeSettingsRpcTestClient(
+    runtime,
+    async () => {
+      throw new Error('Unexpected worker operation in an updater test')
+    },
+    overrides,
+  )
+  const atoms = createUpdatesAtoms(client)
   const registry = AtomRegistry.make()
   return { atoms, registry }
 }
@@ -86,13 +92,14 @@ describe('native updater atoms', () => {
   it('uses a retryable state for failed load and succeeds on retry', async () => {
     const getUpdateStatus = vi
       .fn()
-      .mockReturnValueOnce(Effect.fail(new RendererApiError({ operation: 'updates:status', message: 'offline' })))
+      .mockReturnValueOnce(Effect.fail(new Error('offline')))
       .mockReturnValueOnce(Effect.succeed(status('current', 2)))
     const { atoms, registry } = makeHarness({ getUpdateStatus })
 
     await dispatch(registry, atoms.loadUpdateStatusAtom, undefined)
     expect(registry.get(atoms.machineAtom)).toMatchObject({ state: 'load-error' })
     await dispatch(registry, atoms.loadUpdateStatusAtom, undefined)
+    expect(getUpdateStatus).toHaveBeenCalledTimes(2)
     expect(registry.get(atoms.machineAtom)).toEqual({ state: 'synced', status: status('current', 2) })
   })
 
@@ -154,7 +161,7 @@ describe('native updater atoms', () => {
   it('maps typed command failures to retryable error state and retains the last snapshot', async () => {
     const downloadUpdate = vi
       .fn()
-      .mockReturnValueOnce(Effect.fail(new RendererApiError({ operation: 'updates:download', message: 'offline' })))
+      .mockReturnValueOnce(Effect.fail(new Error('offline')))
       .mockReturnValueOnce(Effect.succeed(status('ready', 4)))
     const { atoms, registry } = makeHarness({ downloadUpdate })
     registry.set(atoms.statusChangedAtom, status('available', 2))

@@ -114,6 +114,9 @@ const rpcMethods = (client: RpcClient.FromGroup<typeof ApplicationRpcGroup, RpcC
   setCurrency: method('currency:set', client && ((code: string) => client['currency:set']({ code }))),
   getCurrencies: method('currency:list', client && (() => client['currency:list'](undefined))),
   getSettings: method('settings:info', client && (() => client['settings:info'](undefined))),
-  clearData: method('settings:clear', client && (() => client['settings:clear'](undefined))),
+  clearData: method(
+    'settings:clear',
+    client && (() => client['settings:clear'](undefined).pipe(Effect.map(result => result.settings))),
+  ),
   refreshPricing: method('pricing:refresh', client && (() => client['pricing:refresh'](undefined))),
 })

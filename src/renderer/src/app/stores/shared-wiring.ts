@@ -22,7 +22,7 @@ export function createWindowEventAtom(
 ) {
   const readyAtom = eventConnectionAtom
   const eventsAtom = runtime(RendererEvents.layer).atom(get => {
-    if (role !== 'beacon') {
+    if (role === 'panel') {
       get.mount(applyScanChangeAtom)
       get.mount(applyConfigChangeAtom)
     }
@@ -30,7 +30,7 @@ export function createWindowEventAtom(
     get.registry.set(readyAtom, 'pending')
     return Effect.flatMap(RendererEvents, source =>
       Stream.runForEach(
-        source.events(role, () => get.registry.set(readyAtom, 'ready'), role === 'app' ? ['ConfigChanged'] : []),
+        source.events(role, () => get.registry.set(readyAtom, 'ready')),
         event =>
           Effect.sync(() => {
             const registry = get.registry
@@ -62,12 +62,13 @@ export function createWindowEventAtom(
       Effect.catch(error =>
         Effect.sync(() => {
           get.registry.set(readyAtom, 'failed')
-          get.registry.set(
-            scanErrorAtom,
-            error.reason === 'overflow'
-              ? 'Application event buffer overflow. Reopen this window to reconnect.'
-              : 'Unable to subscribe to application events.',
-          )
+          if (role !== 'app')
+            get.registry.set(
+              scanErrorAtom,
+              error.reason === 'overflow'
+                ? 'Application event buffer overflow. Reopen this window to reconnect.'
+                : 'Unable to subscribe to application events.',
+            )
         }),
       ),
     )

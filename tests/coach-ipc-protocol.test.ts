@@ -66,6 +66,33 @@ describe('Coach renderer protocol boundary', () => {
     }
   })
 
+  it('exposes native harness capabilities from the same registered IPC owner', async () => {
+    const detect = vi.fn(async () => [])
+    const runtime = makeMainRuntime({ clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} }, { detect })
+    const ipc = registerAgentsIpc({
+      runtime,
+      dismissals: { dismiss: () => {} },
+      ledgerMcpServer: () => Effect.succeed(null),
+    })
+
+    try {
+      await expect(runtime.runPromise(ipc.native.list)).resolves.toEqual([])
+      await expect(runtime.runPromise(ipc.native.refresh)).resolves.toEqual([])
+      await expect(runtime.runPromise(ipc.native.inspect({ kind: '' }))).resolves.toEqual({
+        ok: false,
+        error: 'invalid coach inspect request',
+      })
+      await expect(runtime.runPromise(ipc.native.openLoginTerminal({ instanceId: '' }))).resolves.toEqual({
+        ok: false,
+        error: 'invalid harness instance id',
+      })
+      expect(detect).toHaveBeenCalledTimes(2)
+    } finally {
+      await ipc.dispose()
+      await Effect.runPromise(runtime.disposeEffect)
+    }
+  })
+
   it('bounds unexpected main-controller rejections in the real registered handlers', async () => {
     const privateError = new Error('private native details C:\\Users\\person\\config token=secret')
     const runtime = makeMainRuntime(

@@ -445,6 +445,120 @@ describe('main lifecycle RPC hub', () => {
     })
   })
 
+  it('delivers ledger events independently of failed metadata hydration with version-only snapshots', async () => {
+    let reads = 0
+    const unavailable = () => {
+      reads += 1
+      return Effect.fail(new Error('metadata unavailable'))
+    }
+    const frames = await Effect.runPromise(
+      Effect.gen(function* () {
+        const hub = yield* LifecycleHub
+        const ready = yield* Deferred.make<undefined>()
+        const subscription = yield* Effect.forkChild(
+          Stream.runCollect(
+            hub.events('app', undefined, 'versions').pipe(
+              Stream.tap(frame => (frame._tag === 'Snapshot' ? Deferred.succeed(ready, undefined) : Effect.void)),
+              Stream.take(2),
+            ),
+          ),
+        )
+        yield* Deferred.await(ready)
+        yield* hub.publish(storeEvent)
+        return yield* Fiber.join(subscription)
+      }).pipe(
+        Effect.provide(
+          lifecycleLayer({
+            epoch: 'read-free-ledger',
+            readSnapshot: {
+              scanStatus: unavailable,
+              scanActivity: unavailable,
+              currency: unavailable,
+              updater: unavailable,
+              harnesses: unavailable,
+            },
+          }),
+        ),
+      ),
+    )
+    expect(reads).toBe(0)
+    expect(frames[0]).toEqual({
+      _tag: 'Snapshot',
+      role: 'app',
+      state: { epoch: 'read-free-ledger', sequence: 0, ledgerGeneration: 0, configRevision: 0 },
+    })
+    expect(frames[1]).toMatchObject({ _tag: 'Event', envelope: { event: storeEvent } })
+  })
+
+  it('resnapshots after worker replacement and drops buffered events from the old owner', async () => {
+    const seen: string[] = []
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const hub = yield* LifecycleHub
+        const snapshotSeen = yield* Deferred.make<undefined>()
+        const release = yield* Deferred.make<undefined>()
+        const subscription = yield* Effect.forkChild(
+          Effect.exit(
+            Stream.runDrain(
+              hub.events('app', undefined, 'versions').pipe(
+                Stream.tap(frame => {
+                  seen.push(frame._tag)
+                  return frame._tag === 'Snapshot'
+                    ? Deferred.succeed(snapshotSeen, undefined).pipe(Effect.andThen(Deferred.await(release)))
+                    : Effect.void
+                }),
+              ),
+            ),
+          ),
+        )
+        yield* Deferred.await(snapshotSeen)
+        yield* hub.publish({ _tag: 'ConfigChanged' })
+        yield* hub.workerReplaced
+        expect(yield* hub.subscriberCount).toBe(0)
+        yield* Deferred.succeed(release, undefined)
+        const previous = yield* Fiber.join(subscription)
+        const snapshot = Option.getOrThrow(yield* Stream.runHead(hub.events('app')))
+        return { previous, snapshot, subscribers: yield* hub.subscriberCount }
+      }).pipe(Effect.provide(lifecycleLayer({ epoch: 'worker-replacement', readSnapshot: reader() }))),
+    )
+    expect(seen).toEqual(['Snapshot'])
+    expect(result.previous._tag).toBe('Failure')
+    if (result.previous._tag === 'Failure')
+      expect(Cause.findError(result.previous.cause)).toMatchObject({ _tag: 'Success', success: { code: 'resnapshot' } })
+    expect(result.snapshot).toMatchObject({
+      _tag: 'Snapshot',
+      state: { sequence: 2, ledgerGeneration: 1, configRevision: 1, scanStatus: { scanned: true } },
+    })
+    expect(result.subscribers).toBe(0)
+  })
+
+  it('rejects an in-flight snapshot from a replaced worker owner', async () => {
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<undefined>()
+        const release = yield* Deferred.make<undefined>()
+        const layer = lifecycleLayer({
+          epoch: 'worker-snapshot-race',
+          readSnapshot: reader({
+            scanStatus: () =>
+              Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(release)), Effect.as(scanStatus)),
+          }),
+        })
+        return yield* Effect.gen(function* () {
+          const hub = yield* LifecycleHub
+          const subscription = yield* Effect.forkChild(Effect.exit(Stream.runHead(hub.events('app', ['store']))))
+          yield* Deferred.await(entered)
+          yield* hub.workerReplaced
+          yield* Deferred.succeed(release, undefined)
+          return yield* Fiber.join(subscription)
+        }).pipe(Effect.provide(layer))
+      }),
+    )
+    expect(result._tag).toBe('Failure')
+    if (result._tag === 'Failure')
+      expect(Cause.findError(result.cause)).toMatchObject({ _tag: 'Success', success: { code: 'resnapshot' } })
+  })
+
   it('lets the app opt into one event category during a staged migration', async () => {
     const frames = await Effect.runPromise(
       Effect.gen(function* () {

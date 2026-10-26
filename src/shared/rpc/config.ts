@@ -15,6 +15,10 @@ export const configWriteReceiptSchema = Schema.Struct({
   ok: Schema.Literal(true),
   configRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 })
+export const settingsClearReceiptSchema = Schema.Struct({
+  settings: settingsInfoSchema,
+  ledgerGeneration: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+})
 
 /** Local configuration and settings calls, retaining the existing channel as
  * each RPC tag. */
@@ -50,6 +54,6 @@ export const ConfigRpcGroup = RpcGroup.make(
   Rpc.make('currency:list', { success: currencyOptionsSchema, error: ConfigRpcError }),
   Rpc.make('store:status', { success: scanStatusSchema, error: ConfigRpcError }),
   Rpc.make('settings:info', { success: settingsInfoSchema, error: ConfigRpcError }),
-  Rpc.make('settings:clear', { success: settingsInfoSchema, error: ConfigRpcError }),
+  Rpc.make('settings:clear', { success: settingsClearReceiptSchema, error: ConfigRpcError }),
   Rpc.make('pricing:refresh', { success: pricingRefreshResultSchema, error: ConfigRpcError }),
 )

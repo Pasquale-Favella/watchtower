@@ -1,16 +1,16 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createRemoteQuerySlot } from '../src/renderer/src/app/atoms/remote-query.js'
 import { createScanAtoms } from '../src/renderer/src/app/atoms/scan.js'
-import { legacyRendererApi, RendererApi, RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
+import { makeScanRpcTestClient } from './scan-rpc-test-helper.js'
 
 const registries: AtomRegistry.AtomRegistry[] = []
 afterEach(() => {
   for (const registry of registries.splice(0)) registry.dispose()
+  vi.unstubAllGlobals()
 })
 
 const metadata = {
@@ -24,20 +24,19 @@ const metadata = {
   aborted: false,
 }
 
-function setup(overrides: Partial<RendererApi['Service']> = {}) {
+function setup(overrides: Parameters<typeof makeScanRpcTestClient>[1] = {}) {
+  vi.stubGlobal('window', { api: { platform: 'darwin' } })
   const registry = AtomRegistry.make()
   registries.push(registry)
   const factory = Atom.context()
-  const layer = Layer.succeed(RendererApi, {
-    ...legacyRendererApi,
-    getPlatform: () => Effect.succeed('darwin'),
-    getScanStatus: () => Effect.succeed({ scanned: true, metadata }),
-    getAnalytics: () => Effect.succeed(null),
-    getScanActive: () => Effect.succeed(false),
+  const client = makeScanRpcTestClient(factory, {
+    status: () => Effect.succeed({ scanned: true, metadata }),
+    analytics: () => Effect.succeed(null),
+    active: () => Effect.succeed(false),
     ...overrides,
   })
-  const atoms = createScanAtoms(factory, layer)
-  return { registry, factory, layer, ...atoms }
+  const atoms = createScanAtoms(client, factory)
+  return { registry, factory, client, ...atoms }
 }
 
 function read<A, E>(
@@ -45,6 +44,11 @@ function read<A, E>(
   atom: Atom.Atom<import('effect/reactivity/AsyncResult').AsyncResult<A, E>>,
 ) {
   return Effect.runPromise(AtomRegistry.getResult(registry, atom, { suspendOnWaiting: true }))
+}
+
+function run<A, E>(registry: AtomRegistry.AtomRegistry, atom: Atom.AtomResultFn<undefined, A, E>): Promise<A> {
+  registry.set(atom, undefined)
+  return read(registry, atom)
 }
 
 describe('native scan lifecycle', () => {
@@ -71,12 +75,12 @@ describe('native scan lifecycle', () => {
   })
 
   it('invalidates activated queries even if metadata hydration fails', async () => {
-    const { registry, factory, layer, applyScanChangeAtom, scanStateAtom, scanProgressAtom } = setup({
-      getScanStatus: () => Effect.fail(new RendererApiError({ operation: 'status', message: 'unavailable' })),
+    const { registry, client, applyScanChangeAtom, scanStateAtom, scanProgressAtom } = setup({
+      status: () => Effect.fail(new Error('unavailable')),
     })
     let calls = 0
     const query = createRemoteQuerySlot({
-      runtime: factory(layer),
+      runtime: client.runtime,
       key: (request: string) => request,
       fetch: () => Effect.sync(() => ++calls),
       reactivityKeys: ['ledger'],
@@ -88,7 +92,7 @@ describe('native scan lifecycle', () => {
     registry.set(applyScanChangeAtom, undefined)
     await read(registry, applyScanChangeAtom)
     await vi.waitFor(() => expect(calls).toBe(2))
-    expect(registry.get(scanStateAtom)).toMatchObject({ scanError: 'unavailable', scanning: false })
+    expect(registry.get(scanStateAtom)).toMatchObject({ scanError: 'Configuration command failed', scanning: true })
   })
 
   it('keeps active scan progress when a pricing change invalidates queries', async () => {
@@ -103,36 +107,23 @@ describe('native scan lifecycle', () => {
     })
   })
 
-  it('ignores an older config snapshot after scan completion has hydrated newer state', async () => {
-    let resolve!: (value: { scanned: false }) => void
-    const getScanStatus = vi
-      .fn()
-      .mockReturnValueOnce(
-        Effect.promise(
-          () =>
-            new Promise<{ scanned: false }>(done => {
-              resolve = done
-            }),
-        ),
-      )
-      .mockReturnValueOnce(Effect.succeed({ scanned: true, metadata }))
-    const { registry, scanStateAtom, applyConfigChangeAtom, applyScanChangeAtom } = setup({ getScanStatus })
-    const releaseConfig = registry.mount(applyConfigChangeAtom)
+  it('invalidates config changes without hydrating metadata over active progress', async () => {
+    const status = vi.fn(() => Effect.succeed({ scanned: true, metadata }))
+    const { registry, scanStateAtom, scanProgressAtom, applyConfigChangeAtom } = setup({ status })
+    registry.set(scanProgressAtom, { stage: 'parse', provider: 'claude', processed: 3 })
     registry.set(applyConfigChangeAtom, undefined)
-    await vi.waitFor(() => expect(getScanStatus).toHaveBeenCalledTimes(1))
-    registry.set(applyScanChangeAtom, undefined)
-    await read(registry, applyScanChangeAtom)
-    resolve({ scanned: false })
     await read(registry, applyConfigChangeAtom)
-    expect(registry.get(scanStateAtom).hydrated).toBe(true)
-    releaseConfig()
+    expect(status).not.toHaveBeenCalled()
+    expect(registry.get(scanStateAtom)).toMatchObject({ scanning: true, progress: [{ provider: 'claude' }] })
   })
 
   it('hydrates metadata and the Full Disk Access signal while clearing failed provider reads', async () => {
-    const { registry, scanStateAtom, applyScanChangeAtom } = setup()
+    const { registry, scanStateAtom, applyScanChangeAtom, hydrateScanProvidersAtom } = setup()
+    registry.mount(hydrateScanProvidersAtom)
     registry.set(scanStateAtom, { ...registry.get(scanStateAtom), detectedProviders: ['old'] })
     registry.set(applyScanChangeAtom, undefined)
     await read(registry, applyScanChangeAtom)
+    await vi.waitFor(() => expect(registry.get(scanStateAtom).detectedProviders).toEqual([]))
     expect(registry.get(scanStateAtom)).toMatchObject({
       hydrated: true,
       fdaNeeded: true,
@@ -143,7 +134,7 @@ describe('native scan lifecycle', () => {
   it('does not erase new scan progress with an older metadata response', async () => {
     let resolve!: (value: { scanned: boolean; metadata: typeof metadata }) => void
     const { registry, scanStateAtom, scanProgressAtom, applyScanChangeAtom } = setup({
-      getScanStatus: () =>
+      status: () =>
         Effect.promise(
           () =>
             new Promise(done => {
@@ -162,6 +153,121 @@ describe('native scan lifecycle', () => {
       stage: 'parse',
       progress: [{ provider: 'new', processed: 1 }],
     })
+  })
+
+  it('does not erase progress that arrives while a reconnect snapshot is hydrating', async () => {
+    let resolve!: (value: { scanned: true; metadata: typeof metadata }) => void
+    const status = vi.fn(() =>
+      Effect.promise(
+        () =>
+          new Promise<{ scanned: true; metadata: typeof metadata }>(done => {
+            resolve = done
+          }),
+      ),
+    )
+    const { registry, scanStateAtom, scanProgressAtom, rehydrateScanAtom } = setup({ status })
+    const pending = run(registry, rehydrateScanAtom)
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+    registry.set(scanProgressAtom, { stage: 'parse', provider: 'current', processed: 2 })
+    resolve({ scanned: true, metadata })
+    await pending
+    expect(registry.get(scanStateAtom)).toMatchObject({
+      scanning: true,
+      progress: [{ provider: 'current', processed: 2 }],
+    })
+  })
+
+  it('fences old-generation status reads after replacement metadata is applied', async () => {
+    let resolveOld!: (value: { scanned: false }) => void
+    const status = vi.fn(() => Effect.promise(() => new Promise<{ scanned: false }>(resolve => (resolveOld = resolve))))
+    const {
+      registry,
+      scanStateAtom,
+      scanHydrationStateAtom,
+      resetScanMetadataAtom,
+      applyStoreMetadataAtom,
+      rehydrateScanAtom,
+    } = setup({
+      status,
+      active: () => Effect.succeed(true),
+    })
+    const oldHydration = run(registry, rehydrateScanAtom)
+    await vi.waitFor(() => expect(status).toHaveBeenCalledTimes(1))
+
+    registry.set(resetScanMetadataAtom, undefined)
+    registry.set(applyStoreMetadataAtom, {
+      ...metadata,
+      perProvider: [{ provider: 'new', ported: 0, unchanged: 0, failed: 0, unparsed: 8 }],
+    })
+    resolveOld({ scanned: false })
+    await expect(oldHydration).resolves.toBe('failed')
+
+    expect(registry.get(scanHydrationStateAtom)).toBe('scanned')
+    expect(registry.get(scanStateAtom)).toMatchObject({ hydrated: true, scanning: false, unparsedTotal: 8 })
+  })
+
+  it('keeps completed scan metadata when its event overtakes the activity read', async () => {
+    let resolveActive!: (value: boolean) => void
+    const active = vi.fn(() =>
+      Effect.promise(
+        () =>
+          new Promise<boolean>(resolve => {
+            resolveActive = resolve
+          }),
+      ),
+    )
+    const { registry, rehydrateScanAtom, applyStoreMetadataAtom, scanStateAtom, scanHydrationStateAtom } = setup({
+      status: () => Effect.succeed({ scanned: false }),
+      active,
+    })
+    const hydration = run(registry, rehydrateScanAtom)
+    await vi.waitFor(() => expect(active).toHaveBeenCalledOnce())
+    registry.set(applyStoreMetadataAtom, metadata)
+    resolveActive(false)
+    await expect(hydration).resolves.toBe('scanned')
+    expect(registry.get(scanHydrationStateAtom)).toBe('scanned')
+    expect(registry.get(scanStateAtom)).toMatchObject({ hydrated: true, scanning: false })
+  })
+
+  it('applies StoreChanged metadata immediately and hydrates providers independently', async () => {
+    const status = vi.fn(() => Effect.succeed({ scanned: true, metadata }))
+    let resolveAnalytics!: (value: {
+      providers: { name: string; cost: number; calls: number; sessions: number }[]
+      models: []
+      categories: []
+      skills: []
+      subagents: []
+    }) => void
+    const analytics = vi.fn(() =>
+      Effect.promise(
+        () =>
+          new Promise<{
+            providers: { name: string; cost: number; calls: number; sessions: number }[]
+            models: []
+            categories: []
+            skills: []
+            subagents: []
+          }>(done => {
+            resolveAnalytics = done
+          }),
+      ),
+    )
+    const { registry, applyStoreMetadataAtom, hydrateScanProvidersAtom, scanStateAtom } = setup({ status, analytics })
+    const unmount = registry.mount(hydrateScanProvidersAtom)
+    registry.set(applyStoreMetadataAtom, metadata)
+    expect(status).not.toHaveBeenCalled()
+    expect(registry.get(scanStateAtom)).toMatchObject({ hydrated: true, unparsedTotal: 0 })
+    await vi.waitFor(() => expect(analytics).toHaveBeenCalledTimes(1))
+    expect(registry.get(scanStateAtom).detectedProviders).toEqual([])
+    resolveAnalytics({
+      providers: [{ name: 'codex', cost: 1, calls: 1, sessions: 1 }],
+      models: [],
+      categories: [],
+      skills: [],
+      subagents: [],
+    })
+    await vi.waitFor(() => expect(registry.get(scanStateAtom).detectedProviders).toEqual(['codex']))
+    unmount()
   })
 
   it('admits one scan command and keeps its guard when repeated requests are refused', async () => {
@@ -188,14 +294,13 @@ describe('native scan lifecycle', () => {
     unmount()
   })
 
-  it('shares one boot hydration and adopts an already running scan', async () => {
+  it('hydrates once and adopts an already running scan', async () => {
     const getScanStatus = vi.fn(() => Effect.succeed({ scanned: false }))
-    const { registry, hydrateScanAtom, scanStateAtom } = setup({
-      getScanStatus,
-      getScanActive: () => Effect.succeed(true),
+    const { registry, rehydrateScanAtom, scanStateAtom } = setup({
+      status: getScanStatus,
+      active: () => Effect.succeed(true),
     })
-    const result = await Promise.all([read(registry, hydrateScanAtom), read(registry, hydrateScanAtom)])
-    expect(result).toEqual(['unscanned', 'unscanned'])
+    await expect(run(registry, rehydrateScanAtom)).resolves.toBe('unscanned')
     expect(getScanStatus).toHaveBeenCalledTimes(1)
     expect(registry.get(scanStateAtom)).toMatchObject({ hydrated: false, scanning: true })
   })

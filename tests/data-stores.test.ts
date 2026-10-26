@@ -1,13 +1,9 @@
-import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
-import * as AtomRpc from 'effect/reactivity/AtomRpc'
 import * as Reactivity from 'effect/reactivity/Reactivity'
-import * as RpcGroup from 'effect/rpc/RpcGroup'
-import * as RpcTest from 'effect/rpc/RpcTest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { restartRpcQuery } from '../src/renderer/src/app/atoms/rpc-query.js'
@@ -17,61 +13,71 @@ import { createOverviewAtoms } from '../src/renderer/src/features/overview/atoms
 import { createPullRequestsAtoms } from '../src/renderer/src/features/pull-requests/atoms.js'
 import { createSessionsAtoms } from '../src/renderer/src/features/sessions/atoms.js'
 import { createSpendAtoms } from '../src/renderer/src/features/spend/atoms.js'
-import { RendererApi } from '../src/renderer/src/shared/lib/renderer-api.js'
-import { GetOverview } from '../src/shared/rpc/analytics.js'
-import { AnalyticsRpcError } from '../src/shared/rpc/errors.js'
+import { sessionRequestKey } from '../src/renderer/src/shared/lib/query-keys.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import type { OverviewPayload } from '../src/shared/schemas/overview.js'
+import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 
 const registries: AtomRegistry.AtomRegistry[] = []
 afterEach(() => {
   for (const registry of registries.splice(0)) registry.dispose()
-  vi.unstubAllGlobals()
 })
 
-const OverviewGroup = RpcGroup.make(GetOverview)
-
-function makeOverviewClient(factory: Atom.RegistryRuntimeFactory, getOverview: (scope: OverviewScope) => unknown) {
-  const handlers = OverviewGroup.toLayer(
-    OverviewGroup.of({
-      'overview:query': ({ scope }) =>
-        Effect.tryPromise({
-          try: () => Promise.resolve(getOverview(scope) as OverviewPayload | null),
-          catch: () => new AnalyticsRpcError({ code: 'unavailable', message: 'Analytics service unavailable' }),
-        }),
-    }),
-  )
-  return AtomRpc.Service<object>()('test/OverviewRpc', {
-    group: OverviewGroup,
-    protocol: Layer.empty,
-    runtime: factory,
-    makeEffect: RpcTest.makeClient(OverviewGroup, { flatten: true }).pipe(Effect.provide(handlers)),
-  })
-}
-
-function setup(api: unknown, getOverview?: (scope: OverviewScope) => unknown) {
-  vi.stubGlobal('window', { api })
+function setup(handlers: Parameters<typeof makeAnalyticsRpcTestClient>[1] = {}) {
+  const factory = Atom.context()
   const registry = AtomRegistry.make()
   registries.push(registry)
-  const factory = Atom.context()
-  const overviewClient = getOverview === undefined ? undefined : makeOverviewClient(factory, getOverview)
+  const client = makeAnalyticsRpcTestClient(factory, handlers)
+  const queries = {
+    overview: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'overview:query',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    sessionRows: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'sessions:view',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    session: (request: { readonly sessionId: string; readonly sourceId?: number }, selectionId: string) =>
+      client.query('store:session', request, {
+        serializationKey: selectionId,
+        reactivityKeys: ['ledger', 'pricing'],
+      }),
+    pullRequests: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'pullRequests:view',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    spend: (scope: OverviewScope, selectionId: string) =>
+      client.query('spend:view', { scope }, { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] }),
+    models: (scope: OverviewScope, selectionId: string) =>
+      client.query('models:view', { scope }, { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] }),
+    optimize: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'optimize:view',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    yield: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'optimize:yield',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+  }
   return {
     registry,
-    ...createOverviewAtoms(
-      overviewClient &&
-        ((scope, selectionId) =>
-          overviewClient.query(
-            'overview:query',
-            { scope },
-            { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
-          )),
-    ),
-    ...createSessionsAtoms(factory),
-    ...createPullRequestsAtoms(factory),
-    ...createSpendAtoms(factory),
-    ...createOptimizeAtoms(factory),
-    ...createModelsAtoms(factory),
-    invalidate: factory(RendererApi.layer).fn(() => Reactivity.invalidate(['ledger', 'pricing'])),
+    ...createOverviewAtoms(queries.overview),
+    ...createSessionsAtoms(queries.sessionRows, queries.session),
+    ...createPullRequestsAtoms(queries.pullRequests),
+    ...createSpendAtoms(queries.spend),
+    ...createOptimizeAtoms(queries.optimize, queries.yield),
+    ...createModelsAtoms(queries.models),
+    invalidate: factory(Layer.empty).fn(() => Reactivity.invalidate(['ledger', 'pricing'])),
   }
 }
 
@@ -119,12 +125,12 @@ const overviewPayload = {
   },
   unpricedModels: [],
   localModelSavings: { totalUSD: 0, calls: 0, byModel: [], byProvider: [] },
-}
+} satisfies OverviewPayload
 
 describe('native analytics queries preserve the shared wire contract', () => {
   it('loads Overview by Scope and keeps the payload during same-key invalidation', async () => {
     const getOverview = vi.fn(() => Promise.resolve(overviewPayload))
-    const { registry, overviewQuery, invalidate } = setup({ getOverview }, getOverview)
+    const { registry, overviewQuery, invalidate } = setup({ overview: getOverview })
     const scope: OverviewScope = { period: 'week', provider: 'openai' }
     registry.set(overviewQuery.requestAtom, scope)
     overviewQuery.pin(registry)
@@ -138,9 +144,11 @@ describe('native analytics queries preserve the shared wire contract', () => {
 
   it('retains Overview data with its typed RPC error when a refresh fails', async () => {
     let calls = 0
-    const { registry, overviewQuery } = setup({}, () => {
-      calls += 1
-      return calls === 1 ? overviewPayload : Promise.reject(new Error('overview unavailable'))
+    const { registry, overviewQuery } = setup({
+      overview: () => {
+        calls += 1
+        return calls === 1 ? Promise.resolve(overviewPayload) : Promise.reject(new Error('overview unavailable'))
+      },
     })
     registry.set(overviewQuery.requestAtom, { period: 'week' })
     overviewQuery.pin(registry)
@@ -158,11 +166,13 @@ describe('native analytics queries preserve the shared wire contract', () => {
   })
 
   it('starts at Initial and gives A/B/A plus reset fresh Overview selections', async () => {
-    const pending: Array<(value: unknown) => void> = []
+    const pending: Array<(value: OverviewPayload | null) => void> = []
     const calls: string[] = []
-    const { registry, overviewQuery } = setup({}, scope => {
-      calls.push(scope.period)
-      return new Promise(resolve => pending.push(resolve))
+    const { registry, overviewQuery } = setup({
+      overview: scope => {
+        calls.push(scope.period)
+        return new Promise(resolve => pending.push(resolve))
+      },
     })
     overviewQuery.pin(registry)
     expect(registry.get(overviewQuery.resultAtom)._tag).toBe('Initial')
@@ -176,7 +186,7 @@ describe('native analytics queries preserve the shared wire contract', () => {
     await vi.waitFor(() => expect(pending).toHaveLength(2))
     registry.set(overviewQuery.requestAtom, { period: 'today' })
     await vi.waitFor(() => expect(pending).toHaveLength(3))
-    pending[1]({ kpis: 'late' })
+    pending[1]({ kpis: 'late' } as unknown as OverviewPayload)
     expect(registry.get(overviewQuery.resultAtom)._tag).toBe('Initial')
     pending[2](overviewPayload)
     expect(await ready(registry, overviewQuery.resultAtom)).toEqual(overviewPayload)
@@ -188,27 +198,46 @@ describe('native analytics queries preserve the shared wire contract', () => {
     expect(await ready(registry, overviewQuery.resultAtom)).toBeNull()
   })
 
-  it('forwards rows Scope and detail source identity independently', async () => {
+  it('forwards rows Scope and preserves optional detail source identity', async () => {
     const getSessionRows = vi.fn(() => Promise.resolve([]))
     const getSession = vi.fn(() => Promise.resolve(null))
-    const { registry, sessionRowsQuery, sessionQuery } = setup({ getSessionRows, getSession })
+    const { registry, sessionRowsQuery, sessionQuery, invalidate } = setup({
+      sessionRows: getSessionRows,
+      session: getSession,
+    })
     registry.set(sessionRowsQuery.requestAtom, { period: 'today' })
     sessionRowsQuery.pin(registry)
     expect(await ready(registry, sessionRowsQuery.resultAtom)).toEqual([])
+
     registry.set(sessionQuery.requestAtom, { sessionId: 'abc', sourceId: 2 })
     sessionQuery.pin(registry)
     expect(await ready(registry, sessionQuery.resultAtom)).toBeNull()
     expect(getSessionRows).toHaveBeenCalledWith({ period: 'today' })
-    expect(getSession).toHaveBeenCalledWith('abc', 2)
+    expect(getSession).toHaveBeenCalledWith({ sessionId: 'abc', sourceId: 2 })
+    registry.set(invalidate, undefined)
+    await vi.waitFor(() => expect(getSession).toHaveBeenCalledTimes(2))
+
+    registry.set(sessionQuery.requestAtom, { sessionId: 'abc' })
+    await ready(registry, sessionQuery.resultAtom)
+    expect(getSession).toHaveBeenLastCalledWith({ sessionId: 'abc' })
+    expect(sessionRequestKey({ sessionId: 'abc', sourceId: 0 })).not.toBe(sessionRequestKey({ sessionId: 'abc' }))
     registry.set(sessionQuery.resetAtom, undefined)
     expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Initial')
+
+    registry.set(sessionQuery.requestAtom, { sessionId: 'abc', sourceId: 0 })
+    await vi.waitFor(() => expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Failure'))
+    expect(getSession).toHaveBeenCalledTimes(3)
   })
 
-  it('keeps unopened sections lazy and refreshes each activated slice once', async () => {
+  it('keeps unopened sections lazy and refreshes each activated Optimize query independently', async () => {
     const getSpend = vi.fn(() => Promise.resolve(null))
     const getOptimize = vi.fn(() => Promise.resolve(null))
     const getYield = vi.fn(() => Promise.resolve(null))
-    const { registry, optimizeQuery, yieldQuery, invalidate } = setup({ getSpend, getOptimize, getYield })
+    const { registry, optimizeQuery, yieldQuery, invalidate } = setup({
+      spend: getSpend,
+      optimize: getOptimize,
+      yield: getYield,
+    })
     registry.set(optimizeQuery.requestAtom, { period: 'week' })
     optimizeQuery.pin(registry)
     await ready(registry, optimizeQuery.resultAtom)
@@ -216,6 +245,7 @@ describe('native analytics queries preserve the shared wire contract', () => {
     await vi.waitFor(() => expect(getOptimize).toHaveBeenCalledTimes(2))
     expect(getYield).not.toHaveBeenCalled()
     expect(getSpend).not.toHaveBeenCalled()
+
     registry.set(yieldQuery.requestAtom, { period: 'week' })
     yieldQuery.pin(registry)
     await ready(registry, yieldQuery.resultAtom)
@@ -231,7 +261,11 @@ describe('native analytics queries preserve the shared wire contract', () => {
     const getPullRequests = vi.fn(() => Promise.resolve(null))
     const getSpend = vi.fn(() => Promise.resolve(null))
     const getModels = vi.fn(() => Promise.resolve(null))
-    const { registry, pullRequestsQuery, spendQuery, modelsQuery } = setup({ getPullRequests, getSpend, getModels })
+    const { registry, pullRequestsQuery, spendQuery, modelsQuery } = setup({
+      pullRequests: getPullRequests,
+      spend: getSpend,
+      models: getModels,
+    })
     for (const query of [pullRequestsQuery, spendQuery, modelsQuery]) {
       registry.set(query.requestAtom, { period: '30days' })
       query.pin(registry)
@@ -241,11 +275,8 @@ describe('native analytics queries preserve the shared wire contract', () => {
       expect(operation).toHaveBeenCalledWith({ period: '30days' })
   })
 
-  it('exposes failed overview RPC calls as query failures', async () => {
-    const { registry, overviewQuery } = setup(
-      { getOverview: () => Promise.reject(new Error('overview unavailable')) },
-      () => Promise.reject(new Error('overview unavailable')),
-    )
+  it('exposes failed Overview RPC calls as typed query failures', async () => {
+    const { registry, overviewQuery } = setup({ overview: () => Promise.reject(new Error('overview unavailable')) })
     registry.set(overviewQuery.requestAtom, { period: 'today' })
     overviewQuery.pin(registry)
     await vi.waitFor(() => {

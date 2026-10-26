@@ -115,6 +115,10 @@ export interface NativeHarnessSource {
 }
 
 export interface CoachRunner {
+  /** Effect-native capabilities owned by this coordinator. External callers
+   *  provide the app's existing MainRuntime; Promise adapters below exist for
+   *  the legacy Electron handlers during migration. */
+  readonly native: NativeCoachRunnerCapabilities
   harnesses(): Promise<CoachHarnessRow[]>
   refreshHarnesses(): Promise<CoachHarnessRow[]>
   /** Pre-flight probe (map 47 ticket 50): asks the agent's handshake for its
@@ -138,6 +142,12 @@ export interface CoachRunner {
    *  and never throws — a leftover scratch dir must never crash the app. */
   reset(): Promise<void>
   dispose(): Promise<void>
+}
+
+export interface NativeCoachRunnerCapabilities {
+  readonly list: Effect.Effect<CoachHarnessRow[], unknown, MainServices>
+  readonly refresh: Effect.Effect<CoachHarnessRow[], unknown, MainServices>
+  readonly inspect: (request: unknown) => Effect.Effect<CoachInspectResult, unknown, MainServices>
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
@@ -176,6 +186,7 @@ export interface AgentsIpcSources {
 export function registerAgentsIpc(sources: AgentsIpcSources): {
   reset: () => Promise<void>
   dispose: () => Promise<void>
+  native: NativeCoachIpcCapabilities
 } {
   const { dismissals, runtime: mainRuntime, ledgerMcpServer } = sources
   const harnesses: NativeHarnessSource = {
@@ -193,6 +204,22 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     startInspection: input => Effect.flatMap(CoachHarnessExecution, execution => execution.startInspection(input)),
   })
 
+  const native: NativeCoachIpcCapabilities = {
+    ...runner.native,
+    openLoginTerminal: Effect.fnUntraced(function* (request: unknown) {
+      const parsed = Schema.decodeUnknownResult(coachOpenLoginTerminalRequestSchema)(request)
+      if (parsed._tag === 'Failure') return { ok: false as const, error: 'invalid harness instance id' }
+      const instanceId = parsed.success
+      const instance = yield* harnesses.get(instanceId)
+      const loginCommand = instance
+        ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
+        : undefined
+      return yield* Effect.sync(() =>
+        openLoginTerminal(instanceId, id => (id === instanceId ? loginCommand : undefined)),
+      )
+    }),
+  }
+
   ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> =>
     runner.harnesses().catch(error => {
       throw new Error(coachProtocolError(error), { cause: error })
@@ -204,18 +231,8 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     }),
   )
   ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
-    const parsed = Schema.decodeUnknownResult(coachOpenLoginTerminalRequestSchema)(request)
-    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid harness instance id' }
     return mainRuntime
-      .runPromise(harnesses.get(parsed.success))
-      .then(instance => {
-        const loginCommand = instance
-          ? harnessSpecs.find(spec => spec.kind === instance.info.kind)?.auth?.loginCommand
-          : undefined
-        return openLoginTerminal(parsed.success, instanceId =>
-          instanceId === parsed.success ? loginCommand : undefined,
-        )
-      })
+      .runPromise(native.openLoginTerminal(request))
       .catch(error => ({ ok: false, error: coachProtocolError(error) }))
   })
 
@@ -281,6 +298,7 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     ),
   )
   return {
+    native,
     reset: async () => {
       await runner.reset()
     },
@@ -292,4 +310,8 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
       await runner.dispose()
     },
   }
+}
+
+export interface NativeCoachIpcCapabilities extends NativeCoachRunnerCapabilities {
+  readonly openLoginTerminal: (request: unknown) => Effect.Effect<CoachLoginTerminalResult, unknown, MainServices>
 }

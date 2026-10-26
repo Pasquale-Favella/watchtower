@@ -1,13 +1,11 @@
-import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { createSettingsAtoms } from '../src/renderer/src/features/settings/atoms.js'
-import { legacyRendererApi, RendererApi, RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
 import type { ActiveCurrency, CurrencyOption } from '../src/shared/schemas/fx.js'
+import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 
 const eur: ActiveCurrency = { code: 'EUR', symbol: '€', rate: 0.92 }
 const currencies: CurrencyOption[] = [
@@ -15,9 +13,13 @@ const currencies: CurrencyOption[] = [
   { code: 'USD', symbol: '$' },
 ]
 
-type SettingsOverrides = Partial<
-  Pick<RendererApi['Service'], 'getCadence' | 'setCadence' | 'getCurrency' | 'setCurrency' | 'getCurrencies'>
->
+interface SettingsOverrides {
+  readonly getCadence?: () => Promise<string>
+  readonly setCadence?: (value: string) => Promise<string>
+  readonly getCurrency?: () => Promise<ActiveCurrency>
+  readonly setCurrency?: (code: string) => Promise<ActiveCurrency>
+  readonly getCurrencies?: () => Promise<CurrencyOption[]>
+}
 
 const registries: AtomRegistry.AtomRegistry[] = []
 afterEach(() => {
@@ -26,9 +28,24 @@ afterEach(() => {
 
 function makeHarness(overrides: SettingsOverrides = {}) {
   const runtime = Atom.context()
-  const service = { ...legacyRendererApi, ...overrides }
-  const apiLayer = Layer.succeed(RendererApi, service)
-  const atoms = createSettingsAtoms(runtime, apiLayer)
+  const request = async (operation: string, ...args: unknown[]): Promise<unknown> => {
+    switch (operation) {
+      case 'cadence:get':
+        return (overrides.getCadence ?? (() => Promise.resolve('1m')))()
+      case 'cadence:set':
+        return (overrides.setCadence ?? (value => Promise.resolve(value)))(args[0] as string)
+      case 'currency:get':
+        return (overrides.getCurrency ?? (() => Promise.resolve({ code: 'USD', symbol: '$', rate: 1 })))()
+      case 'currency:set':
+        return (overrides.setCurrency ?? (code => Promise.resolve({ code, symbol: code, rate: 1 })))(args[0] as string)
+      case 'currency:list':
+        return (overrides.getCurrencies ?? (() => Promise.resolve(currencies)))()
+      default:
+        throw new Error(`Unexpected worker request: ${operation}`)
+    }
+  }
+  const client = makeSettingsRpcTestClient(runtime, request)
+  const atoms = createSettingsAtoms(client)
   const registry = AtomRegistry.make()
   registries.push(registry)
   return { atoms, registry }
@@ -61,9 +78,9 @@ describe('settings atoms', () => {
 
   it('loads cadence, active currency, and currency options through RendererApi', async () => {
     const { atoms, registry } = makeHarness({
-      getCadence: () => Effect.succeed('5m'),
-      getCurrency: () => Effect.succeed(eur),
-      getCurrencies: () => Effect.succeed(currencies),
+      getCadence: () => Promise.resolve('5m'),
+      getCurrency: () => Promise.resolve(eur),
+      getCurrencies: () => Promise.resolve(currencies),
     })
 
     const cadence = await dispatch(registry, atoms.loadCadenceAtom, undefined)
@@ -86,13 +103,11 @@ describe('settings atoms', () => {
     })
     const { atoms, registry } = makeHarness({
       getCadence: () =>
-        Effect.promise(() => {
+        new Promise(resolve => {
           markReadStarted()
-          return new Promise<string>(resolve => {
-            resolveSnapshot = resolve
-          })
+          resolveSnapshot = resolve
         }),
-      setCadence: () => Effect.succeed('5m'),
+      setCadence: () => Promise.resolve('5m'),
     })
 
     const loading = dispatch(registry, atoms.loadCadenceAtom, undefined)
@@ -118,18 +133,14 @@ describe('settings atoms', () => {
     })
     const { atoms, registry } = makeHarness({
       getCadence: () =>
-        Effect.promise(() => {
+        new Promise(resolve => {
           markReadStarted()
-          return new Promise<string>(resolve => {
-            resolveSnapshot = resolve
-          })
+          resolveSnapshot = resolve
         }),
       setCadence: () =>
-        Effect.promise(() => {
+        new Promise(resolve => {
           markWriteStarted()
-          return new Promise<string>(resolve => {
-            resolveWrite = resolve
-          })
+          resolveWrite = resolve
         }),
     })
 
@@ -147,7 +158,7 @@ describe('settings atoms', () => {
   })
 
   it('uses the cadence value confirmed by the server', async () => {
-    const { atoms, registry } = makeHarness({ setCadence: () => Effect.succeed('5m') })
+    const { atoms, registry } = makeHarness({ setCadence: () => Promise.resolve('5m') })
     const result = await dispatch(registry, atoms.setCadenceAtom, '10m')
 
     expect(AsyncResult.isSuccess(result) && result.value).toBe('5m')
@@ -155,8 +166,7 @@ describe('settings atoms', () => {
   })
 
   it('restores the confirmed cadence after a failed write', async () => {
-    const failure = new RendererApiError({ operation: 'cadence:set', message: 'offline' })
-    const { atoms, registry } = makeHarness({ setCadence: () => Effect.fail(failure) })
+    const { atoms, registry } = makeHarness({ setCadence: () => Promise.reject(new Error('offline')) })
     const result = await dispatch(registry, atoms.setCadenceAtom, '10m')
 
     expect(AsyncResult.isFailure(result)).toBe(true)
@@ -164,24 +174,22 @@ describe('settings atoms', () => {
   })
 
   it('changes currency only after the main process confirms it', async () => {
-    const failure = new RendererApiError({ operation: 'currency:set', message: 'offline' })
-    const { atoms, registry } = makeHarness({ setCurrency: () => Effect.fail(failure) })
+    const { atoms, registry } = makeHarness({ setCurrency: () => Promise.reject(new Error('offline')) })
     const failed = await dispatch(registry, atoms.setCurrencyAtom, 'EUR')
 
     expect(AsyncResult.isFailure(failed)).toBe(true)
     expect(registry.get(atoms.activeCurrencyAtom)).toEqual({ code: 'USD', symbol: '$', rate: 1 })
 
-    const successHarness = makeHarness({ setCurrency: () => Effect.succeed(eur) })
+    const successHarness = makeHarness({ setCurrency: () => Promise.resolve(eur) })
     const succeeded = await dispatch(successHarness.registry, successHarness.atoms.setCurrencyAtom, 'EUR')
     expect(AsyncResult.isSuccess(succeeded)).toBe(true)
     expect(successHarness.registry.get(successHarness.atoms.activeCurrencyAtom)).toEqual(eur)
   })
 
   it('keeps prior values when loads fail and applies currency change events directly', async () => {
-    const failure = new RendererApiError({ operation: 'currency:get', message: 'offline' })
     const { atoms, registry } = makeHarness({
-      getCurrency: () => Effect.fail(failure),
-      getCurrencies: () => Effect.fail(failure),
+      getCurrency: () => Promise.reject(new Error('offline')),
+      getCurrencies: () => Promise.reject(new Error('offline')),
     })
     registry.set(atoms.activeCurrencyAtom, eur)
     registry.set(atoms.currencyOptionsAtom, currencies)
@@ -202,14 +210,12 @@ describe('settings atoms', () => {
     const finished: string[] = []
     const { atoms, registry } = makeHarness({
       setCadence: value =>
-        Effect.promise(() => {
+        new Promise(resolve => {
           started.push(value)
-          return new Promise<string>(resolve => {
-            setTimeout(() => {
-              finished.push(value)
-              resolve(value)
-            }, 10)
-          })
+          setTimeout(() => {
+            finished.push(value)
+            resolve(value)
+          }, 10)
         }),
     })
     const first = dispatch(registry, atoms.setCadenceAtom, '2m')
@@ -229,13 +235,12 @@ describe('settings atoms', () => {
     })
     const { atoms, registry: firstRegistry } = makeHarness({
       setCadence: value =>
-        Effect.promise(() => {
-          if (value !== '2m') return Promise.resolve(value)
-          markFirstStarted()
-          return new Promise<string>(resolve => {
-            releaseFirst = resolve
-          })
-        }),
+        value !== '2m'
+          ? Promise.resolve(value)
+          : new Promise(resolve => {
+              markFirstStarted()
+              releaseFirst = resolve
+            }),
     })
     const secondRegistry = AtomRegistry.make()
     registries.push(secondRegistry)
@@ -259,11 +264,9 @@ describe('settings atoms', () => {
     })
     const { atoms, registry } = makeHarness({
       getCurrency: () =>
-        Effect.promise(() => {
+        new Promise(resolve => {
           markReadStarted()
-          return new Promise<ActiveCurrency>(resolve => {
-            resolveSnapshot = resolve
-          })
+          resolveSnapshot = resolve
         }),
     })
 
@@ -286,15 +289,14 @@ describe('settings atoms', () => {
     })
     const { atoms, registry } = makeHarness({
       setCurrency: code =>
-        Effect.promise(() => {
+        new Promise(resolve => {
           started.push(code)
           if (code === 'EUR') {
             markFirstStarted()
-            return new Promise<ActiveCurrency>(resolve => {
-              releaseFirst = resolve
-            })
+            releaseFirst = resolve
+            return
           }
-          return Promise.resolve({ code: 'GBP', symbol: '£', rate: 0.8 })
+          resolve({ code: 'GBP', symbol: '£', rate: 0.8 })
         }),
     })
 

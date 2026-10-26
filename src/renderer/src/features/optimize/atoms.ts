@@ -1,29 +1,52 @@
-import * as Effect from 'effect/Effect'
+import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import type * as Atom from 'effect/reactivity/Atom'
+import type { RpcClientError } from 'effect/rpc/RpcClientError'
 
-import { createRemoteQuerySlot } from '@/app/atoms/remote-query'
-import { runtime } from '@/app/renderer-runtime'
+import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 import { keyOfScope } from '@/shared/lib/query-keys'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
+import type { AnalyticsRpcError } from '../../../../shared/rpc/errors.js'
+import type { OptimizePayload } from '../../../../shared/schemas/optimize.js'
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
+import type { YieldPayload } from '../../../../shared/schemas/yield.js'
 
-export function createOptimizeAtoms(factory: Atom.RegistryRuntimeFactory, layer = RendererApi.layer) {
-  const remote = factory(layer)
+type OptimizeQuery = (
+  scope: OverviewScope,
+  selectionId: string,
+) => Atom.Atom<AsyncResult.AsyncResult<OptimizePayload | null, AnalyticsRpcError | RpcClientError>>
+type YieldQuery = (
+  scope: OverviewScope,
+  selectionId: string,
+) => Atom.Atom<AsyncResult.AsyncResult<YieldPayload | null, AnalyticsRpcError | RpcClientError>>
+
+const applicationOptimizeQuery: OptimizeQuery = (scope, selectionId) =>
+  ApplicationClient.query(
+    'optimize:view',
+    { scope },
+    { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+  )
+const applicationYieldQuery: YieldQuery = (scope, selectionId) =>
+  ApplicationClient.query(
+    'optimize:yield',
+    { scope },
+    { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+  )
+
+export function createOptimizeAtoms(
+  optimizeQuery: OptimizeQuery = applicationOptimizeQuery,
+  yieldQuery: YieldQuery = applicationYieldQuery,
+) {
   return {
-    optimizeQuery: createRemoteQuerySlot({
-      runtime: remote,
+    optimizeQuery: createRpcQuerySlot({
       key: keyOfScope,
-      fetch: (scope: OverviewScope) => Effect.flatMap(RendererApi, api => api.getOptimize(scope)),
-      reactivityKeys: ['ledger', 'pricing'],
+      query: optimizeQuery,
     }),
-    yieldQuery: createRemoteQuerySlot({
-      runtime: remote,
+    yieldQuery: createRpcQuerySlot({
       key: keyOfScope,
-      fetch: (scope: OverviewScope) => Effect.flatMap(RendererApi, api => api.getYield(scope)),
-      reactivityKeys: ['ledger', 'pricing'],
+      query: yieldQuery,
     }),
   }
 }
 
-export const { optimizeQuery, yieldQuery } = createOptimizeAtoms(runtime)
+export const { optimizeQuery, yieldQuery } = createOptimizeAtoms()

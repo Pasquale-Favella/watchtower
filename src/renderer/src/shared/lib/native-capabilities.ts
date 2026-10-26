@@ -1,10 +1,8 @@
-import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
 
 import { runtime } from '@/app/renderer-runtime'
 
-import { RendererApi } from './renderer-api.js'
+import { openExternal } from './native-shell.js'
 
 /** Native shell commands keep their guarded main-process owners. */
-export const openExternalAtom = runtime(RendererApi.layer).fn((url: string) =>
-  Effect.flatMap(RendererApi, api => api.openExternal(url)),
-)
+export const openExternalAtom = runtime(Layer.empty).fn((url: string) => openExternal(url))

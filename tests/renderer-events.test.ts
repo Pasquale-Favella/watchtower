@@ -30,9 +30,7 @@ function eventBridge(expectedListeners: number) {
     onIdle: callback => listen('idle', callback),
     onConfigChanged: callback => listen('config', callback),
     onCurrencyChanged: callback => listen('currency', callback),
-    onUpdateChanged: callback => listen('update', callback),
     onCoachEvent: callback => listen('coach', callback),
-    onCoachHarnessesChanged: callback => listen('harnesses', callback),
     onNavigate: callback => listen('navigate', callback),
     orb: { onPlacement: callback => listen('placement', callback) },
   }
@@ -62,43 +60,46 @@ describe('scoped renderer events', () => {
     expect(bridge.removals()).toBe(5)
   })
 
-  it('subscribes to app-only events and releases them on interruption', async () => {
-    const bridge = eventBridge(10)
+  it('retains only Coach and navigation app subscriptions and releases them on interruption', async () => {
+    const bridge = eventBridge(2)
     const fiber = Effect.runFork(Stream.runDrain(legacyRendererEvents('app', () => bridge.api)))
     await bridge.ready
     expect(bridge.listeners.has('coach')).toBe(true)
+    expect(bridge.listeners.has('navigate')).toBe(true)
     expect(bridge.listeners.has('placement')).toBe(false)
     await Effect.runPromise(Fiber.interrupt(fiber))
     expect(bridge.listeners.size).toBe(0)
-    expect(bridge.removals()).toBe(10)
+    expect(bridge.removals()).toBe(2)
   })
 
-  it('lets the app lifecycle stream own config while retaining other legacy events', async () => {
-    const bridge = eventBridge(9)
+  it('does not retain duplicate application lifecycle categories on the legacy stream', async () => {
+    const bridge = eventBridge(2)
     const fiber = Effect.runFork(
       Stream.runDrain(legacyRendererEvents('app', () => bridge.api, 256, undefined, ['ConfigChanged'])),
     )
     await bridge.ready
     expect(bridge.listeners.has('config')).toBe(false)
-    expect(bridge.listeners.has('currency')).toBe(true)
-    expect(bridge.listeners.size).toBe(9)
+    expect(bridge.listeners.has('currency')).toBe(false)
+    expect(bridge.listeners.has('update')).toBe(false)
+    expect(bridge.listeners.has('harnesses')).toBe(false)
+    expect(bridge.listeners.size).toBe(2)
     await Effect.runPromise(Fiber.interrupt(fiber))
     expect(bridge.listeners.size).toBe(0)
-    expect(bridge.removals()).toBe(9)
+    expect(bridge.removals()).toBe(2)
   })
 
   it('releases already registered listeners if later subscription setup fails', async () => {
-    const bridge = eventBridge(10)
+    const bridge = eventBridge(2)
     const api = {
       ...bridge.api,
-      onChanged: () => {
+      onNavigate: () => {
         throw new Error('unavailable')
       },
     }
     const result = await Effect.runPromiseExit(Stream.runDrain(legacyRendererEvents('app', () => api)))
     expect(result._tag).toBe('Failure')
     expect(bridge.listeners.size).toBe(0)
-    expect(bridge.removals()).toBe(2)
+    expect(bridge.removals()).toBe(1)
   })
 
   it('fails visibly and releases subscriptions when a synchronous producer overruns its buffer', async () => {

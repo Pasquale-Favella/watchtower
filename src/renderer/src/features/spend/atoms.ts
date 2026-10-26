@@ -1,23 +1,34 @@
-import * as Effect from 'effect/Effect'
+import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import type * as Atom from 'effect/reactivity/Atom'
+import type { RpcClientError } from 'effect/rpc/RpcClientError'
 
-import { createRemoteQuerySlot } from '@/app/atoms/remote-query'
-import { runtime } from '@/app/renderer-runtime'
+import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 import { keyOfScope } from '@/shared/lib/query-keys'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
+import type { AnalyticsRpcError } from '../../../../shared/rpc/errors.js'
 import type { OverviewScope } from '../../../../shared/schemas/overview.js'
+import type { SpendPayload } from '../../../../shared/schemas/spend.js'
 
-export function createSpendAtoms(factory: Atom.RegistryRuntimeFactory, layer = RendererApi.layer) {
-  const remote = factory(layer)
+type SpendQuery = (
+  scope: OverviewScope,
+  selectionId: string,
+) => Atom.Atom<AsyncResult.AsyncResult<SpendPayload | null, AnalyticsRpcError | RpcClientError>>
+
+const applicationSpendQuery: SpendQuery = (scope, selectionId) =>
+  ApplicationClient.query(
+    'spend:view',
+    { scope },
+    { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+  )
+
+export function createSpendAtoms(query: SpendQuery = applicationSpendQuery) {
   return {
-    spendQuery: createRemoteQuerySlot({
-      runtime: remote,
+    spendQuery: createRpcQuerySlot({
       key: keyOfScope,
-      fetch: (scope: OverviewScope) => Effect.flatMap(RendererApi, api => api.getSpend(scope)),
-      reactivityKeys: ['ledger', 'pricing'],
+      query,
     }),
   }
 }
 
-export const { spendQuery } = createSpendAtoms(runtime)
+export const { spendQuery } = createSpendAtoms()

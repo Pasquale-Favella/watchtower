@@ -10,6 +10,7 @@ import { rendererRpcApiLayer } from '../src/renderer/src/shared/lib/renderer-rpc
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import type { RpcBridge } from '../src/shared/rpc/bridge.js'
 import { type RpcMessagePort, serverProtocolLayer } from '../src/shared/rpc/port-protocol.js'
+import { unexpectedNativeHandlers } from './fixtures/unexpected-native-rpc.js'
 
 function transport() {
   const clientListeners = new Set<(frame: unknown) => void>()
@@ -58,12 +59,15 @@ describe('renderer RPC service', () => {
       if (operation === 'store:session') return null
       if (operation === 'store:sessions') return []
       if (operation === 'store:status') return { scanned: false }
+      if (operation === 'settings:clear')
+        return { dataDir: '/data', dbSize: 10, dataDirSize: 20, cacheDir: '/cache', cacheSize: 5 }
       if (operation === 'models:setPrice') return { ok: true }
       throw new Error(`private-path:${args}`)
     })
     const server = RpcServer.layer(ApplicationRpcGroup.omit('app:events'), { disableTracing: true }).pipe(
       Layer.provide(
         Layer.mergeAll(
+          unexpectedNativeHandlers,
           serverProtocolLayer(ports.server),
           analyticsHandlers({ request }),
           configHandlers({ request }, Effect.succeed(0)),
@@ -77,19 +81,21 @@ describe('renderer RPC service', () => {
           const rows = yield* api.getSessions({ project: 'test' })
           const session = yield* api.getSession('duplicate', 2)
           const status = yield* api.getScanStatus()
+          const cleared = yield* api.clearData()
           yield* api.setModelPrice('model', 1, 2)
           const failure = yield* Effect.exit(api.getOverview({ period: 'week' }))
-          return { rows, session, status, failure }
+          return { rows, session, status, cleared, failure }
         }),
       ).pipe(Effect.provide(Layer.merge(rendererRpcApiLayer(ports.bridge), server))),
     )
-    expect(result).toMatchObject({ rows: [], session: null, status: { scanned: false } })
+    expect(result).toMatchObject({ rows: [], session: null, status: { scanned: false }, cleared: { dataDir: '/data' } })
     expect(Exit.isFailure(result.failure)).toBe(true)
     expect(String(result.failure)).not.toContain('private-path')
     expect(request.mock.calls).toEqual([
       ['store:sessions', { project: 'test' }],
       ['store:session', 'duplicate', 2],
       ['store:status'],
+      ['settings:clear'],
       ['models:setPrice', 'model', 1, 2],
       ['overview:query', { period: 'week' }],
     ])

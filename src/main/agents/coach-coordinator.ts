@@ -24,7 +24,7 @@ import type { MainRuntime, MainServices } from '../main-runtime.js'
 import { logCodeFor, safeLogOperationalEvent } from '../operational-log.js'
 import { CoachSdkFailure, coachSdkFailureMessage } from './coach-errors.js'
 import { coachProtocolError } from './coach-protocol-errors.js'
-import type { CoachRunner, LedgerMcpAttachment, NativeHarnessSource } from './ipc.js'
+import type { CoachRunner, LedgerMcpAttachment, NativeCoachRunnerCapabilities, NativeHarnessSource } from './ipc.js'
 import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from './prompts.js'
 import { decodeResumeCursor } from './resume-cursor.js'
 import {
@@ -226,33 +226,38 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
   )
   deps.runtime.runFork(probeActor)
 
-  return {
-    harnesses: () => deps.runtime.runPromise(deps.harnesses.list()),
-    refreshHarnesses: () => deps.runtime.runPromise(deps.harnesses.refresh()),
-
-    inspect(request: unknown): Promise<CoachInspectResult> {
-      if (closed) return Promise.resolve(cancelledProbeResult)
+  const native: NativeCoachRunnerCapabilities = {
+    list: deps.harnesses.list(),
+    refresh: deps.harnesses.refresh(),
+    inspect: Effect.fnUntraced(function* (request: unknown) {
+      if (closed) return cancelledProbeResult
       const parsed = Schema.decodeUnknownResult(coachInspectRequestSchema)(request)
-      if (parsed._tag === 'Failure') return Promise.resolve({ ok: false, error: 'invalid coach inspect request' })
+      if (parsed._tag === 'Failure') return { ok: false as const, error: 'invalid coach inspect request' }
       const input =
         typeof parsed.success === 'string'
           ? { kind: parsed.success, allowApiKeyEnv: false }
           : { kind: parsed.success.kind, allowApiKeyEnv: parsed.success.allowApiKeyEnv ?? false }
-      return deps.runtime.runPromise(
-        Effect.gen(function* () {
-          const reply = yield* Deferred.make<Exit.Exit<CoachInspectResult, unknown>>()
-          const next = { ...input, generation, reply }
-          if (dequeuedProbe) {
-            if (queuedProbe) yield* Deferred.succeed(queuedProbe.reply, Exit.succeed(supersededProbeResult))
-            queuedProbe = next
-          } else {
-            dequeuedProbe = next
-          }
-          yield* Queue.offer(probeRequests, true)
-          const result = yield* Deferred.await(reply)
-          return Exit.isFailure(result) ? yield* Effect.failCause(result.cause) : result.value
-        }),
-      )
+      const reply = yield* Deferred.make<Exit.Exit<CoachInspectResult, unknown>>()
+      const next = { ...input, generation, reply }
+      if (dequeuedProbe) {
+        if (queuedProbe) yield* Deferred.succeed(queuedProbe.reply, Exit.succeed(supersededProbeResult))
+        queuedProbe = next
+      } else {
+        dequeuedProbe = next
+      }
+      yield* Queue.offer(probeRequests, true)
+      const result = yield* Deferred.await(reply)
+      return Exit.isFailure(result) ? yield* Effect.failCause(result.cause) : result.value
+    }),
+  }
+
+  return {
+    native,
+    harnesses: () => deps.runtime.runPromise(native.list),
+    refreshHarnesses: () => deps.runtime.runPromise(native.refresh),
+
+    inspect(request: unknown): Promise<CoachInspectResult> {
+      return deps.runtime.runPromise(native.inspect(request))
     },
 
     start(request: unknown, emit: (runId: string, event: CoachEvent) => void): Promise<CoachRunResult> {

@@ -95,6 +95,8 @@ export const lifecycleAppEventCategorySchema = Schema.Literals([
 ])
 export const appLifecycleRequestSchema = Schema.Struct({
   categories: writable(Schema.optional(Schema.mutable(Schema.Array(lifecycleAppEventCategorySchema)))),
+  /** Version-only snapshots let metadata hydrate independently of event delivery. */
+  snapshot: writable(Schema.optional(Schema.Literals(['versions', 'state']))),
 })
 
 const envelopeFields = {
@@ -156,8 +158,12 @@ export type BeaconLifecycleFrame = Schema.Schema.Type<typeof beaconLifecycleFram
 export type LifecycleFrame = AppLifecycleFrame | PanelLifecycleFrame | BeaconLifecycleFrame
 
 export class LifecycleRpcError extends Schema.TaggedError<LifecycleRpcError>()('LifecycleRpcError', {
-  code: Schema.Literals(['snapshot-failed', 'lagged']),
-  message: Schema.Literals(['Lifecycle snapshot failed', 'Lifecycle subscriber fell behind']),
+  code: Schema.Literals(['snapshot-failed', 'lagged', 'resnapshot']),
+  message: Schema.Literals([
+    'Lifecycle snapshot failed',
+    'Lifecycle subscriber fell behind',
+    'Lifecycle state changed',
+  ]),
 }) {}
 
 /** Role-specific lifecycle subscriptions. Snapshot is the first stream item. */

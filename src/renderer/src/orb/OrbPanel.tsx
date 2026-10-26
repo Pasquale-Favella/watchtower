@@ -2,7 +2,7 @@ import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ExternalLink, EyeOff, Power, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import { refreshScanAtom, scanStateAtom } from '@/app/atoms/scan'
+import { scanStateAtom } from '@/app/atoms/scan'
 import { displayShortcutForAction } from '@/app/shortcuts'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { formatChartDate, formatChartValue, spendTrend } from '@/features/overview/lib'
@@ -16,9 +16,9 @@ import { orbControls } from '@/shared/lib/api'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
-import { orbRecentQuery, orbTodayQuery } from './panel-atoms'
-import { placementAtom } from './placement-atoms'
 import { querySnapshot } from '../app/hooks/use-remote-query'
+import { orbRecentQuery, orbTodayQuery, scanStartErrorAtom, scanStartPendingAtom, startScanAtom } from './panel-atoms'
+import { placementAtom } from './placement-atoms'
 
 /** The first-close peek's note (the main process decides when it shows). */
 const BACKGROUNDED_PEEK = 'Still watching in the background'
@@ -53,7 +53,9 @@ export function OrbPanel({ className }: { className?: string }) {
   const loadError = recentQuery.error ?? todayQuery.error
   const failed = loadError !== null && recent === null
   const scanning = useAtomValue(scanStateAtom).scanning
-  const refresh = useAtomSet(refreshScanAtom)
+  const scanPending = useAtomValue(scanStartPendingAtom)
+  const scanCommandError = useAtomValue(scanStartErrorAtom)
+  const startScan = useAtomSet(startScanAtom)
   // Re-render money values when the display currency changes (ADR 0009).
   useAtomValue(activeCurrencyAtom)
 
@@ -97,8 +99,8 @@ export function OrbPanel({ className }: { className?: string }) {
           </Slot>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <IconAction label="Scan now" onClick={() => refresh(undefined)} disabled={scanning}>
-            <RefreshCw className={cn(scanning && 'animate-spin')} />
+          <IconAction label="Scan now" onClick={() => startScan(undefined)} disabled={scanning || scanPending}>
+            <RefreshCw className={cn((scanning || scanPending) && 'animate-spin')} />
           </IconAction>
           <IconAction
             label={`Hide orb · ${displayShortcutForAction('summonOrb')} brings it back`}
@@ -113,6 +115,11 @@ export function OrbPanel({ className }: { className?: string }) {
       </CardHeader>
 
       <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
+        {scanCommandError && (
+          <p role="alert" className="text-destructive text-[11px]">
+            {scanCommandError}
+          </p>
+        )}
         {failed ? (
           <p
             className="text-muted-foreground grid h-full place-items-center text-center text-[11.5px]"

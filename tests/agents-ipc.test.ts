@@ -230,6 +230,12 @@ function ownRunner(options: TestRunnerOptions): CoachRunner {
   return runner
 }
 
+function latestTestMainRuntime(): MainRuntime {
+  const host = [...ownedEffectHosts].at(-1)
+  if (!host) throw new Error('expected an owned test runtime')
+  return host as unknown as MainRuntime
+}
+
 function makeRunner(runtime: HarnessRuntime): CoachRunner {
   return ownRunner({ getRuntime: async () => runtime, harnesses: harnessSource, ledgerMcpServer })
 }
@@ -268,6 +274,25 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
         binaryPath: 'C:\\bin\\claude-agent-acp.exe',
       },
     ])
+  })
+
+  it('exposes native list and refresh effects from the same harness source as the Promise adapters', async () => {
+    const rows = await harnessSource.list()
+    const refresh = vi.fn(async () => rows)
+    const source = { ...harnessSource, refresh }
+    const runner = ownRunner({
+      getRuntime: async () => scriptedRuntime([]),
+      harnesses: source,
+      ledgerMcpServer,
+    })
+    const runtime = latestTestMainRuntime()
+
+    await expect(runtime.runPromise(runner.native.list)).resolves.toEqual(rows)
+    await expect(runner.harnesses()).resolves.toEqual(rows)
+    await expect(runtime.runPromise(runner.native.refresh)).resolves.toEqual(rows)
+    await expect(runner.refreshHarnesses()).resolves.toEqual(rows)
+    expect(refresh).toHaveBeenCalledTimes(2)
+    await runner.reset()
   })
 
   it('reports the sign-in state a run proved back to the harness source', async () => {
@@ -1130,6 +1155,42 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
     const input = inspect.mock.calls[0]?.[0] as { workspacePath: string }
     expect(input.workspacePath).toMatch(/[\\/]watchtower-coach-[^\\/]+$/)
     expect(existsSync(input.workspacePath)).toBe(true)
+  })
+
+  it('runs native and Promise inspections through one probe actor and invalidates native work on reset', async () => {
+    let finish!: () => void
+    const blocked = new Promise<void>(resolve => {
+      finish = resolve
+    })
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => {
+      if (inspect.mock.calls.length === 3) await blocked
+      return {}
+    })
+    const runner = makeRunner({
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
+        /* no-op */
+      }),
+      inspect,
+    })
+    const runtime = latestTestMainRuntime()
+
+    try {
+      const nativeResult = await runtime.runPromise(runner.native.inspect('claude'))
+      const legacyResult = await runner.inspect('claude')
+      expect(nativeResult).toEqual({ ok: true })
+      expect(legacyResult).toEqual({ ok: true })
+      const nativeInput = inspect.mock.calls[0]?.[0]
+      const legacyInput = inspect.mock.calls[1]?.[0]
+      if (!nativeInput || !legacyInput) throw new Error('expected both probe calls')
+      expect(nativeInput.workspacePath).toBe(legacyInput.workspacePath)
+
+      const inFlight = runtime.runPromise(runner.native.inspect('claude'))
+      await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(3))
+      await runner.reset()
+      await expect(inFlight).resolves.toEqual({ ok: false, error: 'conversation reset' })
+    } finally {
+      finish()
+    }
   })
 
   it('returns an ok:false arm for a harness the detector did not find', async () => {

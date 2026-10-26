@@ -1,4 +1,3 @@
-import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
@@ -6,14 +5,23 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { createCoachAtoms } from '../src/renderer/src/features/coach-skills/atoms.js'
 import { candidateKey, craftSkillPrompt } from '../src/renderer/src/features/coach-skills/lib.js'
-import { RendererApi, legacyRendererApi, RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
-import type { SkillCandidate } from '../src/shared/schemas/skills.js'
+import { legacyRendererApi, RendererApi } from '../src/renderer/src/shared/lib/renderer-api.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import type { SkillCandidate, SkillsPayload, SkillsThresholds } from '../src/shared/schemas/skills.js'
+import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 
-function setup(getSkills: RendererApi['Service']['getSkills']) {
+function setup(getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds) => Promise<SkillsPayload | null>) {
   const registry = AtomRegistry.make()
   const runtime = Atom.context()
-  const service: RendererApi['Service'] = { ...legacyRendererApi, getSkills }
-  const atoms = createCoachAtoms(runtime, Layer.succeed(RendererApi, service))
+  const service: RendererApi['Service'] = { ...legacyRendererApi }
+  const client = makeAnalyticsRpcTestClient(runtime, { skills: getSkills })
+  const detectionQuery = (request: { scope: OverviewScope; frequency: number; spread: number }, selectionId: string) =>
+    client.query(
+      'skills:view',
+      { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
+      { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+    )
+  const atoms = createCoachAtoms(runtime, Layer.succeed(RendererApi, service), detectionQuery)
   registry.mount(atoms.coachStateAtom)
   registry.mount(atoms.detection.resultAtom)
   return { registry, atoms }
@@ -55,19 +63,20 @@ const payload = {
 
 describe('Coach & Skills detection pool (the welcome-screen suggested-skill chips)', () => {
   it('loads the detection pool for a scope', async () => {
-    const getSkills = vi.fn(() => Effect.succeed(payload))
+    const getSkills = vi.fn(async () => payload)
     const { registry, atoms } = setup(getSkills)
     registry.set(atoms.detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
     await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
     expect(registry.get(atoms.detection.resultAtom)).toMatchObject({ value: payload })
+    expect(getSkills).toHaveBeenCalledWith({ period: 'lifetime' }, { frequency: 5, spread: 2 })
     registry.dispose()
   })
 
   it('switching scope clears to a fresh load (stale-while-revalidate)', async () => {
     const requests: string[] = []
-    const getSkills = vi.fn((scope: { period: string }) => {
+    const getSkills = vi.fn(async (scope: OverviewScope) => {
       requests.push(JSON.stringify(scope))
-      return Effect.succeed(scope.period === 'lifetime' ? payload : null)
+      return scope.period === 'lifetime' ? payload : null
     })
     const { registry, atoms } = setup(getSkills)
     registry.set(atoms.detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
@@ -80,9 +89,10 @@ describe('Coach & Skills detection pool (the welcome-screen suggested-skill chip
   })
 
   it('a failed load surfaces the error without clearing the last payload', async () => {
-    const failure = new RendererApiError({ operation: 'skills:view', message: 'ipc down' })
     let shouldFail = false
-    const getSkills = vi.fn(() => (shouldFail ? Effect.fail(failure) : Effect.succeed(payload)))
+    const getSkills = vi.fn(() =>
+      shouldFail ? Promise.reject(new Error('skills unavailable')) : Promise.resolve(payload),
+    )
     const { registry, atoms } = setup(getSkills)
     const request = { scope: { period: 'lifetime' as const }, frequency: 5, spread: 2 }
     registry.set(atoms.detection.requestAtom, request)
@@ -93,7 +103,7 @@ describe('Coach & Skills detection pool (the welcome-screen suggested-skill chip
     const result = registry.get(atoms.detection.resultAtom)
     expect(result._tag).toBe('Failure')
     if (result._tag === 'Failure') {
-      expect(JSON.stringify(result.cause)).toContain('ipc down')
+      expect(JSON.stringify(result.cause)).toContain('AnalyticsRpcError')
       expect(result.previousSuccess._tag).toBe('Some')
     }
     registry.dispose()

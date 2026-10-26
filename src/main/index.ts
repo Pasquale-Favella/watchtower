@@ -12,14 +12,11 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
-import { slugifyCandidateName } from '../shared/lib/skills-draft.js'
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '../shared/rpc/application.js'
 import { serverProtocolLayer } from '../shared/rpc/port-protocol.js'
 import type { ComparePair } from '../shared/schemas/compare.js'
-import type { ExportResult } from '../shared/schemas/export.js'
 import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 import {
-  type LedgerMcpConnection,
   type LedgerMcpStartupMode,
   ledgerMcpStartupModeSchema,
   type LedgerMcpStatus,
@@ -27,19 +24,16 @@ import {
 import type { OverviewScope } from '../shared/schemas/overview.js'
 import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
 import type { UpdateStatus } from '../shared/schemas/updates.js'
-import type { AcpMcpServer } from './agents/harnesses/types.js'
 import { registerAgentsIpc } from './agents/ipc.js'
 import { HarnessSnapshot } from './agents/snapshot.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
-import { exportCsvZip as exportCsvZipEffect } from './application/export-csv-zip.js'
-import { saveSkill } from './application/save-skill.js'
+import { createNativeApplicationCapabilities } from './application/native-capabilities.js'
 import { BackgroundShell, type BackgroundShellHandle, backgroundShellLayer } from './background-shell.js'
 import { DbWorkerClient } from './db-worker/client.js'
 import { acquireElectronUpdates } from './electron-updates.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
-import { exportStamp } from './export-zip.js'
-import { makeMainRuntime } from './main-runtime.js'
+import { makeMainRuntime, type MainServices } from './main-runtime.js'
 import {
   closeOperationalLog,
   initOperationalLog,
@@ -58,6 +52,7 @@ import {
   type LifecyclePublishEvent,
 } from './rpc/lifecycle.js'
 import { lifecycleEventFromWorker } from './rpc/worker-events.js'
+import { nativeHandlers, type NativeRpcCapabilities } from './rpc/native-handlers.js'
 import { AppUpdates, updatesLayer } from './updates.js'
 
 /**
@@ -139,9 +134,6 @@ const mainRuntime = makeMainRuntime(
 const sidecarPool = {
   connection: (context: ReturnType<typeof ledgerMcpContext>) =>
     mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.connection(context))),
-  regenerate: (context: ReturnType<typeof ledgerMcpContext>) =>
-    mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.regenerate(context))),
-  status: () => mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.status())),
 }
 /** Tray + floating orb + hide-on-close (set once the app is ready). */
 let backgroundShell: BackgroundShellHandle | null = null
@@ -197,34 +189,14 @@ function ledgerMcpContext(): { execPath: string; entryPath: string; dbPath: stri
   }
 }
 
-function ledgerMcpConnection(server: AcpMcpServer): LedgerMcpConnection {
-  if (!('url' in server) || !('headers' in server)) throw new Error('ledger MCP sidecar is not using HTTP')
-  const headers = Object.fromEntries(server.headers.map(header => [header.name, header.value]))
-  return {
-    url: server.url,
-    config: JSON.stringify(
-      {
-        mcpServers: {
-          [server.name]: { type: 'http', url: server.url, headers },
-        },
-      },
-      null,
-      2,
-    ),
-  }
-}
-
-async function ledgerMcpStatus(db: DbWorkerClient): Promise<LedgerMcpStatus> {
-  const startupMode = (await db.request('ledger-mcp:startup:get')) as LedgerMcpStartupMode
-  const server = await sidecarPool.status()
-  return { startupMode, running: server !== null, url: server && 'url' in server ? server.url : null }
-}
-
 /** Relays db-worker broadcasts to windows. Everything fans out to every
  * window — scan lifecycle included, manual or background: with the orb there
  * are several windows, and a scan one of them starts is the app's scan, so
  * every window must show it (and refetch on the same `store:changed`). */
 function relayWorkerEvents(db: DbWorkerClient): void {
+  db.onReplaced(() => {
+    if (lifecycleHub) mainRuntime.runSync(lifecycleHub.workerReplaced)
+  })
   db.onEvent(event => {
     // Boot handshake (`ready` / `init-error`) is consumed by the client
     // itself — never relayed to windows.
@@ -264,7 +236,7 @@ function relayWorkerEvents(db: DbWorkerClient): void {
   })
 }
 
-function registerIpc(db: DbWorkerClient): void {
+function registerIpc(db: DbWorkerClient, native: NativeRpcCapabilities<MainServices | AppUpdates>): void {
   /** Renderer tripwire forward (#130): a dropped subscription payload lands
    * here with its label + location only — never contents. Schema-validated and
    * length-capped at the schema; a malformed notice is itself an IPC error. */
@@ -280,12 +252,14 @@ function registerIpc(db: DbWorkerClient): void {
     return { ok: true }
   })
 
-  handleLogged('scan:start', (_event, options?: { provider?: string }) => db.request('scan:start', options))
+  handleLogged('scan:start', (_event, options: { provider?: string } = {}) =>
+    mainRuntime.runPromise(native.startScan(options)),
+  )
 
   /** Whether a scan is in flight — asked of the worker, which owns the scan
    * (ADR 0023). A window's bootstrap reads it once, then follows the
    * broadcast lifecycle events. */
-  handleLogged('scan:active', () => db.request('scan:active'))
+  handleLogged('scan:active', () => mainRuntime.runPromise(native.isScanActive()))
 
   ipcMain.on('scan:abort', () => {
     // Fire-and-forget like the renderer's send: a dead worker must never turn
@@ -335,19 +309,7 @@ function registerIpc(db: DbWorkerClient): void {
   handleLogged('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
     const parsed = Schema.decodeUnknownResult(skillsSaveRequestSchema)(request)
     if (parsed._tag === 'Failure') return { ok: false, error: 'invalid save request' }
-    const defaultPath = join(homedir(), '.agents', 'skills', slugifyCandidateName(parsed.success.name), 'SKILL.md')
-    const picked = await dialog.showSaveDialog({
-      title: 'Save skill',
-      defaultPath,
-      filters: [{ name: 'SKILL.md', extensions: ['md'] }],
-    })
-    if (picked.canceled || !picked.filePath) return { ok: false, error: 'cancelled' }
-    return mainRuntime.runPromise(
-      saveSkill(picked.filePath, parsed.success.content).pipe(
-        Effect.map(path => ({ ok: true as const, path })),
-        Effect.catchTag('SaveSkillError', error => Effect.succeed({ ok: false as const, error: error.message })),
-      ),
-    )
+    return mainRuntime.runPromise(native.saveSkill(parsed.success))
   })
 
   handleLogged('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
@@ -409,48 +371,31 @@ function registerIpc(db: DbWorkerClient): void {
 
   handleLogged('settings:clear', () => db.request('settings:clear'))
 
-  handleLogged('ledger-mcp:status', () => ledgerMcpStatus(db))
+  handleLogged('ledger-mcp:status', () => mainRuntime.runPromise(native.getLedgerMcpStatus()))
 
   handleLogged('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
     const parsed = Schema.decodeUnknownResult(ledgerMcpStartupModeSchema)(value)
     if (parsed._tag === 'Failure') throw new Error('invalid ledger MCP startup mode')
-    const startupMode = (await db.request('ledger-mcp:startup:set', parsed.success)) as LedgerMcpStartupMode
-    if (startupMode === 'at-launch') {
-      // Starting is best-effort: a broken bundle or unavailable DB leaves the
-      // Coach able to run without grounding tools.
-      await sidecarPool.connection(ledgerMcpContext())
-    }
-    return ledgerMcpStatus(db)
+    return mainRuntime.runPromise(native.setLedgerMcpStartupMode(parsed.success))
   })
 
-  handleLogged('ledger-mcp:connection', async (): Promise<LedgerMcpConnection> => {
-    await db.ready
-    const server = await sidecarPool.connection(ledgerMcpContext())
-    if (!server) throw new Error('ledger MCP server is unavailable')
-    return ledgerMcpConnection(server)
-  })
+  handleLogged('ledger-mcp:connection', () => mainRuntime.runPromise(native.getLedgerMcpConnection()))
 
-  handleLogged('ledger-mcp:token:regenerate', async (): Promise<LedgerMcpStatus> => {
-    await db.ready
-    await sidecarPool.regenerate(ledgerMcpContext())
-    return ledgerMcpStatus(db)
-  })
+  handleLogged('ledger-mcp:token:regenerate', () => mainRuntime.runPromise(native.regenerateLedgerMcpToken()))
 
   handleLogged('pricing:refresh', () => db.request('pricing:refresh'))
 
   /** The About area's version (ADR 0012): `app.getVersion()` reads it from
    * package.json, which electron-builder also stamps into the packaged app. */
-  handleLogged('app:version', () => app.getVersion())
+  handleLogged('app:version', () => mainRuntime.runPromise(native.getAppVersion()))
 
   for (const [channel, command] of [
-    ['updates:status', 'status'],
-    ['updates:check', 'check'],
-    ['updates:download', 'download'],
-    ['updates:install', 'install'],
+    ['updates:status', 'getUpdateStatus'],
+    ['updates:check', 'checkForUpdates'],
+    ['updates:download', 'downloadUpdate'],
+    ['updates:install', 'installUpdate'],
   ] as const) {
-    handleLogged(channel, (): Promise<UpdateStatus> =>
-      mainRuntime.runPromise(Effect.flatMap(AppUpdates, updates => updates[command])),
-    )
+    handleLogged(channel, (): Promise<UpdateStatus> => mainRuntime.runPromise(native[command]()))
   }
 
   handleLogged('currency:get', () => db.request('currency:get'))
@@ -460,56 +405,22 @@ function registerIpc(db: DbWorkerClient): void {
   /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
   handleLogged('currency:list', () => db.request('currency:list'))
 
-  /** The natural place for a user-facing export artifact: Documents (or home
-   * when the platform lacks the Documents role). Only used as the DEFAULT in
-   * the save dialog — the user always confirms the final path. */
-  function defaultExportBase(): string {
-    try {
-      return app.getPath('documents')
-    } catch {
-      return homedir()
-    }
-  }
+  handleLogged('export:csv', (_event, destination?: string) =>
+    mainRuntime.runPromise(native.exportData({ format: 'csv', destination })),
+  )
+  handleLogged('export:json', (_event, destination?: string) =>
+    mainRuntime.runPromise(native.exportData({ format: 'json', destination })),
+  )
+}
 
-  function exportCsvZip(stamp: string): Promise<ExportResult> {
-    return mainRuntime.runPromise(
-      exportCsvZipEffect(stamp, {
-        defaultDirectory: defaultExportBase(),
-        showSaveDialog: defaultPath =>
-          dialog.showSaveDialog({
-            title: 'Export CSV',
-            defaultPath,
-            filters: [{ name: 'ZIP', extensions: ['zip'] }],
-          }),
-        requestCsvFolder: staging => db.request('export:csv', staging) as Promise<ExportResult>,
-      }),
-    )
-  }
-
-  /** Uses explicit destinations for scripted exports and dialogs for UI exports. */
-  async function runExport(kind: 'csv' | 'json', destination?: string): Promise<ExportResult> {
-    if (destination) return (await db.request(`export:${kind}`, destination)) as ExportResult
-    const stamp = exportStamp()
-    if (kind === 'csv') return exportCsvZip(stamp)
-    const picked = await dialog.showSaveDialog({
-      title: 'Export JSON',
-      defaultPath: 'watchtower-export.json',
-      filters: [{ name: 'JSON', extensions: ['json'] }],
-    })
-    if (picked.canceled || !picked.filePath) return { ok: false, cancelled: true }
-    return (await db.request('export:json', picked.filePath)) as ExportResult
-  }
-
-  handleLogged('export:csv', (_event, destination?: string): Promise<ExportResult> => runExport('csv', destination))
-  handleLogged('export:json', (_event, destination?: string): Promise<ExportResult> => runExport('json', destination))
-
+function registerApplicationAgents(db: DbWorkerClient): ReturnType<typeof registerAgentsIpc> {
   // Coach + Skills agent chain (tickets 21–25): the HarnessRuntime seam's IPC
   // surface — harness listing, run ack/stream/cancel, the not-a-skill
   // dismissal store, and draft prose. The runner is lazy: the AI SDK loads on
   // the first harness-touching call, never at boot. Runs are user-initiated
   // from the unified Coach & Skills surface (ADR 0017); dismissals are a
   // ledger config table (written through the worker) so they survive clear().
-  agentsCleanup = registerAgentsIpc({
+  return registerAgentsIpc({
     runtime: mainRuntime,
     dismissals: {
       dismiss: async (source, name, reason) => {
@@ -605,7 +516,31 @@ app.whenReady().then(async () => {
   )
   relayWorkerEvents(db)
   dbClient = db
-  registerIpc(db)
+  const agents = registerApplicationAgents(db)
+  agentsCleanup = agents
+  const nativeCapabilities = createNativeApplicationCapabilities(
+    {
+      worker: db,
+      version: app.getVersion(),
+      skillDirectory: join(homedir(), '.agents', 'skills'),
+      exportDirectory: () => {
+        try {
+          return app.getPath('documents')
+        } catch {
+          return homedir()
+        }
+      },
+      ledgerMcpContext,
+      showSaveDialog: options => dialog.showSaveDialog(options),
+    },
+    {
+      getCoachHarnesses: () => agents.native.list,
+      refreshCoachHarnesses: () => agents.native.refresh,
+      inspectCoachHarness: agents.native.inspect,
+      openCoachLoginTerminal: agents.native.openLoginTerminal,
+    },
+  )
+  registerIpc(db, nativeCapabilities)
   disposeRendererRpc = registerElectronRpc({
     ipcMain,
     resolveRole: ({ webContents, url }) => {
@@ -626,13 +561,15 @@ app.whenReady().then(async () => {
         configHandlers(
           db,
           Effect.flatMap(LifecycleHub, hub => hub.currentConfigRevision),
+          Effect.flatMap(LifecycleHub, hub => hub.currentLedgerGeneration),
         ),
         lifecycleHandlers,
+        nativeHandlers(nativeCapabilities),
       )
       const protocol = serverProtocolLayer(port)
       const options = { disableTracing: true, disableFatalDefects: true } as const
       const provideHandlers = Effect.provide(Layer.merge(handlers, protocol))
-      let program: Effect.Effect<never, never, LifecycleHub>
+      let program: Effect.Effect<never, never, LifecycleHub | MainServices | AppUpdates>
       switch (role) {
         case 'app':
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(provideHandlers)

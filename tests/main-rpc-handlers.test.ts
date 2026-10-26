@@ -7,13 +7,17 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import { describe, expect, it, vi } from 'vitest'
 
 import { analyticsHandlers, configHandlers } from '../src/main/rpc/handlers.js'
-import { ApplicationRpcGroup, PanelRpcGroup } from '../src/shared/rpc/application.js'
+import { AnalyticsRpcGroup } from '../src/shared/rpc/analytics.js'
+import { PanelRpcGroup } from '../src/shared/rpc/application.js'
+import { ConfigRpcGroup } from '../src/shared/rpc/config.js'
+
+const DataRpcGroup = AnalyticsRpcGroup.merge(ConfigRpcGroup)
 
 describe('main RPC worker forwarding', () => {
   it('retains source identity and the legacy positional argument representation', async () => {
     const request = vi.fn(() => Promise.resolve(null))
     const program = Effect.gen(function* () {
-      const client = yield* RpcTest.makeClient(ApplicationRpcGroup.omit('app:events'))
+      const client = yield* RpcTest.makeClient(DataRpcGroup)
       yield* client['store:session']({ sessionId: 'same-id', sourceId: 42 })
       yield* client['store:session']({ sessionId: 'same-id' })
     }).pipe(
@@ -31,7 +35,7 @@ describe('main RPC worker forwarding', () => {
     const request = vi.fn(() => Promise.resolve(null))
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const client = yield* RpcTest.makeClient(PanelRpcGroup.omit('panel:events'))
+        const client = yield* RpcTest.makeClient(PanelRpcGroup.omit('panel:events', 'scan:start'))
         return yield* Effect.exit(client['overview:query']({ scope: { period: 'lifetime' } }))
       }).pipe(Effect.scoped, Effect.provide(analyticsHandlers({ request }, 'panel'))),
     )
@@ -46,7 +50,7 @@ describe('main RPC worker forwarding', () => {
     const request = vi.fn(() => Promise.resolve({ privatePrompt: 'do not expose this' }))
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const client = yield* RpcTest.makeClient(ApplicationRpcGroup.omit('app:events'))
+        const client = yield* RpcTest.makeClient(DataRpcGroup)
         return yield* Effect.exit(client['overview:query']({ scope: { period: 'today' } }))
       }).pipe(
         Effect.scoped,
@@ -66,7 +70,7 @@ describe('main RPC worker forwarding', () => {
   it('forwards each admitted configuration write exactly once', async () => {
     const request = vi.fn(() => Promise.resolve({ ok: true }))
     const program = Effect.gen(function* () {
-      const client = yield* RpcTest.makeClient(ApplicationRpcGroup.omit('app:events'))
+      const client = yield* RpcTest.makeClient(DataRpcGroup)
       yield* client['models:setPrice']({ model: 'model-a', inputPricePerMillion: 1, outputPricePerMillion: 2 })
       yield* client['models:setPrice']({ model: 'model-b', inputPricePerMillion: 3, outputPricePerMillion: 4 })
     }).pipe(
@@ -92,7 +96,7 @@ describe('main RPC worker forwarding', () => {
     )
     const receipt = await Effect.runPromise(
       Effect.gen(function* () {
-        const client = yield* RpcTest.makeClient(ApplicationRpcGroup.omit('app:events'))
+        const client = yield* RpcTest.makeClient(DataRpcGroup)
         const write = yield* Effect.forkChild(
           client['models:setPrice']({ model: 'mine', inputPricePerMillion: 1, outputPricePerMillion: 2 }).pipe(
             Effect.tap(() =>

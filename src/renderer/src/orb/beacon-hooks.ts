@@ -1,8 +1,7 @@
-import * as Stream from 'effect/Stream'
 import * as Effect from 'effect/Effect'
+import * as Stream from 'effect/Stream'
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 
-import { syncScanActivityAtom } from '@/app/atoms/scan'
 import { pinWindowAtom } from '@/app/hooks/use-remote-query'
 import { registry, runtime } from '@/app/renderer-runtime'
 import { orbControls } from '@/shared/lib/api'
@@ -20,10 +19,7 @@ const beaconBootstrapAtom = runtime(RendererApi.layer).atom(get => {
         Stream.take(1),
       ),
     )
-    yield* Effect.all(
-      [Effect.ignore(get.setResult(syncPlacementAtom, undefined)), get.setResult(syncScanActivityAtom, undefined)],
-      { concurrency: 'unbounded' },
-    )
+    yield* Effect.all([Effect.ignore(get.setResult(syncPlacementAtom, undefined))], { concurrency: 'unbounded' })
     return yield* Effect.never
   })
 })

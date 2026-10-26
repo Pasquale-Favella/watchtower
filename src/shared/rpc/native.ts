@@ -36,8 +36,14 @@ const exportRequestSchema = Schema.Struct({
 
 /** Main-owned application operations that are not worker analytics or config.
  * Tags retain the established renderer operation names. */
+export const StartScan = Rpc.make('scan:start', {
+  payload: scanOptionsSchema,
+  success: scanResultSchema,
+  error: NativeRpcError,
+})
+
 export const NativeRpcGroup = RpcGroup.make(
-  Rpc.make('scan:start', { payload: scanOptionsSchema, success: scanResultSchema, error: NativeRpcError }),
+  StartScan,
   Rpc.make('scan:active', { success: Schema.Boolean, error: NativeRpcError }),
   Rpc.make('updates:status', { success: updateStatusSchema, error: NativeRpcError }),
   Rpc.make('updates:check', { success: updateStatusSchema, error: NativeRpcError }),

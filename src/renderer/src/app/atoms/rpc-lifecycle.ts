@@ -7,13 +7,24 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
 
+import { coachStateAtom, replaceHarnessesAtom } from '@/features/coach-skills/atoms'
+import { activeCurrencyAtom, currencyChangedAtom } from '@/features/settings/atoms'
+import { updateStatusChangedAtom } from '@/features/settings/updates-atoms'
 import { ApplicationClient, ApplicationProtocolLayer } from '@/shared/lib/application-rpc'
 
 import type { AppLifecycleFrame, LifecycleEvent } from '../../../../shared/rpc/lifecycle.js'
 import { RendererConnection } from '../../../../shared/rpc/reconnecting-protocol.js'
 import { runtime as sharedRuntime } from '../renderer-runtime.js'
 import { resetLedgerQueries } from '../reset-ledger.js'
-import { configInvalidationRevisionAtom } from './config-change.js'
+import { appliedLedgerGenerationAtom, configInvalidationRevisionAtom } from './config-change.js'
+import {
+  applyStoreMetadataAtom,
+  rehydrateScanAtom,
+  resetScanMetadataAtom,
+  scanErrorAtom,
+  scanIdleAtom,
+  scanProgressAtom,
+} from './scan.js'
 
 export type AppLifecycleReadiness = {
   readonly state: 'inactive' | 'pending' | 'ready' | 'failed'
@@ -27,6 +38,15 @@ export const appLifecycleReadinessAtom = Atom.keepAlive(
 const UNAVAILABLE_MESSAGE = 'Application connection unavailable. Reconnecting.'
 const FIRST_RETRY_DELAY_MS = 100
 const MAX_RETRY_DELAY_MS = 3_000
+export const APP_LIFECYCLE_CATEGORIES = [
+  'scan',
+  'store',
+  'reset',
+  'config',
+  'currency',
+  'updates',
+  'harnesses',
+] as const
 
 export interface LifecycleCursor {
   epoch: string | undefined
@@ -36,11 +56,49 @@ export interface LifecycleCursor {
 
 export class LifecycleResnapshot extends Data.TaggedError('LifecycleResnapshot')<object> {}
 
-export interface LifecycleFrameCallbacks {
+export function dispatchAppLifecycleEvent<R = never>(
+  registry: AtomRegistry.AtomRegistry,
+  event: LifecycleEvent,
+  applyStoreChanged: (
+    metadata: Extract<LifecycleEvent, { _tag: 'StoreChanged' }>['metadata'],
+  ) => Effect.Effect<void, never, R>,
+): Effect.Effect<void, never, R> {
+  switch (event._tag) {
+    case 'ScanProgress':
+      registry.set(scanProgressAtom, event.progress)
+      return Effect.void
+    case 'ScanError':
+      registry.set(scanErrorAtom, event.message)
+      return Effect.void
+    case 'ScanIdle':
+      registry.set(scanIdleAtom, undefined)
+      return Effect.void
+    case 'StoreChanged':
+      return applyStoreChanged(event.metadata)
+    case 'ConfigChanged':
+      return Effect.void
+    case 'CurrencyChanged':
+      registry.set(currencyChangedAtom, event.currency)
+      return Effect.void
+    case 'UpdateChanged':
+      registry.set(updateStatusChangedAtom, event.status)
+      return Effect.void
+    case 'HarnessesChanged':
+      registry.set(replaceHarnessesAtom, event.rows)
+      return Effect.void
+    case 'LedgerReset':
+      registry.set(rehydrateScanAtom, undefined)
+      return Effect.void
+  }
+}
+
+export interface LifecycleFrameCallbacks<R = never> {
   readonly registry: AtomRegistry.AtomRegistry
   readonly readinessAtom: Atom.Writable<AppLifecycleReadiness, AppLifecycleReadiness>
   readonly invalidate: () => Effect.Effect<void, never, Reactivity.Reactivity>
   readonly resetLedger: (registry: AtomRegistry.AtomRegistry) => void
+  readonly onSnapshot?: () => Effect.Effect<void, never, R>
+  readonly onEvent?: (event: LifecycleEvent) => Effect.Effect<void, never, R>
 }
 
 const setReadiness = (
@@ -56,20 +114,25 @@ const setReadiness = (
 }
 
 /** Applies one app lifecycle frame; callers reuse the cursor across reconnects. */
-export function applyLifecycleFrame(
+export function applyLifecycleFrame<R = never>(
   cursor: LifecycleCursor,
-  callbacks: LifecycleFrameCallbacks,
+  callbacks: LifecycleFrameCallbacks<R>,
   frame: AppLifecycleFrame,
-): Effect.Effect<void, LifecycleResnapshot, Reactivity.Reactivity> {
+): Effect.Effect<void, LifecycleResnapshot, Reactivity.Reactivity | R> {
   const { registry, readinessAtom, invalidate, resetLedger } = callbacks
 
   if (frame._tag === 'Snapshot') {
     const state = frame.state
+    if (cursor.epoch === state.epoch && state.sequence < cursor.sequence) return Effect.void
     const epochChanged = cursor.epoch !== undefined && cursor.epoch !== state.epoch
     const generationChanged = cursor.generation !== undefined && cursor.generation !== state.ledgerGeneration
-    if (epochChanged || generationChanged) resetLedger(registry)
+    if (epochChanged || generationChanged) {
+      registry.set(resetScanMetadataAtom, undefined)
+      resetLedger(registry)
+    }
 
     return invalidate().pipe(
+      Effect.andThen(callbacks.onSnapshot?.() ?? Effect.void),
       Effect.tap(() =>
         Effect.sync(() => {
           const isCurrentEpoch = cursor.epoch === undefined || cursor.epoch === state.epoch
@@ -78,6 +141,7 @@ export function applyLifecycleFrame(
             cursor.generation = state.ledgerGeneration
             cursor.sequence = state.sequence
             registry.set(configInvalidationRevisionAtom, state.configRevision)
+            registry.set(appliedLedgerGenerationAtom, state.ledgerGeneration)
           }
           setReadiness(registry, readinessAtom, 'ready')
         }),
@@ -96,12 +160,20 @@ export function applyLifecycleFrame(
   if (event._tag === 'LedgerReset') {
     resetLedger(registry)
     cursor.generation = event.ledgerGeneration
-    return invalidate()
+    return invalidate().pipe(
+      Effect.andThen(callbacks.onEvent?.(event) ?? Effect.void),
+      Effect.tap(() => Effect.sync(() => registry.set(appliedLedgerGenerationAtom, event.ledgerGeneration))),
+    )
   }
-  if (event._tag !== 'ConfigChanged') return Effect.void
-
-  return invalidate().pipe(
-    Effect.tap(() => Effect.sync(() => registry.set(configInvalidationRevisionAtom, event.configRevision))),
+  const invalidates = event._tag === 'ConfigChanged' || event._tag === 'StoreChanged'
+  const afterInvalidation = invalidates ? invalidate() : Effect.void
+  return afterInvalidation.pipe(
+    Effect.andThen(callbacks.onEvent?.(event) ?? Effect.void),
+    Effect.tap(() =>
+      event._tag === 'ConfigChanged'
+        ? Effect.sync(() => registry.set(configInvalidationRevisionAtom, event.configRevision))
+        : Effect.void,
+    ),
   )
 }
 
@@ -113,9 +185,11 @@ export interface RpcLifecycleOptions {
   readonly readinessAtom?: Atom.Writable<AppLifecycleReadiness, AppLifecycleReadiness>
   readonly invalidate?: () => Effect.Effect<void, never, Reactivity.Reactivity>
   readonly resetLedger?: (registry: AtomRegistry.AtomRegistry) => void
+  readonly onSnapshot?: () => Effect.Effect<void, never, InstanceType<typeof ApplicationClient>>
+  readonly onEvent?: (event: LifecycleEvent) => Effect.Effect<void, never, InstanceType<typeof ApplicationClient>>
 }
 
-/** Creates one root-scoped config-event subscriber over the application's stable RPC client. */
+/** Creates one root-scoped application-event subscriber over the stable RPC client. */
 export function createRpcLifecycleAtom(options: RpcLifecycleOptions = {}) {
   const runtime = options.runtime ?? sharedRuntime
   const layer = (get: Atom.AtomContext) => Layer.merge(get(ApplicationClient.runtime.layer), ApplicationProtocolLayer)
@@ -150,27 +224,67 @@ export function createRpcLifecycleAtom(options: RpcLifecycleOptions = {}) {
     })
 
     let retryCount = 0
+    let initialSnapshotReceived = false
 
     while (true) {
       const connection = yield* waitForConnection
       setReadiness(registry, readinessAtom, 'pending')
       let resnapshot = false
-      const callbacks: LifecycleFrameCallbacks = { registry, readinessAtom, invalidate, resetLedger }
+      const callbacks: LifecycleFrameCallbacks<InstanceType<typeof ApplicationClient>> = {
+        registry,
+        readinessAtom,
+        invalidate,
+        resetLedger,
+        onSnapshot:
+          options.onSnapshot ??
+          (() => {
+            const refreshScanMetadata = initialSnapshotReceived
+            initialSnapshotReceived = true
+            return Effect.gen(function* () {
+              yield* Effect.forkScoped(
+                Effect.gen(function* () {
+                  if (refreshScanMetadata) yield* get.setResult(rehydrateScanAtom, undefined).pipe(Effect.ignore)
+                  const currencyAtStart = registry.get(activeCurrencyAtom)
+                  const harnessesAtStart = registry.get(coachStateAtom).harnesses
+                  const client = yield* ApplicationClient
+                  const [currency, updater, harnesses] = yield* Effect.all([
+                    Effect.result(client('currency:get', undefined)),
+                    Effect.result(client('updates:status', undefined)),
+                    Effect.result(client('coach:harnesses', undefined)),
+                  ])
+                  if (currency._tag === 'Success' && registry.get(activeCurrencyAtom) === currencyAtStart)
+                    registry.set(currencyChangedAtom, currency.success)
+                  if (updater._tag === 'Success') registry.set(updateStatusChangedAtom, updater.success)
+                  if (harnesses._tag === 'Success' && registry.get(coachStateAtom).harnesses === harnessesAtStart)
+                    registry.set(replaceHarnessesAtom, harnesses.success)
+                }),
+              )
+            })
+          }),
+        onEvent:
+          options.onEvent ??
+          (event =>
+            dispatchAppLifecycleEvent(registry, event, metadata =>
+              Effect.sync(() => registry.set(applyStoreMetadataAtom, metadata)),
+            )),
+      }
       yield* Effect.exit(
-        Stream.runDrain(
-          events().pipe(
-            Stream.mapEffect(frame =>
-              applyLifecycleFrame(cursor, callbacks, frame).pipe(
-                Effect.as(true),
-                Effect.catchTag('LifecycleResnapshot', () =>
-                  Effect.sync(() => {
-                    resnapshot = true
-                    return false
-                  }),
+        Effect.scoped(
+          Stream.runDrain(
+            events().pipe(
+              Stream.mapEffect(frame =>
+                applyLifecycleFrame(cursor, callbacks, frame).pipe(
+                  Effect.as(true),
+                  Effect.catchTag('LifecycleResnapshot', () =>
+                    Effect.sync(() => {
+                      resnapshot = true
+                      return false
+                    }),
+                  ),
                 ),
               ),
+              Stream.takeWhile(shouldContinue => shouldContinue),
             ),
-            Stream.takeWhile(shouldContinue => shouldContinue),
           ),
         ),
       )
@@ -196,7 +310,12 @@ export function createRpcLifecycleAtom(options: RpcLifecycleOptions = {}) {
     : runtime(layer).atom<never, never>(get =>
         Effect.gen(function* () {
           const client = yield* ApplicationClient
-          return yield* makeLoop(get, () => client('app:events', { categories: ['config', 'reset'] }))
+          return yield* makeLoop(get, () =>
+            client('app:events', {
+              categories: APP_LIFECYCLE_CATEGORIES,
+              snapshot: 'versions',
+            }),
+          )
         }),
       )
 

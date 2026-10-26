@@ -56,7 +56,11 @@ export function analyticsHandlers(worker: RpcDataWorker, role: 'app' | 'panel' =
   })
 }
 
-export function configHandlers<R>(worker: RpcDataWorker, configRevision: Effect.Effect<number, never, R>) {
+export function configHandlers<R>(
+  worker: RpcDataWorker,
+  configRevision: Effect.Effect<number, never, R>,
+  ledgerGeneration: Effect.Effect<number, never, R> = Effect.succeed(0),
+) {
   function request<S extends Schema.ConstraintDecoder<unknown>>(schema: S, operation: string, ...args: unknown[]) {
     return Effect.tryPromise({
       try: () => worker.request(operation, ...args),
@@ -89,7 +93,12 @@ export function configHandlers<R>(worker: RpcDataWorker, configRevision: Effect.
     'currency:list': () => request(currencyOptionsSchema, 'currency:list'),
     'store:status': () => request(scanStatusSchema, 'store:status'),
     'settings:info': () => request(settingsInfoSchema, 'settings:info'),
-    'settings:clear': () => request(settingsInfoSchema, 'settings:clear'),
+    'settings:clear': () =>
+      request(settingsInfoSchema, 'settings:clear').pipe(
+        Effect.flatMap(settings =>
+          Effect.map(ledgerGeneration, generation => ({ settings, ledgerGeneration: generation })),
+        ),
+      ),
     'pricing:refresh': () => request(pricingRefreshResultSchema, 'pricing:refresh'),
   })
 }
