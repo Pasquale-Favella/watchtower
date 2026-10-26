@@ -73,6 +73,20 @@ describe('scoped renderer events', () => {
     expect(bridge.removals()).toBe(10)
   })
 
+  it('lets the app lifecycle stream own config while retaining other legacy events', async () => {
+    const bridge = eventBridge(9)
+    const fiber = Effect.runFork(
+      Stream.runDrain(legacyRendererEvents('app', () => bridge.api, 256, undefined, ['ConfigChanged'])),
+    )
+    await bridge.ready
+    expect(bridge.listeners.has('config')).toBe(false)
+    expect(bridge.listeners.has('currency')).toBe(true)
+    expect(bridge.listeners.size).toBe(9)
+    await Effect.runPromise(Fiber.interrupt(fiber))
+    expect(bridge.listeners.size).toBe(0)
+    expect(bridge.removals()).toBe(9)
+  })
+
   it('releases already registered listeners if later subscription setup fails', async () => {
     const bridge = eventBridge(10)
     const api = {

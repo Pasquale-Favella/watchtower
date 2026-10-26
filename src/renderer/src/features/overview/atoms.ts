@@ -1,23 +1,33 @@
-import * as Effect from 'effect/Effect'
+import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import type * as Atom from 'effect/reactivity/Atom'
+import type { RpcClientError } from 'effect/rpc/RpcClientError'
 
-import { createRemoteQuerySlot } from '@/app/atoms/remote-query'
-import { runtime } from '@/app/renderer-runtime'
+import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 import { keyOfScope } from '@/shared/lib/query-keys'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
-import type { OverviewScope } from '../../../../shared/schemas/overview.js'
+import type { AnalyticsRpcError } from '../../../../shared/rpc/errors.js'
+import type { OverviewPayload, OverviewScope } from '../../../../shared/schemas/overview.js'
 
-export function createOverviewAtoms(factory: Atom.RegistryRuntimeFactory, layer = RendererApi.layer) {
-  const remote = factory(layer)
+type OverviewQuery = (
+  scope: OverviewScope,
+  selectionId: string,
+) => Atom.Atom<AsyncResult.AsyncResult<OverviewPayload | null, AnalyticsRpcError | RpcClientError>>
+
+const applicationOverviewQuery: OverviewQuery = (scope, selectionId) =>
+  ApplicationClient.query(
+    'overview:query',
+    { scope },
+    { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+  )
+
+export function createOverviewAtoms(query: OverviewQuery = applicationOverviewQuery) {
   return {
-    overviewQuery: createRemoteQuerySlot({
-      runtime: remote,
+    overviewQuery: createRpcQuerySlot({
       key: keyOfScope,
-      fetch: (scope: OverviewScope) => Effect.flatMap(RendererApi, api => api.getOverview(scope)),
-      reactivityKeys: ['ledger', 'pricing'],
+      query,
     }),
   }
 }
 
-export const { overviewQuery } = createOverviewAtoms(runtime)
+export const { overviewQuery } = createOverviewAtoms()

@@ -5,6 +5,8 @@ import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import type * as Scope from 'effect/Scope'
 
+import { createQuerySelectionState } from './query-slot.js'
+
 interface Selection<Request, Value, Error> {
   readonly request: Request
   readonly key: string
@@ -51,7 +53,6 @@ export const createRemoteQuerySlot = <Request, Value, Error, Services, RuntimeEr
 ): RemoteQuerySlot<Request, Value, Error | RuntimeError> => {
   type SlotError = Error | RuntimeError
   type CurrentSelection = Selection<Request, Value, SlotError>
-  const selectionAtom = Atom.keepAlive(Atom.make<CurrentSelection | undefined>(undefined))
 
   const makeSelection = (request: Request, key: string): CurrentSelection => {
     const refreshAtom = Atom.make(0)
@@ -71,23 +72,7 @@ export const createRemoteQuerySlot = <Request, Value, Error, Services, RuntimeEr
     }
   }
 
-  const requestAtom = Atom.keepAlive(
-    Atom.writable(
-      get => get(selectionAtom)?.request ?? null,
-      (context, request: Request | null) => {
-        if (request === null) {
-          context.set(selectionAtom, undefined)
-          return
-        }
-
-        const current = context.get(selectionAtom)
-        const key = options.key(request)
-        if (current?.key === key) return
-
-        context.set(selectionAtom, makeSelection(request, key))
-      },
-    ),
-  )
+  const { selectionAtom, requestAtom } = createQuerySelectionState(options.key, makeSelection)
 
   const resultAtom = Atom.keepAlive(
     Atom.readable(get => {

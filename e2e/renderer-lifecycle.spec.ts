@@ -66,6 +66,9 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
                 currencyReads: number
                 attaches: number
                 detaches: number
+                rpcConnects: number
+                lifecycleSubscriptions: number
+                activeLifecycleSubscriptions: number
               }
               listeners(): number
               nodes(): number
@@ -79,8 +82,11 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
       effectSetups: 2,
       effectCleanups: 1,
       scanCalls: 1,
-      attaches: 10,
-      listeners: 10,
+      attaches: 9,
+      listeners: 9,
+      rpcConnects: 1,
+      lifecycleSubscriptions: 1,
+      activeLifecycleSubscriptions: 1,
     })
     await page.evaluate(() =>
       (
@@ -99,7 +105,12 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
       ).lifecycleProbe.dispose(),
     )
     await expect.poll(async () => (await state()).nodes).toBe(0)
-    expect(await state()).toMatchObject({ effectCleanups: 2, detaches: 10, listeners: 0 })
+    expect(await state()).toMatchObject({
+      effectCleanups: 2,
+      detaches: 9,
+      listeners: 0,
+      activeLifecycleSubscriptions: 0,
+    })
     expect(errors).toEqual([])
   } catch (error) {
     throw new Error(`${error instanceof Error ? (error.stack ?? error.message) : String(error)}${diagnosticDetails()}`)

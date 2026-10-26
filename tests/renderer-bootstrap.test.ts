@@ -1,6 +1,7 @@
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { expect, it, vi } from 'vitest'
 
+import { appLifecycleReadinessAtom } from '../src/renderer/src/app/atoms/rpc-lifecycle.js'
 import { scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
 import { appBootstrapAtom } from '../src/renderer/src/app/hooks/use-app-bootstrap.js'
 import { updatesMachineAtom } from '../src/renderer/src/features/settings/updates-atoms.js'
@@ -80,6 +81,7 @@ it('subscribes before the first scan and hydrates when completion precedes the c
   vi.stubGlobal('window', { api })
   const unmount = registry.mount(appBootstrapAtom)
   try {
+    await vi.waitFor(() => expect(registry.get(appLifecycleReadinessAtom).state).toBe('failed'))
     await vi.waitFor(() => expect(registry.get(scanStateAtom).hydrated).toBe(true))
     await vi.waitFor(() => expect(getCurrency).toHaveBeenCalledTimes(1))
     expect(scan).toHaveBeenCalledTimes(1)

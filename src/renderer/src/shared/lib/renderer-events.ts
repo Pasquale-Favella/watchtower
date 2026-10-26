@@ -16,6 +16,7 @@ import { updateStatusSchema } from '../../../../shared/schemas/updates.js'
 import { parseEvent } from './api.js'
 
 export type RendererWindowRole = 'app' | 'beacon' | 'panel'
+type LegacyEventExclusion = 'ConfigChanged' | 'CurrencyChanged'
 
 export type RendererEvent =
   | { readonly _tag: 'ScanProgress'; readonly progress: typeof scanProgressMessageSchema.Type }
@@ -54,6 +55,7 @@ export function legacyRendererEvents(
   bridge: () => EventBridge = () => window.api,
   capacity = 256,
   onReady?: () => void,
+  excluded: ReadonlyArray<LegacyEventExclusion> = [],
 ): Stream.Stream<RendererEvent, RendererEventError> {
   return Stream.callback<RendererEvent, RendererEventError>(
     Effect.fnUntraced(function* (queue) {
@@ -71,6 +73,7 @@ export function legacyRendererEvents(
           Effect.try({ try: subscribe, catch: () => new RendererEventError({ reason: 'unavailable' }) }),
           unsubscribe => Effect.sync(unsubscribe),
         )
+      const included = (tag: LegacyEventExclusion): boolean => !excluded.includes(tag)
       yield* attach(() =>
         source.onProgress(raw => {
           const progress = parseEvent(scanProgressMessageSchema, 'scan progress', raw)
@@ -92,13 +95,15 @@ export function legacyRendererEvents(
       yield* attach(() => source.onIdle(() => publish({ _tag: 'ScanIdle' })))
 
       if (role !== 'beacon') {
-        yield* attach(() => source.onConfigChanged(() => publish({ _tag: 'ConfigChanged' })))
-        yield* attach(() =>
-          source.onCurrencyChanged(raw => {
-            const currency = parseEvent(activeCurrencySchema, 'currency changed', raw)
-            if (currency) publish({ _tag: 'CurrencyChanged', currency })
-          }),
-        )
+        if (included('ConfigChanged'))
+          yield* attach(() => source.onConfigChanged(() => publish({ _tag: 'ConfigChanged' })))
+        if (included('CurrencyChanged'))
+          yield* attach(() =>
+            source.onCurrencyChanged(raw => {
+              const currency = parseEvent(activeCurrencySchema, 'currency changed', raw)
+              if (currency) publish({ _tag: 'CurrencyChanged', currency })
+            }),
+          )
       }
       if (role === 'app') {
         yield* attach(() =>
@@ -145,10 +150,11 @@ export class RendererEvents extends Context.Service<
     readonly events: (
       role: RendererWindowRole,
       onReady?: () => void,
+      excluded?: ReadonlyArray<LegacyEventExclusion>,
     ) => Stream.Stream<RendererEvent, RendererEventError>
   }
 >()('watchtower/renderer/RendererEvents') {
   static readonly layer = Layer.succeed(RendererEvents, {
-    events: (role, onReady) => legacyRendererEvents(role, () => window.api, 256, onReady),
+    events: (role, onReady, excluded) => legacyRendererEvents(role, () => window.api, 256, onReady, excluded),
   })
 }

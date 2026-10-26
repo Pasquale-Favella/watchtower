@@ -2,6 +2,7 @@ import * as Effect from 'effect/Effect'
 import * as Stream from 'effect/Stream'
 import { useEffect } from 'react'
 
+import { appLifecycleReadinessAtom, appRpcLifecycleAtom } from '@/app/atoms/rpc-lifecycle'
 import { hydrateScanAtom, refreshScanAtom, scanStateAtom } from '@/app/atoms/scan'
 import { registry, runtime } from '@/app/renderer-runtime'
 import { appEventsReadyAtom, subscribeToIpc } from '@/app/stores/subscribe'
@@ -22,6 +23,7 @@ import { pinWindowAtom } from './use-remote-query.js'
 
 export const appBootstrapAtom = runtime(RendererApi.layer).atom(get => {
   get.mount(refreshScanAtom)
+  get.mount(appRpcLifecycleAtom)
   get.mount(setCadenceAtom)
   get.mount(setCurrencyAtom)
   get.mount(loadUpdateStatusAtom)
@@ -44,6 +46,11 @@ export const appBootstrapAtom = runtime(RendererApi.layer).atom(get => {
   })
   get.registry.set(loadUpdateStatusAtom, undefined)
   return Effect.gen(function* () {
+    yield* Stream.runHead(
+      get
+        .stream(appLifecycleReadinessAtom)
+        .pipe(Stream.filter(state => state.state === 'ready' || state.state === 'failed')),
+    )
     yield* Stream.runDrain(
       get.stream(appEventsReadyAtom).pipe(
         Stream.filter(state => state === 'ready' || state === 'failed'),

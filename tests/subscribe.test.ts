@@ -1,8 +1,8 @@
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { initialScanState } from '../src/renderer/src/app/atoms/scan.js'
 import { configInvalidationRevisionAtom } from '../src/renderer/src/app/atoms/config-change.js'
+import { initialScanState } from '../src/renderer/src/app/atoms/scan.js'
 import { refreshScanAtom, scanProgressAtom, scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
 import { setRouter } from '../src/renderer/src/app/navigation.js'
 import { appEventsReadyAtom, subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
@@ -255,17 +255,13 @@ describe('subscribeToIpc (ADR 0011)', () => {
     await flushEvents()
   })
 
-  it('applies a config:changed broadcast through applyChange', async () => {
-    const listeners = captureApi({
-      getScanStatus: () => Promise.resolve(statusScanned),
-      getAnalytics: () => Promise.resolve(analytics),
-    })
+  it('leaves app config events to the native lifecycle subscription', async () => {
+    const listeners = captureApi()
     const teardown = subscribeToIpc(registry)
     await flushEvents()
 
-    listeners.onConfigChanged!()
-    await flushEvents()
-    await vi.waitFor(() => expect(registry.get(configInvalidationRevisionAtom)).toBe(1))
+    expect(listeners.onConfigChanged).toBeUndefined()
+    expect(registry.get(configInvalidationRevisionAtom)).toBe(0)
 
     teardown()
     await flushEvents()
@@ -341,13 +337,14 @@ describe('subscribeToIpc (ADR 0011)', () => {
     const releaseSecondOwner = subscribeToIpc(registry)
     await flushEvents()
     expect(registry.get(appEventsReadyAtom)).toBe('ready')
-    expect(Object.keys(listeners)).toHaveLength(10)
+    expect(Object.keys(listeners)).toHaveLength(9)
+    expect(listeners.onConfigChanged).toBeUndefined()
     teardown()
     await flushEvents()
     expect(unsub).not.toHaveBeenCalled()
     releaseSecondOwner()
     await flushEvents()
-    expect(unsub).toHaveBeenCalledTimes(10)
+    expect(unsub).toHaveBeenCalledTimes(9)
   })
 
   it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', async () => {

@@ -4,6 +4,7 @@ import * as Predicate from 'effect/Predicate'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import type * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { RpcClientError } from 'effect/rpc/RpcClientError'
 import { useContext, useEffect } from 'react'
 
 import type { RemoteQuerySlot } from '../atoms/remote-query.js'
@@ -41,8 +42,11 @@ export function querySnapshot<Value, Error>(result: AsyncResult.AsyncResult<Valu
   let message: string | null = null
   if (result._tag === 'Failure') {
     const error = AsyncResult.error(result)
-    message =
-      Option.isSome(error) && Predicate.isError(error.value) ? error.value.message : 'Unable to load data. Try again.'
+    if (Option.isSome(error) && error.value instanceof RpcClientError)
+      message = 'Application connection unavailable. Reconnecting.'
+    else
+      message =
+        Option.isSome(error) && Predicate.isError(error.value) ? error.value.message : 'Unable to load data. Try again.'
   }
   return {
     data: Option.getOrNull(AsyncResult.value(result)),

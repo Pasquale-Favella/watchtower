@@ -1,8 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 import type { Api } from '../src/preload/index.js'
-
-import { withApp } from './app'
+import { dismissOnboarding, withApp } from './app'
 
 test('sandboxed preload carries RPC frames and replaces the connection after reload', async () => {
   await withApp(async ({ app, window }) => {
@@ -69,5 +68,66 @@ test('sandboxed preload carries RPC frames and replaces the connection after rel
     const second = await query()
     expect(second.response).toMatchObject({ _tag: 'Success' })
     expect(second.connection.generation).toBeGreaterThan(first.connection.generation)
+  })
+})
+
+test('Overview native RPC refreshes pricing after reconnect without reload', async () => {
+  await withApp(async ({ app, window }) => {
+    await dismissOnboarding(window)
+    await expect(window.getByText('Total spend', { exact: true })).toBeVisible()
+
+    // The application now owns this view through AtomRpc. Removing only the
+    // old invoke handler ensures a successful update must use that RPC path.
+    await app.evaluate(({ ipcMain }) => ipcMain.removeHandler('overview:query'))
+
+    const totalSpend = window
+      .getByText('Total spend', { exact: true })
+      .locator('xpath=following-sibling::div//span')
+      .first()
+    const setPrice = (input: number, output: number) =>
+      window.evaluate(
+        async ({ input, output }) => {
+          const api = (globalThis as typeof globalThis & { window: { api: Api } }).window.api
+          await api.setModelPrice('gpt-5.2-codex', input, output)
+        },
+        { input, output },
+      )
+
+    await setPrice(1_000_000, 2_000_000)
+    await expect(totalSpend).toHaveText('$64.00')
+
+    const pausedListenerCount = await app.evaluate(({ ipcMain }) => {
+      const channel = 'rpc:v1:connect'
+      const listeners = ipcMain.rawListeners(channel) as Array<Parameters<typeof ipcMain.on>[1]>
+      const testGlobal = globalThis as typeof globalThis & {
+        __watchtowerE2eRpcConnectListeners?: typeof listeners
+      }
+      testGlobal.__watchtowerE2eRpcConnectListeners = listeners
+      for (const listener of listeners) ipcMain.removeListener(channel, listener)
+      return listeners.length
+    })
+    expect(pausedListenerCount).toBeGreaterThan(0)
+
+    try {
+      await window.evaluate(async () => {
+        const bridge = (globalThis as typeof globalThis & { window: { api: Api } }).window.api.rpcV1
+        const connection = await bridge.connect()
+        if (connection._tag !== 'Connected') throw new Error(`RPC connection failed: ${connection.code}`)
+        bridge.disconnect(connection.generation)
+      })
+      await setPrice(2_000_000, 2_000_000)
+    } finally {
+      await app.evaluate(({ ipcMain }) => {
+        const channel = 'rpc:v1:connect'
+        const testGlobal = globalThis as typeof globalThis & {
+          __watchtowerE2eRpcConnectListeners?: Array<Parameters<typeof ipcMain.on>[1]>
+        }
+        const listeners = testGlobal.__watchtowerE2eRpcConnectListeners ?? []
+        for (const listener of listeners) ipcMain.on(channel, listener)
+        delete testGlobal.__watchtowerE2eRpcConnectListeners
+      })
+    }
+
+    await expect(totalSpend).toHaveText('$96.00')
   })
 })

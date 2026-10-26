@@ -23,10 +23,10 @@ flowchart TB
         workflows ~~~ decoder
     end
 
-    preload["Preload contextBridge<br/>Typed Promise API and event subscriptions"]
+    preload["Preload contextBridge<br/>Versioned RPC port and temporary legacy API"]
 
     subgraph main["Electron main process · MainRuntime"]
-        ipc["IPC handlers and worker client"]
+        ipc["RPC/IPC handlers and worker client"]
         shell["BackgroundShell<br/>Tray, orb, windows, subscriptions"]
         coach["Coach harness coordination"]
         pool["MCP pool and sidecar lifecycle"]
@@ -52,8 +52,8 @@ flowchart TB
     cache[("Session cache<br/>Per-file fingerprints")]
     ledger[("ledger.db<br/>Transcript facts and persisted settings")]
 
-    workflows -->|"RendererApi Effects"| preload
-    preload -->|"Invoke IPC"| ipc
+    workflows -->|"AtomRpc pilot / remaining RendererApi Effects"| preload
+    preload -->|"RPC MessagePort / remaining invoke IPC"| ipc
     ipc -->|"Results and events"| preload
     preload -->|"Incoming payloads"| decoder
     decoder -->|"Validated data or visible error state"| ui
@@ -101,16 +101,28 @@ and event paths are drawn explicitly.
    and cached calls, while each changed file commits atomically to the ledger.
 2. The worker sends progress and completion events to main for relay.
    `store:changed` invalidates active queries in each window's Reactivity
-   service. A Section's data request travels through `RendererApi`, currently
-   adapted over the Promise IPC API, to an application query
-   in the worker. That query obtains decoded facts and live settings through
+   service. Overview and pricing use native AtomRpc queries over the versioned
+   Electron MessagePort. Remaining Sections use `RendererApi` over the temporary
+   Promise IPC adapter. Main forwards both paths to an application query in the
+   worker. That query obtains decoded facts and live settings through
    a focused repository capability, runs pure calculations, and validates
    the outgoing payload with Effect Schema. Main forwards the result and the
    renderer decodes it again before publishing the Atom's `AsyncResult`.
+   The app window keeps one scoped RPC client across port generations. Disconnects
+   fail admitted calls; reconnection reads the config/reset snapshot and invalidates
+   queries without replaying commands. Panel and beacon lifecycle consumers still
+   use the legacy subscriptions pending their transport migration.
+   Each RPC connection admits at most 64 active requests. The worker client also
+   admits at most 128 distinct ordinary operations across connections, including
+   recovery waits. RPC cancellation does not release an unfinished worker operation.
+   Shared reads reuse admission; scan abort and shutdown retain control access.
 3. An Alias or Price override edit follows a worker command route into
    `LedgerConfig`. Subsequent queries use the updated setting to reprice the
    existing facts. The edit requires no transcript rescan. Each repository
    operation completes its SQLite transaction without Promise yields.
+   RPC pricing writes return a confirmed config revision. The renderer waits
+   for its authoritative event revision and the active query refresh, so a
+   different window's earlier event cannot confirm the wrong write.
 4. A Coach request goes to main's harness integration. The coding-agent CLI
    can call `watchtower-ledger` tools over MCP to inspect usage. Each MCP
    query process owns a read-only connection and reuses the application query
@@ -140,9 +152,10 @@ snapshot and never refetches ledger data merely to change the display symbol.
 
 The versioned RPC implementation follows
 [ADR 0037](./adr/0037-versioned-effect-rpc-boundaries.md). Shared schemas,
-generated clients and an authenticated MessagePort adapter are present while
-production query selection and lifecycle migration continue. The existing
-application bridge remains active during that rollout. See the
+generated clients and an authenticated MessagePort adapter serve the
+Overview/pricing pilot and its config/reset lifecycle. Remaining application
+domains still use the legacy bridge. Main/worker requests retain the old wire;
+renderer RPC errors cannot yet preserve worker domain tags end to end. See the
 [adoption plan](./plans/effect-renderer-adoption.md) for the separate renderer,
 renderer/main RPC and main/worker RPC completion gates.
 

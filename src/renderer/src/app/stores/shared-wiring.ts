@@ -30,7 +30,7 @@ export function createWindowEventAtom(
     get.registry.set(readyAtom, 'pending')
     return Effect.flatMap(RendererEvents, source =>
       Stream.runForEach(
-        source.events(role, () => get.registry.set(readyAtom, 'ready')),
+        source.events(role, () => get.registry.set(readyAtom, 'ready'), role === 'app' ? ['ConfigChanged'] : []),
         event =>
           Effect.sync(() => {
             const registry = get.registry

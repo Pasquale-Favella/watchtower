@@ -1,17 +1,20 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
+import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
 import { configInvalidationRevisionAtom } from '@/app/atoms/config-change'
-import { createRemoteQuerySlot } from '@/app/atoms/remote-query'
-import { runtime as sharedRuntime } from '@/app/renderer-runtime'
+import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
 import { isUnpriced } from '@/shared/lib/models'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
-import type { ModelReportRow } from '../../../../shared/schemas/models.js'
+import { configWriteReceiptSchema } from '../../../../shared/rpc/config.js'
+import type { ModelAlias, ModelReportRow, PriceOverride } from '../../../../shared/schemas/models.js'
+
+type PricingClient = Pick<typeof ApplicationClient, 'runtime' | 'mutation' | 'query'>
 
 export const PRICING_REQUEST = {}
 export const KNOWN_MODELS_REQUEST = { period: 'lifetime' as const }
@@ -40,57 +43,61 @@ interface QueryInvalidationTarget {
   readonly resultAtom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>
 }
 
-export function createPricingCommandAtoms(
-  factory: Atom.RegistryRuntimeFactory,
+type ConfigWriteReceipt = Schema.Schema.Type<typeof configWriteReceiptSchema>
+
+const setCommandError = (
+  get: Atom.FnContext,
+  errorsAtom: Atom.Writable<PricingCommandErrors, PricingCommandErrors>,
+  command: PricingCommand,
+  error: string | null,
+): void => {
+  const registry = get.registry
+  registry.set(errorsAtom, { ...registry.get(errorsAtom), [command]: error })
+}
+
+const refreshAfterWrite = Effect.fnUntraced(function* (
+  get: Atom.FnContext,
   options: PricingCommandOptions,
-  apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
+  configRevision: number,
 ) {
-  const api = factory(apiLayer)
-  const setCommandError = (get: Atom.FnContext, command: PricingCommand, error: string | null): void => {
-    const registry = get.registry
-    registry.set(options.commandErrorsAtom, {
-      ...registry.get(options.commandErrorsAtom),
-      [command]: error,
-    })
+  if (get.registry.get(configInvalidationRevisionAtom) < configRevision) {
+    yield* Stream.runDrain(
+      get.stream(configInvalidationRevisionAtom).pipe(
+        Stream.filter(revision => revision >= configRevision),
+        Stream.take(1),
+      ),
+    )
   }
 
-  const refreshAfterWrite = (get: Atom.FnContext, revision: number) =>
-    Effect.gen(function* () {
-      yield* Stream.runDrain(
-        get.stream(configInvalidationRevisionAtom).pipe(
-          Stream.filter(next => next > revision),
-          Stream.take(1),
-        ),
-      )
+  const registry = get.registry
+  const activeQueries = [options.aliasesQuery, options.overridesQuery, options.knownModelsQuery].filter(
+    query => registry.get(query.requestAtom) !== null,
+  )
+  yield* Effect.all(
+    activeQueries.map(query => Effect.result(get.result(query.resultAtom, { suspendOnWaiting: true }))),
+    { concurrency: 'unbounded' },
+  )
+})
 
-      const registry = get.registry
-      const activeQueries = [options.aliasesQuery, options.overridesQuery, options.knownModelsQuery].filter(
-        query => registry.get(query.requestAtom) !== null,
-      )
-      yield* Effect.all(
-        activeQueries.map(query => Effect.result(get.result(query.resultAtom, { suspendOnWaiting: true }))),
-        { concurrency: 'unbounded' },
-      )
-    })
-
-  const command = <Input>(
+const createPricingCommandAtoms = (client: PricingClient, options: PricingCommandOptions) => {
+  const command = <Input, MutationInput extends { readonly payload: unknown }, MutationError>(
     name: PricingCommand,
-    write: (rendererApi: RendererApi['Service'], input: Input) => Effect.Effect<void, unknown>,
+    mutation: Atom.AtomResultFn<MutationInput, ConfigWriteReceipt, MutationError>,
+    toMutationInput: (input: Input) => MutationInput,
   ) =>
-    api.fn<Input>()(
+    client.runtime.fn<Input>()(
       (input, get) =>
         get.registry.get(writeSemaphoreAtom).withPermit(
           Effect.gen(function* () {
-            const revision = get.registry.get(configInvalidationRevisionAtom)
-            const rendererApi = yield* RendererApi
-            const result = yield* Effect.result(write(rendererApi, input))
+            const result = yield* Effect.result(get.setResult(mutation, toMutationInput(input)))
             if (result._tag === 'Failure') {
               const message = result.failure instanceof Error ? result.failure.message : String(result.failure)
-              setCommandError(get, name, message)
+              setCommandError(get, options.commandErrorsAtom, name, message)
               return { ok: false, message } as const
             }
-            setCommandError(get, name, null)
-            yield* refreshAfterWrite(get, revision)
+
+            setCommandError(get, options.commandErrorsAtom, name, null)
+            yield* refreshAfterWrite(get, options, result.success.configRevision)
             return { ok: true } as const
           }),
         ),
@@ -98,74 +105,65 @@ export function createPricingCommandAtoms(
     )
 
   return {
-    addAliasAtom: command('addAlias', (rendererApi, input: { model: string; aliasOf: string }) =>
-      rendererApi.addModelAlias(input.model, input.aliasOf),
-    ),
-    removeAliasAtom: command('removeAlias', (rendererApi, model: string) => rendererApi.removeModelAlias(model)),
-    setOverrideAtom: command(
-      'setOverride',
-      (rendererApi, input: { model: string; inputPricePerMillion: number; outputPricePerMillion: number }) =>
-        rendererApi.setModelPrice(input.model, input.inputPricePerMillion, input.outputPricePerMillion),
-    ),
-    removeOverrideAtom: command('removeOverride', (rendererApi, model: string) =>
-      rendererApi.removePriceOverride(model),
-    ),
+    addAliasAtom: command('addAlias', client.mutation('models:addAlias'), (input: ModelAlias) => ({ payload: input })),
+    removeAliasAtom: command('removeAlias', client.mutation('models:removeAlias'), (model: string) => ({
+      payload: { model },
+    })),
+    setOverrideAtom: command('setOverride', client.mutation('models:setPrice'), (input: PriceOverride) => ({
+      payload: input,
+    })),
+    removeOverrideAtom: command('removeOverride', client.mutation('models:removePriceOverride'), (model: string) => ({
+      payload: { model },
+    })),
   }
 }
 
-export function createPricingAtoms(
-  factory: Atom.RegistryRuntimeFactory,
-  apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
-) {
-  const api = factory(apiLayer)
-  const pricingAliases = createRemoteQuerySlot({
-    runtime: api,
-    fetch: () => Effect.flatMap(RendererApi, rendererApi => rendererApi.getModelAliases()),
+export function createPricingAtoms(client: PricingClient = ApplicationClient) {
+  const aliasesQuery = createRpcQuerySlot({
     key: () => 'aliases',
-    reactivityKeys: ['pricing'],
+    query: (_request, selectionId) =>
+      client.query('models:getAliases', undefined, { serializationKey: selectionId, reactivityKeys: ['pricing'] }),
   })
-  const pricingOverrides = createRemoteQuerySlot({
-    runtime: api,
-    fetch: () => Effect.flatMap(RendererApi, rendererApi => rendererApi.getPriceOverrides()),
+  const overridesQuery = createRpcQuerySlot({
     key: () => 'overrides',
-    reactivityKeys: ['pricing'],
+    query: (_request, selectionId) =>
+      client.query('models:getPriceOverrides', undefined, {
+        serializationKey: selectionId,
+        reactivityKeys: ['pricing'],
+      }),
   })
-  const pricingKnownModels = createRemoteQuerySlot({
-    runtime: api,
-    fetch: () => Effect.flatMap(RendererApi, rendererApi => rendererApi.getModels(KNOWN_MODELS_REQUEST)),
+  const knownModelsQuery = createRpcQuerySlot({
     key: () => 'known-models',
-    reactivityKeys: ['ledger', 'pricing'],
+    query: (_request, selectionId) =>
+      client.query(
+        'models:view',
+        { scope: KNOWN_MODELS_REQUEST },
+        {
+          serializationKey: selectionId,
+          reactivityKeys: ['ledger', 'pricing'],
+        },
+      ),
   })
   const commandErrorsAtom = Atom.keepAlive(Atom.make<PricingCommandErrors>(initialErrors))
-  const commandAtoms = createPricingCommandAtoms(
-    factory,
-    {
-      aliasesQuery: pricingAliases,
-      overridesQuery: pricingOverrides,
-      knownModelsQuery: pricingKnownModels,
-      commandErrorsAtom,
-    },
-    apiLayer,
-  )
-  const { addAliasAtom, removeAliasAtom, setOverrideAtom, removeOverrideAtom } = commandAtoms
+  const commandAtoms = createPricingCommandAtoms(client, {
+    aliasesQuery,
+    overridesQuery,
+    knownModelsQuery,
+    commandErrorsAtom,
+  })
 
-  const unpricedModelsAtom = Atom.readable(get => {
-    const result = get(pricingKnownModels.resultAtom)
-    return result._tag === 'Success' ? (result.value?.byModel ?? []).filter(isUnpriced) : []
-  })
-  const pricedModelsAtom = Atom.readable(get => {
-    const result = get(pricingKnownModels.resultAtom)
-    return result._tag === 'Success' ? (result.value?.byModel ?? []).filter(model => model.costUSD > 0) : []
-  })
+  const { addAliasAtom, removeAliasAtom, setOverrideAtom, removeOverrideAtom } = commandAtoms
   const knownModelsAtom = Atom.readable<ModelReportRow[] | null>(get => {
-    const result = get(pricingKnownModels.resultAtom)
-    return result._tag === 'Success' ? (result.value?.byModel ?? []) : null
+    const payload = AsyncResult.value(get(knownModelsQuery.resultAtom))
+    return Option.isSome(payload) ? (payload.value?.byModel ?? []) : null
   })
+  const unpricedModelsAtom = Atom.readable(get => (get(knownModelsAtom) ?? []).filter(isUnpriced))
+  const pricedModelsAtom = Atom.readable(get => (get(knownModelsAtom) ?? []).filter(model => model.costUSD > 0))
 
   return {
-    aliasesQuery: pricingAliases,
-    overridesQuery: pricingOverrides,
-    knownModelsQuery: pricingKnownModels,
+    aliasesQuery,
+    overridesQuery,
+    knownModelsQuery,
     commandErrorsAtom,
     addAliasAtom,
     removeAliasAtom,
@@ -177,23 +175,19 @@ export function createPricingAtoms(
   }
 }
 
-const defaultPricingAtoms = createPricingAtoms(sharedRuntime)
+const defaultPricingAtoms = createPricingAtoms()
 
-/** Each form gets its own command result atom so concurrent callers cannot share receipts. */
+/** Each form uses the shared native mutation atoms and a distinct command result atom. */
 export function createPricingCommandFamily(
-  factory: Atom.RegistryRuntimeFactory = sharedRuntime,
-  apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
+  client: PricingClient = ApplicationClient,
+  options: PricingCommandOptions = {
+    aliasesQuery: defaultPricingAtoms.aliasesQuery,
+    overridesQuery: defaultPricingAtoms.overridesQuery,
+    knownModelsQuery: defaultPricingAtoms.knownModelsQuery,
+    commandErrorsAtom: defaultPricingAtoms.commandErrorsAtom,
+  },
 ) {
-  return createPricingCommandAtoms(
-    factory,
-    {
-      aliasesQuery: defaultPricingAtoms.aliasesQuery,
-      overridesQuery: defaultPricingAtoms.overridesQuery,
-      knownModelsQuery: defaultPricingAtoms.knownModelsQuery,
-      commandErrorsAtom: defaultPricingAtoms.commandErrorsAtom,
-    },
-    apiLayer,
-  )
+  return createPricingCommandAtoms(client, options)
 }
 
 export const aliasesPricingCommands = createPricingCommandFamily()

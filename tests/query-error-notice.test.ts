@@ -2,6 +2,7 @@ import { RegistryContext } from '@effect/atom-react'
 import * as Option from 'effect/Option'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
@@ -10,7 +11,6 @@ import { QueryErrorNotice } from '../src/renderer/src/shared/components/QueryErr
 import { overviewQuery } from '../src/renderer/src/features/overview/atoms.js'
 import { OverviewView } from '../src/renderer/src/features/overview/OverviewView.js'
 import { TooltipProvider } from '../src/renderer/src/shared/components/ui/tooltip.js'
-import { RendererApiError } from '../src/renderer/src/shared/lib/renderer-api.js'
 import type { OverviewPayload } from '../src/shared/schemas/overview.js'
 
 const payload: OverviewPayload = {
@@ -50,7 +50,9 @@ const payload: OverviewPayload = {
 
 function renderFailedOverview(previous?: OverviewPayload): string {
   const failure = AsyncResult.fail(
-    new RendererApiError({ operation: 'overview:query', message: 'Connection unavailable' }),
+    new RpcClientError({
+      reason: new RpcClientDefect({ message: 'RPC port disconnected', cause: new Error('closed') }),
+    }),
     {
       previousSuccess: previous === undefined ? Option.none() : Option.some(AsyncResult.success(previous)),
     },
@@ -79,14 +81,14 @@ describe('QueryErrorNotice', () => {
     const markup = renderFailedOverview(payload)
     expect(markup).toContain('Total spend')
     expect(markup).toContain('$42.00')
-    expect(markup).toContain('Refresh failed: Connection unavailable')
+    expect(markup).toContain('Refresh failed: Application connection unavailable. Reconnecting.')
     expect(markup).not.toContain('role="alert"')
   })
 
   it('renders the actual Overview first-load failure without stale metrics', () => {
     const markup = renderFailedOverview()
     expect(markup).toContain('role="alert"')
-    expect(markup).toContain('Connection unavailable')
+    expect(markup).toContain('Application connection unavailable. Reconnecting.')
     expect(markup).not.toContain('Total spend')
   })
   it('keeps retained view content visible beside a nonblocking refresh error', () => {

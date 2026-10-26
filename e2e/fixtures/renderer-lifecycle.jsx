@@ -10,7 +10,21 @@ import { rendererRuntimeOwner } from '@/app/renderer-runtime'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 const listeners = new Map()
-const counts = { effectSetups: 0, effectCleanups: 0, scanCalls: 0, currencyReads: 0, attaches: 0, detaches: 0 }
+const counts = {
+  effectSetups: 0,
+  effectCleanups: 0,
+  scanCalls: 0,
+  currencyReads: 0,
+  attaches: 0,
+  detaches: 0,
+  rpcConnects: 0,
+  lifecycleSubscriptions: 0,
+  activeLifecycleSubscriptions: 0,
+}
+let nextGeneration = 1
+const rpcMessages = new Map()
+const rpcCloses = new Map()
+const lifecycleRequests = new Map()
 let scanned = false
 const metadata = {
   scanId: 'fixture',
@@ -21,6 +35,31 @@ const metadata = {
   failedFiles: 0,
   perProvider: [],
   aborted: false,
+}
+const lifecycleSnapshot = {
+  _tag: 'Snapshot',
+  role: 'app',
+  state: {
+    epoch: 'fixture-epoch',
+    sequence: 0,
+    ledgerGeneration: 0,
+    configRevision: 0,
+    scanStatus: { scanned: false },
+    scanActivity: { scanning: false, progress: null, error: null },
+    currency: { code: 'USD', symbol: '$', rate: 1 },
+    updater: {
+      revision: 0,
+      currentVersion: 'fixture',
+      latestVersion: null,
+      updateAvailable: false,
+      tag: null,
+      phase: 'idle',
+      installSupported: true,
+      progress: null,
+      message: null,
+    },
+    harnesses: [],
+  },
 }
 const delay = value => new Promise(resolve => setTimeout(() => resolve(value), 15))
 const subscribe = name => listener => {
@@ -48,6 +87,48 @@ window.api = {
       'onNavigate',
     ].map(name => [name, subscribe(name)]),
   ),
+  rpcV1: {
+    connect: async () => {
+      counts.rpcConnects++
+      const generation = nextGeneration++
+      rpcMessages.set(generation, new Set())
+      rpcCloses.set(generation, new Set())
+      return { _tag: 'Connected', generation }
+    },
+    send: async (frame, generation) => {
+      const message = JSON.parse(frame)
+      if (message._tag === 'Request' && message.tag === 'app:events') {
+        counts.lifecycleSubscriptions++
+        counts.activeLifecycleSubscriptions++
+        lifecycleRequests.set(message.id, generation)
+        const response = JSON.stringify({ _tag: 'Chunk', requestId: message.id, values: [lifecycleSnapshot] })
+        for (const listener of rpcMessages.get(generation) ?? []) listener(response)
+      } else if (message._tag === 'Interrupt' && lifecycleRequests.delete(message.requestId)) {
+        counts.activeLifecycleSubscriptions--
+      }
+    },
+    onMessage: (listener, generation) => {
+      const listeners = rpcMessages.get(generation)
+      listeners?.add(listener)
+      return () => listeners?.delete(listener)
+    },
+    onClose: (listener, generation) => {
+      const listeners = rpcCloses.get(generation)
+      listeners?.add(listener)
+      return () => listeners?.delete(listener)
+    },
+    disconnect: generation => {
+      for (const [requestId, owner] of lifecycleRequests) {
+        if (owner === generation) {
+          lifecycleRequests.delete(requestId)
+          counts.activeLifecycleSubscriptions--
+        }
+      }
+      for (const listener of rpcCloses.get(generation) ?? []) listener()
+      rpcMessages.delete(generation)
+      rpcCloses.delete(generation)
+    },
+  },
   getScanStatus: () => delay({ scanned, ...(scanned ? { metadata } : {}) }),
   getScanActive: () => delay(false),
   getAnalytics: () => delay(null),
@@ -71,7 +152,7 @@ window.api = {
     }),
   scan: async () => {
     counts.scanCalls++
-    if (listeners.size !== 10) throw new Error('Scan started before event subscription')
+    if (listeners.size !== 9) throw new Error('Scan started before event subscription')
     scanned = true
     listeners.get('onChanged')(metadata)
     return await delay({ ok: true })
