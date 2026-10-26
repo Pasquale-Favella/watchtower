@@ -103,10 +103,23 @@ const makeIncarnation = async (
   fiber.addObserver(exit => {
     if (!startupSettled) rejectStartup(exit)
   })
-  const client = await Promise.race([
-    startup,
-    new Promise<never>((_, reject) => setTimeout(() => reject(new Error('worker RPC scope startup timed out')), 3_000)),
-  ])
+  let client: Client
+  try {
+    client = await Promise.race([
+      startup,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('worker RPC scope startup timed out')), 3_000),
+      ),
+    ])
+    // Layer construction precedes the worker's application handshake. Keep cold
+    // module loading outside the deadline that checks RPC response delivery.
+    if (!failInitialization) await waitForCounter(counters, 1, 1, 5_000)
+  } catch (error) {
+    resolveStop()
+    if (worker.threadId !== -1) await worker.terminate()
+    await Promise.race([Effect.runPromise(Fiber.await(fiber)), delay(1_500)])
+    throw error
+  }
 
   return {
     client,
@@ -138,8 +151,8 @@ const makeObservation = (): Observation => ({
   exitTimes: [],
 })
 
-const waitForCounter = async (counters: Int32Array, index: number, expected: number) => {
-  const deadline = Date.now() + 2_000
+const waitForCounter = async (counters: Int32Array, index: number, expected: number, timeoutMs = 2_000) => {
+  const deadline = Date.now() + timeoutMs
   while (Atomics.load(counters, index) !== expected && Date.now() < deadline) {
     await new Promise(resolve => setTimeout(resolve, 5))
   }
@@ -162,7 +175,7 @@ describe('official worker RPC under incarnation supervision', () => {
     } finally {
       if (observation.active > 0) await incarnation.worker.terminate()
     }
-  }, 8_000)
+  }, 15_000)
 
   it('fails one committed pending call, closes the old scope, then permits a replacement', async () => {
     const observation = makeObservation()
@@ -240,7 +253,7 @@ describe('official worker RPC under incarnation supervision', () => {
       await Promise.race([first.stop().catch(() => {}), delay(3_000)])
       if (replacement) await Promise.race([replacement.stop(), delay(3_000)])
     }
-  }, 8_000)
+  }, 15_000)
 
   it('sends the application shutdown RPC before the official close handshake', async () => {
     const observation = makeObservation()
@@ -257,5 +270,5 @@ describe('official worker RPC under incarnation supervision', () => {
     } finally {
       if (observation.active > 0) await incarnation.worker.terminate()
     }
-  }, 8_000)
+  }, 15_000)
 })
