@@ -1,4 +1,5 @@
-import { test, expect } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+
 import { dismissOnboarding, withApp } from './app'
 
 /**
@@ -10,20 +11,26 @@ import { dismissOnboarding, withApp } from './app'
  */
 test('palette opens, filters, and navigates to Models', async () => {
   await withApp(async ({ window }) => {
-    await dismissOnboarding(window)
+    await test.step('dismiss first-run onboarding', () => dismissOnboarding(window))
 
-    await window.keyboard.press('ControlOrMeta+k')
     const input = window.getByPlaceholder('Go to a section or run an action...')
-    await expect(input).toBeVisible()
+    await test.step('open command palette', async () => {
+      await window.keyboard.press('ControlOrMeta+k')
+      await expect(input).toBeVisible()
+    })
 
-    await input.fill('Models')
     const row = window.getByRole('option', { name: 'Models' })
-    await expect(row).toBeVisible()
-    await input.press('Enter')
+    await test.step('filter for Models', async () => {
+      await input.fill('Models')
+      await expect(row).toBeVisible()
+    })
 
     // The dialog closes and the Models view renders its (always-mounted)
     // lens tabs.
-    await expect(window.getByRole('dialog')).toBeHidden()
-    await expect(window.getByRole('tab', { name: 'By model' })).toBeVisible({ timeout: 30_000 })
+    await test.step('navigate to Models', async () => {
+      await input.press('Enter')
+      await expect(window.getByRole('dialog')).toBeHidden()
+      await expect(window.getByRole('tab', { name: 'By model' })).toBeVisible({ timeout: 30_000 })
+    })
   })
 })
