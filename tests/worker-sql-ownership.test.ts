@@ -116,7 +116,7 @@ describe('db-worker SQL ownership', () => {
     expect(close).toHaveBeenCalledTimes(1)
   })
 
-  it('finishes manual scan events and owner cleanup before releasing the real SQL client', async () => {
+  it('drains an aborted manual scan and its owner before releasing the real SQL client', async () => {
     const path = databasePath()
     const order: string[] = []
     const activeOwner = { read: () => undefined as unknown }
@@ -154,7 +154,7 @@ describe('db-worker SQL ownership', () => {
       { dbPath: path, dataDir: dirname(path), cacheDir: join(dirname(path), 'cache') },
       event => {
         events.push(event)
-        if (event.event === 'oplog' && event.logEvent === 'scan.finish') order.push('scan-finish')
+        if (event.event === 'scan:error' && event.message === 'scan aborted') order.push('scan-aborted')
       },
       { runtime },
     )
@@ -162,7 +162,7 @@ describe('db-worker SQL ownership', () => {
     vi.spyOn(
       worker as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
       'performScan',
-    ).mockReturnValue(Effect.tryPromise({ try: () => scanResult, catch: cause => cause }))
+    ).mockReturnValue(Effect.uninterruptible(Effect.tryPromise({ try: () => scanResult, catch: cause => cause })))
 
     try {
       const request = worker.dispatch('scan:start', [])
@@ -172,11 +172,11 @@ describe('db-worker SQL ownership', () => {
       expect(driver.counts.finalizers).toBe(0)
 
       finishScan()
-      await expect(request).resolves.toEqual({ ok: true })
+      await expect(request).resolves.toMatchObject({ ok: false, aborted: true })
       await closing
 
-      expect(order).toEqual(['scan-finish', 'sql-release'])
-      expect(events).toContainEqual(expect.objectContaining({ event: 'store:changed' }))
+      expect(order).toEqual(['scan-aborted', 'sql-release'])
+      expect(events).not.toContainEqual(expect.objectContaining({ event: 'store:changed' }))
     } finally {
       finishScan()
       await worker.close()
