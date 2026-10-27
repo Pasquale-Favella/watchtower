@@ -60,8 +60,6 @@ export function lifecycleEventFromWorker(
         _tag: 'CurrencyChanged',
         currency,
       }))
-    case 'ready':
-    case 'init-error':
     case 'oplog':
       return Result.succeed(undefined)
   }

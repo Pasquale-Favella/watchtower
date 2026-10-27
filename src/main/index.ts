@@ -180,9 +180,6 @@ function relayWorkerEvents(db: DbWorkerClient): void {
     if (lifecycleHub) mainRuntime.runSync(lifecycleHub.workerReplaced)
   })
   db.onEvent(event => {
-    // Boot handshake (`ready` / `init-error`) is consumed by the client
-    // itself — never relayed to windows.
-    if (event.event === 'ready' || event.event === 'init-error') return
     const lifecycle = lifecycleEventFromWorker(event)
     if (lifecycle._tag === 'Failure') {
       safeLogOperationalEvent('warn', 'rpc.worker-event.invalid', {

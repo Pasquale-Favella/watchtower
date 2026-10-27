@@ -17,7 +17,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   DB_WORKER_REQUEST_CAPACITY,
   DbWorkerClient,
-  type DbWorkerPort,
   nextRespawnAttempt,
   RESPAWN_BACKOFF_BASE_MS,
   RESPAWN_BACKOFF_CAP_MS,
@@ -31,6 +30,12 @@ import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '
 import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
 import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
 import { openWorkerRuntime, type WorkerOverrides, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import {
+  type ControlledCall,
+  type ControlledTransport,
+  type ControlledWorker,
+  makeControlledDbWorker,
+} from './db-worker-transport-helper.js'
 
 function tempDataDir(): string {
   return mkdtempSync(join(tmpdir(), 'watchtower-dbworker-'))
@@ -375,7 +380,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   it('owns manual finish failures and blocks replacement until failure events finish', async () => {
     const c = open()
-    const finishFailure = new Error('scan finish event failed')
+    const finishFailure = new Error('SQLITE_CORRUPT at C:\\Users\\alice\\ledger.db: secret-row-value')
     const metadata: ScanMetadata = {
       scanId: 'manual-finish-failure',
       startedAt: new Date().toISOString(),
@@ -401,12 +406,27 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
     await expect(c.dispatch('scan:start', [])).resolves.toEqual({
       ok: false,
       aborted: false,
-      error: finishFailure.message,
+      error: 'The scan failed.',
     })
     await expect(replacement).resolves.toEqual({ ok: false, alreadyRunning: true })
     expect((c as unknown as { activeScan: unknown }).activeScan).toBeNull()
-    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: finishFailure.message })
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'The scan failed.' })
     expect(events).toContainEqual(expect.objectContaining({ event: 'oplog', logEvent: 'scan.error', level: 'error' }))
+    expect(JSON.stringify(events)).not.toContain('secret-row-value')
+  })
+
+  it('keeps private scan failures out of result envelopes and events', async () => {
+    const c = open()
+    const failure = new Error('SQLITE_ERROR in C:\\Users\\alice\\ledger.db: private-column=value')
+    vi.spyOn(
+      c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
+      'performScan',
+    ).mockReturnValue(Effect.fail(failure))
+
+    const result = await c.dispatch('scan:start', [])
+    expect(result).toEqual({ ok: false, aborted: false, error: 'The scan failed.' })
+    expect(events).toContainEqual({ event: 'scan:error', manual: true, message: 'The scan failed.' })
+    expect(JSON.stringify({ result, events })).not.toMatch(/private-column|ledger\.db|alice/)
   })
 
   it('scan:abort interrupts the running scan fiber and maps to {ok:false, aborted:true}', async () => {
@@ -505,22 +525,14 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   it('close before manual work registration marks the owner aborted without starting work', async () => {
     const c = open()
-    const activeRuntime = runtime
-    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
     const performScan = vi.spyOn(
       c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
       'performScan',
     )
-    const runSync = activeRuntime.runSync.bind(activeRuntime)
-    const runSyncSpy = vi.spyOn(activeRuntime, 'runSync')
     let closeRequest: Promise<void> | undefined
-    let stopAtFork = true
-    runSyncSpy.mockImplementation(effect => {
-      if (stopAtFork) {
-        stopAtFork = false
-        closeRequest = c.close()
-      }
-      return runSync(effect)
+    // The event callback runs after owner admission and just before its fiber is registered.
+    vi.spyOn(c as unknown as { emitScanStart: (provider?: string) => void }, 'emitScanStart').mockImplementation(() => {
+      closeRequest = c.close()
     })
 
     await expect(c.dispatch('scan:start', [])).resolves.toMatchObject({ ok: false, aborted: true })
@@ -532,24 +544,14 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
 
   it('reports an abort before manual work registration without starting the scan', async () => {
     const c = open()
-    const activeRuntime = runtime
-    if (!activeRuntime) throw new Error('DbWorker runtime was not initialized')
     const performScan = vi.spyOn(
       c as unknown as { performScan: (...args: never[]) => Effect.Effect<ScanMetadata, unknown> },
       'performScan',
     )
-    const runSync = activeRuntime.runSync.bind(activeRuntime)
-    const runSyncSpy = vi.spyOn(activeRuntime, 'runSync')
     let abortRequest: Promise<unknown> | undefined
-    let stopAtFork = true
-    runSyncSpy.mockImplementation(effect => {
-      // Dispatch stop at the external fork boundary: admission and start event
-      // have happened, but the owned lifecycle fiber has not started yet.
-      if (stopAtFork) {
-        stopAtFork = false
-        abortRequest = c.dispatch('scan:abort', [])
-      }
-      return runSync(effect)
+    // Abort at the same synchronous boundary exercised by production admission.
+    vi.spyOn(c as unknown as { emitScanStart: (provider?: string) => void }, 'emitScanStart').mockImplementation(() => {
+      abortRequest = c.dispatch('scan:abort', [])
     })
 
     await expect(c.dispatch('scan:start', [])).resolves.toEqual({ ok: false, aborted: true, error: 'scan aborted' })
@@ -651,8 +653,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
       delegate = throwingFetch()
       const failed = (await c.dispatch('pricing:refresh', [])) as { ok: boolean; error?: string }
       expect(failed.ok).toBe(false)
-      expect(typeof failed.error).toBe('string')
-      expect(failed.error).toContain('offline')
+      expect(failed.error).toBe('Pricing refresh failed.')
     } finally {
       try {
         await c.close()
@@ -808,63 +809,26 @@ describe('SCAN_DURATION_COUNTER wiring (Wave 5, fake/throwing sinks, TestClock)'
   })
 })
 
-/** In-memory stand-in for a worker thread: echoes requests back on demand. */
-class FakeWorker {
-  listeners = new Map<string, Array<(...args: unknown[]) => void>>()
-  posted: unknown[] = []
+type Responder = (transport: ControlledTransport, call: ControlledCall, index: number) => void
 
-  constructor(private behavior: (req: { id: number; op: string; args: unknown[] }) => void) {}
-
-  postMessage(message: unknown): void {
-    this.posted.push(message)
-    // Async like a real thread hop: the request stays pending until the test
-    // drives the fake's next step (response, error, or exit).
-    queueMicrotask(() => this.behavior(message as { id: number; op: string; args: unknown[] }))
-  }
-
-  on(event: string, listener: (...args: unknown[]) => void): unknown {
-    const list = this.listeners.get(event) ?? []
-    list.push(listener)
-    this.listeners.set(event, list)
-    return this
-  }
-
-  emit(event: string, ...args: unknown[]): void {
-    for (const listener of this.listeners.get(event) ?? []) listener(...args)
-  }
-
-  terminate(): Promise<number> {
-    return Promise.resolve(0)
-  }
+const echoResponder: Responder = (transport, call, index) => {
+  transport.resolveCall(index, { op: call.operation, args: call.args })
 }
 
-type Responder = (fake: FakeWorker, req: { id: number; op: string; args: unknown[] }) => void
-
-const echoResponder: Responder = (fake, req) => {
-  fake.emit('message', { id: req.id, ok: true, data: { op: req.op, args: req.args } })
+function makeClient(responder: Responder = echoResponder, onFake?: (fake: ControlledWorker) => void) {
+  const controlled = makeControlledDbWorker(responder, fake => onFake?.(fake))
+  return { ...controlled, fakes: controlled.workers }
 }
 
-function makeClient(
-  responder: Responder = echoResponder,
-  onFake?: (fake: FakeWorker) => void,
-): { client: DbWorkerClient; fakes: FakeWorker[] } {
-  const fakes: FakeWorker[] = []
-  const client = new DbWorkerClient(
-    { dbPath: ':memory:', dataDir: ':memory:', cacheDir: ':memory:' },
-    'fake-worker.js',
-    () => {
-      const fake = new FakeWorker(req => responder(fake, req))
-      fakes.push(fake)
-      onFake?.(fake)
-      return fake as unknown as DbWorkerPort
-    },
-  )
-  return { client, fakes }
+async function startClient(client: DbWorkerClient, transport: ControlledTransport): Promise<void> {
+  transport.resolveReady()
+  await client.ready
 }
 
-describe('DbWorkerClient request/response correlation', () => {
+describe('DbWorkerClient logical transport behavior', () => {
   it('resolves concurrent requests to the right caller', async () => {
-    const { client } = makeClient()
+    const { client, transports } = makeClient()
+    await startClient(client, transports[0]!)
     const [a, b] = await Promise.all([
       client.request('overview:query', { period: 'today' }),
       client.request('currency:get'),
@@ -875,32 +839,39 @@ describe('DbWorkerClient request/response correlation', () => {
   })
 
   it('rejects when the worker reports an op error', async () => {
-    const { client } = makeClient((fake, req) => {
-      fake.emit('message', { id: req.id, ok: false, error: 'boom' })
+    const { client, transports } = makeClient((transport, _call, index) => {
+      transport.rejectCall(index, new Error('boom'))
     })
+    await startClient(client, transports[0]!)
     await expect(client.request('models:addAlias', ['', ''])).rejects.toThrow('boom')
     await client.terminate()
   })
 
   it('routes worker broadcasts to event listeners', async () => {
-    const { client, fakes } = makeClient()
+    const { client, transports } = makeClient()
+    await startClient(client, transports[0]!)
     const seen: DbWorkerEvent[] = []
     client.onEvent(event => {
       seen.push(event)
     })
-    fakes[0]!.emit('message', { event: 'store:changed', metadata: { portedFiles: 1 } })
+    transports[0]!.emitEvent({ event: 'store:changed', metadata: { portedFiles: 1 } })
     expect(seen).toEqual([{ event: 'store:changed', metadata: { portedFiles: 1 } }])
     await client.terminate()
   })
 
   it('rejects in-flight requests and respawns after a live worker exits', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => {
-      spawn()
-    })
+    const { client, fakes, transports } = makeClient(
+      (transport, call, index) => {
+        if (call.operation === 'overview:query') return
+        echoResponder(transport, call, index)
+      },
+      () => {
+        spawn()
+      },
+    )
     expect(spawn).toHaveBeenCalledTimes(1)
-    fakes[0]!.emit('message', { event: 'ready' })
-    await expect(client.ready).resolves.toBeUndefined()
+    await startClient(client, transports[0]!)
     const pending = client.request('overview:query', {})
     fakes[0]!.emit('exit', 1)
     await expect(pending).rejects.toThrow(/exited unexpectedly/)
@@ -908,30 +879,28 @@ describe('DbWorkerClient request/response correlation', () => {
     // (~0.8–1.2s jittered), not synchronously — wait out the Clock delay.
     await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2), { timeout: 5000 })
     // The respawned worker serves new requests once it is ready.
-    fakes[1]!.emit('message', { event: 'ready' })
+    transports[1]!.resolveReady()
     await expect(client.request('currency:get')).resolves.toEqual({ op: 'currency:get', args: [] })
     await client.terminate()
   })
 
   it('resolves ready on the boot handshake', async () => {
-    const { client, fakes } = makeClient()
-    fakes[0]!.emit('message', { event: 'ready' })
-    await expect(client.ready).resolves.toBeUndefined()
+    const { client, transports } = makeClient()
+    await startClient(client, transports[0]!)
     await client.terminate()
   })
 
   it('notifies replacement readiness once without replaying a possibly committed write', async () => {
     let committed = 0
-    const { client, fakes } = makeClient((fake, request) => {
-      if (request.op === 'models:addAlias') committed += 1
-      else fake.emit('message', { id: request.id, ok: true, data: committed })
+    const { client, fakes, transports } = makeClient((transport, call, index) => {
+      if (call.operation === 'models:addAlias') committed += 1
+      else transport.resolveCall(index, committed)
     })
     const replaced = vi.fn()
     const removed = vi.fn()
     client.onReplaced(replaced)
     client.onReplaced(removed)()
-    fakes[0]!.emit('message', { event: 'ready' })
-    await client.ready
+    await startClient(client, transports[0]!)
     expect(replaced).not.toHaveBeenCalled()
     const write = client.request('models:addAlias', 'raw', 'known')
     await vi.waitFor(() => expect(committed).toBe(1))
@@ -939,9 +908,8 @@ describe('DbWorkerClient request/response correlation', () => {
     await expect(write).rejects.toThrow('exited unexpectedly')
     await vi.waitFor(() => expect(fakes).toHaveLength(2), { timeout: 5000 })
     expect(replaced).not.toHaveBeenCalled()
-    fakes[1]!.emit('message', { event: 'ready' })
-    fakes[1]!.emit('message', { event: 'ready' })
-    fakes[0]!.emit('message', { event: 'ready' })
+    transports[1]!.resolveReady()
+    await client.ready
     expect(replaced).toHaveBeenCalledTimes(1)
     expect(removed).not.toHaveBeenCalled()
     await expect(client.request('currency:get')).resolves.toBe(1)
@@ -951,10 +919,10 @@ describe('DbWorkerClient request/response correlation', () => {
 
   it('never respawns a worker that failed to boot and rejects with its error', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => {
+    const { client, fakes, transports } = makeClient(echoResponder, () => {
       spawn()
     })
-    fakes[0]!.emit('message', { event: 'init-error', error: 'cannot open ledger.db' })
+    transports[0]!.rejectReady(new Error('cannot open ledger.db'))
     await expect(client.ready).rejects.toThrow('cannot open ledger.db')
     const pending = client.request('overview:query', {})
     fakes[0]!.emit('exit', 1)
@@ -978,11 +946,12 @@ describe('DbWorkerClient request/response correlation', () => {
   })
 
   it.each([false, true])('settles opaque thread errors safely when ready is %s', async becameReady => {
-    const { client, fakes } = makeClient(() => {})
+    const { client, fakes, transports } = makeClient(() => {})
     const worker = fakes[0]!
+    const transport = transports[0]!
     try {
       if (becameReady) {
-        worker.emit('message', { event: 'ready' })
+        transport.resolveReady()
         await client.ready
       }
       const ready = becameReady
@@ -999,85 +968,82 @@ describe('DbWorkerClient request/response correlation', () => {
   })
 
   it('coalesces identical concurrent reads into one execution', async () => {
-    const { client, fakes } = makeClient()
+    const { client, transports } = makeClient()
+    await startClient(client, transports[0]!)
     const first = client.request('overview:query', { period: 'today' })
     const second = client.request('overview:query', { period: 'today' })
     expect(second).toBe(first)
     const [a, b] = await Promise.all([first, second])
-    expect(fakes[0]!.posted).toHaveLength(1)
+    expect(transports[0]!.calls).toHaveLength(1)
     expect(a).toEqual(b)
     await client.terminate()
   })
 
   it('bounds distinct logical requests, reuses shared-read admission, and releases on success or error', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const sharedRead = client.request('overview:query', { period: 'today' })
     const observer = Effect.runFork(Effect.tryPromise({ try: () => sharedRead, catch: cause => cause }))
     await Effect.runPromise(Fiber.interrupt(observer))
     const writes = Array.from({ length: DB_WORKER_REQUEST_CAPACITY - 1 }, (_, index) =>
       client.request('models:addAlias', [`alias-${index}`]),
     )
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
 
     expect(client.request('overview:query', { period: 'today' })).toBe(sharedRead)
     await expect(client.request('models:addAlias', ['over-capacity'])).rejects.toThrow(
       'too many outstanding database worker requests',
     )
-    expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY)
+    expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY)
 
-    const firstRequest = worker.posted[0] as { id: number }
-    worker.emit('message', { id: firstRequest.id, ok: true, data: 'shared result' })
+    transport.resolveCall(0, 'shared result')
     await expect(sharedRead).resolves.toBe('shared result')
     const afterSuccess = client.request('models:addAlias', ['after-success'])
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
 
-    const failedWrite = worker.posted[1] as { id: number }
-    worker.emit('message', { id: failedWrite.id, ok: false, error: 'write failed' })
+    transport.rejectCall(1, new Error('write failed'))
     await expect(writes[0]).rejects.toThrow('write failed')
     const afterError = client.request('models:addAlias', ['after-error'])
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 2))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 2))
 
-    for (const raw of worker.posted.slice(2) as { id: number }[]) {
-      worker.emit('message', { id: raw.id, ok: true, data: null })
-    }
+    for (let index = 2; index < transport.calls.length; index++) transport.resolveCall(index, null)
     await Promise.all([...writes.slice(1), afterSuccess, afterError])
     await client.terminate()
   })
 
   it('keeps scan abort available at ordinary capacity and coalesces concurrent aborts', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const requests = Array.from({ length: DB_WORKER_REQUEST_CAPACITY }, (_, index) =>
       client.request('models:addAlias', [`alias-${index}`]),
     )
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
 
     const firstAbort = client.request('scan:abort')
     const secondAbort = client.request('scan:abort')
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
-    expect((worker.posted as { op: string }[]).filter(request => request.op === 'scan:abort')).toHaveLength(1)
-    const abortRequest = worker.posted.at(-1) as { id: number; op: string }
-    expect(abortRequest.op).toBe('scan:abort')
-    worker.emit('message', { id: abortRequest.id, ok: true, data: null })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
+    expect(transport.calls.filter(request => request.operation === 'scan:abort')).toHaveLength(1)
+    const abortIndex = transport.calls.findIndex(request => request.operation === 'scan:abort')
+    transport.resolveCall(abortIndex, null)
     await expect(Promise.all([firstAbort, secondAbort])).resolves.toEqual([null, null])
     await expect(client.request('models:addAlias', ['still-full'])).rejects.toThrow(
       'too many outstanding database worker requests',
     )
 
-    for (const raw of worker.posted.slice(0, DB_WORKER_REQUEST_CAPACITY) as { id: number }[]) {
-      worker.emit('message', { id: raw.id, ok: true, data: null })
-    }
+    for (let index = 0; index < DB_WORKER_REQUEST_CAPACITY; index++) transport.resolveCall(index, null)
     await Promise.all(requests)
     await client.terminate()
   })
 
   it('bounds requests waiting behind recovery and releases them after replacement readiness', async () => {
-    const { client, fakes } = makeClient((fake, request) => {
-      if (request.op !== 'scan:abort') echoResponder(fake, request)
+    const { client, fakes, transports } = makeClient((transport, call, index) => {
+      if (call.operation !== 'scan:abort') echoResponder(transport, call, index)
     })
     const retiringWorker = fakes[0]!
-    retiringWorker.emit('message', { event: 'ready' })
+    const retiringTransport = transports[0]!
+    retiringTransport.resolveReady()
     await client.ready
 
     let finishTermination!: (exitCode: number) => void
@@ -1092,192 +1058,178 @@ describe('DbWorkerClient request/response correlation', () => {
     await expect(client.request('models:addAlias', ['over-capacity'])).rejects.toThrow(
       'too many outstanding database worker requests',
     )
-    expect(retiringWorker.posted).toHaveLength(1)
+    expect(retiringTransport.calls).toHaveLength(1)
 
     finishTermination(0)
-    await vi.waitFor(() => expect(fakes).toHaveLength(2))
-    const replacement = fakes[1]!
-    replacement.emit('message', { event: 'ready' })
+    await vi.waitFor(() => expect(transports).toHaveLength(2))
+    const replacement = transports[1]!
+    replacement.resolveReady()
     await abort
     await Promise.all(queued)
-    expect(replacement.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY)
+    expect(replacement.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY)
     await client.shutdown()
   })
 
   it('keeps graceful shutdown available at ordinary request capacity', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const requests = Array.from({ length: DB_WORKER_REQUEST_CAPACITY }, (_, index) =>
       client.request('models:addAlias', [`alias-${index}`]),
     )
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY))
     const settled = Promise.all(requests.map(request => request.catch(error => error)))
 
     const closing = client.shutdown(0)
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
-    expect(worker.posted.at(-1)).toMatchObject({ op: 'shutdown', args: [] })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(DB_WORKER_REQUEST_CAPACITY + 1))
+    expect(transport.calls.at(-1)).toMatchObject({ operation: 'shutdown', args: [] })
+    transport.resolveCall(DB_WORKER_REQUEST_CAPACITY, null)
     await closing
     const failures = await settled
     expect(failures.every(error => error instanceof Error && error.message === 'data worker shut down')).toBe(true)
   })
 
-  it('removes a pending slot and releases admission when postMessage throws', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
-    vi.spyOn(worker, 'postMessage').mockImplementationOnce(() => {
-      throw new Error('post failed')
+  it('releases admission when the transport rejects a logical request', async () => {
+    const { client, transports } = makeClient((transport, call, index) => {
+      if (index === 0) transport.rejectCall(index, new Error('send failed'))
+      else echoResponder(transport, call, index)
     })
-
-    await expect(client.request('models:addAlias', ['first'])).rejects.toThrow('post failed')
-    expect((client as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0)
-
+    const transport = transports[0]!
+    await startClient(client, transport)
+    await expect(client.request('models:addAlias', ['first'])).rejects.toThrow('send failed')
     const next = client.request('models:addAlias', ['second'])
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
-    const request = worker.posted[0] as { id: number }
-    worker.emit('message', { id: request.id, ok: true, data: null })
-    await expect(next).resolves.toBeNull()
+    await expect(next).resolves.toEqual({ op: 'models:addAlias', args: [['second']] })
     await client.terminate()
   })
 
   it('keeps one coalesced flight while retrying reads overtaken by multiple mutations', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const args = { period: 'today' }
     const first = client.request('overview:query', args)
     expect(client.request('overview:query', args)).toBe(first)
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
-
-    const firstId = (worker.posted[0] as { id: number }).id
-    worker.emit('message', { event: 'config:changed' })
-    worker.emit('message', { event: 'store:changed', metadata: {} })
-    worker.emit('message', { id: firstId, ok: true, data: 'stale snapshot' })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(1))
+    transport.emitEvent({ event: 'config:changed' })
+    transport.emitEvent({ event: 'store:changed', metadata: {} })
+    transport.resolveCall(0, 'stale snapshot')
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(2))
     expect(client.request('overview:query', args)).toBe(first)
 
-    const secondId = (worker.posted[1] as { id: number }).id
-    worker.emit('message', { event: 'config:changed' })
-    worker.emit('message', { id: secondId, ok: true, data: 'also stale' })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(3))
+    transport.emitEvent({ event: 'config:changed' })
+    transport.resolveCall(1, 'also stale')
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(3))
     expect(client.request('overview:query', args)).toBe(first)
 
-    const thirdId = (worker.posted[2] as { id: number }).id
-    worker.emit('message', { id: thirdId, ok: true, data: 'current snapshot' })
+    transport.resolveCall(2, 'current snapshot')
     await expect(first).resolves.toBe('current snapshot')
-    expect(worker.posted.map(message => (message as { op: string }).op)).toEqual([
-      'overview:query',
-      'overview:query',
-      'overview:query',
-    ])
+    expect(transport.calls.map(call => call.operation)).toEqual(['overview:query', 'overview:query', 'overview:query'])
     await client.terminate()
   })
 
   it('does not resolve an in-flight read with data from before ledger reset', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const pending = client.request('overview:query', { period: 'today' })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
-
-    worker.emit('message', { event: 'ledger:reset' })
-    worker.emit('message', {
-      id: (worker.posted[0] as { id: number }).id,
-      ok: true,
-      data: { source: 'before-clear' },
-    })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
-    worker.emit('message', {
-      id: (worker.posted[1] as { id: number }).id,
-      ok: true,
-      data: { source: 'after-clear' },
-    })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(1))
+    transport.emitEvent({ event: 'ledger:reset' })
+    transport.resolveCall(0, { source: 'before-clear' })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(2))
+    transport.resolveCall(1, { source: 'after-clear' })
 
     await expect(pending).resolves.toEqual({ source: 'after-clear' })
     await client.terminate()
   })
 
   it('retries with the original cloned query args after the caller mutates them', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const args = { period: 'today' }
     const pending = client.request('overview:query', args)
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(1))
     args.period = 'week'
-    worker.emit('message', { event: 'config:changed' })
-    worker.emit('message', { id: (worker.posted[0] as { id: number }).id, ok: true, data: 'stale' })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
+    transport.emitEvent({ event: 'config:changed' })
+    transport.resolveCall(0, 'stale')
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(2))
 
-    expect((worker.posted[1] as { args: unknown[] }).args).toEqual([{ period: 'today' }])
-    worker.emit('message', { id: (worker.posted[1] as { id: number }).id, ok: true, data: 'current' })
+    expect(transport.calls[1]!.args).toEqual([{ period: 'today' }])
+    transport.resolveCall(1, 'current')
     await expect(pending).resolves.toBe('current')
     await client.terminate()
   })
 
   it('does not retry a failed read after a mutation event', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const pending = client.request('overview:query', { period: 'today' })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
-    worker.emit('message', { event: 'config:changed' })
-    worker.emit('message', { id: (worker.posted[0] as { id: number }).id, ok: false, error: 'read failed' })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(1))
+    transport.emitEvent({ event: 'config:changed' })
+    transport.rejectCall(0, new Error('read failed'))
     await expect(pending).rejects.toThrow('read failed')
-    expect(worker.posted).toHaveLength(1)
+    expect(transport.calls).toHaveLength(1)
     await client.terminate()
   })
 
   it('does not send an invalidated retry after shutdown starts', async () => {
-    const { client, fakes } = makeClient(() => {})
-    const worker = fakes[0]!
+    const { client, transports } = makeClient(() => {})
+    const transport = transports[0]!
+    await startClient(client, transport)
     const pending = client.request('overview:query', { period: 'today' })
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(1))
-    worker.emit('message', { event: 'config:changed' })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(1))
+    transport.emitEvent({ event: 'config:changed' })
 
     const closing = client.shutdown()
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(2))
-    const [readRequest, closeRequest] = worker.posted as { id: number; op: string }[]
-    worker.emit('message', { id: readRequest!.id, ok: true, data: 'stale snapshot' })
+    await vi.waitFor(() => expect(transport.calls).toHaveLength(2))
+    transport.resolveCall(0, 'stale snapshot')
     await expect(pending).rejects.toThrow('data worker shut down')
-    expect(worker.posted.map(message => (message as { op: string }).op)).toEqual(['overview:query', 'shutdown'])
-    worker.emit('message', { id: closeRequest!.id, ok: true, data: null })
+    expect(transport.calls.map(call => call.operation)).toEqual(['overview:query', 'shutdown'])
+    transport.resolveCall(1, null)
     await closing
   })
 
   it('does not resume a request queued behind recovery after shutdown, but still sends shutdown', async () => {
-    const { client, fakes } = makeClient(() => {})
-    fakes[0]!.emit('message', { event: 'ready' })
+    const { client, transports } = makeClient(() => {})
+    transports[0]!.resolveReady()
     await client.ready
     const abort = Effect.runPromise(client.scanAbortEffect([], 1, 5_000)).catch(() => undefined)
-    await vi.waitFor(() => expect(fakes).toHaveLength(2))
+    await vi.waitFor(() => expect(transports).toHaveLength(2))
 
     const queuedRead = client.request('overview:query', { period: 'today' })
     const closing = client.shutdown()
-    fakes[1]!.emit('message', { event: 'ready' })
+    transports[1]!.resolveReady()
     await abort
-    await vi.waitFor(() => expect(fakes[1]!.posted).toHaveLength(1))
-    expect(fakes[1]!.posted).toMatchObject([{ op: 'shutdown', args: [] }])
-    const shutdownId = (fakes[1]!.posted[0] as { id: number }).id
-    fakes[1]!.emit('message', { id: shutdownId, ok: true, data: null })
+    await vi.waitFor(() => expect(transports[1]!.calls).toHaveLength(1))
+    expect(transports[1]!.calls).toMatchObject([{ operation: 'shutdown', args: [] }])
+    transports[1]!.resolveCall(0, null)
 
     await expect(queuedRead).rejects.toThrow('data worker shut down')
     await closing
   })
 
   it('does not coalesce distinct args or writes', async () => {
-    const { client, fakes } = makeClient()
+    const { client, transports } = makeClient()
+    await startClient(client, transports[0]!)
     await Promise.all([
       client.request('overview:query', { period: 'today' }),
       client.request('overview:query', { period: 'week' }),
       client.request('scan:start'),
       client.request('scan:start'),
     ])
-    expect(fakes[0]!.posted).toHaveLength(4)
+    expect(transports[0]!.calls).toHaveLength(4)
     await client.terminate()
   })
 
   it('shutdown asks the worker to close and terminates the thread', async () => {
-    const { client, fakes } = makeClient()
-    fakes[0]!.emit('message', { event: 'ready' })
-    await client.shutdown()
-    // The first post is the graceful close op; the thread is then gone.
-    expect(fakes[0]!.posted[0]).toMatchObject({ op: 'shutdown', args: [] })
+    const { client, transports } = makeClient()
+    transports[0]!.resolveReady()
+    const closing = client.shutdown()
+    await vi.waitFor(() => expect(transports[0]!.calls).toHaveLength(1))
+    transports[0]!.resolveCall(0, null)
+    await closing
+    expect(transports[0]!.calls[0]).toMatchObject({ operation: 'shutdown', args: [] })
     await expect(client.request('currency:get')).rejects.toThrow(/shut down|unavailable/)
   })
 })
@@ -1286,9 +1238,9 @@ describe('DbWorkerClient shutdown deadline (Effect Clock, §5.1)', () => {
   it('a hanging graceful ack resolves after the Clock deadline and terminates exactly once', async () => {
     const timeoutMs = 2000
     // Hanging responder: the graceful `shutdown` ack never arrives.
-    const { client, fakes } = makeClient(() => {})
+    const { client, fakes, transports } = makeClient(() => {})
     const worker = fakes[0]!
-    worker.emit('message', { event: 'ready' })
+    transports[0]!.resolveReady()
     await client.ready
     const terminateSpy = vi.spyOn(worker, 'terminate')
     const pending = client.request('currency:get')
@@ -1302,7 +1254,7 @@ describe('DbWorkerClient shutdown deadline (Effect Clock, §5.1)', () => {
     )
     await rejected
     // The in-flight read went out first; the graceful close op follows it.
-    expect(worker.posted).toContainEqual(expect.objectContaining({ op: 'shutdown', args: [] }))
+    expect(transports[0]!.calls).toContainEqual(expect.objectContaining({ operation: 'shutdown', args: [] }))
     expect(terminateSpy).toHaveBeenCalledTimes(1)
     // The Promise entry point stays idempotent on top: no second terminate.
     await client.shutdown()
@@ -1311,21 +1263,24 @@ describe('DbWorkerClient shutdown deadline (Effect Clock, §5.1)', () => {
   })
 
   it('a graceful ack wins the deadline without advancing the clock', async () => {
-    const { client, fakes } = makeClient()
+    const { client, fakes, transports } = makeClient()
     const worker = fakes[0]!
-    worker.emit('message', { event: 'ready' })
+    transports[0]!.resolveReady()
     await client.ready
     const terminateSpy = vi.spyOn(worker, 'terminate')
-    await Effect.runPromise(client.shutdownEffect(2000).pipe(Effect.provide(TestClock.layer())))
-    expect(worker.posted[0]).toMatchObject({ op: 'shutdown', args: [] })
+    const shutdown = Effect.runPromise(client.shutdownEffect(2000).pipe(Effect.provide(TestClock.layer())))
+    await vi.waitFor(() => expect(transports[0]!.calls).toHaveLength(1))
+    transports[0]!.resolveCall(0, null)
+    await shutdown
+    expect(transports[0]!.calls[0]).toMatchObject({ operation: 'shutdown', args: [] })
     expect(terminateSpy).toHaveBeenCalledTimes(1)
   })
 
   it('still resolves when the graceful send itself fails (no live worker)', async () => {
-    const { client, fakes } = makeClient()
+    const { client, fakes, transports } = makeClient()
     const worker = fakes[0]!
     // Boot failure, never lived: the exit leaves no worker behind.
-    worker.emit('message', { event: 'init-error', error: 'cannot open ledger.db' })
+    transports[0]!.rejectReady(new Error('cannot open ledger.db'))
     await expect(client.ready).rejects.toThrow('cannot open ledger.db')
     worker.emit('exit', 1)
     const terminateSpy = vi.spyOn(worker, 'terminate')
@@ -1350,10 +1305,10 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
   })
 
   it('uses Effect Clock time when deciding whether to reset the crash streak', async () => {
-    const { client, fakes } = makeClient()
+    const { client, fakes, transports } = makeClient()
     const worker = fakes[0]
     if (!worker) throw new Error('initial fake worker was not created')
-    worker.emit('message', { event: 'ready' })
+    transports[0]!.resolveReady()
     await client.ready
     let countAtResetDeadline = 0
 
@@ -1364,7 +1319,7 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
           const firstCrash = yield* Effect.forkChild(client.respawnAfterExitEffect('1'))
           yield* TestClock.adjust(1_200)
           yield* Fiber.join(firstCrash)
-          fakes[1]?.emit('message', { event: 'ready' })
+          transports[1]?.resolveReady()
 
           yield* TestClock.adjust(RESPAWN_BACKOFF_RESET_AFTER_MS + 1)
           const recoveredCrash = yield* Effect.forkChild(client.respawnAfterExitEffect('1'))
@@ -1385,14 +1340,14 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
     async teardown => {
       vi.useFakeTimers()
       const spawn = vi.fn()
-      const { client, fakes } = makeClient(echoResponder, () => {
+      const { client, fakes, transports } = makeClient(echoResponder, () => {
         spawn()
       })
 
       try {
         const worker = fakes[0]
         if (!worker) throw new Error('initial fake worker was not created')
-        worker.emit('message', { event: 'ready' })
+        transports[0]!.resolveReady()
         await client.ready
         worker.emit('exit', 1)
         await vi.advanceTimersByTimeAsync(0)
@@ -1416,14 +1371,14 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
   it('interrupts the exit-callback backoff when shutdownEffect is itself interrupted', async () => {
     vi.useFakeTimers()
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => {
+    const { client, fakes, transports } = makeClient(echoResponder, () => {
       spawn()
     })
 
     try {
       const worker = fakes[0]
       if (!worker) throw new Error('initial fake worker was not created')
-      worker.emit('message', { event: 'ready' })
+      transports[0]!.resolveReady()
       await client.ready
       worker.emit('exit', 1)
       await vi.advanceTimersByTimeAsync(0)
@@ -1459,8 +1414,8 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
   })
 
   it('sleeps on the TestClock: no respawn before 0.8x nominal, respawned by 1.2x', async () => {
-    const { client, fakes } = makeClient()
-    fakes[0]!.emit('message', { event: 'ready' })
+    const { client, fakes, transports } = makeClient()
+    transports[0]!.resolveReady()
     await client.ready
     // Attempt 1: nominal 1s → hold at 799ms, released by 1200ms.
     const before = await Effect.runPromise(
@@ -1479,8 +1434,8 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
   })
 
   it('backs a deep streak off toward the cap band on the TestClock', async () => {
-    const { client, fakes } = makeClient()
-    fakes[0]!.emit('message', { event: 'ready' })
+    const { client, fakes, transports } = makeClient()
+    transports[0]!.resolveReady()
     await client.ready
     // Attempt 5: nominal 16s → hold at 12.799s, released by 19.2s.
     const before = await Effect.runPromise(
@@ -1500,10 +1455,10 @@ describe('DbWorkerClient crash-respawn backoff (Wave 7 §4.4, TestClock)', () =>
 
   it('skips the respawn when torn down during the backoff window', async () => {
     const spawn = vi.fn()
-    const { client, fakes } = makeClient(echoResponder, () => {
+    const { client, transports } = makeClient(echoResponder, () => {
       spawn()
     })
-    fakes[0]!.emit('message', { event: 'ready' })
+    transports[0]!.resolveReady()
     await client.ready
     await Effect.runPromise(
       Effect.gen(function* () {

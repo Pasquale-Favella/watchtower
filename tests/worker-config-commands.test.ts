@@ -18,7 +18,7 @@ import { dismissSkill, setModelPrice } from '../src/main/application/ledger-conf
 import { ledgerConfigRequest } from '../src/main/db-worker/config-dispatch.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
+import { workerRpcError } from '../src/main/db-worker/rpc-errors.js'
 import { LedgerConfig } from '../src/main/store/ledger-ports.js'
 import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
 
@@ -203,7 +203,11 @@ describe('worker configuration commands use the owned ports', () => {
       async (context, _owner, events) => {
         const error = await context.dispatch(op, args).catch(error => error)
         expect(error).toMatchObject({ _tag: 'LedgerConfigValidationError', message })
-        expect(workerProtocolError(error)).toBe(message)
+        expect(workerRpcError(error, 'command-failed')).toMatchObject({
+          _tag: 'WorkerRpcError',
+          code: 'invalid-request',
+          message: 'The database worker operation failed.',
+        })
         expect(write).not.toHaveBeenCalled()
         expect(events.filter(event => event.event === 'config:changed')).toEqual([])
       },

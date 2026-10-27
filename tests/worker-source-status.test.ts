@@ -9,6 +9,7 @@ import * as Layer from 'effect/Layer'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { LedgerMaintenance } from '../src/main/application/ledger-maintenance.js'
 import { DbWorkerContext } from '../src/main/db-worker/context.js'
 import { LedgerQueries } from '../src/main/store/ledger-ports.js'
 import { LedgerIngest } from '../src/main/store/ledger-repository.js'
@@ -84,7 +85,11 @@ describe('worker scan status uses source existence', () => {
   it('observes native ingest and clear without hydrating the sources', async () => {
     await withWorker(async (context, owner) => {
       const queries = owner.runtime.runSync(LedgerQueries)
+      const ingest = owner.runtime.runSync(LedgerIngest)
+      const maintenance = owner.runtime.runSync(LedgerMaintenance)
       const hasSources = vi.spyOn(queries, 'hasSources')
+      const clear = vi.spyOn(ingest, 'clear')
+      const reclaim = vi.spyOn(maintenance, 'reclaim')
       const getSources = vi.spyOn(queries, 'getSources')
       const getSessions = vi.spyOn(queries, 'getSessions')
       const getTurns = vi.spyOn(queries, 'getTurns')
@@ -118,11 +123,17 @@ describe('worker scan status uses source existence', () => {
       }
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: true })
       expect(hasSources).toHaveBeenCalledTimes(2)
-      const runPromise = vi.spyOn(owner.runtime, 'runPromise')
       await context.dispatch('settings:clear', [])
-      expect(runPromise).toHaveBeenCalledOnce()
+      expect(clear).toHaveBeenCalledOnce()
+      expect(reclaim).toHaveBeenCalledOnce()
       expect(await context.dispatch('store:status', [])).toEqual({ scanned: false })
       expect(hasSources).toHaveBeenCalledTimes(3)
+      expect(getSources).not.toHaveBeenCalled()
+      expect(getSessions).not.toHaveBeenCalled()
+      expect(getTurns).not.toHaveBeenCalled()
+      expect(getCalls).not.toHaveBeenCalled()
+      expect(getCallFacts).not.toHaveBeenCalled()
+      expect(getSnapshot).not.toHaveBeenCalled()
     })
   })
 

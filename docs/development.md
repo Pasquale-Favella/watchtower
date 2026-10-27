@@ -216,11 +216,14 @@ src/
 │  ├─ env.ts                # Effect Config, Env service, captured AppPaths
 │  ├─ operational-log.ts    # shared Logger/Metric/Tracer integration
 │  ├─ db-worker/
-│  │  ├─ entry.ts           # worker startup, scan fibers, cadence, shutdown
-│  │  ├─ client.ts          # main-to-worker Promise and event adapter
+│  │  ├─ entry.ts           # official worker RPC process root
+│  │  ├─ bootstrap.ts       # one SQL runtime/context, ledger-ready initialization
+│  │  ├─ client.ts          # main-owned admission, consistency and worker supervisor
+│  │  ├─ rpc-transport.ts   # one official protocol scope and event consumer per worker
+│  │  ├─ rpc-server.ts      # validated application handlers and sequenced events
 │  │  ├─ query-dispatch.ts  # query routes into application workflows
 │  │  ├─ config-dispatch.ts # settings command routes
-│  │  └─ protocol.ts        # typed worker request/response/event contract
+│  │  └─ protocol.ts        # local boot inputs, producer events and read policy
 │  ├─ application/          # Effect queries, commands, capability definitions
 │  ├─ *-calculation.ts      # pure section, export, and pricing calculations
 │  ├─ cadence.ts            # background scan / FX cadence policy
@@ -233,7 +236,7 @@ src/
 │  │  ├─ ledger-mcp/        # official SDK server, Schema tool inputs, read-only runtime
 │  │  ├─ prompts.ts         # the one briefing: coaching + skill authoring scopes
 │  │  ├─ events.ts          # ACP stream → CoachEvent derivation
-│  │  └─ ipc.ts             # coach:harnesses/run/inspect/cancel/reset wire
+│  │  └─ ipc.ts             # existing Coach coordinator capability composition
 │  ├─ pipeline/             # discovery -> extraction -> parse -> classify -> price
 │  │  ├─ scan.ts            # Effect scan orchestration, metadata out
 │  │  ├─ parser.ts          # native parser streams and per-file delta seam
@@ -250,10 +253,11 @@ src/
 │     └─ aggregate-calculation.ts # pure query-time aggregation helpers
 ├─ preload/                 # typed contextBridge API (the renderer's only door)
 ├─ shared/schemas/          # Effect Schema contracts and derived types; UI-only types
+├─ shared/rpc/              # application, role and internal worker RPC contracts
 └─ renderer/src/            # React 19 + Tailwind + shadcn/ui (sandboxed)
-   ├─ app/                  # AppShell, sidebar/topbar, onboarding, stores, shortcuts
+   ├─ app/                  # window registry, workflows, AppShell and shortcuts
    ├─ features/             # one folder per section (overview, sessions, spend, coach-skills, ...)
-   └─ shared/               # UI kit, hooks, Promise IPC API, synchronous Schema decoder
+   └─ shared/               # UI kit, native RPC clients, shell adapters and Schema decoder
 ```
 
 Architecture decisions are recorded as ADRs in [`docs/adr`](./adr) and

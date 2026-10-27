@@ -30,7 +30,7 @@ const reader: LifecycleSnapshotReader = {
 }
 
 describe('worker lifecycle event mapping', () => {
-  it('maps validated worker events and ignores readiness and operational logs', () => {
+  it('maps validated worker events and ignores operational logs', () => {
     const events: ReadonlyArray<readonly [DbWorkerEvent, LifecyclePublishEvent | undefined]> = [
       [
         { event: 'scan:progress', manual: true, progress: { stage: 'parse', processed: 1, total: 2 } },
@@ -81,8 +81,6 @@ describe('worker lifecycle event mapping', () => {
           currency: { code: 'EUR', symbol: '€', rate: 0.9 },
         },
       ],
-      [{ event: 'ready' }, undefined],
-      [{ event: 'init-error', error: 'private boot detail' }, undefined],
       [{ event: 'oplog', level: 'error', logEvent: 'scan.error', fields: { code: 'failed' } }, undefined],
     ]
 

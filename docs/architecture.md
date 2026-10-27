@@ -162,8 +162,14 @@ generated clients and an authenticated MessagePort adapter serve all application
 requests and lifecycle/Coach streams. The remaining preload adapters cover
 native shell navigation, links, Full Disk Access, notices and orb geometry.
 Their responses and events retain synchronous schema validation.
-Main/worker requests retain the old wire;
-renderer RPC errors cannot yet preserve worker domain tags end to end. See the
+Main/worker requests use the internal `WorkerRpcGroup` over the official Node
+worker adapter. Each supervisor-owned worker generation has one protocol scope
+and one event consumer. Application readiness follows event subscription and
+ledger initialization. Success and failure watermarks keep event application
+ahead of acknowledgement delivery. Worker errors carry safe typed codes rather
+than SQL details or paths; renderer handlers translate those failures into their
+application error contracts. The supervisor retains admission, read coalescing,
+revision fencing, abort drainage and replacement without command replay. See the
 [adoption plan](./plans/effect-renderer-adoption.md) for the separate renderer,
 renderer/main RPC and main/worker RPC completion gates.
 
@@ -215,9 +221,9 @@ Every provider's parsed call record flows through one shared Effect Schema
 ledger row. Effect Schema is the authority for provider, ledger, cache, and
 IPC contracts. The renderer decodes incoming payloads synchronously with
 Effect Schema and reports invalid payloads through its existing error state
-and tripwire. One UI-only schema module remains plain TypeScript. The renderer
-uses no Effect runtime, layers, or services, and its Promise-based IPC facade
-and local state flow remain unchanged. The installed MCP SDK still uses Zod
+and tripwire. One UI-only schema module remains plain TypeScript. Window-owned
+Atom registries, Layers and services compose renderer workflows and native RPC
+queries. React retains interaction-local state. The installed MCP SDK still uses Zod
 internally; that dependency does not define Watchtower's contracts.
 
 Scan metadata carries per-provider **unparsed** counts, so a vendor's schema

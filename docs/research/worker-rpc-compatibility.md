@@ -1,6 +1,6 @@
 # Effect worker RPC compatibility probe
 
-Status: disposable compatibility evidence, not production approval. Verified on 2026-10-23 with system Node v24.13.0, Electron 43.2.0 (embedded Node v24.18.0), `effect` 4.0.5 and `@effect/platform-node` 4.0.5 on Windows.
+Status: initial disposable compatibility evidence, followed by production integration below. The probe was verified on 2026-10-23 with system Node v24.13.0, Electron 43.2.0 (embedded Node v24.18.0), `effect` 4.0.5 and `@effect/platform-node` 4.0.5 on Windows. Current acceptance belongs to issue #174.
 
 ## Result
 
@@ -40,7 +40,38 @@ stable-read coalescing, real abort drainage, or the packaged Watchtower worker.
 Those remain S12 integration requirements. The fixture's startup acknowledgement
 also does not substitute for the production ledger-ready handshake.
 
-## Reproduction
+## Production integration, 2026-10-27
+
+The application now uses `WorkerRpcGroup` and the official Node worker adapters.
+`DbWorkerClient` remains the sole supervisor. Each generation supplies its one
+native Worker to a one-shot Spawner and joins that protocol scope before
+replacement. Ordinary requests retain the existing 128-operation admission
+limit. The single-worker protocol pool reserves three additional leases for the
+event stream, abort and shutdown. Its default concurrency of one would otherwise
+let the lifetime event stream prevent readiness and application calls.
+
+The client subscribes to the bounded, sequenced event stream before requesting
+ledger readiness. Unary success and operation-error watermarks delay settlement
+until the main consumer has applied preceding events. Native worker handlers
+compose the existing context's Effects and service graph. They do not acquire a
+second SQL runtime. Safe error codes preserve intentional failure categories;
+scan and pricing failures use fixed messages. Application shutdown precedes the
+official close handshake under the supervisor's existing deadline. Pure
+interruption during normal worker close is a successful process exit.
+
+The production-entry Node tests cover a 128-session fixture scan, config-event
+ordering, clear/reset, graceful exit with no forced termination, fatal
+initialization without respawn, and real corrupted-row/missing-table failures
+with safe prior Operational log records. Separate actual-worker tests retain
+stable-read/coalescing evidence and prove that forced abort recovery prevents a
+late callback from writing. Protocol tests cover lost committed replies without
+replay and control calls at ordinary-request saturation. Existing context tests
+still verify parser drainage before SQL disposal.
+
+These results supplement the initial probe. They do not replace the final
+packaged Electron and supported-target acceptance recorded in #174.
+
+## Probe reproduction
 
 Run the focused Node test:
 

@@ -1,78 +1,91 @@
 import { parentPort, workerData } from 'node:worker_threads'
 
+import * as NodeWorkerRunner from '@effect/platform-node/NodeWorkerRunner'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import { RpcServer, RpcWorker } from 'effect/rpc'
+import * as Schema from 'effect/Schema'
 
 import { DbWorkerContext } from '../../src/main/db-worker/context.js'
-import type { DbWorkerData, DbWorkerRequest } from '../../src/main/db-worker/protocol.js'
+import type { DbWorkerData } from '../../src/main/db-worker/protocol.js'
+import { dbWorkerRpcServerLayer } from '../../src/main/db-worker/rpc-server.js'
 import { LedgerIngest } from '../../src/main/store/ledger-repository.js'
 import { LedgerViewReads } from '../../src/main/store/ledger-view-reads.js'
 import { openWorkerRuntime } from '../../src/main/worker-runtime.js'
+import { WorkerRpcGroup } from '../../src/shared/rpc/worker.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './cached-file.js'
 
 const port = parentPort
 if (!port) throw new Error('native read-ordering fixture must run on a worker thread')
 
 const init = workerData as DbWorkerData
-const runtime = openWorkerRuntime(init.dbPath)
-let context: DbWorkerContext
 const snapshotGate = Deferred.makeUnsafe<undefined, never>()
-try {
-  runtime.runSync(
-    Effect.flatMap(LedgerIngest, ingest =>
-      ingest.portIn({
-        provider: 'opencode',
-        envFingerprint: 'native-read-ordering',
-        filePath: FIXTURE_SOURCE_PATH,
-        verdict: 'new',
-        cachedFile: buildFixtureCachedFile(),
-      }),
-    ),
-  )
+const serverLayer = dbWorkerRpcServerLayer({
+  createContext: async emit => {
+    const runtime = openWorkerRuntime(init.dbPath)
+    try {
+      runtime.runSync(
+        Effect.flatMap(LedgerIngest, ingest =>
+          ingest.portIn({
+            provider: 'opencode',
+            envFingerprint: 'native-read-ordering',
+            filePath: FIXTURE_SOURCE_PATH,
+            verdict: 'new',
+            cachedFile: buildFixtureCachedFile(),
+          }),
+        ),
+      )
 
-  // Decorate the real repository read inside this fixture worker. The SQL read
-  // and transaction complete first; only its result delivery is held for the
-  // parent to coordinate with a config write.
-  const reads = runtime.runSync(LedgerViewReads)
-  const getViewData = reads.getViewData.bind(reads)
-  reads.getViewData = () =>
-    getViewData().pipe(
-      Effect.flatMap(data =>
-        Effect.sync(() =>
-          port.postMessage({ fixture: 'snapshot-ready', aliases: data.aliases, overrides: data.overrides }),
-        ).pipe(Effect.andThen(Deferred.await(snapshotGate)), Effect.as(data)),
-      ),
-    )
+      const reads = runtime.runSync(LedgerViewReads)
+      const getViewData = reads.getViewData.bind(reads)
+      reads.getViewData = () =>
+        getViewData().pipe(
+          Effect.flatMap(data =>
+            Effect.sync(() =>
+              emit({
+                event: 'scan:progress',
+                manual: true,
+                progress: { stage: 'parse', provider: 'native-read-ordering', total: data.overrides.length },
+              }),
+            ).pipe(Effect.andThen(Deferred.await(snapshotGate)), Effect.as(data)),
+          ),
+        )
 
-  context = new DbWorkerContext(init, event => port.postMessage(event), { runtime })
-} catch (error) {
-  try {
-    Effect.runSync(runtime.disposeEffect)
-  } catch {
-    // Preserve the fixture setup failure.
-  }
-  throw error
-}
-port.on('message', (raw: unknown) => {
-  if (raw && typeof raw === 'object' && 'fixtureControl' in raw) {
-    if ((raw as { fixtureControl: unknown }).fixtureControl === 'releaseSnapshot') {
-      void Effect.runPromise(Deferred.succeed(snapshotGate, undefined))
+      const context = new DbWorkerContext(init, emit, { runtime })
+      return {
+        dispatchEffect: (operation: string, args: unknown[]) =>
+          context
+            .dispatchEffect(operation, args)
+            .pipe(
+              Effect.tap(() =>
+                operation === 'models:setPrice' ? Deferred.succeed(snapshotGate, undefined) : Effect.void,
+              ),
+            ),
+        close: () => context.close(),
+      }
+    } catch (error) {
+      try {
+        Effect.runSync(runtime.disposeEffect)
+      } catch {
+        // Preserve the initialization failure.
+      }
+      throw error
     }
-    return
-  }
-  const request = raw as DbWorkerRequest
-  const response = context.dispatch(request.op, request.args).then(
-    data => port.postMessage({ id: request.id, ok: true, data }),
-    error =>
-      port.postMessage({
-        id: request.id,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-  )
-  if (request.op === 'shutdown') {
-    void response.finally(() => runtime.dispose()).catch(() => undefined)
-  }
+  },
+  onFatal: () => port.close(),
 })
 
-port.postMessage({ event: 'ready' })
+const program = Effect.scoped(
+  Effect.gen(function* () {
+    const protocol = yield* RpcServer.makeProtocolWorkerRunner.pipe(Effect.provide(NodeWorkerRunner.layer))
+    yield* RpcWorker.initialMessage(Schema.Void).pipe(Effect.provideService(RpcServer.Protocol, protocol))
+    return yield* RpcServer.make(WorkerRpcGroup, { disableTracing: true }).pipe(
+      Effect.provideService(RpcServer.Protocol, protocol),
+      Effect.provide(serverLayer),
+    )
+  }),
+)
+
+Effect.runPromise(program).catch(() => {
+  process.exitCode = 1
+})
