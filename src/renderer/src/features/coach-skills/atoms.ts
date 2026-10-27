@@ -1,17 +1,17 @@
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
-import * as Predicate from 'effect/Predicate'
 import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
-import type { RpcClientError } from 'effect/rpc/RpcClientError'
+import { RpcClientError } from 'effect/rpc/RpcClientError'
+import * as Stream from 'effect/Stream'
 
 import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
 import { overviewScopeAtom } from '@/app/atoms/scope'
 import { preferencesAtom } from '@/features/settings/preferences-atoms'
 import { ApplicationClient } from '@/shared/lib/application-rpc'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
+import { CoachRpcError } from '../../../../shared/rpc/coach.js'
 import type { AnalyticsRpcError } from '../../../../shared/rpc/errors.js'
 import type {
   CoachEventEnvelope,
@@ -66,7 +66,6 @@ export interface CoachState {
   messages: ChatMessage[]
   running: boolean
   activeRunId: string | null
-  pendingEvents: Record<string, CoachEventEnvelope[]>
   resumeCursor: string | null
   runMessageIds: Record<string, string>
   runHarnessKinds: Record<string, string>
@@ -87,12 +86,14 @@ type CoachDetectionQuery = (
   selectionId: string,
 ) => Atom.Atom<AsyncResult.AsyncResult<SkillsPayload | null, AnalyticsRpcError | RpcClientError>>
 
-const applicationCoachDetectionQuery: CoachDetectionQuery = (request, selectionId) =>
-  ApplicationClient.query(
-    'skills:view',
-    { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
-    { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
-  )
+const applicationCoachDetectionQuery =
+  (client: typeof ApplicationClient): CoachDetectionQuery =>
+  (request, selectionId) =>
+    client.query(
+      'skills:view',
+      { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
+      { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+    )
 
 const initialCoachState = (): CoachState => ({
   hydrated: false,
@@ -109,7 +110,6 @@ const initialCoachState = (): CoachState => ({
   messages: [],
   running: false,
   activeRunId: null,
-  pendingEvents: {},
   resumeCursor: null,
   runMessageIds: {},
   runHarnessKinds: {},
@@ -150,12 +150,18 @@ const emptyAssistant = (state: CoachState): ChatMessage => ({
   streaming: true,
 })
 
+const safeCoachError = (error: unknown, fallback: string): string =>
+  error instanceof CoachRpcError
+    ? error.message
+    : error instanceof RpcClientError
+      ? 'Application connection unavailable. Reconnecting.'
+      : fallback
+
 export const createCoachAtoms = (
-  runtime: Atom.RegistryRuntimeFactory,
-  apiLayer: Layer.Layer<RendererApi> = RendererApi.layer,
-  detectionQuery: CoachDetectionQuery = applicationCoachDetectionQuery,
+  client: typeof ApplicationClient = ApplicationClient,
+  detectionQuery: CoachDetectionQuery = applicationCoachDetectionQuery(client),
 ) => {
-  const api = runtime(apiLayer)
+  const api = client.runtime
   const coachStateAtom = Atom.keepAlive(Atom.make(initialCoachState()))
   const detection = createRpcQuerySlot<CoachDetectionRequest, SkillsPayload | null, AnalyticsRpcError | RpcClientError>(
     {
@@ -167,10 +173,19 @@ export const createCoachAtoms = (
   const loadHarnessesAtom = api.fn<undefined>()(
     (_, get) =>
       Effect.gen(function* () {
-        const rendererApi = yield* RendererApi
-        const harnesses = yield* rendererApi.getCoachHarnesses()
-        get.set(replaceHarnessesAtom, harnesses)
-        return harnesses
+        const currentHarnesses = get.registry.get(coachStateAtom).harnesses
+        const rpc = yield* client
+        const result = yield* Effect.result(rpc('coach:harnesses', undefined))
+        if (result._tag === 'Failure') {
+          get.set(coachStateAtom, {
+            ...get(coachStateAtom),
+            error: safeCoachError(result.failure, 'Unable to load Coach harnesses.'),
+          })
+          return
+        }
+        if (get.registry.get(coachStateAtom).harnesses === currentHarnesses)
+          get.set(replaceHarnessesAtom, result.success)
+        return result.success
       }),
     { concurrent: true },
   )
@@ -178,19 +193,36 @@ export const createCoachAtoms = (
   const refreshHarnessesAtom = api.fn<undefined>()(
     (_, get) =>
       Effect.gen(function* () {
-        const rendererApi = yield* RendererApi
-        const harnesses = yield* rendererApi.refreshCoachHarnesses()
-        get.set(replaceHarnessesAtom, harnesses)
-        return harnesses
+        const currentHarnesses = get.registry.get(coachStateAtom).harnesses
+        const rpc = yield* client
+        const result = yield* Effect.result(rpc('coach:harnesses-refresh', undefined))
+        if (result._tag === 'Failure') {
+          get.set(coachStateAtom, {
+            ...get(coachStateAtom),
+            error: safeCoachError(result.failure, 'Unable to refresh Coach harnesses.'),
+          })
+          return
+        }
+        if (get.registry.get(coachStateAtom).harnesses === currentHarnesses)
+          get.set(replaceHarnessesAtom, result.success)
+        return result.success
       }),
     { concurrent: true },
   )
 
   const openCoachLoginTerminalAtom = api.fn<string>()(
-    instanceId =>
+    (instanceId, get) =>
       Effect.gen(function* () {
-        const rendererApi = yield* RendererApi
-        yield* rendererApi.openCoachLoginTerminal(instanceId)
+        const rpc = yield* client
+        const result = yield* Effect.result(rpc('coach:open-login-terminal', { instanceId }))
+        if (result._tag === 'Failure') {
+          get.set(coachStateAtom, {
+            ...get(coachStateAtom),
+            error: safeCoachError(result.failure, 'Unable to open the harness login terminal.'),
+          })
+        } else if (!result.success.ok) {
+          get.set(coachStateAtom, { ...get(coachStateAtom), error: result.success.error ?? 'Unable to start login.' })
+        }
       }),
     { concurrent: true },
   )
@@ -200,10 +232,21 @@ export const createCoachAtoms = (
       (sequence, get) => {
         const allowApiKeyEnv = get(preferencesAtom).allowHarnessApiKeyEnv
         return Effect.gen(function* () {
-          const rendererApi = yield* RendererApi
-          const result = yield* rendererApi.inspectCoachHarness(
-            allowApiKeyEnv ? { kind, allowApiKeyEnv: true } : { kind },
+          const rpc = yield* client
+          const resultExit = yield* Effect.result(
+            rpc('coach:inspect', {
+              request: allowApiKeyEnv ? { kind, allowApiKeyEnv: true } : { kind },
+            }),
           )
+          if (resultExit._tag === 'Failure') {
+            const current = get(coachStateAtom)
+            get.set(coachStateAtom, {
+              ...current,
+              error: safeCoachError(resultExit.failure, 'Unable to inspect the harness.'),
+            })
+            return
+          }
+          const result = resultExit.success
           if (!result.ok) return
           const current = get(coachStateAtom)
           const existing = current.modelsByKind[kind]
@@ -372,23 +415,9 @@ export const createCoachAtoms = (
     (context, envelope: CoachEventEnvelope) => {
       const state = context.get(coachStateAtom)
       const messageId = state.runMessageIds[envelope.runId]
-      if (!messageId) {
-        if (state.running && state.activeRunId === null) {
-          const parked = state.pendingEvents[envelope.runId] ?? []
-          context.set(coachStateAtom, {
-            ...state,
-            pendingEvents: { ...state.pendingEvents, [envelope.runId]: [...parked, envelope] },
-          })
-        }
-        return
-      }
+      if (!messageId) return
       const runGeneration = state.runGenerations[envelope.runId]
-      if (
-        runGeneration !== undefined &&
-        runGeneration !== state.generation &&
-        state.messages.every(message => message.id !== messageId || message.error !== 'cancelled')
-      )
-        return
+      if (runGeneration === undefined || runGeneration !== state.generation) return
       const event = envelope.event
       const active = state.activeRunId === envelope.runId
       let next: CoachState = { ...state }
@@ -494,11 +523,17 @@ export const createCoachAtoms = (
             messages: state.messages.map(message =>
               message.streaming ? { ...message, streaming: false, error: 'cancelled' } : message,
             ),
+            error: null,
           })
         }
         if (runId) {
-          const rendererApi = yield* RendererApi
-          yield* rendererApi.cancelCoachRun(runId)
+          const rpc = yield* client
+          const result = yield* Effect.result(rpc('coach:cancel', { runId }))
+          if (result._tag === 'Failure')
+            get.set(coachStateAtom, {
+              ...get(coachStateAtom),
+              error: safeCoachError(result.failure, 'Unable to cancel the Coach run.'),
+            })
         }
       }),
     { concurrent: true },
@@ -518,7 +553,6 @@ export const createCoachAtoms = (
           error: null,
           running: false,
           activeRunId: null,
-          pendingEvents: {},
           runMessageIds: {},
           runHarnessKinds: {},
           runGenerations: {},
@@ -527,25 +561,27 @@ export const createCoachAtoms = (
           modelId: cached?.modelId ?? null,
           modeId: cached?.modeId ?? null,
         })
-        const rendererApi = yield* RendererApi
-        yield* rendererApi.resetCoachWorkspace()
+        const rpc = yield* client
+        const result = yield* Effect.result(rpc('coach:reset', undefined))
+        if (result._tag === 'Failure' && get.registry.get(coachStateAtom).generation === generation)
+          get.set(coachStateAtom, {
+            ...get(coachStateAtom),
+            error: safeCoachError(result.failure, 'Unable to reset the Coach session.'),
+          })
       }),
     { concurrent: false },
   )
 
-  const runCoachEffect = (
-    input: { readonly prompt: string; readonly retryMessageId?: string },
-    get: Atom.FnContext,
-  ) => {
-    const state = get(coachStateAtom)
-    const generation = state.generation
-    return Effect.gen(function* () {
+  const runCoachEffect = (input: { readonly prompt: string; readonly retryMessageId?: string }, get: Atom.FnContext) =>
+    Effect.suspend(() => {
+      const state = get.registry.get(coachStateAtom)
       const prompt = input.prompt.trim()
-      if (state.running || !prompt) return
+      if (state.running || !prompt) return Effect.void
       if (!state.harnessKind) {
-        get.set(coachStateAtom, { ...state, error: 'select a harness first' })
-        return
+        get.registry.set(coachStateAtom, { ...state, error: 'Select a harness first.' })
+        return Effect.void
       }
+      const harnessKind = state.harnessKind
       const retryIndex = input.retryMessageId
         ? state.messages.findIndex(message => message.id === input.retryMessageId)
         : -1
@@ -559,8 +595,10 @@ export const createCoachAtoms = (
           retryIndex !== lastAssistant ||
           state.messages[retryIndex - 1]?.role !== 'user'
         )
-          return
+          return Effect.void
       }
+
+      const generation = state.generation
       const user = input.retryMessageId
         ? undefined
         : {
@@ -573,81 +611,136 @@ export const createCoachAtoms = (
             streaming: false,
           }
       const assistant = emptyAssistant(state)
-      get.set(coachStateAtom, {
+      get.registry.set(coachStateAtom, {
         ...state,
         running: true,
         activeRunId: null,
         error: null,
-        pendingEvents: {},
         messages: input.retryMessageId
           ? state.messages.filter(message => message.id !== input.retryMessageId).concat(assistant)
           : user
             ? [...state.messages, user, assistant]
             : [...state.messages, assistant],
       })
-      const preferenceSnapshot = get(preferencesAtom)
+      const preferenceSnapshot = get.registry.get(preferencesAtom)
       const request = {
-        harnessKind: state.harnessKind,
-        scope: get(overviewScopeAtom),
+        harnessKind,
+        scope: get.registry.get(overviewScopeAtom),
         prompt,
         ...(state.sessionModels ? { modelId: state.modelId ?? undefined } : {}),
         ...(state.sessionModes ? { modeId: state.modeId ?? undefined } : {}),
         ...(state.resumeCursor ? { resumeCursor: state.resumeCursor } : {}),
         ...(preferenceSnapshot.allowHarnessApiKeyEnv ? { allowApiKeyEnv: true as const } : {}),
       }
-      const rendererApi = yield* RendererApi
-      const result = yield* rendererApi.startCoachRun(request)
-      const latest = get(coachStateAtom)
-      if (latest.generation !== generation || !latest.running) {
-        if (result.ok) yield* rendererApi.cancelCoachRun(result.runId)
-        return
-      }
-      if (!result.ok) {
-        get.set(coachStateAtom, {
-          ...latest,
+
+      const finishInterrupted = (message: string): void => {
+        const current = get.registry.get(coachStateAtom)
+        if (current.generation !== generation) return
+        get.registry.set(coachStateAtom, {
+          ...current,
           running: false,
-          error: result.error,
-          pendingEvents: {},
-          messages: latest.messages.map(message =>
-            message.streaming ? { ...message, streaming: false, error: result.error } : message,
+          activeRunId: null,
+          error: message,
+          messages: current.messages.map(item =>
+            item.id === assistant.id ? { ...item, streaming: false, error: message } : item,
           ),
         })
-        return
       }
-      const runId = result.runId
-      get.set(coachStateAtom, {
-        ...latest,
-        activeRunId: runId,
-        runMessageIds: { ...latest.runMessageIds, [runId]: assistant.id },
-        runHarnessKinds: { ...latest.runHarnessKinds, [runId]: state.harnessKind },
-        runGenerations: { ...latest.runGenerations, [runId]: generation },
-      })
-      const parked = get(coachStateAtom).pendingEvents[runId]
-      get.set(coachStateAtom, { ...get(coachStateAtom), pendingEvents: {} })
-      for (const envelope of parked ?? []) get.set(eventAtom, envelope)
-    }).pipe(
-      Effect.catch(error => {
-        return Effect.sync(() => {
-          const latest = get(coachStateAtom)
-          if (latest.generation !== generation) return
-          const message =
-            Predicate.hasProperty(error, 'message') && Predicate.isString(error.message)
-              ? error.message
-              : 'Unable to start the Coach run.'
-          get.set(coachStateAtom, {
-            ...latest,
-            running: false,
-            activeRunId: null,
-            error: message,
-            pendingEvents: {},
-            messages: latest.messages.map(item =>
-              item.streaming ? { ...item, streaming: false, error: message } : item,
+
+      return Effect.gen(function* () {
+        const rpc = yield* client
+        const stream = rpc('coach:run', request)
+        let started = false
+        let terminal = false
+        let streamFailed = false
+        let staleRunId: string | undefined
+        const consume = Stream.runDrain(
+          stream.pipe(
+            Stream.mapEffect(frame =>
+              Effect.sync(() => {
+                const current = get.registry.get(coachStateAtom)
+                if (frame._tag === 'Started') {
+                  if (started) {
+                    finishInterrupted('The Coach stream returned more than one run id.')
+                    return false
+                  }
+                  if (current.generation !== generation || !current.running) {
+                    staleRunId = frame.runId
+                    return false
+                  }
+                  started = true
+                  get.registry.set(coachStateAtom, {
+                    ...current,
+                    activeRunId: frame.runId,
+                    runMessageIds: { ...current.runMessageIds, [frame.runId]: assistant.id },
+                    runHarnessKinds: { ...current.runHarnessKinds, [frame.runId]: harnessKind },
+                    runGenerations: { ...current.runGenerations, [frame.runId]: generation },
+                  })
+                  return true
+                }
+
+                if (!started || frame.runId !== get.registry.get(coachStateAtom).activeRunId) {
+                  finishInterrupted('The Coach stream returned events before its run was started.')
+                  return false
+                }
+                const latest = get.registry.get(coachStateAtom)
+                if (latest.generation !== generation || latest.activeRunId !== frame.runId) return false
+                get.registry.set(eventAtom, { runId: frame.runId, event: frame.event })
+                terminal =
+                  frame.event.kind === 'error' || (frame.event.kind === 'status' && frame.event.state === 'done')
+                return !terminal
+              }),
             ),
-          })
-        })
-      }),
-    )
-  }
+            Stream.takeWhile(keepReading => keepReading),
+          ),
+        ).pipe(
+          Effect.catchCause(cause =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.failCause(cause)
+              : Effect.sync(() => {
+                  streamFailed = true
+                  const error = Cause.findErrorOption(cause)
+                  const failure = error._tag === 'Some' ? error.value : undefined
+                  const message =
+                    failure instanceof RpcClientError
+                      ? 'Connection lost. This partial response was interrupted; retry your message to continue.'
+                      : safeCoachError(failure, 'The Coach run stopped unexpectedly.')
+                  finishInterrupted(message)
+                }),
+          ),
+        )
+        const interruptedBeforeStart = get.stream(coachStateAtom).pipe(
+          Stream.filter(current => !started && current.generation !== generation),
+          Stream.runHead,
+          Effect.as('cancelled' as const),
+        )
+        const streamResult = yield* Effect.raceFirst(
+          consume.pipe(Effect.as('completed' as const)),
+          interruptedBeforeStart,
+        )
+        if (streamResult === 'cancelled') return
+
+        if (staleRunId) {
+          yield* Effect.result(rpc('coach:cancel', { runId: staleRunId })).pipe(Effect.asVoid)
+          return
+        }
+        const latest = get.registry.get(coachStateAtom)
+        if (latest.generation !== generation) return
+        if (!started && !streamFailed) finishInterrupted('The Coach run ended before it started.')
+        else if (!terminal && latest.running)
+          finishInterrupted('Connection lost. This partial response was interrupted; retry your message to continue.')
+      }).pipe(
+        Effect.catch(error =>
+          Effect.sync(() => {
+            const message =
+              error instanceof RpcClientError
+                ? 'Connection lost. This partial response was interrupted; retry your message to continue.'
+                : safeCoachError(error, 'Unable to start the Coach run.')
+            finishInterrupted(message)
+          }),
+        ),
+      )
+    })
 
   const sendCoachAtom = api.fn<string>()((prompt, get) => runCoachEffect({ prompt }, get), { concurrent: true })
   const retryAssistantAtom = api.fn<string>()(
@@ -700,9 +793,7 @@ export const mountCoachAtoms = (registry: AtomRegistry.AtomRegistry, atoms: Coac
   }
 }
 
-import { runtime as sharedRuntime } from '@/app/renderer-runtime'
-
-const defaultCoachAtoms = createCoachAtoms(sharedRuntime)
+const defaultCoachAtoms = createCoachAtoms(ApplicationClient)
 
 export const {
   coachStateAtom,

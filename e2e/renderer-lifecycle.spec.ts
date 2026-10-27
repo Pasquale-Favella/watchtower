@@ -4,6 +4,8 @@ import { join, resolve } from 'node:path'
 import { _electron as electron, expect, type Page, test } from '@playwright/test'
 import { build } from 'vite'
 
+import type { UpdateStatus } from '../src/shared/schemas/updates'
+
 test('development StrictMode shares bootstrap ownership and disposes the window registry', async () => {
   const directory = mkdtempSync(join(resolve('.'), '.watchtower-lifecycle-'))
   let app: Awaited<ReturnType<typeof electron.launch>> | undefined
@@ -113,8 +115,8 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
         'coach:harnesses': 1,
       }),
       unexpectedRequests: [],
-      attaches: 2,
-      listeners: 2,
+      attaches: 1,
+      listeners: 1,
       rpcConnects: 1,
       lifecycleSubscriptions: 1,
       activeLifecycleSubscriptions: 1,
@@ -128,6 +130,69 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
     )
     await expect(activePage.locator('[data-ready="true"]')).toHaveText('€9.00')
     expect((await state()).nativeReads['currency:get']).toBe(1)
+
+    const updateStatus = (revision: number, phase: UpdateStatus['phase']): UpdateStatus => ({
+      revision,
+      currentVersion: '0.2.0',
+      latestVersion: '0.3.0',
+      updateAvailable: true,
+      tag: 'v0.3.0',
+      phase,
+      installSupported: true,
+      progress: phase === 'downloading' ? 50 : phase === 'ready' ? 100 : null,
+      message: null,
+    })
+    const updatePane = () =>
+      activePage.evaluate(() => {
+        const probe = (
+          globalThis as typeof globalThis & {
+            lifecycleProbe: { showUpdatesPane(): void }
+          }
+        ).lifecycleProbe
+        probe.showUpdatesPane()
+      })
+    const hideUpdatePane = () =>
+      activePage.evaluate(() => {
+        const probe = (
+          globalThis as typeof globalThis & {
+            lifecycleProbe: { hideUpdatesPane(): void }
+          }
+        ).lifecycleProbe
+        probe.hideUpdatesPane()
+      })
+    const publishUpdate = (status: UpdateStatus) =>
+      activePage.evaluate(status => {
+        const probe = (
+          globalThis as typeof globalThis & {
+            lifecycleProbe: { publishUpdate(status: UpdateStatus): void }
+          }
+        ).lifecycleProbe
+        probe.publishUpdate(status)
+      }, status)
+
+    await updatePane()
+    await expect(activePage.getByRole('button', { name: 'Check for updates', exact: true })).toBeDisabled()
+    await expect(activePage.getByRole('button', { name: 'Open release page' })).toBeVisible()
+    await expect(activePage.getByRole('button', { name: 'Download update', exact: true })).toHaveCount(0)
+    await expect(activePage.getByRole('button', { name: 'Restart to install', exact: true })).toHaveCount(0)
+
+    await publishUpdate(updateStatus(1, 'available'))
+    await expect(activePage.getByRole('button', { name: 'Download update', exact: true })).toBeEnabled()
+    await hideUpdatePane()
+    await publishUpdate(updateStatus(2, 'downloading'))
+    await updatePane()
+    await expect(activePage.getByText('Downloading update: 50%')).toBeVisible()
+
+    await publishUpdate(updateStatus(3, 'ready'))
+    await expect(activePage.getByRole('button', { name: 'Restart to install', exact: true })).toBeEnabled()
+    await expect(activePage.getByText('Version 0.3.0 is ready. Restart to install it.')).toBeVisible()
+    await expect(activePage.getByRole('button', { name: 'Download update', exact: true })).toHaveCount(0)
+    await hideUpdatePane()
+    await publishUpdate(updateStatus(1, 'available'))
+    await updatePane()
+    await expect(activePage.getByText('Version 0.3.0 is ready. Restart to install it.')).toBeVisible()
+    await expect(activePage.getByRole('button', { name: 'Restart to install', exact: true })).toBeEnabled()
+
     await activePage.evaluate(() =>
       (
         globalThis as typeof globalThis & {
@@ -138,7 +203,7 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
     await expect.poll(async () => (await state()).nodes).toBe(0)
     expect(await state()).toMatchObject({
       effectCleanups: 2,
-      detaches: 2,
+      detaches: 1,
       listeners: 0,
       activeLifecycleSubscriptions: 0,
     })

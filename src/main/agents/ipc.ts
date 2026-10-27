@@ -2,25 +2,17 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-import { BrowserWindow, ipcMain } from 'electron'
 
 import {
   type CoachEvent,
-  type CoachEventEnvelope,
   type CoachHarnessRow,
   type CoachInspectResult,
   type CoachLoginTerminalResult,
   coachOpenLoginTerminalRequestSchema,
   type CoachRunResult,
 } from '../../shared/schemas/agents.js'
-import {
-  type SkillsDismissal,
-  skillsDismissalRequestSchema,
-  type SkillsDismissalResult,
-} from '../../shared/schemas/skills.js'
 import type { MainRuntime, MainServices } from '../main-runtime.js'
 import { createCoachCoordinator } from './coach-coordinator.js'
-import { coachProtocolError } from './coach-protocol-errors.js'
 import { harnessSpecs } from './harnesses/index.js'
 import type { AcpMcpServer } from './harnesses/types.js'
 import { openLoginTerminal } from './login-terminal.js'
@@ -34,12 +26,11 @@ import {
 import { type HarnessInstance, HarnessSnapshot } from './snapshot.js'
 
 /**
- * Coach & Skills IPC (ADR 0017, reshaped by map 53): the wire between the
- * HarnessRuntime seam and the renderer's unified Coach & Skills surface. The
- * runner is an Effect coordinator hosted by MainRuntime. It owns run
- * ack/stream/cancel and the per-conversation temp workspace against an
- * injected runtime + detection, so it is unit-testable without electron;
- * `registerAgentsIpc` is the thin glue that maps it onto ipcMain + webContents.
+ * Coach & Skills backend (ADR 0017, reshaped by map 53): the connection between
+ * the HarnessRuntime seam and the app's unified Coach & Skills surface.
+ * `createCoachRunner` adapts the Effect coordinator for tests;
+ * `createApplicationAgents` combines it with the app-owned harness snapshot
+ * and runtime for the versioned RPC handlers.
  *
  * No workspace picker anymore (map 53): the runner owns a private temp
  * workspace per conversation — a resumed run (sessionId present) reuses the
@@ -48,12 +39,6 @@ import { type HarnessInstance, HarnessSnapshot } from './snapshot.js'
  * the platform's own data through the INJECTED in-app ledger MCP server
  * (map 53), scoped to the current UI scope the renderer sends on `coach:run`.
  *
- * Wire contract (frozen, shared schemas): `coach:harnesses` (invoke → rows),
- * `coach:run` (invoke → immediate `{ ok: true, runId }` ack, events pushed on
- * `coach:event` as runId-enveloped CoachEvents), `coach:cancel` (send →
- * stops the active run through its owned cancellation handle),
- * `coach:reset` (send → cancels all runs + cleans the conversation workspace).
- * The renderer revalidates every payload against the same schemas (ADR 0005).
  */
 
 /** An acquired ledger MCP attachment: the session server config plus the
@@ -115,9 +100,8 @@ export interface NativeHarnessSource {
 }
 
 export interface CoachRunner {
-  /** Effect-native capabilities owned by this coordinator. External callers
-   *  provide the app's existing MainRuntime; Promise adapters below exist for
-   *  the legacy Electron handlers during migration. */
+  /** Production RPC handlers use these Effect-native capabilities. The
+   *  Promise methods below remain the coordinator's test adapter. */
   readonly native: NativeCoachRunnerCapabilities
   harnesses(): Promise<CoachHarnessRow[]>
   refreshHarnesses(): Promise<CoachHarnessRow[]>
@@ -144,10 +128,17 @@ export interface CoachRunner {
   dispose(): Promise<void>
 }
 
-export interface NativeCoachRunnerCapabilities {
-  readonly list: Effect.Effect<CoachHarnessRow[], unknown, MainServices>
-  readonly refresh: Effect.Effect<CoachHarnessRow[], unknown, MainServices>
-  readonly inspect: (request: unknown) => Effect.Effect<CoachInspectResult, unknown, MainServices>
+export interface NativeCoachRunnerCapabilities<R = MainServices> {
+  readonly list: Effect.Effect<CoachHarnessRow[], unknown, R>
+  readonly refresh: Effect.Effect<CoachHarnessRow[], unknown, R>
+  readonly inspect: (request: unknown) => Effect.Effect<CoachInspectResult, unknown, R>
+  readonly start: (
+    request: unknown,
+    emit: (runId: string, event: CoachEvent) => void,
+    onRunId?: (runId: string) => void,
+  ) => Effect.Effect<CoachRunResult, unknown, R>
+  readonly cancel: (runId: string) => Effect.Effect<void, unknown, R>
+  readonly reset: Effect.Effect<void, unknown, R>
 }
 
 export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
@@ -159,36 +150,20 @@ export function createCoachRunner(deps: CoachRunnerDeps): CoachRunner {
     ledgerMcpServer: deps.ledgerMcpServer,
   })
 }
-/** The main-side dismissal write (ticket 25), wired to the ledger so the
- *  not-a-skill signal persists. The skills:view handler reads the ledger
- *  directly (the db-worker owns that read); this source only carries the
- *  write — async, because the ledger lives on the worker thread. */
-export interface SkillsDismissalSource {
-  dismiss: (source: SkillsDismissal['source'], name: string, reason: string) => void | Promise<void>
-}
-
-export interface AgentsIpcSources {
-  dismissals: SkillsDismissalSource
+export interface ApplicationAgentsSources {
   /** The single main-owned graph contains the versioned, scoped harness snapshot. */
-  runtime: MainRuntime
-  /** Acquires the in-app ledger MCP server for a harness registry key
-   *  (map 53) — the runner's app-specific dep, supplied by the composition
-   *  root (main/index.ts). Takes no scope: the server serves the full
-   *  lifetime ledger, and the harness filters via the tools' optional `scope`
-   *  argument. Null when there is no ledger.db yet (fresh install) or the
-   *  sidecar fails to boot — no data, no tools. */
-  ledgerMcpServer: (harnessKind: string) => Effect.Effect<LedgerMcpAttachment | null, unknown, MainServices>
+  readonly runtime: MainRuntime
+  /** Acquires the in-app ledger MCP server for a harness registry key. */
+  readonly ledgerMcpServer: CoachRunnerDeps['ledgerMcpServer']
 }
 
-/** Wire the Coach & Skills IPC surface onto ipcMain. Call once from
- *  registerIpc(); returns the runner cleanup handle (temp workspace teardown)
- *  for the app's quit path. `dismissals` bridges the not-a-skill store. */
-export function registerAgentsIpc(sources: AgentsIpcSources): {
+/** Compose app-owned harness capabilities for the authenticated RPC layer. */
+export function createApplicationAgents(sources: ApplicationAgentsSources): {
   reset: () => Promise<void>
   dispose: () => Promise<void>
   native: NativeCoachIpcCapabilities
 } {
-  const { dismissals, runtime: mainRuntime, ledgerMcpServer } = sources
+  const { runtime: mainRuntime, ledgerMcpServer } = sources
   const harnesses: NativeHarnessSource = {
     list: () => Effect.flatMap(HarnessSnapshot, snapshot => snapshot.list()),
     refresh: () => Effect.flatMap(HarnessSnapshot, snapshot => snapshot.refresh()),
@@ -220,77 +195,6 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     }),
   }
 
-  ipcMain.handle('coach:harnesses', async (): Promise<CoachHarnessRow[]> =>
-    runner.harnesses().catch(error => {
-      throw new Error(coachProtocolError(error), { cause: error })
-    }),
-  )
-  ipcMain.handle('coach:harnesses-refresh', async (): Promise<CoachHarnessRow[]> =>
-    runner.refreshHarnesses().catch(error => {
-      throw new Error(coachProtocolError(error), { cause: error })
-    }),
-  )
-  ipcMain.handle('coach:open-login-terminal', async (_event, request: unknown): Promise<CoachLoginTerminalResult> => {
-    return mainRuntime
-      .runPromise(native.openLoginTerminal(request))
-      .catch(error => ({ ok: false, error: coachProtocolError(error) }))
-  })
-
-  /** Pre-flight probe (map 47 ticket 50): the harness's handshake-declared
-   *  models/modes without a run, so the pickers render before the first
-   *  message. The request is a bare registry key — the runner re-detects and
-   *  never trusts it beyond that key, and a probe failure is `{ ok: false }`
-   *  (pickers absent, chat unaffected). */
-  ipcMain.handle('coach:inspect', async (_event, request: unknown): Promise<CoachInspectResult> => {
-    // The runner validates (bare key or { kind, allowApiKeyEnv }) — a probe
-    // failure is `{ ok: false }` (pickers absent, chat unaffected).
-    return runner.inspect(request).catch(error => ({ ok: false, error: coachProtocolError(error) }))
-  })
-
-  ipcMain.handle('coach:run', async (event, request: unknown): Promise<CoachRunResult> => {
-    const win = BrowserWindow.fromWebContents(event.sender)
-    if (!win) return { ok: false, error: 'no window' }
-    return runner
-      .start(request, (runId, coachEvent) => {
-        if (!win.isDestroyed()) {
-          win.webContents.send('coach:event', { runId, event: coachEvent } satisfies CoachEventEnvelope)
-        } else {
-          // The window that launched the run is gone — stop pulling the stream
-          // so the ACP child process is torn down instead of leaking.
-          runner.cancel(runId)
-        }
-      })
-      .catch(error => ({ ok: false, error: coachProtocolError(error) }))
-  })
-
-  ipcMain.on('coach:cancel', (_event, runId: string) => {
-    // Fire-and-forget from the user's Stop button — the renderer recovers on
-    // its own; the teardown promise is just the wait-for-cleanup handle.
-    void runner.cancel(runId)
-  })
-
-  /** Conversation reset (map 53 ticket 56): cancels active runs and deletes
-   *  the conversation's temp workspace — fired by the renderer's
-   *  `resetSession` (a brand-new conversation) and by the app quit path. The
-   *  runner awaits the run teardowns before deleting, so a child process
-   *  still holding the workspace (Windows) can never produce an uncaught
-   *  EPERM here. */
-  ipcMain.on('coach:reset', () => {
-    void runner.reset()
-  })
-
-  // Skills draft board (ticket 25): the not-a-skill store. skills:view /
-  // skills:save stay in registerIpc (they need the ledger + dialog directly);
-  // this module owns the harness-touching wire — skill prose runs through
-  // coach:run's single coach mode (ADR 0017 reshaped), so no separate prose
-  // channel exists here.
-  ipcMain.handle('skills:dismiss', async (_event, request: unknown): Promise<SkillsDismissalResult> => {
-    const parsed = Schema.decodeUnknownResult(skillsDismissalRequestSchema)(request)
-    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid dismissal request' }
-    await dismissals.dismiss(parsed.success.source, parsed.success.name, parsed.success.reason)
-    return { ok: true }
-  })
-
   const startup = mainRuntime.runFork(
     Effect.sleep(Duration.millis(1500)).pipe(
       Effect.andThen(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.start())),
@@ -305,7 +209,6 @@ export function registerAgentsIpc(sources: AgentsIpcSources): {
     dispose: async () => {
       // This boundary can run after MainRuntime has started closing, so the
       // service-free fiber interrupt must not depend on that runtime.
-      // eslint-disable-next-line no-restricted-syntax
       await Effect.runPromise(Fiber.interrupt(startup))
       await runner.dispose()
     },

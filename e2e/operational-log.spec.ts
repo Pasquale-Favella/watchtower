@@ -40,11 +40,11 @@ test('operational log records boot and IPC failures as JSON lines', async () => 
     // Check boot before the initial scan can rotate the bounded log.
     await dismissOnboarding(window)
 
-    // Force one IPC failure with an invalid startup mode. The rejection is
+    // Force one retained shell failure with an invalid notice. The rejection is
     // expected — the record must carry op + code only, never the message.
     const outcome = await window.evaluate(() =>
-      (globalThis as unknown as { api: { setLedgerMcpStartupMode: (mode: string) => Promise<unknown> } }).api
-        .setLedgerMcpStartupMode('bogus-mode')
+      (globalThis as unknown as { api: { notifyNotice: (label: string, location: string) => Promise<unknown> } }).api
+        .notifyNotice('', '')
         .then(
           () => 'unexpected-ok',
           (err: unknown) => `rejected:${err instanceof Error ? err.message : String(err)}`,
@@ -56,9 +56,21 @@ test('operational log records boot and IPC failures as JSON lines', async () => 
       .poll(() => readRecords().filter(record => record['event'] === 'ipc.error').length, { timeout: 30_000 })
       .toBe(1)
     const ipcError = readRecords().find(record => record['event'] === 'ipc.error')
-    expect(ipcError?.['op']).toBe('ledger-mcp:startup:set')
+    expect(ipcError?.['op']).toBe('log:notice')
     expect(ipcError?.['code']).toBe('failed')
-    expect(JSON.stringify(ipcError)).not.toContain('invalid ledger MCP startup mode')
+    expect(JSON.stringify(ipcError)).not.toContain('invalid renderer notice')
+
+    await window.evaluate(() =>
+      (
+        globalThis as unknown as { api: { notifyNotice: (label: string, location: string) => Promise<unknown> } }
+      ).api.notifyNotice('orb placement', 'horizontal'),
+    )
+    await expect.poll(() => readRecords().filter(record => record['event'] === 'renderer.notice').length).toBe(1)
+    expect(readRecords().find(record => record['event'] === 'renderer.notice')).toMatchObject({
+      context: 'renderer',
+      label: 'orb placement',
+      location: 'horizontal',
+    })
 
     // Single-writer file: every line parses and carries level + event.
     for (const record of readRecords()) {

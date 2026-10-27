@@ -79,6 +79,26 @@ const fixtureSlot = (client: QueryClient) =>
   })
 
 describe('native AtomRpc query slot', () => {
+  it('does not query until a selected slot is mounted, then releases its current member', async () => {
+    const registry = AtomRegistry.make()
+    const runtimeFactory = Atom.context()
+    let calls = 0
+    const slot = fixtureSlot(makeClient(runtimeFactory, request => Effect.sync(() => `${request}:${++calls}`)))
+    const unpin = slot.pin(registry)
+
+    expect(registry.get(slot.resultAtom)._tag).toBe('Initial')
+    expect(calls).toBe(0)
+    registry.set(slot.requestAtom, 'A')
+    await waitFor(registry, slot.resultAtom, result => result._tag === 'Success' && result.value === 'A:1')
+    expect(calls).toBe(1)
+
+    registry.set(slot.requestAtom, null)
+    expect(registry.get(slot.resultAtom)._tag).toBe('Initial')
+    expect(calls).toBe(1)
+    unpin()
+    registry.dispose()
+  })
+
   it('uses a fresh family member for A/B/A and ignores late superseded replies', async () => {
     const registry = AtomRegistry.make()
     const runtimeFactory = Atom.context()
@@ -206,6 +226,75 @@ describe('native AtomRpc query slot', () => {
     await waitFor(registry, slot.resultAtom, result => result._tag === 'Success' && result.value === 'A:1')
     restartRpcQuery(registry, slot)
     await waitFor(registry, slot.resultAtom, result => result._tag === 'Success' && result.value === 'A:2')
+    unpin()
+    registry.dispose()
+  })
+
+  it('reset leaves an unopened slot idle and rejects a pending refresh result', async () => {
+    const registry = AtomRegistry.make()
+    const runtimeFactory = Atom.context()
+    const replies: Array<(value: string) => void> = []
+    const client = makeClient(runtimeFactory, request =>
+      Effect.callback<string>(resume => {
+        replies.push(value => resume(Effect.succeed(`${request}:${value}`)))
+      }),
+    )
+    const slot = fixtureSlot(client)
+    const unpin = slot.pin(registry)
+
+    restartRpcQuery(registry, slot)
+    expect(registry.get(slot.requestAtom)).toBeNull()
+    expect(replies).toHaveLength(0)
+
+    registry.set(slot.requestAtom, 'A')
+    await waitForCount(() => replies.length, 1)
+    replies[0]('initial')
+    await waitFor(registry, slot.resultAtom, result => result._tag === 'Success' && result.value === 'A:initial')
+    registry.set(slot.refreshAtom, undefined)
+    await waitForCount(() => replies.length, 2)
+
+    Atom.batch(() => restartRpcQuery(registry, slot))
+    expect(registry.get(slot.requestAtom)).toBe('A')
+    expect(registry.get(slot.resultAtom)._tag).toBe('Initial')
+    await waitForCount(() => replies.length, 3)
+    replies[1]('late refresh')
+    expect(registry.get(slot.resultAtom)._tag).toBe('Initial')
+    replies[2]('fresh after reset')
+    await waitFor(
+      registry,
+      slot.resultAtom,
+      result => result._tag === 'Success' && result.value === 'A:fresh after reset',
+    )
+
+    unpin()
+    registry.dispose()
+  })
+
+  it('keeps the active refresh when an older concurrent refresh resolves first', async () => {
+    const registry = AtomRegistry.make()
+    const runtimeFactory = Atom.context()
+    const replies: Array<(value: string) => void> = []
+    const client = makeClient(runtimeFactory, request =>
+      Effect.callback<string>(resume => {
+        replies.push(value => resume(Effect.succeed(`${request}:${value}`)))
+      }),
+    )
+    const slot = fixtureSlot(client)
+    const unpin = slot.pin(registry)
+    registry.set(slot.requestAtom, 'A')
+    await waitForCount(() => replies.length, 1)
+    replies[0]('initial')
+    await waitFor(registry, slot.resultAtom, result => result._tag === 'Success' && result.value === 'A:initial')
+
+    registry.set(slot.refreshAtom, undefined)
+    await waitForCount(() => replies.length, 2)
+    registry.set(slot.refreshAtom, undefined)
+    await waitForCount(() => replies.length, 3)
+    replies[1]('old')
+    expect(registry.get(slot.resultAtom)).toMatchObject({ _tag: 'Success', value: 'A:initial', waiting: true })
+    replies[2]('new')
+    await waitFor(registry, slot.resultAtom, result => result._tag === 'Success' && result.value === 'A:new')
+
     unpin()
     registry.dispose()
   })

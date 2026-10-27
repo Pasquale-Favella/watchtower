@@ -184,45 +184,92 @@ async function checkMcpHttp(executablePath, entryPath, dbPath) {
     }
   }
 }
-async function checkRendererRpc(window) {
-  const result = await window.evaluate(async () => {
+async function installRendererRpcProbe(window) {
+  await window.evaluate(async () => {
     const bridge = window.api.rpcV1
     const connection = await bridge.connect()
     if (connection._tag !== 'Connected') throw new Error('Packaged RPC connection failed')
-    const invoke = (id, tag, payload) =>
+    let sequence = 0
+    let disposed = false
+    const prefix = `watchtower-packaged-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const call = (tag, payload = null) =>
       new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => {
-          unsubscribe()
-          reject(new Error('Packaged RPC timed out'))
-        }, 10000)
-        const unsubscribe = bridge.onMessage(raw => {
-          const frame = JSON.parse(raw)
-          if (frame._tag !== 'Exit' || frame.requestId !== id) return
+        if (disposed) return reject(new Error('Packaged RPC probe is disposed'))
+        const id = `${prefix}-${++sequence}`
+        let settled = false
+        let unsubscribe = () => {}
+        const finish = (error, value) => {
+          if (settled) return
+          settled = true
           clearTimeout(timeout)
           unsubscribe()
-          if (frame.exit._tag === 'Success') resolve(frame.exit.value)
-          else reject(new Error('Packaged RPC request failed'))
+          if (error) reject(error)
+          else resolve(value)
+        }
+        const timeout = setTimeout(() => finish(new Error(`Packaged RPC timed out: ${tag}`)), 10000)
+        unsubscribe = bridge.onMessage(raw => {
+          let frame
+          try {
+            if (typeof raw !== 'string') throw new Error('Invalid RPC frame')
+            frame = JSON.parse(raw)
+          } catch {
+            return finish(new Error('Malformed packaged RPC response'))
+          }
+          if (!frame || frame.requestId !== id) return
+          if (frame._tag === 'Defect') return finish(new Error('Packaged RPC server failure'))
+          if (frame._tag !== 'Exit' || !frame.exit || typeof frame.exit !== 'object')
+            return finish(new Error('Malformed packaged RPC response'))
+          if (frame.exit._tag === 'Success') {
+            if (!Object.prototype.hasOwnProperty.call(frame.exit, 'value'))
+              return finish(new Error('Malformed packaged RPC success'))
+            return finish(undefined, frame.exit.value)
+          }
+          if (frame.exit._tag !== 'Failure' || !Array.isArray(frame.exit.cause) || frame.exit.cause.length === 0)
+            return finish(new Error('Malformed packaged RPC failure'))
+          const failure = frame.exit.cause.find(item => item && item._tag === 'Fail' && item.error)
+          if (!failure) return finish(new Error('Packaged RPC operation failed'))
+          if (
+            typeof failure.error !== 'object' ||
+            typeof failure.error._tag !== 'string' ||
+            typeof failure.error.code !== 'string' ||
+            typeof failure.error.message !== 'string'
+          )
+            return finish(new Error('Malformed packaged RPC error'))
+          const error = new Error('Packaged RPC operation failed')
+          error.rpcError = failure.error
+          finish(error)
         }, connection.generation)
         bridge
           .send(JSON.stringify({ _tag: 'Request', id, tag, payload, headers: [] }), connection.generation)
-          .catch(error => {
-            clearTimeout(timeout)
-            unsubscribe()
-            reject(error)
-          })
+          .catch(() => finish(new Error(`Packaged RPC send failed: ${tag}`)))
       })
+    window.rpcProbe = {
+      call,
+      dispose: () => {
+        if (disposed) return
+        disposed = true
+        bridge.disconnect(connection.generation)
+      },
+    }
+  })
+}
+
+async function checkRendererRpc(window) {
+  const result = await window.evaluate(async () => {
+    const status = await window.rpcProbe.call('store:status')
     const name = 'watchtower-packaged-rpc-model'
-    const status = await invoke('packaged-rpc-status', 'store:status', null)
-    await invoke('packaged-rpc-price', 'models:setPrice', {
+    const receipt = await window.rpcProbe.call('models:setPrice', {
       model: name,
       inputPricePerMillion: 0,
       outputPricePerMillion: 2,
     })
-    const prices = await invoke('packaged-rpc-prices', 'models:getPriceOverrides', null)
-    await invoke('packaged-rpc-remove', 'models:removePriceOverride', { model: name })
-    return { status, price: prices.find(price => price.model === name) }
+    const prices = await window.rpcProbe.call('models:getPriceOverrides')
+    await window.rpcProbe.call('models:removePriceOverride', { model: name })
+    return { status, receipt, price: prices.find(price => price.model === name) }
   })
   assert.equal(result.status.scanned, true)
+  assert.equal(result.receipt.ok, true)
+  assert.ok(Number.isInteger(result.receipt.configRevision))
   assert.deepEqual(result.price, {
     model: 'watchtower-packaged-rpc-model',
     inputPricePerMillion: 0,
@@ -251,7 +298,8 @@ async function main() {
       const pageErrors = []
       window.on('pageerror', error => pageErrors.push(error))
       await expect(window).toHaveTitle(/Watchtower/)
-      await window.evaluate(() => window.api.setCadence('manual'))
+      await installRendererRpcProbe(window)
+      await window.evaluate(() => window.rpcProbe.call('cadence:set', { value: 'manual' }))
       const skip = window.getByRole('button', { name: 'Skip' })
       const retry = window.getByRole('button', { name: 'Retry' })
       await expect
@@ -298,18 +346,20 @@ async function main() {
       const migratedPayloads = await window.evaluate(async () => {
         const scope = { period: 'lifetime' }
         return {
-          optimize: await window.api.getOptimize(scope),
-          yield: await window.api.getYield(scope),
-          skills: await window.api.getSkills(scope),
+          optimize: await window.rpcProbe.call('optimize:view', { scope }),
+          yield: await window.rpcProbe.call('optimize:yield', { scope }),
+          skills: await window.rpcProbe.call('skills:view', { scope }),
         }
       })
       assert.ok(migratedPayloads.optimize && Array.isArray(migratedPayloads.optimize.findings))
       assert.ok(migratedPayloads.yield && Array.isArray(migratedPayloads.yield.details))
       assert.ok(migratedPayloads.skills && Array.isArray(migratedPayloads.skills.drafts))
       const sessionPayloads = await window.evaluate(async () => {
-        const projects = await window.api.getProjects()
-        const sessions = await window.api.getSessions({})
-        const detail = sessions.length ? await window.api.getSession(sessions[0].sessionId) : null
+        const projects = await window.rpcProbe.call('store:projects')
+        const sessions = await window.rpcProbe.call('store:sessions', { filter: {} })
+        const detail = sessions.length
+          ? await window.rpcProbe.call('store:session', { sessionId: sessions[0].sessionId, sourceId: 1 })
+          : null
         const term = detail?.turns
           .find(turn => turn.userMessage.trim())
           ?.userMessage.trim()
@@ -319,9 +369,9 @@ async function main() {
           sessions,
           detail,
           term,
-          hits: term ? await window.api.search(term) : [],
-          missing: await window.api.getSession('watchtower-packaged-missing-session'),
-          blank: await window.api.search('  \t '),
+          hits: term ? await window.rpcProbe.call('store:search', { query: term }) : [],
+          missing: await window.rpcProbe.call('store:session', { sessionId: 'watchtower-packaged-missing-session' }),
+          blank: await window.rpcProbe.call('store:search', { query: '  \t ' }),
         }
       })
       assert.ok(Array.isArray(sessionPayloads.projects) && sessionPayloads.projects.length > 0)
@@ -336,7 +386,7 @@ async function main() {
       assert.equal(sessionPayloads.missing, null)
       assert.deepEqual(sessionPayloads.blank, [])
       console.log(
-        'Packaged project/session rows, targeted detail, positive search, missing detail and blank search IPC passed.',
+        'Packaged project/session rows, targeted detail, positive search, missing detail and blank search RPC passed.',
       )
       const userData = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))
       assert.equal(path.resolve(userData), path.resolve(profile))
@@ -348,9 +398,9 @@ async function main() {
       const jsonPath = path.join(profile, 'exports', 'usage.json')
       const exports = await window.evaluate(
         async ({ csv, json }) => ({
-          csv: await window.api.exportData('csv', csv),
-          json: await window.api.exportData('json', json),
-          harnesses: await window.api.getCoachHarnesses(),
+          csv: await window.rpcProbe.call('export', { format: 'csv', destination: csv }),
+          json: await window.rpcProbe.call('export', { format: 'json', destination: json }),
+          harnesses: await window.rpcProbe.call('coach:harnesses'),
         }),
         { csv: exportFolder, json: jsonPath },
       )
@@ -366,31 +416,43 @@ async function main() {
       assert.equal(fs.readdirSync(exportFolder).length, 11)
       assert.ok(Array.isArray(exports.harnesses))
       const config = await window.evaluate(async () => {
-        const api = window.api
         const name = 'watchtower-wave20-gate-model'
-        const cadence = await api.getCadence()
-        const manual = await api.setCadence('manual')
-        const restoredCadence = await api.setCadence(cadence)
-        await api.addModelAlias(` ${name} `, ' target-model ')
-        const aliases = await api.getModelAliases()
-        await api.setModelPrice(` ${name} `, 0, 2)
-        const prices = await api.getPriceOverrides()
-        await api.removeModelAlias(` ${name} `)
-        await api.removePriceOverride(` ${name} `)
-        const remainingAliases = await api.getModelAliases()
-        const remainingPrices = await api.getPriceOverrides()
-        const dismissal = await api.dismissSkill({ source: 'bash', name: 'wave20-gate', reason: 'fixture' })
-        const status = await api.getScanStatus()
-        const startup = await api.setLedgerMcpStartupMode('on-demand')
-        const invalid = await api.setModelPrice(name, -1, 0).then(
-          () => 'accepted',
-          error => error.message,
+        const call = window.rpcProbe.call
+        const cadence = await call('cadence:get')
+        const manual = await call('cadence:set', { value: 'manual' })
+        const restoredCadence = await call('cadence:set', { value: cadence })
+        const aliasReceipt = await call('models:addAlias', { model: ` ${name} `, aliasOf: ' target-model ' })
+        const aliases = await call('models:getAliases')
+        const priceReceipt = await call('models:setPrice', {
+          model: ` ${name} `,
+          inputPricePerMillion: 0,
+          outputPricePerMillion: 2,
+        })
+        const prices = await call('models:getPriceOverrides')
+        const removeAliasReceipt = await call('models:removeAlias', { model: ` ${name} ` })
+        const removePriceReceipt = await call('models:removePriceOverride', { model: ` ${name} ` })
+        const remainingAliases = await call('models:getAliases')
+        const remainingPrices = await call('models:getPriceOverrides')
+        const dismissal = await call('skills:dismiss', { source: 'bash', name: 'wave20-gate', reason: 'fixture' })
+        const status = await call('store:status')
+        const startup = await call('ledger-mcp:startup:set', { mode: 'on-demand' })
+        const invalid = await call('models:setPrice', {
+          model: name,
+          inputPricePerMillion: -1,
+          outputPricePerMillion: 0,
+        }).then(
+          () => ({ accepted: true }),
+          error => ({ accepted: false, error: error.rpcError }),
         )
         return {
           name,
           manual,
           cadence,
           restoredCadence,
+          aliasReceipt,
+          priceReceipt,
+          removeAliasReceipt,
+          removePriceReceipt,
           aliases,
           prices,
           remainingAliases,
@@ -403,6 +465,15 @@ async function main() {
       })
       assert.equal(config.manual, 'manual')
       assert.equal(config.restoredCadence, config.cadence)
+      for (const receipt of [
+        config.aliasReceipt,
+        config.priceReceipt,
+        config.removeAliasReceipt,
+        config.removePriceReceipt,
+      ]) {
+        assert.equal(receipt.ok, true)
+        assert.ok(Number.isInteger(receipt.configRevision))
+      }
       assert.ok(config.aliases.some(alias => alias.model === config.name && alias.aliasOf === 'target-model'))
       assert.ok(
         config.prices.some(
@@ -414,14 +485,19 @@ async function main() {
       assert.deepEqual(config.dismissal, { ok: true })
       assert.equal(config.status.scanned, true)
       assert.equal(config.startup.startupMode, 'on-demand')
-      assert.ok(config.invalid.includes('prices must be non-negative numbers'))
+      assert.equal(config.invalid.accepted, false)
+      assert.deepEqual(config.invalid.error, {
+        _tag: 'ConfigRpcError',
+        code: 'command-failed',
+        message: 'Configuration command failed',
+      })
       console.log(
         'Packaged configuration ports passed: cadence, aliases and price CRUD, zero price, dismissal, startup, source status and failed validation.',
       )
       const inspection = await window.evaluate(async rows => {
         const harness = rows.find(row => row.kind === 'codex') ?? rows.find(row => row.kind === 'claude')
         if (!harness) return { skipped: true }
-        const result = await window.api.inspectCoachHarness(harness.instanceId)
+        const result = await window.rpcProbe.call('coach:inspect', { request: { kind: harness.kind } })
         return { kind: harness.kind, binaryPath: harness.binaryPath, result }
       }, exports.harnesses)
       assert.notEqual(inspection.skipped, true, 'Packaged Coach SDK inspection requires a detected bundled harness')
@@ -441,46 +517,69 @@ async function main() {
       fs.mkdirSync(protectedFolder)
       const protectedFile = path.join(protectedFolder, 'keep.txt')
       fs.writeFileSync(protectedFile, 'untouched')
-      const refused = await window.evaluate(async target => window.api.exportData('csv', target), protectedFolder)
+      const refused = await window.evaluate(
+        async target => window.rpcProbe.call('export', { format: 'csv', destination: target }),
+        protectedFolder,
+      )
       assert.equal(refused.ok, false)
+      assert.equal(typeof refused.error, 'string')
       assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'untouched')
       console.log(
-        'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned harness IPC passed.',
+        'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned harness RPC passed.',
       )
       await checkMcp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
       await checkMcpHttp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
       const cleared = await window.evaluate(async () => {
-        const api = window.api
-        await api.setCadence('manual')
-        const selected = await api.setCurrency('EUR')
-        const cached = await api.getCurrency()
-        const invalid = await api.setCurrency(' eur ').then(
-          () => 'accepted',
-          error => error.message,
+        const call = window.rpcProbe.call
+        await call('cadence:set', { value: 'manual' })
+        const selected = await call('currency:set', { code: 'EUR' })
+        const cached = await call('currency:get')
+        const invalid = await call('currency:set', { code: ' eur ' }).then(
+          () => ({ accepted: true }),
+          error => ({ accepted: false, error: error.rpcError }),
         )
-        await api.setCurrency('USD')
-        await api.addModelAlias('wave20-clear-config', 'target-model')
-        await api.setModelPrice('wave20-clear-config', 0, 2)
-        const info = await api.clearData()
+        await call('currency:set', { code: 'USD' })
+        const aliasReceipt = await call('models:addAlias', {
+          model: 'wave20-clear-config',
+          aliasOf: 'target-model',
+        })
+        const priceReceipt = await call('models:setPrice', {
+          model: 'wave20-clear-config',
+          inputPricePerMillion: 0,
+          outputPricePerMillion: 2,
+        })
+        const info = await call('settings:clear')
         return {
           selected,
           cached,
           invalid,
           info,
-          currency: await api.getCurrency(),
-          cadence: await api.getCadence(),
-          aliases: await api.getModelAliases(),
-          prices: await api.getPriceOverrides(),
-          startup: await api.getLedgerMcpStatus(),
-          status: await api.getScanStatus(),
-          projects: await api.getProjects(),
-          sessions: await api.getSessions({}),
+          aliasReceipt,
+          priceReceipt,
+          currency: await call('currency:get'),
+          cadence: await call('cadence:get'),
+          aliases: await call('models:getAliases'),
+          prices: await call('models:getPriceOverrides'),
+          startup: await call('ledger-mcp:status'),
+          status: await call('store:status'),
+          projects: await call('store:projects'),
+          sessions: await call('store:sessions', { filter: {} }),
         }
       })
       assert.equal(cleared.selected.code, 'EUR')
       assert.equal(cleared.cached.code, 'EUR')
-      assert.ok(cleared.invalid.includes('invalid ISO 4217 currency code'))
-      assert.equal(path.resolve(cleared.info.dataDir), path.resolve(profile))
+      assert.equal(cleared.invalid.accepted, false)
+      assert.deepEqual(cleared.invalid.error, {
+        _tag: 'ConfigRpcError',
+        code: 'command-failed',
+        message: 'Configuration command failed',
+      })
+      assert.equal(path.resolve(cleared.info.settings.dataDir), path.resolve(profile))
+      assert.ok(Number.isInteger(cleared.info.ledgerGeneration))
+      for (const receipt of [cleared.aliasReceipt, cleared.priceReceipt]) {
+        assert.equal(receipt.ok, true)
+        assert.ok(Number.isInteger(receipt.configRevision))
+      }
       assert.equal(cleared.cadence, 'manual')
       assert.deepEqual(cleared.currency, { code: 'USD', symbol: '$', rate: 1 })
       assert.ok(
@@ -492,15 +591,18 @@ async function main() {
       assert.deepEqual(cleared.projects, [])
       assert.deepEqual(cleared.sessions, [])
       console.log(
-        'Packaged currency select/cache/validation and clear/reclaim IPC passed; facts cleared, config retained.',
+        'Packaged currency select/cache/validation and clear/reclaim RPC passed; facts cleared, config retained.',
       )
 
       assert.deepEqual(pageErrors, [])
       assert.equal(app.windows().length, 1)
       console.log(
-        `Packaged ${process.platform} boot, real scan, onboarding, analytics navigation, migrated IPC payloads, and renderer error checks passed.`,
+        `Packaged ${process.platform} boot, real scan, onboarding, analytics navigation, native RPC payloads, and renderer error checks passed.`,
       )
     } finally {
+      for (const page of app.windows()) {
+        await page.evaluate(() => globalThis.rpcProbe?.dispose()).catch(() => {})
+      }
       await app.close()
     }
   } finally {

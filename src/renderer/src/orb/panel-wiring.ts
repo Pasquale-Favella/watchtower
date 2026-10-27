@@ -10,7 +10,7 @@ import { configInvalidationRevisionAtom } from '@/app/atoms/config-change'
 import { restartRpcQuery } from '@/app/atoms/rpc-query'
 import { scanStateAtom } from '@/app/atoms/scan'
 import { currencyChangedAtom } from '@/features/settings/atoms'
-import { parseEvent } from '@/shared/lib/api'
+import { parseEvent } from '@/shared/lib/contract-decoder'
 import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
 
 import type { PanelLifecycleEvent, PanelLifecycleFrame } from '../../../shared/rpc/lifecycle.js'

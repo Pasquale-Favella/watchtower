@@ -6,9 +6,80 @@ import * as Stream from 'effect/Stream'
 import type { IpcMain } from 'electron'
 import type { WebContents } from 'electron'
 
+import type { NativeCoachRunnerCapabilities } from '../../src/main/agents/ipc.js'
+import { coachHandlers } from '../../src/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '../../src/main/rpc/electron.js'
 import { type RpcMessagePort, serverProtocolLayer } from '../../src/shared/rpc/port-protocol.js'
-import { ProbeFailure, ProbeReadOnlyRpcGroup, ProbeRpcGroup } from './rpc-transport-contract.js'
+import type { CoachEvent } from '../../src/shared/schemas/agents.js'
+import { AppProbeRpcGroup, ProbeFailure, ProbeReadOnlyRpcGroup, ProbeRpcGroup } from './rpc-transport-contract.js'
+
+interface CoachRunControl {
+  readonly emit: (runId: string, event: CoachEvent) => void
+  active: boolean
+  cancelCalls: number
+}
+
+interface CoachHarnessDiagnostics {
+  readonly starts: number
+  readonly cancelCalls: Readonly<Record<string, number>>
+  readonly activeRuns: Readonly<Record<string, boolean>>
+}
+
+interface CoachHarnessControl {
+  readonly diagnostics: () => CoachHarnessDiagnostics
+  readonly emit: (runId: string, event: CoachEvent) => boolean
+  readonly burstNext: () => void
+}
+
+let nextCoachRun = 1
+let burstNextCoachRun = false
+const coachRuns = new Map<string, CoachRunControl>()
+
+const coachCapabilities: NativeCoachRunnerCapabilities<never> = {
+  list: Effect.succeed([]),
+  refresh: Effect.succeed([]),
+  inspect: () => Effect.succeed({ ok: false, error: 'Fixture inspection is unavailable.' }),
+  start: (_request, emit, onRunId) =>
+    Effect.sync(() => {
+      const runId = `fixture-coach-${nextCoachRun++}`
+      coachRuns.set(runId, { emit, active: true, cancelCalls: 0 })
+      onRunId?.(runId)
+      if (burstNextCoachRun) {
+        burstNextCoachRun = false
+        for (let index = 0; index < 160; index++) emit(runId, { kind: 'text', delta: 'x' })
+      }
+      return { ok: true, runId }
+    }),
+  cancel: runId =>
+    Effect.sync(() => {
+      const run = coachRuns.get(runId)
+      if (run) {
+        run.cancelCalls++
+        run.active = false
+      }
+    }),
+  reset: Effect.void,
+}
+
+const coachHarnessControl: CoachHarnessControl = {
+  diagnostics: () => ({
+    starts: nextCoachRun - 1,
+    cancelCalls: Object.fromEntries([...coachRuns].map(([runId, run]) => [runId, run.cancelCalls])),
+    activeRuns: Object.fromEntries([...coachRuns].map(([runId, run]) => [runId, run.active])),
+  }),
+  emit: (runId, event) => {
+    const run = coachRuns.get(runId)
+    if (!run) return false
+    run.emit(runId, event)
+    return true
+  },
+  burstNext: () => {
+    burstNextCoachRun = true
+  },
+}
+
+;(globalThis as typeof globalThis & { rpcTransportCoachHarness?: CoachHarnessControl }).rpcTransportCoachHarness =
+  coachHarnessControl
 
 export const installProbeRpc = (
   ipcMain: IpcMain,
@@ -58,6 +129,7 @@ export const installProbeRpc = (
       'probe:finite-stream': () => Stream.fromIterable([1, 2, 3, 4]),
       'probe:infinite-stream': () => Stream.fromIterable(Array.from({ length: 1000 }, (_, index) => index)),
     })
+    const appHandlers = Layer.merge(handlers, coachHandlers(coachCapabilities))
     const program =
       role === 'panel'
         ? RpcServer.make(ProbeReadOnlyRpcGroup, { disableTracing: true, disableFatalDefects: true }).pipe(
@@ -71,8 +143,8 @@ export const installProbeRpc = (
               ),
             ),
           )
-        : RpcServer.make(ProbeRpcGroup, { disableTracing: true, disableFatalDefects: true }).pipe(
-            Effect.provide(Layer.merge(handlers, serverProtocolLayer(port))),
+        : RpcServer.make(AppProbeRpcGroup, { disableTracing: true, disableFatalDefects: true }).pipe(
+            Effect.provide(Layer.merge(appHandlers, serverProtocolLayer(port))),
           )
     const fiber = Effect.runFork(program)
     activeServerFibers += 1

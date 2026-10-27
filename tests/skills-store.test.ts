@@ -1,27 +1,18 @@
-import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
 import { createCoachAtoms } from '../src/renderer/src/features/coach-skills/atoms.js'
 import { candidateKey, craftSkillPrompt } from '../src/renderer/src/features/coach-skills/lib.js'
-import { legacyRendererApi, RendererApi } from '../src/renderer/src/shared/lib/renderer-api.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import type { SkillCandidate, SkillsPayload, SkillsThresholds } from '../src/shared/schemas/skills.js'
-import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
+import { makeCoachRpcTestClient } from './coach-rpc-test-helper.js'
 
 function setup(getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds) => Promise<SkillsPayload | null>) {
   const registry = AtomRegistry.make()
   const runtime = Atom.context()
-  const service: RendererApi['Service'] = { ...legacyRendererApi }
-  const client = makeAnalyticsRpcTestClient(runtime, { skills: getSkills })
-  const detectionQuery = (request: { scope: OverviewScope; frequency: number; spread: number }, selectionId: string) =>
-    client.query(
-      'skills:view',
-      { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
-      { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
-    )
-  const atoms = createCoachAtoms(runtime, Layer.succeed(RendererApi, service), detectionQuery)
+  const client = makeCoachRpcTestClient(runtime, { skills: getSkills })
+  const atoms = createCoachAtoms(client)
   registry.mount(atoms.coachStateAtom)
   registry.mount(atoms.detection.resultAtom)
   return { registry, atoms }

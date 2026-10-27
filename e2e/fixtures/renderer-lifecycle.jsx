@@ -1,6 +1,6 @@
 /* global document, window */
 import { useAtomValue } from '@effect/atom-react'
-import { StrictMode, useEffect } from 'react'
+import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { appLifecycleReadinessAtom } from '@/app/atoms/rpc-lifecycle'
@@ -9,6 +9,7 @@ import { scanStateAtom } from '@/app/atoms/scan'
 import { useAppBootstrap } from '@/app/hooks/use-app-bootstrap'
 import { initializeRendererWindow, RendererRoot } from '@/app/renderer-root'
 import { rendererRuntimeOwner } from '@/app/renderer-runtime'
+import { AboutSection } from '@/features/settings/AboutSection'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 const listeners = new Map()
@@ -58,11 +59,12 @@ const updateStatus = {
   latestVersion: null,
   updateAvailable: false,
   tag: null,
-  phase: 'idle',
-  installSupported: true,
+  phase: 'unsupported',
+  installSupported: false,
   progress: null,
   message: null,
 }
+let setUpdatesVisible = () => {}
 const reply = (generation, frame) => {
   const message = JSON.stringify(frame)
   for (const listener of rpcMessages.get(generation) ?? []) listener(message)
@@ -201,6 +203,8 @@ const root = createRoot(document.getElementById('root'))
 
 function Probe() {
   useAppBootstrap()
+  const [updatesVisible, setVisible] = useState(false)
+  setUpdatesVisible = setVisible
   const state = useAtomValue(scanStateAtom)
   const { formatUsd } = useCurrencyFormatter()
   useEffect(() => {
@@ -211,7 +215,12 @@ function Probe() {
   }, [])
   counts.renderCount = (counts.renderCount ?? 0) + 1
   counts.lastRenderedScan = state
-  return <div data-ready={state.hydrated}>{formatUsd(10)}</div>
+  return (
+    <>
+      <div data-ready={state.hydrated}>{formatUsd(10)}</div>
+      {updatesVisible && <AboutSection />}
+    </>
+  )
 }
 
 window.lifecycleProbe = {
@@ -225,6 +234,9 @@ window.lifecycleProbe = {
     bootstrap: rendererRuntimeOwner.registry.get(appBootstrapAtom),
   }),
   setCurrency: nextCurrency => publishLifecycle({ _tag: 'CurrencyChanged', currency: nextCurrency }),
+  showUpdatesPane: () => setUpdatesVisible(true),
+  hideUpdatesPane: () => setUpdatesVisible(false),
+  publishUpdate: status => publishLifecycle({ _tag: 'UpdateChanged', status }),
   dispose: () => {
     root.unmount()
     dispose()

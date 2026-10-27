@@ -5,7 +5,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { calculateSessionDetail } from '../src/main/session-detail-calculation.js'
 import { createSessionsAtoms } from '../src/renderer/src/features/sessions/atoms.js'
-import { fetchSession } from '../src/renderer/src/shared/lib/api.js'
 import type { SessionDetail } from '../src/shared/schemas/views.js'
 import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 import { buildFixtureReport } from './fixtures/report.js'
@@ -32,28 +31,25 @@ afterEach(() => {
 })
 
 describe('source-aware session detail', () => {
-  it('forwards explicit source identity and preserves the legacy IPC argument list', async () => {
-    const getSession = vi.fn(() => Promise.resolve(null))
-    vi.stubGlobal('window', { api: { getSession } })
-    expect(await fetchSession('duplicate', 2)).toEqual({ ok: true, data: null })
-    expect(getSession).toHaveBeenLastCalledWith('duplicate', 2)
-    await fetchSession('duplicate')
-    expect(getSession).toHaveBeenLastCalledWith('duplicate')
+  it('forwards explicit source identity and preserves its omission when unspecified', async () => {
+    const session = vi.fn(async () => null)
+    const { registry, sessionQuery } = setup(session)
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 2 })
+    await vi.waitFor(() => expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Success'))
+    expect(session).toHaveBeenLastCalledWith({ sessionId: 'duplicate', sourceId: 2 })
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate' })
+    await vi.waitFor(() => expect(session).toHaveBeenCalledTimes(2))
+    expect(session).toHaveBeenLastCalledWith({ sessionId: 'duplicate' })
+    registry.dispose()
   })
 
-  it.each([0, -1, 1.5, Infinity, NaN])('rejects invalid source %s before IPC', async sourceId => {
-    const getSession = vi.fn(() => Promise.resolve(null))
-    vi.stubGlobal('window', { api: { getSession } })
-    expect(await fetchSession('duplicate', sourceId)).toMatchObject({ ok: false })
-    expect(getSession).not.toHaveBeenCalled()
-  })
-
-  it('does not coerce sourceId zero to an unspecified source at the RPC boundary', async () => {
-    const loadSession = vi.fn(() => Promise.resolve(null))
-    const { registry, sessionQuery } = setup(loadSession)
-    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId: 0 })
+  it.each([0, -1, 1.5, Infinity, NaN])('rejects invalid source %s before the handler', async sourceId => {
+    const session = vi.fn(async () => null)
+    const { registry, sessionQuery } = setup(session)
+    registry.set(sessionQuery.requestAtom, { sessionId: 'duplicate', sourceId })
     await vi.waitFor(() => expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Failure'))
-    expect(loadSession).not.toHaveBeenCalled()
+    expect(session).not.toHaveBeenCalled()
+    registry.dispose()
   })
 
   it('forwards explicit source identity through RPC and drops an old source response', async () => {

@@ -4,13 +4,12 @@ import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react
 
 import { pinWindowAtom } from '@/app/hooks/use-remote-query'
 import { registry, runtime } from '@/app/renderer-runtime'
-import { orbControls } from '@/shared/lib/api'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
 import { beaconEventsReadyAtom, subscribeToOrbBeacon } from './beacon-wiring'
+import { orbControls, OrbShell } from './native-shell'
 import { syncPlacementAtom } from './placement-atoms'
 
-const beaconBootstrapAtom = runtime(RendererApi.layer).atom(get => {
+const beaconBootstrapAtom = runtime(OrbShell.layer).atom(get => {
   get.addFinalizer(subscribeToOrbBeacon(get.registry))
   return Effect.gen(function* () {
     yield* Stream.runDrain(

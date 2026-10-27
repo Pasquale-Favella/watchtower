@@ -12,7 +12,7 @@ import {
   scanStateAtom,
 } from '@/app/atoms/scan'
 import { registry, runtime } from '@/app/renderer-runtime'
-import { subscribeToIpc } from '@/app/stores/subscribe'
+import { subscribeToNavigation } from '@/app/stores/subscribe'
 import { coachDetection, mountCoachWorkflow } from '@/features/coach-skills/atoms'
 import { loadCadenceAtom, loadCurrencyOptionsAtom, setCadenceAtom, setCurrencyAtom } from '@/features/settings/atoms'
 import { mountSettingsCapabilityWorkflow } from '@/features/settings/capability-atoms'
@@ -47,7 +47,7 @@ export const appBootstrapAtom = runtime(get =>
   get.mount(setCurrencyAtom)
   get.addFinalizer(mountCoachWorkflow(get.registry))
   get.addFinalizer(mountSettingsCapabilityWorkflow(get.registry))
-  get.addFinalizer(subscribeToIpc(get.registry))
+  get.addFinalizer(subscribeToNavigation(get.registry))
   const preferences = get.registry.get(preferencesAtom)
   let thresholdKey = `${preferences.skillsFrequency}\0${preferences.skillsSpread}`
   get.subscribe(preferencesAtom, next => {
@@ -63,8 +63,7 @@ export const appBootstrapAtom = runtime(get =>
       })
   })
   return Effect.gen(function* () {
-    // The native event subscriber owns scan readiness. Coach/navigation
-    // subscriptions can recover independently and never gate the first scan.
+    // Native application events establish readiness independently of navigation.
     yield* bootstrapInitialScan(
       Stream.runHead(get.stream(appLifecycleReadinessAtom).pipe(Stream.filter(state => state.state === 'ready'))),
       Effect.suspend(() => get.setResult(rehydrateScanAtom, undefined)),

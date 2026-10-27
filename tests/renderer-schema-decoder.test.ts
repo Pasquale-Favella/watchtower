@@ -1,7 +1,7 @@
 import { Schema } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { parseEvent, parsePayload } from '../src/renderer/src/shared/lib/api.js'
+import { parseEvent, parsePayload } from '../src/renderer/src/shared/lib/contract-decoder.js'
 import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
 import { cadenceOptionSchema, cadenceValueSchema } from '../src/shared/schemas/cadence.js'
 import { exportResultSchema } from '../src/shared/schemas/export.js'

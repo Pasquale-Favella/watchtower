@@ -2,8 +2,8 @@ import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useEffect, useRef } from 'react'
 
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
-import { orbControls } from '@/shared/lib/api'
 
+import { orbControls } from './native-shell'
 import { OrbPanel } from './OrbPanel'
 import { useOrbPanelBootstrap } from './panel-hooks'
 import { placementAtom, requestPlacementAtom } from './placement-atoms'

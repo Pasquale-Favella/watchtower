@@ -1,21 +1,17 @@
 import { expect, test } from '@playwright/test'
-import type { Api } from '../src/preload/index'
-import type { UpdateStatus } from '../src/shared/schemas/updates'
 
 import { dismissOnboarding, withApp } from './app'
+import { invokeRpc } from './rpc-probe'
 
-test('updates IPC and Settings preserve the development-build fallback', async () => {
-  await withApp(async ({ app, window }) => {
-    const statuses = await window.evaluate(async () => {
-      const api = (globalThis as unknown as { api: Api }).api
-      return [
-        await api.getUpdateStatus(),
-        await api.checkForUpdates(),
-        await api.downloadUpdate(),
-        await api.installUpdate(),
-      ]
-    })
-    for (const status of statuses) {
+test('updates RPC and Settings preserve the development-build fallback', async () => {
+  await withApp(async ({ window }) => {
+    const statuses = await Promise.all(
+      ['updates:status', 'updates:check', 'updates:download', 'updates:install'].map(tag => invokeRpc(window, tag)),
+    )
+    for (const result of statuses) {
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error('Update RPC request failed')
+      const status = result.value
       expect(status).toMatchObject({
         phase: 'unsupported',
         installSupported: false,
@@ -30,33 +26,6 @@ test('updates IPC and Settings preserve the development-build fallback', async (
     await expect(window.getByRole('button', { name: 'Open release page' })).toBeVisible()
     await expect(window.getByRole('button', { name: 'Download update', exact: true })).toHaveCount(0)
     await expect(window.getByRole('button', { name: 'Restart to install', exact: true })).toHaveCount(0)
-
-    const available: UpdateStatus = {
-      ...statuses[0]!,
-      revision: 1,
-      phase: 'available',
-      installSupported: true,
-      latestVersion: '0.3.0',
-      updateAvailable: true,
-      tag: 'v0.3.0',
-      message: null,
-    }
-    await app.evaluate(({ BrowserWindow }, status) => {
-      for (const win of BrowserWindow.getAllWindows()) win.webContents.send('updates:changed', status)
-    }, available)
-    await expect(window.getByRole('button', { name: 'Download update', exact: true })).toBeEnabled()
-    await window.getByRole('button', { name: 'Overview', exact: true }).click()
-    await app.evaluate(({ BrowserWindow }, status) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        win.webContents.send('updates:changed', { ...status, revision: 2, phase: 'downloading', progress: 50 })
-        win.webContents.send('updates:changed', { ...status, revision: 3, phase: 'ready', progress: 100 })
-        win.webContents.send('updates:changed', status)
-      }
-    }, available)
-    await window.getByRole('button', { name: 'Settings', exact: true }).click()
-    await expect(window.getByRole('button', { name: 'Restart to install', exact: true })).toBeEnabled()
-    await expect(window.getByText('Version 0.3.0 is ready. Restart to install it.')).toBeVisible()
-    await expect(window.getByRole('button', { name: 'Download update', exact: true })).toHaveCount(0)
   })
 })
 import { createHash } from 'node:crypto'

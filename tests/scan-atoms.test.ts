@@ -3,7 +3,7 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createRemoteQuerySlot } from '../src/renderer/src/app/atoms/remote-query.js'
+import { createRpcQuerySlot } from '../src/renderer/src/app/atoms/rpc-query.js'
 import { createScanAtoms } from '../src/renderer/src/app/atoms/scan.js'
 import { makeScanRpcTestClient } from './scan-rpc-test-helper.js'
 
@@ -75,23 +75,31 @@ describe('native scan lifecycle', () => {
   })
 
   it('invalidates activated queries even if metadata hydration fails', async () => {
+    let analyticsCalls = 0
     const { registry, client, applyScanChangeAtom, scanStateAtom, scanProgressAtom } = setup({
       status: () => Effect.fail(new Error('unavailable')),
+      analytics: () =>
+        Effect.sync(() => {
+          analyticsCalls += 1
+          return null
+        }),
     })
-    let calls = 0
-    const query = createRemoteQuerySlot({
-      runtime: client.runtime,
+    const query = createRpcQuerySlot({
       key: (request: string) => request,
-      fetch: () => Effect.sync(() => ++calls),
-      reactivityKeys: ['ledger'],
+      query: (request, selectionId) =>
+        client.query('store:analytics', undefined, {
+          serializationKey: `${request}:${selectionId}`,
+          reactivityKeys: ['ledger'],
+        }),
     })
     registry.set(query.requestAtom, 'current')
     query.pin(registry)
-    expect(await read(registry, query.resultAtom)).toBe(1)
+    expect(await read(registry, query.resultAtom)).toBeNull()
+    expect(analyticsCalls).toBe(1)
     registry.set(scanProgressAtom, { stage: 'port-in' })
     registry.set(applyScanChangeAtom, undefined)
     await read(registry, applyScanChangeAtom)
-    await vi.waitFor(() => expect(calls).toBe(2))
+    await vi.waitFor(() => expect(analyticsCalls).toBe(2))
     expect(registry.get(scanStateAtom)).toMatchObject({ scanError: 'Configuration command failed', scanning: true })
   })
 

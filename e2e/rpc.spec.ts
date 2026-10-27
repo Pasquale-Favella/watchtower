@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 
 import type { Api } from '../src/preload/index.js'
 import { dismissOnboarding, withApp } from './app'
+import { invokeRpc } from './rpc-probe'
 
 test('sandboxed preload carries RPC frames and replaces the connection after reload', async () => {
   await withApp(async ({ app, window }) => {
@@ -76,24 +77,17 @@ test('Overview native RPC refreshes pricing after reconnect without reload', asy
     await dismissOnboarding(window)
     await expect(window.getByText('Total spend', { exact: true })).toBeVisible()
 
-    // The application now owns this view through AtomRpc. Removing only the
-    // old invoke handler ensures a successful update must use that RPC path.
-    await app.evaluate(({ ipcMain }) => ipcMain.removeHandler('overview:query'))
-
     const totalSpend = window
       .getByText('Total spend', { exact: true })
       .locator('xpath=following-sibling::div//span')
       .first()
-    const setPrice = (input: number, output: number) =>
-      window.evaluate(
-        async ({ input, output }) => {
-          const api = (globalThis as typeof globalThis & { window: { api: Api } }).window.api
-          await api.setModelPrice('gpt-5.2-codex', input, output)
-        },
-        { input, output },
-      )
-
-    await setPrice(1_000_000, 2_000_000)
+    expect(
+      await invokeRpc(window, 'models:setPrice', {
+        model: 'gpt-5.2-codex',
+        inputPricePerMillion: 1_000_000,
+        outputPricePerMillion: 2_000_000,
+      }),
+    ).toMatchObject({ ok: true, value: { ok: true, configRevision: expect.any(Number) } })
     await expect(totalSpend).toHaveText('$64.00')
 
     const pausedListenerCount = await app.evaluate(({ ipcMain }) => {
@@ -109,13 +103,69 @@ test('Overview native RPC refreshes pricing after reconnect without reload', asy
     expect(pausedListenerCount).toBeGreaterThan(0)
 
     try {
-      await window.evaluate(async () => {
-        const bridge = (globalThis as typeof globalThis & { window: { api: Api } }).window.api.rpcV1
-        const connection = await bridge.connect()
-        if (connection._tag !== 'Connected') throw new Error(`RPC connection failed: ${connection.code}`)
-        bridge.disconnect(connection.generation)
+      // A test-owned native endpoint replaces the renderer connection. Its
+      // request still crosses the authenticated production RPC server and the
+      // existing worker, while renderer reconnection remains paused.
+      await app.evaluate(async ({ BrowserWindow }) => {
+        const sender = BrowserWindow.getAllWindows().find(win =>
+          win.webContents.getURL().endsWith('/index.html'),
+        )?.webContents
+        const listeners = (
+          globalThis as typeof globalThis & {
+            __watchtowerE2eRpcConnectListeners?: Array<Parameters<Electron.IpcMain['on']>[1]>
+          }
+        ).__watchtowerE2eRpcConnectListeners
+        if (!sender || !listeners?.length) throw new Error('Authenticated RPC endpoint unavailable')
+        const requestId = 2_000_000_000
+        let endpoint: Electron.MessagePortMain | undefined
+        const postMessage = sender.postMessage
+        try {
+          sender.postMessage = (channel, message, ports) => {
+            if (channel === 'rpc:v1:port' && message?.requestId === requestId) endpoint = ports?.[0]
+            else postMessage.call(sender, channel, message, ports)
+          }
+          listeners[0]({ sender, senderFrame: sender.mainFrame } as Electron.IpcMainEvent, { version: 1, requestId })
+        } finally {
+          sender.postMessage = postMessage
+        }
+        const port = endpoint
+        if (!port) throw new Error('RPC control endpoint was not transferred')
+        await new Promise<void>((resolve, reject) => {
+          let settled = false
+          const finish = (error?: Error) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            port.removeListener('message', receive)
+            port.removeListener('close', closed)
+            port.close()
+            if (error) reject(error)
+            else resolve()
+          }
+          const closed = () => finish(new Error('RPC control endpoint closed before acknowledgement'))
+          const receive = (event: Electron.MessageEvent) => {
+            if (typeof event.data !== 'string') return
+            const frame = JSON.parse(event.data)
+            if (frame._tag !== 'Exit' || frame.requestId !== 'e2e-gap-price') return
+            if (frame.exit?._tag === 'Success' && frame.exit.value?.ok === true) finish()
+            else finish(new Error('RPC gap write failed'))
+          }
+          const timer = setTimeout(() => finish(new Error('RPC gap write timed out')), 10_000)
+          port.on('message', receive)
+          port.on('close', closed)
+          port.start()
+          port.postMessage(
+            JSON.stringify({
+              _tag: 'Request',
+              id: 'e2e-gap-price',
+              tag: 'models:setPrice',
+              headers: [],
+              payload: { model: 'gpt-5.2-codex', inputPricePerMillion: 2_000_000, outputPricePerMillion: 2_000_000 },
+            }),
+          )
+        })
       })
-      await setPrice(2_000_000, 2_000_000)
+      await expect(totalSpend).toHaveText('$64.00')
     } finally {
       await app.evaluate(({ ipcMain }) => {
         const channel = 'rpc:v1:connect'

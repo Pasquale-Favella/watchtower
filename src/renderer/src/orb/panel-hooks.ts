@@ -4,14 +4,13 @@ import { useEffect } from 'react'
 
 import { pinWindowAtom } from '@/app/hooks/use-remote-query'
 import { registry, runtime } from '@/app/renderer-runtime'
-import { orbControls } from '@/shared/lib/api'
-import { RendererApi } from '@/shared/lib/renderer-api'
 
+import { orbControls, OrbShell } from './native-shell'
 import { loadOrbOverviewAtom, orbRecentQuery, orbTodayQuery } from './panel-atoms'
 import { panelEventsReadyAtom, subscribeToOrbPanel } from './panel-wiring'
 import { syncPlacementAtom } from './placement-atoms'
 
-const panelBootstrapAtom = runtime(RendererApi.layer).atom(get => {
+const panelBootstrapAtom = runtime(OrbShell.layer).atom(get => {
   get.addFinalizer(subscribeToOrbPanel(get.registry))
   pinWindowAtom(get.registry, orbTodayQuery.resultAtom)
   pinWindowAtom(get.registry, orbRecentQuery.resultAtom)

@@ -11,6 +11,7 @@ import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
 import { nativeHandlers } from '../src/main/rpc/native-handlers.js'
 import { ApplicationClient } from '../src/renderer/src/shared/lib/application-rpc.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
+import { unexpectedCoachHandlers } from './fixtures/unexpected-native-rpc.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native operation in a settings RPC test'))
 
@@ -53,6 +54,7 @@ export function makeSettingsRpcTestClient(
     },
   })
   const handlers = Layer.mergeAll(
+    unexpectedCoachHandlers,
     analyticsHandlers({ request }),
     configHandlers(
       { request },

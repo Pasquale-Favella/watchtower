@@ -1,21 +1,23 @@
 import * as Effect from 'effect/Effect'
-import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
+import * as Stream from 'effect/Stream'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { overviewScopeAtom, periodAtom } from '../src/renderer/src/app/atoms/scope.js'
 import { createCoachAtoms, mountCoachAtoms } from '../src/renderer/src/features/coach-skills/atoms.js'
 import { harnessBadge, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
 import { preferencesAtom } from '../src/renderer/src/features/settings/preferences-atoms.js'
-import { legacyRendererApi, RendererApi } from '../src/renderer/src/shared/lib/renderer-api.js'
+import { CoachRpcError, type CoachRunFrame } from '../src/shared/rpc/coach.js'
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
+  CoachInspectRequest,
   CoachSessionModels,
   CoachSessionModes,
 } from '../src/shared/schemas/agents.js'
-import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
+import { type CoachRpcTestOverrides, makeCoachRpcTestClient } from './coach-rpc-test-helper.js'
 
 const harnesses: CoachHarnessRow[] = [
   { instanceId: 'claude', kind: 'claude', displayName: 'Claude Code', status: 'ready', auth: { status: 'configured' } },
@@ -28,35 +30,32 @@ const models: CoachSessionModels = {
 const modes: CoachSessionModes = { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' }
 const envelope = (runId: string, event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId, event })
 
-function setup(overrides: Partial<RendererApi['Service']> = {}) {
+function setup(overrides: CoachRpcTestOverrides = {}) {
   const registry = AtomRegistry.make()
   const runtime = Atom.context()
-  const service: RendererApi['Service'] = {
-    ...legacyRendererApi,
-    getCoachHarnesses: () => Effect.succeed(harnesses),
-    refreshCoachHarnesses: () => Effect.succeed(harnesses),
-    openCoachLoginTerminal: () => Effect.succeed({ ok: true }),
-    inspectCoachHarness: () => Effect.succeed({ ok: true, models, modes }),
-    startCoachRun: () => Effect.succeed({ ok: true, runId: 'run-1' }),
-    cancelCoachRun: () => Effect.void,
-    resetCoachWorkspace: () => Effect.void,
-    getSkills: () => Effect.succeed(null),
+  const client = makeCoachRpcTestClient(runtime, {
+    harnesses: () => Effect.succeed(harnesses),
+    refreshHarnesses: () => Effect.succeed(harnesses),
+    inspect: () => Effect.succeed({ ok: true, models, modes }),
     ...overrides,
-  }
-  const client = makeAnalyticsRpcTestClient(runtime, {
-    skills: (scope, thresholds) => Effect.runPromise(service.getSkills(scope, thresholds)),
   })
-  const atoms = createCoachAtoms(runtime, Layer.succeed(RendererApi, service), (request, selectionId) =>
-    client.query(
-      'skills:view',
-      { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
-      { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
-    ),
-  )
+  const atoms = createCoachAtoms(client)
   registry.mount(atoms.coachStateAtom)
   const release = mountCoachAtoms(registry, atoms)
-  return { registry, atoms, service, release }
+  return { registry, atoms, client, release }
 }
+
+const runningStream = (runId: string): Stream.Stream<CoachRunFrame, CoachRpcError> =>
+  Stream.concat(Stream.make({ _tag: 'Started' as const, runId }), Stream.never)
+
+const finishedStream = (runId: string, events: CoachRunFrame[] = []): Stream.Stream<CoachRunFrame, CoachRpcError> =>
+  Stream.fromIterable([{ _tag: 'Started' as const, runId }, ...events])
+
+const eventFrame = (runId: string, event: CoachEventEnvelope['event']): CoachRunFrame => ({
+  _tag: 'Event',
+  runId,
+  event,
+})
 
 const waitFor = async (registry: AtomRegistry.AtomRegistry, predicate: () => boolean): Promise<void> => {
   await vi.waitFor(() => expect(predicate()).toBe(true))
@@ -148,7 +147,7 @@ describe('Coach native atom workflow', () => {
     const refreshed = [{ ...harnesses[1]!, instanceId: 'codex', kind: 'codex' }]
     const getCoachHarnesses = vi.fn(() => Effect.succeed(harnesses))
     const refreshCoachHarnesses = vi.fn(() => Effect.succeed(refreshed))
-    const { registry, atoms } = setup({ getCoachHarnesses, refreshCoachHarnesses })
+    const { registry, atoms } = setup({ harnesses: getCoachHarnesses, refreshHarnesses: refreshCoachHarnesses })
     registry.set(atoms.loadHarnessesAtom, undefined)
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).hydrated)
     expect(registry.get(atoms.coachStateAtom).harnessKind).toBe('claude')
@@ -167,7 +166,7 @@ describe('Coach native atom workflow', () => {
           : { ok: false as const, error: 'offline' },
       ),
     )
-    const { registry, atoms } = setup({ inspectCoachHarness: inspect })
+    const { registry, atoms } = setup({ inspect })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.inspectHarnessAtom, 'claude')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.claude !== undefined)
@@ -184,9 +183,32 @@ describe('Coach native atom workflow', () => {
     registry.dispose()
   })
 
+  it.each(['loadHarnessesAtom', 'refreshHarnessesAtom'] as const)(
+    'does not replace newer lifecycle harness rows with a late %s response',
+    async command => {
+      let resolve!: (rows: CoachHarnessRow[]) => void
+      const delayed = () =>
+        Effect.promise(
+          () =>
+            new Promise<CoachHarnessRow[]>(done => {
+              resolve = done
+            }),
+        )
+      const { registry, atoms } = setup({ harnesses: delayed, refreshHarnesses: delayed })
+      registry.set(atoms[command], undefined)
+      await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+      const newer = [{ ...harnesses[0]!, status: 'warning' as const, auth: { status: 'unauthenticated' as const } }]
+      registry.set(atoms.replaceHarnessesAtom, newer)
+      resolve(harnesses)
+      await vi.waitFor(() => expect(registry.get(atoms[command])).toMatchObject({ _tag: 'Success', waiting: false }))
+      expect(registry.get(atoms.coachStateAtom).harnesses).toEqual(newer)
+      registry.dispose()
+    },
+  )
+
   it('caches a successful empty probe and suppresses duplicate probes for a kind in flight', async () => {
     let resolve!: (value: { ok: true }) => void
-    const inspectCoachHarness = vi.fn((_request: string | { kind: string; allowApiKeyEnv?: boolean }) =>
+    const inspectCoachHarness = vi.fn((_request: CoachInspectRequest) =>
       Effect.promise(
         () =>
           new Promise<{ ok: true }>(done => {
@@ -194,7 +216,7 @@ describe('Coach native atom workflow', () => {
           }),
       ),
     )
-    const { registry, atoms } = setup({ inspectCoachHarness })
+    const { registry, atoms } = setup({ inspect: inspectCoachHarness })
     registry.set(atoms.inspectHarnessAtom, 'claude')
     await vi.waitFor(() => expect(inspectCoachHarness).toHaveBeenCalledTimes(1))
     registry.set(atoms.inspectHarnessAtom, 'claude')
@@ -215,7 +237,7 @@ describe('Coach native atom workflow', () => {
 
   it('caches a late probe for its original kind without replacing the newly selected harness', async () => {
     let resolveClaude!: (value: { ok: true; models: CoachSessionModels; modes: CoachSessionModes }) => void
-    const inspectCoachHarness = vi.fn((request: string | { kind: string; allowApiKeyEnv?: boolean }) => {
+    const inspectCoachHarness = vi.fn((request: CoachInspectRequest) => {
       const kind = typeof request === 'string' ? request : request.kind
       if (kind === 'claude')
         return Effect.promise(
@@ -226,7 +248,7 @@ describe('Coach native atom workflow', () => {
         )
       return Effect.succeed({ ok: true as const, models: { availableModels: [], currentModelId: 'default' } })
     })
-    const { registry, atoms } = setup({ inspectCoachHarness })
+    const { registry, atoms } = setup({ inspect: inspectCoachHarness })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.inspectHarnessAtom, 'claude')
     await vi.waitFor(() => expect(resolveClaude).toBeTypeOf('function'))
@@ -236,6 +258,7 @@ describe('Coach native atom workflow', () => {
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.gemini !== undefined)
     resolveClaude({ ok: true, models, modes })
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.claude !== undefined)
+    expect(registry.get(atoms.coachStateAtom).modelsByKind.claude).toMatchObject({ models, modes })
     expect(registry.get(atoms.coachStateAtom)).toMatchObject({
       harnessKind: 'gemini',
       sessionModels: { availableModels: [] },
@@ -243,25 +266,20 @@ describe('Coach native atom workflow', () => {
     registry.dispose()
   })
 
-  it('snapshots Scope and API-key preference, parks early events until acknowledgement, then replays them', async () => {
-    let acknowledge!: (value: { ok: true; runId: string }) => void
-    const pending = new Promise<{ ok: true; runId: string }>(resolve => {
-      acknowledge = resolve
-    })
-    const startCoachRun = vi.fn(() => Effect.promise(() => pending))
-    const { registry, atoms, release } = setup({ startCoachRun })
+  it('binds the Started frame before reducing the first streamed event and snapshots request state', async () => {
+    const run = vi.fn(() =>
+      finishedStream('run-1', [
+        eventFrame('run-1', { kind: 'text', delta: 'fast ' }),
+        eventFrame('run-1', { kind: 'error', message: 'fast failure' }),
+      ]),
+    )
+    const { registry, atoms, release } = setup({ run })
     registry.set(periodAtom, 'lifetime')
     registry.set(preferencesAtom, { ...registry.get(preferencesAtom), allowHarnessApiKeyEnv: true })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, '  hello coach  ')
-    await vi.waitFor(() => expect(startCoachRun).toHaveBeenCalledTimes(1))
-    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: true, activeRunId: null })
-    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'text', delta: 'fast ' }))
-    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'error', message: 'fast failure' }))
-    expect(registry.get(atoms.coachStateAtom).pendingEvents['run-1']).toHaveLength(2)
-    acknowledge({ ok: true, runId: 'run-1' })
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).messages.at(-1)?.error === 'fast failure')
-    expect(startCoachRun).toHaveBeenCalledWith(
+    expect(run).toHaveBeenCalledWith(
       expect.objectContaining({
         prompt: 'hello coach',
         scope: registry.get(overviewScopeAtom),
@@ -272,46 +290,85 @@ describe('Coach native atom workflow', () => {
     registry.dispose()
   })
 
-  it('does not launch without a harness and surfaces a refused run acknowledgement', async () => {
-    const startCoachRun = vi.fn(() => Effect.succeed({ ok: false as const, error: 'harness refused' }))
-    const first = setup({ startCoachRun })
+  it('does not launch without a harness and reports a stream that ends before Started', async () => {
+    const run = vi.fn(() => Stream.empty)
+    const first = setup({ run })
     first.registry.set(first.atoms.sendCoachAtom, 'question')
     await waitFor(first.registry, () => first.registry.get(first.atoms.coachStateAtom).error !== null)
-    expect(startCoachRun).not.toHaveBeenCalled()
-    expect(first.registry.get(first.atoms.coachStateAtom).error).toBe('select a harness first')
+    expect(run).not.toHaveBeenCalled()
+    expect(first.registry.get(first.atoms.coachStateAtom).error).toBe('Select a harness first.')
     first.registry.set(first.atoms.replaceHarnessesAtom, harnesses)
     first.registry.set(first.atoms.sendCoachAtom, 'question')
-    await waitFor(first.registry, () => first.registry.get(first.atoms.coachStateAtom).error === 'harness refused')
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+    await waitFor(first.registry, () => !first.registry.get(first.atoms.coachStateAtom).running)
+    expect(first.registry.get(first.atoms.coachStateAtom).error).toBeTruthy()
     expect(first.registry.get(first.atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
     expect(first.registry.get(first.atoms.coachStateAtom).messages.at(-1)).toMatchObject({
       role: 'assistant',
       streaming: false,
-      error: 'harness refused',
+      error: expect.any(String),
     })
     first.registry.dispose()
   })
 
+  it('surfaces a typed RPC failure that arrives before Started', async () => {
+    const failure = new CoachRpcError({ code: 'start-failed', message: 'Unable to start the Coach run.' })
+    const { registry, atoms } = setup({ run: () => Stream.fail(failure) })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+
+    await waitFor(registry, () => !registry.get(atoms.coachStateAtom).running)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({
+      activeRunId: null,
+      error: 'Unable to start the Coach run.',
+    })
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      streaming: false,
+      error: 'Unable to start the Coach run.',
+    })
+    registry.dispose()
+  })
+
+  it('keeps a partial answer visible and marks it interrupted when the RPC connection fails', async () => {
+    const disconnected = new RpcClientError({
+      reason: new RpcClientDefect({ message: 'Connection lost', cause: new Error('socket closed') }),
+    })
+    const { registry, atoms } = setup({
+      run: () =>
+        finishedStream('run-disconnected', [
+          eventFrame('run-disconnected', { kind: 'text', delta: 'partial answer' }),
+        ]).pipe(Stream.concat(Stream.fail(disconnected))),
+    })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+
+    await waitFor(registry, () => !registry.get(atoms.coachStateAtom).running)
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      content: 'partial answer',
+      streaming: false,
+      error: 'Connection lost. This partial response was interrupted; retry your message to continue.',
+    })
+    registry.dispose()
+  })
+
   it('omits model and mode IDs until the harness declares those choices', async () => {
-    const startCoachRun = vi.fn((_request: Parameters<RendererApi['Service']['startCoachRun']>[0]) =>
-      Effect.succeed({ ok: true as const, runId: 'run-1' }),
-    )
-    const { registry, atoms } = setup({ startCoachRun })
+    const run = vi.fn<NonNullable<CoachRpcTestOverrides['run']>>(() => runningStream('run-1'))
+    const { registry, atoms } = setup({ run })
     registry.set(atoms.setHarnessAtom, 'claude')
     registry.set(atoms.setModelIdAtom, 'custom-model')
     registry.set(atoms.setModeIdAtom, 'custom-mode')
     registry.set(atoms.sendCoachAtom, 'question')
-    await waitFor(registry, () => startCoachRun.mock.calls.length === 1)
-    expect(startCoachRun.mock.calls[0]?.[0]).not.toHaveProperty('modelId')
-    expect(startCoachRun.mock.calls[0]?.[0]).not.toHaveProperty('modeId')
+    await waitFor(registry, () => run.mock.calls.length === 1)
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty('modelId')
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty('modeId')
     registry.dispose()
   })
 
   it('resumes from the last session cursor and snapshots the selected UI Scope on each run', async () => {
     let sequence = 0
-    const startCoachRun = vi.fn((_request: Parameters<RendererApi['Service']['startCoachRun']>[0]) =>
-      Effect.succeed({ ok: true as const, runId: `run-${++sequence}` }),
-    )
-    const { registry, atoms } = setup({ startCoachRun })
+    const run = vi.fn<NonNullable<CoachRpcTestOverrides['run']>>(() => runningStream(`run-${++sequence}`))
+    const { registry, atoms } = setup({ run })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'first')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
@@ -320,7 +377,7 @@ describe('Coach native atom workflow', () => {
     registry.set(periodAtom, 'lifetime')
     registry.set(atoms.sendCoachAtom, 'second')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
-    expect(startCoachRun.mock.calls[1]?.[0]).toMatchObject({
+    expect(run.mock.calls[1]?.[0]).toMatchObject({
       prompt: 'second',
       resumeCursor: 'resume-1',
       scope: { period: 'lifetime' },
@@ -330,10 +387,8 @@ describe('Coach native atom workflow', () => {
 
   it('sends the picked model/mode only after the active harness declares them', async () => {
     let sequence = 0
-    const startCoachRun = vi.fn((_request: Parameters<RendererApi['Service']['startCoachRun']>[0]) =>
-      Effect.succeed({ ok: true as const, runId: `run-${++sequence}` }),
-    )
-    const { registry, atoms } = setup({ startCoachRun })
+    const run = vi.fn<NonNullable<CoachRpcTestOverrides['run']>>(() => runningStream(`run-${++sequence}`))
+    const { registry, atoms } = setup({ run })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'first')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
@@ -343,8 +398,8 @@ describe('Coach native atom workflow', () => {
     registry.set(atoms.setModeIdAtom, 'plan')
     registry.set(atoms.sendCoachAtom, 'second')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
-    expect(startCoachRun.mock.calls[1]?.[0]).toMatchObject({ modelId: 'opus', modeId: 'plan' })
-    expect(startCoachRun.mock.calls[1]?.[0]).not.toHaveProperty('allowApiKeyEnv')
+    expect(run.mock.calls[1]?.[0]).toMatchObject({ modelId: 'opus', modeId: 'plan' })
+    expect(run.mock.calls[1]?.[0]).not.toHaveProperty('allowApiKeyEnv')
     registry.dispose()
   })
 
@@ -378,30 +433,76 @@ describe('Coach native atom workflow', () => {
     registry.dispose()
   })
 
-  it('ignores acknowledgements after reset and asks the bridge to cancel the stale run', async () => {
-    let acknowledge!: (value: { ok: true; runId: string }) => void
-    const pending = new Promise<{ ok: true; runId: string }>(resolve => {
-      acknowledge = resolve
-    })
-    const startCoachRun = vi.fn(() => Effect.promise(() => pending))
-    const cancelCoachRun = vi.fn(() => Effect.void)
-    const resetCoachWorkspace = vi.fn(() => Effect.void)
-    const { registry, atoms, release } = setup({ startCoachRun, cancelCoachRun, resetCoachWorkspace })
+  it('interrupts a pending run stream when reset wins before Started', async () => {
+    let startStream!: (runId: string) => void
+    let streamInterrupted = false
+    const run = vi.fn(() =>
+      Stream.fromEffect(
+        Effect.promise(
+          () =>
+            new Promise<string>(resolve => {
+              startStream = resolve
+            }),
+        ),
+      ).pipe(
+        Stream.flatMap(runId => runningStream(runId)),
+        Stream.ensuring(Effect.sync(() => (streamInterrupted = true))),
+      ),
+    )
+    const reset = vi.fn(() => Effect.void)
+    const { registry, atoms, release } = setup({ run, reset })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'question')
-    await vi.waitFor(() => expect(startCoachRun).toHaveBeenCalledTimes(1))
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
     registry.set(atoms.resetSessionAtom, undefined)
-    await waitFor(registry, () => resetCoachWorkspace.mock.calls.length === 1)
-    acknowledge({ ok: true, runId: 'late-run' })
-    await waitFor(registry, () => cancelCoachRun.mock.calls.length === 1)
+    await waitFor(registry, () => reset.mock.calls.length === 1)
+    await waitFor(registry, () => streamInterrupted)
+    startStream('late-run')
     expect(registry.get(atoms.coachStateAtom)).toMatchObject({ messages: [], activeRunId: null, running: false })
     release()
     registry.dispose()
   })
 
+  it('interrupts a pending run stream immediately when cancelled before Started', async () => {
+    let releaseStarted!: (runId: string) => void
+    let streamInterrupted = false
+    const run = vi.fn(() =>
+      Stream.fromEffect(
+        Effect.promise(
+          () =>
+            new Promise<string>(resolve => {
+              releaseStarted = resolve
+            }),
+        ),
+      ).pipe(
+        Stream.flatMap(runId => runningStream(runId)),
+        Stream.ensuring(Effect.sync(() => (streamInterrupted = true))),
+      ),
+    )
+    const { registry, atoms } = setup({ run })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => run.mock.calls.length === 1)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: true, activeRunId: null })
+
+    registry.set(atoms.cancelAtom, undefined)
+    await waitFor(registry, () => streamInterrupted)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
+
+    releaseStarted('late-run')
+    await Promise.resolve()
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      content: '',
+      streaming: false,
+      error: 'cancelled',
+    })
+    registry.dispose()
+  })
+
   it('resets conversation and resume state while restoring the current harness capability cache', async () => {
-    const resetCoachWorkspace = vi.fn(() => Effect.void)
-    const { registry, atoms } = setup({ resetCoachWorkspace })
+    const reset = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ reset })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.inspectHarnessAtom, 'claude')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.claude !== undefined)
@@ -411,7 +512,7 @@ describe('Coach native atom workflow', () => {
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
     registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'resume-1' }))
     registry.set(atoms.resetSessionAtom, undefined)
-    await waitFor(registry, () => resetCoachWorkspace.mock.calls.length === 1)
+    await waitFor(registry, () => reset.mock.calls.length === 1)
     expect(registry.get(atoms.coachStateAtom)).toMatchObject({
       messages: [],
       resumeCursor: null,
@@ -426,26 +527,24 @@ describe('Coach native atom workflow', () => {
   })
 
   it('cancel marks the turn immediately and late payloads cannot revive a different run', async () => {
-    const cancelCoachRun = vi.fn(() => Effect.void)
-    const { registry, atoms } = setup({ cancelCoachRun })
+    const cancel = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ cancel })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'question')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
     registry.set(atoms.cancelAtom, undefined)
-    await waitFor(registry, () => cancelCoachRun.mock.calls.length === 1)
+    await waitFor(registry, () => cancel.mock.calls.length === 1)
     expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
     expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({ error: 'cancelled', streaming: false })
     registry.set(atoms.eventAtom, envelope('run-1', { kind: 'error', message: 'late failure' }))
     expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({ error: 'cancelled' })
     registry.set(atoms.eventAtom, envelope('run-1', { kind: 'text', delta: 'late text' }))
     expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
-      content: 'late text',
+      content: '',
       error: 'cancelled',
     })
     registry.set(atoms.eventAtom, envelope('run-1', { kind: 'tool', tool: 'Read', id: 't1', state: 'completed' }))
-    expect(registry.get(atoms.coachStateAtom).messages.at(-1)?.tools).toEqual([
-      { tool: 'Read', id: 't1', state: 'completed' },
-    ])
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)?.tools).toEqual([])
     registry.dispose()
   })
 
@@ -476,13 +575,13 @@ describe('Coach native atom workflow', () => {
   })
 
   it('fences a run when the selected harness changes and routes later session events only by source identity', async () => {
-    const cancelCoachRun = vi.fn(() => Effect.void)
-    const { registry, atoms } = setup({ cancelCoachRun })
+    const cancel = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ cancel })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'question')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
     registry.set(atoms.setHarnessAtom, 'gemini')
-    await vi.waitFor(() => expect(cancelCoachRun).toHaveBeenCalledWith('run-1'))
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith('run-1'))
     registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'stale', models, modes }))
     expect(registry.get(atoms.coachStateAtom)).toMatchObject({
       harnessKind: 'gemini',
@@ -495,14 +594,14 @@ describe('Coach native atom workflow', () => {
   })
 
   it('cancels and closes a run when its selected harness disappears with no replacement', async () => {
-    const cancelCoachRun = vi.fn(() => Effect.void)
-    const { registry, atoms } = setup({ cancelCoachRun })
+    const cancel = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ cancel })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'question')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
 
     registry.set(atoms.replaceHarnessesAtom, [])
-    await vi.waitFor(() => expect(cancelCoachRun).toHaveBeenCalledWith('run-1'))
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith('run-1'))
     expect(registry.get(atoms.coachStateAtom)).toMatchObject({ harnessKind: null, running: false, activeRunId: null })
     expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({ streaming: false, error: 'cancelled' })
     registry.dispose()
@@ -510,8 +609,8 @@ describe('Coach native atom workflow', () => {
 
   it('retry replaces only the final assistant turn while retaining its user prompt', async () => {
     let run = 0
-    const startCoachRun = vi.fn(() => Effect.succeed({ ok: true as const, runId: `run-${++run}` }))
-    const { registry, atoms } = setup({ startCoachRun })
+    const start = vi.fn(() => runningStream(`run-${++run}`))
+    const { registry, atoms } = setup({ run: start })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'same prompt')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
@@ -521,23 +620,23 @@ describe('Coach native atom workflow', () => {
     expect(assistant?.role).toBe('assistant')
     if (!assistant) throw new Error('The first run should create an assistant turn.')
     registry.set(atoms.retryAssistantAtom, 'not-the-last-assistant')
-    expect(startCoachRun).toHaveBeenCalledTimes(1)
+    expect(start).toHaveBeenCalledTimes(1)
     registry.set(atoms.retryAssistantAtom, assistant.id)
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
     expect(registry.get(atoms.coachStateAtom).messages).toHaveLength(2)
     expect(registry.get(atoms.coachStateAtom).messages[0]).toMatchObject({ role: 'user', content: 'same prompt' })
-    expect(startCoachRun).toHaveBeenLastCalledWith(
+    expect(start).toHaveBeenLastCalledWith(
       expect.objectContaining({ prompt: 'same prompt', scope: { period: 'today' } }),
     )
     registry.set(atoms.retryAssistantAtom, assistant.id)
-    expect(startCoachRun).toHaveBeenCalledTimes(2)
+    expect(start).toHaveBeenCalledTimes(2)
     registry.dispose()
   })
 
   it('refuses retry for streaming, user, non-final, or currently running turns', async () => {
     let sequence = 0
-    const startCoachRun = vi.fn(() => Effect.succeed({ ok: true as const, runId: `run-${++sequence}` }))
-    const { registry, atoms } = setup({ startCoachRun })
+    const run = vi.fn(() => runningStream(`run-${++sequence}`))
+    const { registry, atoms } = setup({ run })
     registry.set(atoms.replaceHarnessesAtom, harnesses)
     registry.set(atoms.sendCoachAtom, 'first prompt')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
@@ -545,23 +644,23 @@ describe('Coach native atom workflow', () => {
     const firstUser = registry.get(atoms.coachStateAtom).messages[0]!
     registry.set(atoms.retryAssistantAtom, firstAssistant.id)
     registry.set(atoms.retryAssistantAtom, firstUser.id)
-    expect(startCoachRun).toHaveBeenCalledTimes(1)
+    expect(run).toHaveBeenCalledTimes(1)
     registry.set(atoms.eventAtom, envelope('run-1', { kind: 'status', state: 'done' }))
     registry.set(atoms.sendCoachAtom, 'second prompt')
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
     registry.set(atoms.retryAssistantAtom, firstAssistant.id)
-    expect(startCoachRun).toHaveBeenCalledTimes(2)
+    expect(run).toHaveBeenCalledTimes(2)
     registry.set(atoms.eventAtom, envelope('run-2', { kind: 'status', state: 'done' }))
     const secondAssistant = registry.get(atoms.coachStateAtom).messages.at(-1)!
     registry.set(atoms.retryAssistantAtom, secondAssistant.id)
     await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-3')
-    expect(startCoachRun).toHaveBeenCalledTimes(3)
+    expect(run).toHaveBeenCalledTimes(3)
     registry.dispose()
   })
 
   it('keeps detection lazy until selected, keyed by Scope and thresholds with same-key refresh semantics', async () => {
-    const getSkills = vi.fn(() => Effect.succeed(null))
-    const { registry, atoms } = setup({ getSkills })
+    const getSkills = vi.fn(async () => null)
+    const { registry, atoms } = setup({ skills: getSkills })
     registry.mount(atoms.detection.resultAtom)
     expect(getSkills).not.toHaveBeenCalled()
     registry.set(atoms.detection.requestAtom, { scope: { period: 'today' }, frequency: 5, spread: 2 })

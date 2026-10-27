@@ -11,23 +11,23 @@ import { pullRequestsQuery } from '@/features/pull-requests/atoms'
 import { sessionQuery, sessionRowsQuery } from '@/features/sessions/atoms'
 import { spendQuery } from '@/features/spend/atoms'
 
-import { restartRemoteQuery } from './atoms/remote-query.js'
+import { restartRpcQuery } from './atoms/rpc-query.js'
 import { searchSlot } from './atoms/search.js'
 
 /** Called only after a successful clear. Configuration and conversation state survive. */
 export function resetLedgerQueries(registry: AtomRegistry.AtomRegistry): void {
   Atom.batch(() => {
-    restartRemoteQuery(registry, overviewQuery)
-    restartRemoteQuery(registry, sessionRowsQuery)
-    restartRemoteQuery(registry, sessionQuery)
-    restartRemoteQuery(registry, spendQuery)
-    restartRemoteQuery(registry, modelsQuery)
-    restartRemoteQuery(registry, pricingKnownModelsQuery)
-    restartRemoteQuery(registry, pullRequestsQuery)
-    restartRemoteQuery(registry, compareQuery)
-    restartRemoteQuery(registry, optimizeQuery)
-    restartRemoteQuery(registry, yieldQuery)
-    restartRemoteQuery(registry, coachDetection)
-    restartRemoteQuery(registry, searchSlot)
+    restartRpcQuery(registry, overviewQuery)
+    restartRpcQuery(registry, sessionRowsQuery)
+    restartRpcQuery(registry, sessionQuery)
+    restartRpcQuery(registry, spendQuery)
+    restartRpcQuery(registry, modelsQuery)
+    restartRpcQuery(registry, pricingKnownModelsQuery)
+    restartRpcQuery(registry, pullRequestsQuery)
+    restartRpcQuery(registry, compareQuery)
+    restartRpcQuery(registry, optimizeQuery)
+    restartRpcQuery(registry, yieldQuery)
+    restartRpcQuery(registry, coachDetection)
+    restartRpcQuery(registry, searchSlot)
   })
 }

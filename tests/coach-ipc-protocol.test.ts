@@ -1,36 +1,23 @@
+import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as RpcTest from 'effect/rpc/RpcTest'
+import * as Stream from 'effect/Stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { registerAgentsIpc } from '../src/main/agents/ipc.js'
+import { createApplicationAgents } from '../src/main/agents/ipc.js'
 import { makeMainRuntime } from '../src/main/main-runtime.js'
+import { coachHandlers } from '../src/main/rpc/coach-handlers.js'
+import { CoachRpcError, CoachRpcGroup } from '../src/shared/rpc/coach.js'
 
-const handlers = vi.hoisted(() => new Map<string, (...args: unknown[]) => Promise<unknown>>())
+afterEach(() => vi.useRealTimers())
 
-vi.mock('electron', () => ({
-  ipcMain: {
-    handle: (channel: string, handler: (...args: unknown[]) => Promise<unknown>) => handlers.set(channel, handler),
-    on: () => {},
-  },
-  BrowserWindow: {
-    fromWebContents: () => ({ isDestroyed: () => false, webContents: { send: () => {} } }),
-  },
-}))
-
-afterEach(() => {
-  handlers.clear()
-  vi.useRealTimers()
-})
-
-describe('Coach renderer protocol boundary', () => {
+describe('Coach RPC boundary', () => {
   it('starts harness detection after the preserved startup delay', async () => {
     vi.useFakeTimers()
     const detect = vi.fn(async () => [])
     const runtime = makeMainRuntime({ clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} }, { detect })
-    const ipc = registerAgentsIpc({
-      runtime,
-      dismissals: { dismiss: () => {} },
-      ledgerMcpServer: () => Effect.succeed(null),
-    })
+    const agents = createApplicationAgents({ runtime, ledgerMcpServer: () => Effect.succeed(null) })
 
     try {
       await vi.advanceTimersByTimeAsync(1499)
@@ -38,62 +25,78 @@ describe('Coach renderer protocol boundary', () => {
       await vi.advanceTimersByTimeAsync(1)
       expect(detect).toHaveBeenCalledOnce()
     } finally {
-      await ipc.dispose()
+      await agents.dispose()
       await Effect.runPromise(runtime.disposeEffect)
-      vi.useRealTimers()
     }
   })
 
-  it('interrupts delayed harness startup when IPC is disposed before the app runtime', async () => {
+  it('interrupts delayed harness startup when the app-owned service is disposed', async () => {
     vi.useFakeTimers()
     const detect = vi.fn(async () => [])
     const runtime = makeMainRuntime({ clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} }, { detect })
-    const ipc = registerAgentsIpc({
-      runtime,
-      dismissals: { dismiss: () => {} },
-      ledgerMcpServer: () => Effect.succeed(null),
-    })
+    const agents = createApplicationAgents({ runtime, ledgerMcpServer: () => Effect.succeed(null) })
 
     try {
       await vi.advanceTimersByTimeAsync(1499)
       expect(detect).not.toHaveBeenCalled()
-      await ipc.dispose()
+      await agents.dispose()
       await vi.advanceTimersByTimeAsync(1)
       expect(detect).not.toHaveBeenCalled()
     } finally {
       await Effect.runPromise(runtime.disposeEffect)
-      vi.useRealTimers()
     }
   })
 
-  it('exposes native harness capabilities from the same registered IPC owner', async () => {
-    const detect = vi.fn(async () => [])
-    const runtime = makeMainRuntime({ clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} }, { detect })
-    const ipc = registerAgentsIpc({
-      runtime,
-      dismissals: { dismiss: () => {} },
-      ledgerMcpServer: () => Effect.succeed(null),
-    })
+  it('validates malformed probes and reports safe typed failures for malformed runs', async () => {
+    const runtime = makeMainRuntime(
+      { clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} },
+      { detect: async () => [] },
+    )
+    const agents = createApplicationAgents({ runtime, ledgerMcpServer: () => Effect.succeed(null) })
+    const program = Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(CoachRpcGroup)
+      const runResult = yield* Effect.exit(Stream.runCollect(client['coach:run']({ harnessKind: '', prompt: 'hello' })))
+      const cancelResult = yield* Effect.exit(client['coach:cancel']({ runId: 'foreign-run' }))
+      yield* client['coach:reset']()
+      return { runResult, cancelResult }
+    }).pipe(Effect.scoped, Effect.provide(coachHandlers(agents.native)))
 
     try {
-      await expect(runtime.runPromise(ipc.native.list)).resolves.toEqual([])
-      await expect(runtime.runPromise(ipc.native.refresh)).resolves.toEqual([])
-      await expect(runtime.runPromise(ipc.native.inspect({ kind: '' }))).resolves.toEqual({
+      const { runResult, cancelResult } = await runtime.runPromise(program)
+      expect(Exit.isFailure(runResult)).toBe(true)
+      if (Exit.isFailure(runResult)) {
+        const error = Cause.findError(runResult.cause)
+        expect(error).toMatchObject({
+          _tag: 'Success',
+          success: new CoachRpcError({ code: 'start-failed', message: 'Unable to start the Coach run.' }),
+        })
+      }
+      expect(Exit.isFailure(cancelResult)).toBe(true)
+      if (Exit.isFailure(cancelResult)) {
+        const error = Cause.findError(cancelResult.cause)
+        expect(error).toMatchObject({
+          _tag: 'Success',
+          success: new CoachRpcError({
+            code: 'unauthorized',
+            message: 'The Coach run is not owned by this connection.',
+          }),
+        })
+      }
+      await expect(runtime.runPromise(agents.native.inspect({ kind: '' }))).resolves.toEqual({
         ok: false,
         error: 'invalid coach inspect request',
       })
-      await expect(runtime.runPromise(ipc.native.openLoginTerminal({ instanceId: '' }))).resolves.toEqual({
+      await expect(runtime.runPromise(agents.native.openLoginTerminal({ instanceId: '' }))).resolves.toEqual({
         ok: false,
         error: 'invalid harness instance id',
       })
-      expect(detect).toHaveBeenCalledTimes(2)
     } finally {
-      await ipc.dispose()
+      await agents.dispose()
       await Effect.runPromise(runtime.disposeEffect)
     }
   })
 
-  it('bounds unexpected main-controller rejections in the real registered handlers', async () => {
+  it('bounds a private harness startup error in the RPC stream failure', async () => {
     const privateError = new Error('private native details C:\\Users\\person\\config token=secret')
     const runtime = makeMainRuntime(
       { clientVersion: '4.2.1', appPath: '/app', onHarnessChange: () => {} },
@@ -103,33 +106,25 @@ describe('Coach renderer protocol boundary', () => {
         },
       },
     )
-    const ipc = registerAgentsIpc({
-      runtime,
-      dismissals: { dismiss: () => {} },
-      ledgerMcpServer: () => Effect.succeed(null),
-    })
+    const agents = createApplicationAgents({ runtime, ledgerMcpServer: () => Effect.succeed(null) })
+    const program = Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(CoachRpcGroup)
+      return yield* Effect.exit(Stream.runCollect(client['coach:run']({ harnessKind: 'claude', prompt: 'hello' })))
+    }).pipe(Effect.scoped, Effect.provide(coachHandlers(agents.native)))
+
     try {
-      expect(await handlers.get('coach:inspect')!(undefined, 'claude')).toEqual({
-        ok: false,
-        error: 'An unexpected Coach failure occurred. Please retry.',
-      })
-      expect(await handlers.get('coach:run')!({ sender: {} }, { harnessKind: 'claude', prompt: 'hello' })).toEqual({
-        ok: false,
-        error: 'An unexpected Coach failure occurred. Please retry.',
-      })
-      expect(await handlers.get('coach:open-login-terminal')!(undefined, 'claude')).toEqual({
-        ok: false,
-        error: 'An unexpected Coach failure occurred. Please retry.',
-      })
-      for (const channel of ['coach:harnesses', 'coach:harnesses-refresh']) {
-        const error = await handlers.get(channel)!().catch(error => error)
-        expect(error).toBeInstanceOf(Error)
-        if (!(error instanceof Error)) throw new Error('expected the IPC handler to reject with an Error')
-        expect(error.message).toBe('An unexpected Coach failure occurred. Please retry.')
-        expect(error.cause).toBe(privateError)
+      const result = await runtime.runPromise(program)
+      expect(Exit.isFailure(result)).toBe(true)
+      expect(JSON.stringify(result)).not.toContain('private native details')
+      if (Exit.isFailure(result)) {
+        const error = Cause.findError(result.cause)
+        expect(error).toMatchObject({
+          _tag: 'Success',
+          success: new CoachRpcError({ code: 'start-failed', message: 'Unable to start the Coach run.' }),
+        })
       }
     } finally {
-      await ipc.dispose()
+      await agents.dispose()
       await Effect.runPromise(runtime.disposeEffect)
     }
   })

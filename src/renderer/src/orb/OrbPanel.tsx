@@ -12,11 +12,11 @@ import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
-import { orbControls } from '@/shared/lib/api'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 import { querySnapshot } from '../app/hooks/use-remote-query'
+import { orbControls } from './native-shell'
 import { orbRecentQuery, orbTodayQuery, scanStartErrorAtom, scanStartPendingAtom, startScanAtom } from './panel-atoms'
 import { placementAtom } from './placement-atoms'
 

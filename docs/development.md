@@ -48,14 +48,18 @@ guide](./agents/effect.md). Use the installed source for APIs on this release.
   Activated analytical queries remain mounted until their window closes.
   Unopened Sections stay lazy. Authoritative events invalidate each window's
   own Reactivity service; currency changes only repaint formatted values.
-- Overview and pricing use `ApplicationClient` with native AtomRpc query and
-  mutation atoms. Other application domains retain `RendererApi` only while
-  their transport migration is pending. Reuse the root factory and protocol
+- Application domains use `ApplicationClient` with native AtomRpc queries and
+  Effect workflows. Use mutation atoms when one in-flight operation per tag is
+  enforced. Concurrent independent commands, including harness probes, call the
+  generated client directly so they cannot share another invocation's result.
+  Reuse the root factory and protocol
   Layer; rebuilding a client runtime on reconnect can replay mutation inputs.
   Application fetches and subscriptions belong to scoped Effects,
   not component-owned Promise chains. Admitted commands require a window
   owner when they must survive Section navigation. `keepAlive` alone does not
   mount an asynchronous Atom.
+- `get.setResult` dispatches when called. Wrap it in `Effect.suspend` when a
+  preceding readiness effect must complete before the command is dispatched.
 - Lifecycle subscriptions project only their selected categories. Config/reset
   snapshots carry authoritative versions without reading unrelated metadata.
   Invalidating a committed write must never depend on scan-status or harness

@@ -7,10 +7,14 @@ import * as Stream from 'effect/Stream'
 
 import { rpcMessagePortFromBridge } from '../../src/renderer/src/shared/lib/rpc-port.js'
 import type { RpcBridge } from '../../src/shared/rpc/bridge.js'
+import type { CoachRunFrame } from '../../src/shared/rpc/coach.js'
+import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'
+import type { RpcMessagePort } from '../../src/shared/rpc/port-protocol.js'
 import { clientProtocolLayer } from '../../src/shared/rpc/port-protocol.js'
 import { ProbeRpcGroup } from './rpc-transport-contract.js'
 
 type ProbeClient = RpcClient.FromGroup<typeof ProbeRpcGroup, RpcClientError>
+type CoachClient = RpcClient.FromGroup<typeof CoachRpcGroup, RpcClientError>
 type FixtureApi = {
   readonly rpcV1: RpcBridge
 }
@@ -29,10 +33,19 @@ type ProbeGlobal = {
   readonly connect: () => Promise<unknown>
   readonly beginConnect: () => void
   readonly bridge: () => RpcBridge
+  readonly beginCoachRun: () => Promise<CoachRunFrame>
+  readonly waitCoachFrames: (count: number) => Promise<CoachRunFrame[]>
+  readonly finishCoachRun: () => Promise<string>
+  readonly cancelCoachRun: (runId: string) => Promise<void>
+  readonly coachGeneration: () => number
 }
 
 const w = window as typeof window & { api?: FixtureApi; rpcTransportProbe?: ProbeGlobal }
 let pendingWrite: Promise<unknown> | undefined
+let coachFrames: CoachRunFrame[] = []
+let coachCompletion: Promise<string> | undefined
+let coachOutcome: 'Pending' | 'Success' | 'Failure' = 'Pending'
+let coachConnectionGeneration = 0
 
 const bridge = (): RpcBridge => {
   const value = w.api?.rpcV1
@@ -59,6 +72,37 @@ const run = async <A, E>(operation: (client: ProbeClient, generation: number) =>
   )
 }
 
+const runCoach = async <A, E>(
+  operation: (client: CoachClient) => Effect.Effect<A, E>,
+  keepBridgeOwner = false,
+): Promise<A> => {
+  const rpcBridge = bridge()
+  const connection = await rpcBridge.connect()
+  if (connection._tag !== 'Connected') throw new Error(`connect failed: ${connection.code}`)
+  coachConnectionGeneration = connection.generation
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const bridgePort = rpcMessagePortFromBridge(rpcBridge, connection.generation)
+        const clientPort: RpcMessagePort = keepBridgeOwner ? { ...bridgePort, close: () => Effect.void } : bridgePort
+        const protocol = yield* Layer.build(clientProtocolLayer(clientPort))
+        const client = yield* RpcClient.make(CoachRpcGroup).pipe(
+          Effect.provideService(RpcClient.Protocol, Context.get(protocol, RpcClient.Protocol)),
+        )
+        return yield* operation(client)
+      }),
+    ),
+  )
+}
+
+const waitCoachFrames = async (count: number): Promise<CoachRunFrame[]> => {
+  const deadline = Date.now() + 10_000
+  while (coachFrames.length < count && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 5))
+  if (coachFrames.length < count)
+    throw new Error(`Timed out waiting for Coach stream frames (${coachFrames.length} received, ${coachOutcome})`)
+  return [...coachFrames]
+}
+
 w.rpcTransportProbe = {
   run,
   bridge,
@@ -66,6 +110,28 @@ w.rpcTransportProbe = {
   beginConnect: () => {
     void bridge().connect()
   },
+  beginCoachRun: async () => {
+    coachFrames = []
+    coachOutcome = 'Pending'
+    coachCompletion = runCoach(client =>
+      Stream.runForEach(client['coach:run']({ harnessKind: 'fixture', prompt: 'controlled transport probe' }), frame =>
+        Effect.sync(() => coachFrames.push(frame)),
+      ),
+    ).then(
+      () => (coachOutcome = 'Success'),
+      () => (coachOutcome = 'Failure'),
+    )
+    const [frame] = await waitCoachFrames(1)
+    if (!frame) throw new Error('Coach stream did not start')
+    return frame
+  },
+  waitCoachFrames,
+  finishCoachRun: async () => {
+    if (!coachCompletion) throw new Error('No Coach stream is active')
+    return coachCompletion
+  },
+  cancelCoachRun: runId => runCoach(client => client['coach:cancel']({ runId }), true),
+  coachGeneration: () => coachConnectionGeneration,
   read: () => run(client => client['probe:read'](undefined)),
   write: value => run(client => client['probe:write']({ value })),
   fail: () => run(client => client['probe:fail'](undefined)),

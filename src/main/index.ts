@@ -14,17 +14,9 @@ import { join } from 'path'
 
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '../shared/rpc/application.js'
 import { serverProtocolLayer } from '../shared/rpc/port-protocol.js'
-import type { ComparePair } from '../shared/schemas/compare.js'
 import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
-import {
-  type LedgerMcpStartupMode,
-  ledgerMcpStartupModeSchema,
-  type LedgerMcpStatus,
-} from '../shared/schemas/ledger-mcp.js'
-import type { OverviewScope } from '../shared/schemas/overview.js'
-import { skillsSaveRequestSchema, type SkillsSaveResult, type SkillsThresholds } from '../shared/schemas/skills.js'
-import type { UpdateStatus } from '../shared/schemas/updates.js'
-import { registerAgentsIpc } from './agents/ipc.js'
+import type { LedgerMcpStartupMode } from '../shared/schemas/ledger-mcp.js'
+import { createApplicationAgents } from './agents/ipc.js'
 import { HarnessSnapshot } from './agents/snapshot.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from './agents/ledger-mcp/config.js'
 import { LedgerMcpPool } from './agents/ledger-mcp/pool.js'
@@ -42,6 +34,7 @@ import {
   safeLogOperationalEvent,
 } from './operational-log.js'
 import { closeMainResources, createQuitCoordinator } from './quit-coordinator.js'
+import { coachHandlers } from './rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from './rpc/electron.js'
 import { analyticsHandlers, configHandlers } from './rpc/handlers.js'
 import {
@@ -52,7 +45,7 @@ import {
   type LifecyclePublishEvent,
 } from './rpc/lifecycle.js'
 import { lifecycleEventFromWorker } from './rpc/worker-events.js'
-import { nativeHandlers, type NativeRpcCapabilities } from './rpc/native-handlers.js'
+import { nativeHandlers } from './rpc/native-handlers.js'
 import { AppUpdates, updatesLayer } from './updates.js'
 
 /**
@@ -84,7 +77,6 @@ const appUpdatesLayer = updatesLayer({
   }),
   onChange: status => {
     publishLifecycle({ _tag: 'UpdateChanged', status })
-    broadcast('updates:changed', status)
   },
   requestInstall: install => quitCoordinator.requestInstall(install),
 })
@@ -110,7 +102,6 @@ const mainRuntime = makeMainRuntime(
     appPath: app.getAppPath(),
     onHarnessChange: rows => {
       publishLifecycle({ _tag: 'HarnessesChanged', rows })
-      broadcast('coach:harnesses-changed', rows)
     },
   },
   {},
@@ -145,12 +136,6 @@ let backgroundShell: BackgroundShellHandle | null = null
 const hasInstanceLock = app.requestSingleInstanceLock()
 if (!hasInstanceLock) app.quit()
 app.on('second-instance', () => backgroundShell?.showMainWindow())
-
-function broadcast(channel: string, data?: unknown): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed()) win.webContents.send(channel, data)
-  }
-}
 
 function publishLifecycle(event: LifecyclePublishEvent): void {
   if (lifecycleHub) mainRuntime.runSync(lifecycleHub.publish(event))
@@ -189,10 +174,7 @@ function ledgerMcpContext(): { execPath: string; entryPath: string; dbPath: stri
   }
 }
 
-/** Relays db-worker broadcasts to windows. Everything fans out to every
- * window — scan lifecycle included, manual or background: with the orb there
- * are several windows, and a scan one of them starts is the app's scan, so
- * every window must show it (and refetch on the same `store:changed`). */
+/** The lifecycle hub projects worker events to each authenticated window role. */
 function relayWorkerEvents(db: DbWorkerClient): void {
   db.onReplaced(() => {
     if (lifecycleHub) mainRuntime.runSync(lifecycleHub.workerReplaced)
@@ -208,39 +190,12 @@ function relayWorkerEvents(db: DbWorkerClient): void {
         code: lifecycle.failure.code,
       })
     } else if (lifecycle.success) publishLifecycle(lifecycle.success)
-    switch (event.event) {
-      case 'scan:progress':
-        broadcast('scan:progress', event.progress)
-        break
-      case 'scan:error':
-        broadcast('scan:error', event.message)
-        break
-      case 'store:changed':
-        broadcast('store:changed', event.metadata)
-        break
-      case 'scan:idle':
-        broadcast('scan:idle')
-        break
-      case 'config:changed':
-        broadcast('config:changed')
-        break
-      case 'currency:changed':
-        broadcast('currency:changed', event.currency)
-        break
-      case 'oplog':
-        // Worker Operational-log forward (#128): filed via the shared seam
-        // with the worker context — never relayed to windows.
-        safeLogOperationalEvent(event.level, event.logEvent, event.fields, 'worker')
-        break
-    }
+    if (event.event === 'oplog') safeLogOperationalEvent(event.level, event.logEvent, event.fields, 'worker')
   })
 }
 
-function registerIpc(db: DbWorkerClient, native: NativeRpcCapabilities<MainServices | AppUpdates>): void {
-  /** Renderer tripwire forward (#130): a dropped subscription payload lands
-   * here with its label + location only — never contents. Schema-validated and
-   * length-capped at the schema; a malformed notice is itself an IPC error. */
-  handleLogged('log:notice', (notice: unknown): { ok: true } => {
+function registerShellCapabilities(): void {
+  handleLogged('log:notice', (_event, notice: unknown): { ok: true } => {
     const parsed = Schema.decodeUnknownResult(rendererNoticeSchema)(notice)
     if (parsed._tag === 'Failure') throw new Error('invalid renderer notice')
     safeLogOperationalEvent(
@@ -252,181 +207,26 @@ function registerIpc(db: DbWorkerClient, native: NativeRpcCapabilities<MainServi
     return { ok: true }
   })
 
-  handleLogged('scan:start', (_event, options: { provider?: string } = {}) =>
-    mainRuntime.runPromise(native.startScan(options)),
-  )
-
-  /** Whether a scan is in flight — asked of the worker, which owns the scan
-   * (ADR 0023). A window's bootstrap reads it once, then follows the
-   * broadcast lifecycle events. */
-  handleLogged('scan:active', () => mainRuntime.runPromise(native.isScanActive()))
-
-  ipcMain.on('scan:abort', () => {
-    // Fire-and-forget like the renderer's send: a dead worker must never turn
-    // an abort into an unhandled rejection here.
-    void db.request('scan:abort').catch(() => {})
-  })
-
-  handleLogged('cadence:get', () => db.request('cadence:get'))
-
-  handleLogged('cadence:set', (_event, value: string) => db.request('cadence:set', value))
-
-  handleLogged('store:status', () => db.request('store:status'))
-
-  handleLogged('store:views', () => db.request('store:views'))
-
-  handleLogged('store:projects', () => db.request('store:projects'))
-
-  handleLogged('store:sessions', (_event, filter?: { project?: string; since?: string; until?: string }) =>
-    db.request('store:sessions', filter),
-  )
-
-  handleLogged('sessions:view', (_event, scope: OverviewScope) => db.request('sessions:view', scope))
-
-  handleLogged('pullRequests:view', (_event, scope: OverviewScope) => db.request('pullRequests:view', scope))
-
-  handleLogged('spend:view', (_event, scope: OverviewScope) => db.request('spend:view', scope))
-
-  handleLogged('models:view', (_event, scope: OverviewScope) => db.request('models:view', scope))
-
-  handleLogged('compare:view', (_event, scope: OverviewScope, pair?: ComparePair) =>
-    db.request('compare:view', scope, pair),
-  )
-
-  handleLogged('optimize:view', (_event, scope: OverviewScope) => db.request('optimize:view', scope))
-
-  /** The Skills section's detection payload (ticket 24): pure local mining
-   * of skill/bash/tool seams plus the on-disk inventory — no consent, no
-   * network. Thresholds (frequency × spread) are renderer settings passed
-   * per request; defaults (5 × 2) apply when absent. */
-  handleLogged('skills:view', (_event, scope: OverviewScope, thresholds?: SkillsThresholds) =>
-    db.request('skills:view', scope, thresholds),
-  )
-
-  /** Skills › Save (ticket 25): the ONLY write the draft board can do, and it
-   * is user-initiated — the OS save dialog IS the user's confirmation, and no
-   * path is ever written without it. Defaults to `.agents/skills/` in home. */
-  handleLogged('skills:save', async (_event, request: unknown): Promise<SkillsSaveResult> => {
-    const parsed = Schema.decodeUnknownResult(skillsSaveRequestSchema)(request)
-    if (parsed._tag === 'Failure') return { ok: false, error: 'invalid save request' }
-    return mainRuntime.runPromise(native.saveSkill(parsed.success))
-  })
-
-  handleLogged('optimize:yield', (_event, scope: OverviewScope) => db.request('optimize:yield', scope))
-
-  handleLogged('models:addAlias', (_event, model: string, aliasOf: string) =>
-    db.request('models:addAlias', model, aliasOf),
-  )
-
-  handleLogged('models:getAliases', () => db.request('models:getAliases'))
-
-  handleLogged('models:removeAlias', (_event, model: string) => db.request('models:removeAlias', model))
-
-  handleLogged('models:getPriceOverrides', () => db.request('models:getPriceOverrides'))
-
-  handleLogged('models:removePriceOverride', (_event, model: string) => db.request('models:removePriceOverride', model))
-
-  handleLogged(
-    'models:setPrice',
-    (_event, model: string, inputPricePerMillion: number, outputPricePerMillion: number) =>
-      db.request('models:setPrice', model, inputPricePerMillion, outputPricePerMillion),
-  )
-
-  /** Open a PR in the default browser. Only http(s) URLs are allowed — a
-   * malformed or non-web URL is refused so a crafted label can never drive the
-   * shell into an arbitrary protocol handler. */
   handleLogged('open-external', (_event, url: string) => {
     try {
       const { protocol } = new URL(url)
       if (protocol === 'https:' || protocol === 'http:') return shell.openExternal(url)
     } catch {
-      /* malformed URL — refuse to open */
+      // Unsupported or malformed URLs cannot open native protocol handlers.
     }
     return undefined
   })
 
-  /** Open the macOS Full Disk Access pane (ADR 0015). The generic
-   * `open-external` channel refuses non-http(s) schemes, so the TCC pane's
-   * `x-apple.systempreferences:` URL gets its own narrow handler — a no-op
-   * anywhere that isn't macOS. */
   handleLogged('open-fda-settings', (): boolean => {
     if (process.platform !== 'darwin') return false
-    // Best-effort like `open-external`: a refused URL must never surface as
-    // an unhandled rejection.
     shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles').catch(() => {})
     return true
   })
-
-  handleLogged('store:session', (_event, sessionId: string, sourceId?: number) =>
-    sourceId === undefined ? db.request('store:session', sessionId) : db.request('store:session', sessionId, sourceId),
-  )
-
-  handleLogged('store:analytics', () => db.request('store:analytics'))
-
-  handleLogged('overview:query', (_event, scope: OverviewScope) => db.request('overview:query', scope))
-
-  handleLogged('store:search', (_event, query: string) => db.request('store:search', query))
-
-  handleLogged('settings:info', () => db.request('settings:info'))
-
-  handleLogged('settings:clear', () => db.request('settings:clear'))
-
-  handleLogged('ledger-mcp:status', () => mainRuntime.runPromise(native.getLedgerMcpStatus()))
-
-  handleLogged('ledger-mcp:startup:set', async (_event, value: unknown): Promise<LedgerMcpStatus> => {
-    const parsed = Schema.decodeUnknownResult(ledgerMcpStartupModeSchema)(value)
-    if (parsed._tag === 'Failure') throw new Error('invalid ledger MCP startup mode')
-    return mainRuntime.runPromise(native.setLedgerMcpStartupMode(parsed.success))
-  })
-
-  handleLogged('ledger-mcp:connection', () => mainRuntime.runPromise(native.getLedgerMcpConnection()))
-
-  handleLogged('ledger-mcp:token:regenerate', () => mainRuntime.runPromise(native.regenerateLedgerMcpToken()))
-
-  handleLogged('pricing:refresh', () => db.request('pricing:refresh'))
-
-  /** The About area's version (ADR 0012): `app.getVersion()` reads it from
-   * package.json, which electron-builder also stamps into the packaged app. */
-  handleLogged('app:version', () => mainRuntime.runPromise(native.getAppVersion()))
-
-  for (const [channel, command] of [
-    ['updates:status', 'getUpdateStatus'],
-    ['updates:check', 'checkForUpdates'],
-    ['updates:download', 'downloadUpdate'],
-    ['updates:install', 'installUpdate'],
-  ] as const) {
-    handleLogged(channel, (): Promise<UpdateStatus> => mainRuntime.runPromise(native[command]()))
-  }
-
-  handleLogged('currency:get', () => db.request('currency:get'))
-
-  handleLogged('currency:set', (_event, code: string) => db.request('currency:set', code))
-
-  /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
-  handleLogged('currency:list', () => db.request('currency:list'))
-
-  handleLogged('export:csv', (_event, destination?: string) =>
-    mainRuntime.runPromise(native.exportData({ format: 'csv', destination })),
-  )
-  handleLogged('export:json', (_event, destination?: string) =>
-    mainRuntime.runPromise(native.exportData({ format: 'json', destination })),
-  )
 }
-
-function registerApplicationAgents(db: DbWorkerClient): ReturnType<typeof registerAgentsIpc> {
-  // Coach + Skills agent chain (tickets 21–25): the HarnessRuntime seam's IPC
-  // surface — harness listing, run ack/stream/cancel, the not-a-skill
-  // dismissal store, and draft prose. The runner is lazy: the AI SDK loads on
-  // the first harness-touching call, never at boot. Runs are user-initiated
-  // from the unified Coach & Skills surface (ADR 0017); dismissals are a
-  // ledger config table (written through the worker) so they survive clear().
-  return registerAgentsIpc({
+function registerApplicationAgents(db: DbWorkerClient): ReturnType<typeof createApplicationAgents> {
+  // One coordinator owns harness runs and their conversation workspace.
+  return createApplicationAgents({
     runtime: mainRuntime,
-    dismissals: {
-      dismiss: async (source, name, reason) => {
-        await db.request('skills:dismiss', { source, name, reason })
-      },
-    },
     // The in-app ledger MCP server (map 53): the harness agent spawns the app
     // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the FULL
     // lifetime ledger read-only — no scope is baked at spawn (the harness
@@ -540,7 +340,7 @@ app.whenReady().then(async () => {
       openCoachLoginTerminal: agents.native.openLoginTerminal,
     },
   )
-  registerIpc(db, nativeCapabilities)
+  registerShellCapabilities()
   disposeRendererRpc = registerElectronRpc({
     ipcMain,
     resolveRole: ({ webContents, url }) => {
@@ -572,7 +372,10 @@ app.whenReady().then(async () => {
       let program: Effect.Effect<never, never, LifecycleHub | MainServices | AppUpdates>
       switch (role) {
         case 'app':
-          program = RpcServer.make(ApplicationRpcGroup, options).pipe(provideHandlers)
+          program = RpcServer.make(ApplicationRpcGroup, options).pipe(
+            Effect.provide(coachHandlers(agents.native)),
+            provideHandlers,
+          )
           break
         case 'panel':
           program = RpcServer.make(PanelRpcGroup, options).pipe(provideHandlers)

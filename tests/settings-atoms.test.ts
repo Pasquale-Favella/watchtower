@@ -76,7 +76,7 @@ describe('settings atoms', () => {
     expect(registry.get(atoms.currencyOptionsAtom)).toEqual([])
   })
 
-  it('loads cadence, active currency, and currency options through RendererApi', async () => {
+  it('loads cadence, active currency, and currency options through native RPC', async () => {
     const { atoms, registry } = makeHarness({
       getCadence: () => Promise.resolve('5m'),
       getCurrency: () => Promise.resolve(eur),

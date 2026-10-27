@@ -1,14 +1,13 @@
 import * as Effect from 'effect/Effect'
 import * as Atom from 'effect/reactivity/Atom'
 
-import { RendererApi } from '@/shared/lib/renderer-api'
-
 import type { OrbPanelRequest, OrbPlacement } from '../../../shared/schemas/orb.js'
 import { runtime } from '../app/renderer-runtime.js'
+import { OrbShell } from './native-shell.js'
 
 const initialPlacement: OrbPlacement = { expanded: false, peek: false, horizontal: 'right', vertical: 'bottom' }
 
-export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer = RendererApi.layer) {
+export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer = OrbShell.layer) {
   const remote = factory(layer)
   const currentPlacementAtom = Atom.keepAlive(Atom.make(initialPlacement))
   const placementRevisionAtom = Atom.keepAlive(Atom.make(0))
@@ -24,7 +23,7 @@ export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer
   const syncPlacementAtom = remote.fn<undefined>()((_, get) =>
     Effect.gen(function* () {
       const revision = get.registry.get(placementRevisionAtom)
-      const api = yield* RendererApi
+      const api = yield* OrbShell
       const placement = yield* api.getOrbPlacement()
       if (placement && revision === get.registry.get(placementRevisionAtom)) get.set(placementAtom, placement)
       return placement
@@ -34,7 +33,7 @@ export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer
   const requestPlacementAtom = remote.fn<OrbPanelRequest>()((request, get) =>
     Effect.gen(function* () {
       const revision = get.registry.get(placementRevisionAtom)
-      const api = yield* RendererApi
+      const api = yield* OrbShell
       const placement = yield* api.requestOrbPanel(request)
       if (placement && revision === get.registry.get(placementRevisionAtom)) get.set(placementAtom, placement)
       return placement

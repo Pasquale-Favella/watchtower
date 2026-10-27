@@ -4,6 +4,9 @@ import { join, resolve } from 'node:path'
 import { _electron as electron, expect, type Page, test } from '@playwright/test'
 import { build } from 'vite'
 
+import type { CoachRunFrame } from '../src/shared/rpc/coach.js'
+import type { CoachEvent } from '../src/shared/schemas/agents.js'
+
 type Probe = {
   read(): Promise<{ readonly writes: number }>
   write(value: string): Promise<unknown>
@@ -17,6 +20,21 @@ type Probe = {
   overflow(): Promise<{ readonly generation: number; readonly closed: boolean }>
   connect(): Promise<{ readonly _tag: string; readonly generation?: number; readonly code?: string }>
   beginConnect(): void
+  beginCoachRun(): Promise<CoachRunFrame>
+  waitCoachFrames(count: number): Promise<CoachRunFrame[]>
+  finishCoachRun(): Promise<string>
+  cancelCoachRun(runId: string): Promise<void>
+  coachGeneration(): number
+}
+
+type CoachHarnessControl = {
+  diagnostics(): {
+    readonly starts: number
+    readonly cancelCalls: Readonly<Record<string, number>>
+    readonly activeRuns: Readonly<Record<string, boolean>>
+  }
+  emit(runId: string, event: CoachEvent): boolean
+  burstNext(): void
 }
 
 type TransportDiagnostics = {
@@ -154,6 +172,158 @@ test('real sandboxed MessagePort transport passes the production RPC port bounda
       return { read: await rpc.read(), values: await rpc.finiteStream() }
     })
     expect(initial).toEqual({ read: { writes: 0 }, values: [1, 2, 3, 4] })
+
+    const panelCoachDenied = await panelPage.evaluate(async () => {
+      const rpc = (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe
+      try {
+        await rpc.cancelCoachRun('not-owned')
+        return false
+      } catch {
+        return true
+      }
+    })
+    expect(panelCoachDenied).toBe(true)
+
+    const firstCoachFrame = await mainPage.evaluate(() =>
+      (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.beginCoachRun(),
+    )
+    expect(firstCoachFrame).toMatchObject({ _tag: 'Started', runId: expect.any(String) })
+    const coachRunId = firstCoachFrame.runId
+    const emitCoachEvent = (event: CoachEvent) =>
+      electronApp.evaluate(
+        (_electron, { runId, event }) =>
+          (
+            globalThis as typeof globalThis & { rpcTransportCoachHarness: CoachHarnessControl }
+          ).rpcTransportCoachHarness.emit(runId, event),
+        { runId: coachRunId, event },
+      )
+    expect(await emitCoachEvent({ kind: 'text', delta: 'first ' })).toBe(true)
+    expect(await emitCoachEvent({ kind: 'text', delta: 'second' })).toBe(true)
+    expect(await emitCoachEvent({ kind: 'status', state: 'done' })).toBe(true)
+    const completedCoachFrames = await mainPage.evaluate(
+      count =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.waitCoachFrames(count),
+      4,
+    )
+    expect(completedCoachFrames).toEqual([
+      { _tag: 'Started', runId: coachRunId },
+      { _tag: 'Event', runId: coachRunId, event: { kind: 'text', delta: 'first ' } },
+      { _tag: 'Event', runId: coachRunId, event: { kind: 'text', delta: 'second' } },
+      { _tag: 'Event', runId: coachRunId, event: { kind: 'status', state: 'done' } },
+    ])
+    expect(
+      await mainPage.evaluate(() =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.finishCoachRun(),
+      ),
+    ).toBe('Success')
+
+    const cancelCoachFrame = await mainPage.evaluate(() =>
+      (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.beginCoachRun(),
+    )
+    expect(cancelCoachFrame._tag).toBe('Started')
+    if (cancelCoachFrame._tag !== 'Started') throw new Error('Coach cancellation run did not start')
+    const cancelResult = await mainPage.evaluate(async runId => {
+      try {
+        await (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.cancelCoachRun(runId)
+        return 'Success'
+      } catch {
+        return 'Failure'
+      }
+    }, cancelCoachFrame.runId)
+    expect(cancelResult).toBe('Success')
+    const cancelledCoachFrames = await mainPage.evaluate(
+      count =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.waitCoachFrames(count),
+      2,
+    )
+    expect(cancelledCoachFrames).toEqual([
+      { _tag: 'Started', runId: cancelCoachFrame.runId },
+      {
+        _tag: 'Event',
+        runId: cancelCoachFrame.runId,
+        event: { kind: 'error', message: 'cancelled' },
+      },
+    ])
+    expect(
+      await mainPage.evaluate(() =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.finishCoachRun(),
+      ),
+    ).toBe('Success')
+    const replayedCancel = await mainPage.evaluate(async runId => {
+      try {
+        await (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.cancelCoachRun(runId)
+        return 'Success'
+      } catch {
+        return 'Failure'
+      }
+    }, cancelCoachFrame.runId)
+    expect(replayedCancel).toBe('Failure')
+    const coachDiagnostics = () =>
+      electronApp.evaluate(() =>
+        (
+          globalThis as typeof globalThis & { rpcTransportCoachHarness: CoachHarnessControl }
+        ).rpcTransportCoachHarness.diagnostics(),
+      )
+    await expect.poll(async () => (await coachDiagnostics()).cancelCalls[cancelCoachFrame.runId]).toBe(1)
+    expect(await coachDiagnostics()).toMatchObject({
+      starts: 2,
+      activeRuns: { [cancelCoachFrame.runId]: false },
+    })
+
+    await electronApp.evaluate(() =>
+      (
+        globalThis as typeof globalThis & { rpcTransportCoachHarness: CoachHarnessControl }
+      ).rpcTransportCoachHarness.burstNext(),
+    )
+    const overflowCoachFrame = await mainPage.evaluate(() =>
+      (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.beginCoachRun(),
+    )
+    expect(overflowCoachFrame._tag).toBe('Started')
+    if (overflowCoachFrame._tag !== 'Started') throw new Error('Coach overflow run did not start')
+    const overflowCoachFrames = await mainPage.evaluate(
+      count =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.waitCoachFrames(count),
+      130,
+    )
+    expect(overflowCoachFrames).toHaveLength(130)
+    expect(overflowCoachFrames.at(-1)).toEqual({
+      _tag: 'Event',
+      runId: overflowCoachFrame.runId,
+      event: { kind: 'error', message: 'Coach output exceeded the stream limit. Retry your message.' },
+    })
+    expect(
+      await mainPage.evaluate(() =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.finishCoachRun(),
+      ),
+    ).toBe('Success')
+    await expect.poll(async () => (await coachDiagnostics()).cancelCalls[overflowCoachFrame.runId]).toBe(1)
+
+    const disconnectedCoachFrame = await mainPage.evaluate(() =>
+      (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.beginCoachRun(),
+    )
+    expect(disconnectedCoachFrame._tag).toBe('Started')
+    if (disconnectedCoachFrame._tag !== 'Started') throw new Error('Coach disconnect run did not start')
+    const coachGeneration = await mainPage.evaluate(() =>
+      (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.coachGeneration(),
+    )
+    await mainPage.evaluate(
+      generation =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.disconnect(generation),
+      coachGeneration,
+    )
+    expect(
+      await mainPage.evaluate(() =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.finishCoachRun(),
+      ),
+    ).toBe('Failure')
+    await expect.poll(async () => (await coachDiagnostics()).cancelCalls[disconnectedCoachFrame.runId]).toBe(1)
+    expect((await coachDiagnostics()).activeRuns[disconnectedCoachFrame.runId]).toBe(false)
+    expect(
+      await mainPage.evaluate(() =>
+        (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe.read(),
+      ),
+    ).toEqual({ writes: 0 })
+    expect((await coachDiagnostics()).starts).toBe(4)
 
     const typedFailure = await mainPage.evaluate(async () => {
       const rpc = (globalThis as typeof globalThis & { rpcTransportProbe: Probe }).rpcTransportProbe

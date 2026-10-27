@@ -7,7 +7,7 @@ import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { RpcClientError } from 'effect/rpc/RpcClientError'
 import { useContext, useEffect } from 'react'
 
-import type { RemoteQuerySlot } from '../atoms/remote-query.js'
+import type { RpcQuerySlot } from '../atoms/rpc-query.js'
 
 const windowPins = new WeakMap<AtomRegistry.AtomRegistry, Map<object, () => void>>()
 
@@ -57,7 +57,7 @@ export function querySnapshot<Value, Error>(result: AsyncResult.AsyncResult<Valu
 
 /** Pins a feature's current slot until its window closes, without retaining old request identities. */
 export function useRemoteQuery<Request, Value, Error>(
-  slot: RemoteQuerySlot<Request, Value, Error>,
+  slot: RpcQuerySlot<Request, Value, Error>,
   request: Request | null,
   key: (request: Request) => string,
 ): QuerySnapshot<Value> {

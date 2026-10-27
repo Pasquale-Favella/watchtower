@@ -10,11 +10,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { restartRpcQuery } from '../src/renderer/src/app/atoms/rpc-query.js'
 import { scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
+import { createOrbShell, OrbShell } from '../src/renderer/src/orb/native-shell.js'
 import type { PanelOverviewQuery } from '../src/renderer/src/orb/panel-atoms.js'
 import { createPanelAtoms, createPanelScanCommandAtoms, ORB_SCOPES } from '../src/renderer/src/orb/panel-atoms.js'
 import { applyPanelLifecycleFrame, panelEventsReadyAtom } from '../src/renderer/src/orb/panel-wiring.js'
 import { createPlacementAtoms } from '../src/renderer/src/orb/placement-atoms.js'
-import { legacyRendererApi, RendererApi } from '../src/renderer/src/shared/lib/renderer-api.js'
 import { PanelRpcGroup } from '../src/shared/rpc/application.js'
 import { AnalyticsRpcError } from '../src/shared/rpc/errors.js'
 import { NativeRpcError } from '../src/shared/rpc/native.js'
@@ -64,15 +64,13 @@ const payload: OverviewPayload = {
   localModelSavings: { totalUSD: 0, calls: 0, byModel: [], byProvider: [] },
 }
 
-function setup(overrides: Partial<RendererApi['Service']> = {}) {
+function setup(overrides: Partial<OrbShell['Service']> = {}) {
   const registry = AtomRegistry.make()
   registries.push(registry)
   const factory = Atom.context()
-  const layer = Layer.succeed(RendererApi, {
-    ...legacyRendererApi,
+  const layer = Layer.succeed(OrbShell, {
     getOrbPlacement: () => Effect.succeed(collapsed),
     requestOrbPanel: request => Effect.succeed(request === 'fold' ? collapsed : expanded),
-    getOverview: () => Effect.succeed(payload),
     ...overrides,
   })
   return { registry, factory, layer }
@@ -118,6 +116,26 @@ function panelQuery(
 }
 
 describe('orb placement atoms', () => {
+  it('validates native placement responses and returns fixed failures', async () => {
+    const shell = createOrbShell({
+      getPlacement: async () => ({ expanded: 'invalid' }) as never,
+      requestPanel: async () => {
+        throw new Error('private bridge detail')
+      },
+    })
+
+    await expect(Effect.runPromise(shell.getOrbPlacement())).rejects.toMatchObject({
+      _tag: 'OrbShellError',
+      operation: 'orb:placement:get',
+      message: expect.stringContaining('Invalid orb placement payload'),
+    })
+    await expect(Effect.runPromise(shell.requestOrbPanel('open'))).rejects.toMatchObject({
+      _tag: 'OrbShellError',
+      operation: 'orb:panel:request',
+      message: 'Unable to update the orb panel.',
+    })
+  })
+
   it('loads the current placement unless a newer placement event arrived', async () => {
     let finishRead!: (placement: OrbPlacement) => void
     const { registry, factory, layer } = setup({

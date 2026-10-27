@@ -3,6 +3,7 @@ import { join } from 'node:path'
 
 import { expect, type Page, test } from '@playwright/test'
 
+import type { Api } from '../src/preload/index.js'
 import { acceleratorFor, SHORTCUTS } from '../src/shared/lib/shortcuts'
 import { dismissOnboarding, withApp } from './app'
 
@@ -101,22 +102,52 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
 
     // One scan, every window: a scan started from the panel streams its
     // progress to the (hidden) main window too, not only to the requester.
-    await window.evaluate(() => {
+    await window.evaluate(async () => {
       const probe = globalThis as unknown as {
-        api: { onProgress: (cb: () => void) => () => void }
+        api: Api
         __orbScanProgress?: number
+        __orbStopScanProbe?: () => void
       }
+      const bridge = probe.api.rpcV1
+      const connection = await bridge.connect()
+      if (connection._tag !== 'Connected') throw new Error('Main RPC connection unavailable')
+      const requestId = `orb-progress-${crypto.randomUUID()}`
       probe.__orbScanProgress = 0
-      probe.api.onProgress(() => {
-        probe.__orbScanProgress = (probe.__orbScanProgress ?? 0) + 1
-      })
+      const unsubscribe = bridge.onMessage(raw => {
+        if (typeof raw !== 'string') return
+        const frame = JSON.parse(raw)
+        if (frame._tag !== 'Chunk' || frame.requestId !== requestId) return
+        for (const value of frame.values)
+          if (value._tag === 'Event' && value.envelope.event._tag === 'ScanProgress')
+            probe.__orbScanProgress = (probe.__orbScanProgress ?? 0) + 1
+        void bridge.send(JSON.stringify({ _tag: 'Ack', requestId }), connection.generation).catch(() => {})
+      }, connection.generation)
+      probe.__orbStopScanProbe = () => {
+        unsubscribe()
+        void bridge.send(JSON.stringify({ _tag: 'Interrupt', requestId }), connection.generation).catch(() => {})
+        delete probe.__orbStopScanProbe
+      }
+      await bridge.send(
+        JSON.stringify({
+          _tag: 'Request',
+          id: requestId,
+          tag: 'app:events',
+          headers: [],
+          payload: { categories: ['scan'], snapshot: 'versions' },
+        }),
+        connection.generation,
+      )
     })
-    await panel.getByRole('button', { name: 'Scan now' }).click()
-    await expect
-      .poll(() => window.evaluate(() => (globalThis as { __orbScanProgress?: number }).__orbScanProgress ?? 0), {
-        timeout: 60_000,
-      })
-      .toBeGreaterThan(0)
+    try {
+      await panel.getByRole('button', { name: 'Scan now' }).click()
+      await expect
+        .poll(() => window.evaluate(() => (globalThis as { __orbScanProgress?: number }).__orbScanProgress ?? 0), {
+          timeout: 60_000,
+        })
+        .toBeGreaterThan(0)
+    } finally {
+      await window.evaluate(() => (globalThis as { __orbStopScanProbe?: () => void }).__orbStopScanProbe?.())
+    }
 
     // Every page shares one origin even in a build (file://): a theme the
     // main window persists reaches both orb windows live.

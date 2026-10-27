@@ -10,7 +10,7 @@ export interface QuerySelectionState<Request, Selection extends QuerySelection<R
   readonly requestAtom: Atom.Writable<Request | null, Request | null>
 }
 
-/** Shared one-current-selection identity state for bridge and AtomRpc query slots. */
+/** Shared one-current-selection identity state for native AtomRpc query slots. */
 export function createQuerySelectionState<Request, Selection extends QuerySelection<Request>>(
   keyOf: (request: Request) => string,
   makeSelection: (request: Request, key: string) => Selection,

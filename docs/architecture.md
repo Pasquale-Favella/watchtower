@@ -23,7 +23,7 @@ flowchart TB
         workflows ~~~ decoder
     end
 
-    preload["Preload contextBridge<br/>Versioned RPC port and temporary legacy API"]
+    preload["Preload contextBridge<br/>Versioned RPC port and native shell capabilities"]
 
     subgraph main["Electron main process · MainRuntime"]
         ipc["RPC/IPC handlers and worker client"]
@@ -52,8 +52,8 @@ flowchart TB
     cache[("Session cache<br/>Per-file fingerprints")]
     ledger[("ledger.db<br/>Transcript facts and persisted settings")]
 
-    workflows -->|"AtomRpc pilot / remaining RendererApi Effects"| preload
-    preload -->|"RPC MessagePort / remaining invoke IPC"| ipc
+    workflows -->|"AtomRpc queries and Effect workflows"| preload
+    preload -->|"RPC MessagePort / native shell IPC"| ipc
     ipc -->|"Results and events"| preload
     preload -->|"Incoming payloads"| decoder
     decoder -->|"Validated data or visible error state"| ui
@@ -101,17 +101,17 @@ and event paths are drawn explicitly.
    and cached calls, while each changed file commits atomically to the ledger.
 2. The worker sends progress and completion events to main for relay.
    `store:changed` invalidates active queries in each window's Reactivity
-   service. Overview and pricing use native AtomRpc queries over the versioned
-   Electron MessagePort. Remaining Sections use `RendererApi` over the temporary
-   Promise IPC adapter. Main forwards both paths to an application query in the
+   service. All analytical Sections use native AtomRpc queries over the versioned
+   Electron MessagePort. Main forwards each application query to the
    worker. That query obtains decoded facts and live settings through
    a focused repository capability, runs pure calculations, and validates
    the outgoing payload with Effect Schema. Main forwards the result and the
    renderer decodes it again before publishing the Atom's `AsyncResult`.
    The app window keeps one scoped RPC client across port generations. Disconnects
-   fail admitted calls; reconnection reads the config/reset snapshot and invalidates
-   queries without replaying commands. Panel and beacon lifecycle consumers still
-   use the legacy subscriptions pending their transport migration.
+   fail admitted calls; reconnection reads an authoritative snapshot and invalidates
+   queries without replaying commands. App, panel and beacon own role-specific
+   lifecycle streams. App snapshots carry versions immediately; metadata hydration
+   runs separately. Ledger generations fence cleared or replaced worker state.
    Each RPC connection admits at most 64 active requests. The worker client also
    admits at most 128 distinct ordinary operations across connections, including
    recovery waits. RPC cancellation does not release an unfinished worker operation.
@@ -123,10 +123,16 @@ and event paths are drawn explicitly.
    RPC pricing writes return a confirmed config revision. The renderer waits
    for its authoritative event revision and the active query refresh, so a
    different window's earlier event cannot confirm the wrong write.
+   Clear commands return a ledger generation; the renderer waits until its reset
+   has been applied before rescanning, with one authoritative invalidation owner.
 4. A Coach request goes to main's harness integration. The coding-agent CLI
    can call `watchtower-ledger` tools over MCP to inspect usage. Each MCP
    query process owns a read-only connection and reuses the application query
-   code with its own service graph. The SDK owns protocol handling; Effect
+   code with its own service graph. A continuous RPC stream establishes the run
+   identity before delivering ordered text, tool and terminal events. Pending
+   output is bounded by event count and encoded bytes; overflow terminates the
+   stream visibly and drains the owning run. Disconnect and cancellation never
+   replay a prompt. The SDK owns protocol handling; Effect
    Schema owns Watchtower's tool arguments and result contracts. Tool scopes
    default to lifetime and can differ from the current dashboard scope.
 5. Cancellation and shutdown belong to the runtime that owns the work.
@@ -152,9 +158,11 @@ snapshot and never refetches ledger data merely to change the display symbol.
 
 The versioned RPC implementation follows
 [ADR 0037](./adr/0037-versioned-effect-rpc-boundaries.md). Shared schemas,
-generated clients and an authenticated MessagePort adapter serve the
-Overview/pricing pilot and its config/reset lifecycle. Remaining application
-domains still use the legacy bridge. Main/worker requests retain the old wire;
+generated clients and an authenticated MessagePort adapter serve all application
+requests and lifecycle/Coach streams. The remaining preload adapters cover
+native shell navigation, links, Full Disk Access, notices and orb geometry.
+Their responses and events retain synchronous schema validation.
+Main/worker requests retain the old wire;
 renderer RPC errors cannot yet preserve worker domain tags end to end. See the
 [adoption plan](./plans/effect-renderer-adoption.md) for the separate renderer,
 renderer/main RPC and main/worker RPC completion gates.
@@ -220,8 +228,9 @@ drift is visible in the UI instead of silently corrupting totals.
 The main process sends manual `⌘R`/`Ctrl+R` requests to the db-worker. The
 worker also owns background cadence and scan lifecycle. Each scan streams
 per-file deltas into SQLite and reports progress and completion to main, which
-relays events to the renderer. `store:changed` remains the renderer's only
-refetch trigger. There is no renderer polling loop. Scans coalesce, a failed
+projects events to renderer lifecycle streams. Committed ledger/config changes
+and reconnect snapshots invalidate active queries. There is no renderer polling
+loop. Scans coalesce, a failed
 background scan leaves the last-known data visible, and each scan supports
 abort and per-provider progress.
 

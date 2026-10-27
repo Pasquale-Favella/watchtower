@@ -6,7 +6,7 @@ import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Stream from 'effect/Stream'
 
 import { scanStateAtom } from '@/app/atoms/scan'
-import { parseEvent } from '@/shared/lib/api'
+import { parseEvent } from '@/shared/lib/contract-decoder'
 import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
 
 import type { BeaconLifecycleFrame } from '../../../shared/rpc/lifecycle.js'
