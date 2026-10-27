@@ -50,6 +50,7 @@ export class WorkerRpcError extends Schema.TaggedError<WorkerRpcError>()('Worker
     'database-access-denied',
     'database-query-invalid',
     'database-operation-failed',
+    'event-overflow',
   ]),
   message: Schema.Literal('The database worker operation failed.'),
   /** Present on an operation failure so the caller can apply preceding events

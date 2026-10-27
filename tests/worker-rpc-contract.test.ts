@@ -121,6 +121,7 @@ describe('typed db-worker RPC contract', () => {
       'database-access-denied',
       'database-query-invalid',
       'database-operation-failed',
+      'event-overflow',
     ] as const
 
     for (const code of codes) {

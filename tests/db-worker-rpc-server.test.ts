@@ -76,6 +76,61 @@ describe('db-worker RPC server', () => {
     expect(context?.dispatchEffect).toHaveBeenCalledWith('models:addAlias', ['unknown-model', 'known-model'])
   })
 
+  it('accepts and sequences a synchronous 1024-event startup burst before the ready ACK', async () => {
+    const burstSize = 1024
+    const layer = dbWorkerRpcServerLayer({
+      createContext: async emit => {
+        for (let index = 0; index < burstSize; index++) {
+          if (index % 2 === 0) {
+            emit({
+              event: 'scan:progress',
+              manual: true,
+              progress: { stage: 'parse', processed: index, total: burstSize },
+            })
+          } else {
+            emit({
+              event: 'oplog',
+              level: 'info',
+              logEvent: 'startup-burst',
+              fields: { index },
+            })
+          }
+        }
+        return fakeContext(emit)
+      },
+      onFatal: vi.fn(),
+    })
+
+    let signalSubscribed!: () => void
+    const subscribed = new Promise<void>(resolve => {
+      signalSubscribed = resolve
+    })
+    const program = Effect.gen(function* () {
+      const client = yield* RpcTest.makeClient(WorkerRpcGroup)
+      const stream = yield* Effect.forkChild(
+        Stream.runCollect(
+          client['worker:events']().pipe(
+            Stream.tap(frame => (frame.sequence === 0 ? Effect.sync(signalSubscribed) : Effect.void)),
+            Stream.take(burstSize + 1),
+          ),
+        ),
+      )
+      yield* Effect.promise(() => subscribed)
+      const ready = yield* client['worker:ready']()
+      const frames = yield* Fiber.join(stream)
+      return { ready, frames }
+    })
+
+    const result = await runServer(layer, program)
+    expect(result.ready).toEqual({ value: true, eventSequence: burstSize })
+    expect(result.frames).toHaveLength(burstSize + 1)
+    expect(result.frames.map(frame => frame.sequence)).toEqual(
+      Array.from({ length: burstSize + 1 }, (_, index) => index),
+    )
+    expect(result.frames.slice(1).filter(frame => frame.event.event === 'scan:progress')).toHaveLength(burstSize / 2)
+    expect(result.frames.slice(1).filter(frame => frame.event.event === 'oplog')).toHaveLength(burstSize / 2)
+  })
+
   it('preserves omitted source identity at the context boundary', async () => {
     let context: ReturnType<typeof fakeContext> | undefined
     const layer = dbWorkerRpcServerLayer({
@@ -218,7 +273,7 @@ describe('db-worker RPC server', () => {
       const error = Cause.findError(result.cause)
       expect(error).toMatchObject({
         _tag: 'Success',
-        success: new WorkerRpcError({ code: 'unavailable', message: 'The database worker operation failed.' }),
+        success: new WorkerRpcError({ code: 'event-overflow', message: 'The database worker operation failed.' }),
       })
     }
   })
@@ -227,7 +282,7 @@ describe('db-worker RPC server', () => {
     const onFatal = vi.fn()
     const layer = dbWorkerRpcServerLayer({
       createContext: async emit => {
-        for (let index = 0; index < 257; index++) emit({ event: 'config:changed' })
+        for (let index = 0; index < 4097; index++) emit({ event: 'config:changed' })
         return fakeContext(emit)
       },
       onFatal,
@@ -240,6 +295,13 @@ describe('db-worker RPC server', () => {
     const result = await runServer(layer, program)
     expect(Exit.isFailure(result)).toBe(true)
     expect(onFatal).toHaveBeenCalledOnce()
+    if (Exit.isFailure(result)) {
+      const error = Cause.findError(result.cause)
+      expect(error).toMatchObject({
+        _tag: 'Success',
+        success: new WorkerRpcError({ code: 'event-overflow', message: 'The database worker operation failed.' }),
+      })
+    }
   })
 
   it('rejects a malformed encoded request before it can dispatch', async () => {

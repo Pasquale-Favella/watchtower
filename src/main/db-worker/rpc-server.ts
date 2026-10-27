@@ -19,7 +19,7 @@ import type { DbWorkerContext, DbWorkerEmit } from './context.js'
 import type { DbWorkerEvent } from './protocol.js'
 import { workerRpcError } from './rpc-errors.js'
 
-const EVENT_CAPACITY = 256
+const EVENT_CAPACITY = 4096
 const EVENT_BYTE_CAPACITY = 2 * 1024 * 1024
 const SINGLE_EVENT_BYTE_CAPACITY = 1024 * 1024
 
@@ -192,7 +192,7 @@ class WorkerRpcServerStateImpl implements WorkerRpcServerStateService {
       this.queuedEventBytes + bytes > EVENT_BYTE_CAPACITY ||
       !Queue.offerUnsafe(this.queue, sequenced)
     ) {
-      this.failGeneration(workerError('unavailable'))
+      this.failGeneration(workerError('event-overflow'))
       return
     }
     this.queuedEventCount += 1
