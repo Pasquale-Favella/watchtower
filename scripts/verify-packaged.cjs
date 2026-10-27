@@ -278,6 +278,68 @@ async function checkRendererRpc(window) {
   console.log('Packaged sandbox RPC query and admitted configuration write passed over MessagePort.')
 }
 
+function basenameFromUrl(url) {
+  try {
+    const segments = new URL(url).pathname.split('/').filter(Boolean)
+    return segments.at(-1) ?? 'unloaded'
+  } catch {
+    return 'unloaded'
+  }
+}
+
+async function inspectNativeWindows(app) {
+  return app.evaluate(({ BrowserWindow }) =>
+    BrowserWindow.getAllWindows()
+      .map(win => {
+        const url = win.webContents.getURL()
+        let basename = 'unloaded'
+        try {
+          basename = new URL(url).pathname.split('/').filter(Boolean).at(-1) ?? 'unloaded'
+        } catch {
+          // Keep diagnostics to an allowlisted basename even for non-URL pages.
+        }
+        const preferences = win.webContents.getLastWebPreferences()
+        return {
+          basename,
+          visible: win.isVisible(),
+          minimized: win.isMinimized(),
+          webContentsId: win.webContents.id,
+          security: {
+            sandbox: preferences.sandbox,
+            contextIsolation: preferences.contextIsolation,
+            nodeIntegration: preferences.nodeIntegration,
+          },
+        }
+      })
+      .sort((left, right) => left.basename.localeCompare(right.basename)),
+  )
+}
+
+function assertPackagedSurfaces(inventory, phase) {
+  const expected = ['index.html', 'orb-panel.html', 'orb.html']
+  const roles = inventory.map(surface => surface.basename)
+  const safeInventory = inventory.map(({ basename, visible, minimized }) => ({ basename, visible, minimized }))
+  assert.deepEqual(
+    roles,
+    expected,
+    `${phase}: expected exactly one app, beacon, and panel window; ${JSON.stringify(safeInventory)}`,
+  )
+  for (const surface of inventory) {
+    assert.deepEqual(
+      surface.security,
+      { sandbox: true, contextIsolation: true, nodeIntegration: false },
+      `${phase}: unsafe web preferences for ${surface.basename}; ${JSON.stringify(safeInventory)}`,
+    )
+  }
+}
+
+async function pageForSurface(app, basename, expect) {
+  await expect.poll(() => app.windows().some(page => basenameFromUrl(page.url()) === basename)).toBe(true)
+  const page = app.windows().find(candidate => basenameFromUrl(candidate.url()) === basename)
+  if (!page) throw new Error(`Packaged ${basename} page disappeared after navigation`)
+  return page
+}
+
 async function main() {
   const options = parseOptions(process.argv.slice(2))
   if (options.help) {
@@ -294,9 +356,19 @@ async function main() {
     if (process.platform === 'linux') args.unshift('--no-sandbox')
     const app = await electron.launch({ executablePath, args, env: providerFixture.env, timeout: 60000 })
     try {
-      const window = await app.firstWindow({ timeout: 60000 })
       const pageErrors = []
-      window.on('pageerror', error => pageErrors.push(error))
+      const capturedPages = new WeakSet()
+      const capturePageErrors = page => {
+        if (capturedPages.has(page)) return
+        capturedPages.add(page)
+        page.on('pageerror', error =>
+          pageErrors.push({ basename: basenameFromUrl(page.url()), message: error.message }),
+        )
+      }
+      app.on('window', capturePageErrors)
+      for (const page of app.windows()) capturePageErrors(page)
+      const window = await app.firstWindow({ timeout: 60000 })
+      capturePageErrors(window)
       await expect(window).toHaveTitle(/Watchtower/)
       await installRendererRpcProbe(window)
       await window.evaluate(() => window.rpcProbe.call('cadence:set', { value: 'manual' }))
@@ -594,10 +666,61 @@ async function main() {
         'Packaged currency select/cache/validation and clear/reclaim RPC passed; facts cleared, config retained.',
       )
 
+      // Exercise the packaged background shell with its actual windows. A
+      // renderer `window.close()` would destroy the page; closing the native
+      // BrowserWindow follows the app's hide-and-float lifecycle.
+      await app.evaluate(({ BrowserWindow }) => {
+        const main = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('index.html'))
+        if (!main) throw new Error('Packaged main BrowserWindow is missing')
+        if (main.isMinimized()) main.restore()
+        main.show()
+      })
+      await expect
+        .poll(async () => (await inspectNativeWindows(app)).find(surface => surface.basename === 'index.html')?.visible)
+        .toBe(true)
+
+      const orbPagePromise = pageForSurface(app, 'orb.html', expect)
+      const panelPagePromise = pageForSurface(app, 'orb-panel.html', expect)
+      await app.evaluate(({ BrowserWindow }) => {
+        const main = BrowserWindow.getAllWindows().find(win => win.webContents.getURL().endsWith('index.html'))
+        if (!main) throw new Error('Packaged main BrowserWindow is missing before close')
+        main.close()
+      })
+      const [orb, panel] = await Promise.all([orbPagePromise, panelPagePromise])
+      const isNativeWindowVisible = async basename =>
+        (await inspectNativeWindows(app)).find(surface => surface.basename === basename)?.visible ?? false
+      await expect.poll(() => isNativeWindowVisible('index.html')).toBe(false)
+      const beaconButton = orb.getByRole('button', { name: /Watchtower panel/ })
+      await expect(beaconButton).toBeVisible({ timeout: 30000 })
+      await expect(panel.getByText('Spend over time', { exact: true })).toBeVisible({ timeout: 60000 })
+
+      // The first-close peek can still be visible or may have folded while
+      // the panel loaded. Read its native state and use the real beacon to
+      // reach the open state in either case.
+      if (await isNativeWindowVisible('orb-panel.html')) {
+        await beaconButton.click()
+        await expect.poll(() => isNativeWindowVisible('orb-panel.html')).toBe(false)
+      }
+      await beaconButton.click()
+      await expect.poll(() => isNativeWindowVisible('orb-panel.html')).toBe(true)
+      const backgroundInventory = await inspectNativeWindows(app)
+      assertPackagedSurfaces(backgroundInventory, 'backgrounded')
+
+      await panel.getByRole('button', { name: /^See overview/ }).click()
+      await expect.poll(() => isNativeWindowVisible('index.html')).toBe(true)
+      await expect(window.getByText('Total spend', { exact: true })).toBeVisible({ timeout: 30000 })
+      await expect.poll(() => isNativeWindowVisible('orb.html')).toBe(false)
+      const restoredInventory = await inspectNativeWindows(app)
+      assertPackagedSurfaces(restoredInventory, 'restored')
+      assert.deepEqual(
+        restoredInventory.map(surface => [surface.basename, surface.webContentsId]),
+        backgroundInventory.map(surface => [surface.basename, surface.webContentsId]),
+        'the app, beacon, and panel BrowserWindows must be reused after panel navigation',
+      )
+
       assert.deepEqual(pageErrors, [])
-      assert.equal(app.windows().length, 1)
       console.log(
-        `Packaged ${process.platform} boot, real scan, onboarding, analytics navigation, native RPC payloads, and renderer error checks passed.`,
+        `Packaged ${process.platform} boot, RPC/SQL/MCP/export/FX/clear flows, and one reused app/beacon/panel with sandboxed renderers passed.`,
       )
     } finally {
       for (const page of app.windows()) {
