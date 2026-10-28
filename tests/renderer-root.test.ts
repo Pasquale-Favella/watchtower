@@ -53,7 +53,7 @@ describe('renderer root hydration', () => {
     browser.values.set('watchtower:settings', JSON.stringify({ state: { defaultPeriod: 'month' }, version: 0 }))
     const owner = createRendererRuntimeOwner()
 
-    initializeRendererWindow(browser.window, owner)
+    initializeRendererWindow(browser.window, { owner })
 
     expect(owner.registry.get(preferencesAtom).defaultPeriod).toBe('month')
     expect(owner.registry.get(periodAtom)).toBe('month')
@@ -65,7 +65,7 @@ describe('renderer root hydration', () => {
     browser.values.set('watchtower:settings', JSON.stringify({ state: { defaultPeriod: 'month' }, version: 0 }))
     const owner = createRendererRuntimeOwner()
 
-    initializeRendererWindow(browser.window, owner)
+    initializeRendererWindow(browser.window, { owner })
     owner.registry.set(periodAtom, 'week')
     browser.emitStorage('watchtower:settings', JSON.stringify({ state: { defaultPeriod: 'lifetime' }, version: 0 }))
 
@@ -76,7 +76,7 @@ describe('renderer root hydration', () => {
   it('removes storage and unload listeners and disposes the registry', () => {
     const browser = new BrowserFacade()
     const owner = createRendererRuntimeOwner()
-    const dispose = initializeRendererWindow(browser.window, owner)
+    const dispose = initializeRendererWindow(browser.window, { owner })
 
     expect(browser.listeners.get('storage')?.size).toBe(1)
     expect(browser.listeners.get('beforeunload')?.size).toBe(1)
@@ -85,5 +85,48 @@ describe('renderer root hydration', () => {
     expect(browser.listeners.get('storage')?.size).toBe(0)
     expect(browser.listeners.get('beforeunload')?.size).toBe(0)
     expect(owner.registry.getNodes().size).toBe(0)
+  })
+
+  it('unmounts the React root before disposing the registry and only once', () => {
+    const browser = new BrowserFacade()
+    const owner = createRendererRuntimeOwner()
+    const order: string[] = []
+    const trackedOwner = {
+      ...owner,
+      dispose: () => {
+        order.push('registry-dispose')
+        owner.dispose()
+      },
+    }
+    const dispose = initializeRendererWindow(browser.window, {
+      owner: trackedOwner,
+      beforeDispose: () => {
+        order.push('root-unmount')
+        expect(owner.registry.getNodes().size).toBeGreaterThan(0)
+      },
+    })
+
+    dispose()
+    dispose()
+
+    expect(order).toEqual(['root-unmount', 'registry-dispose'])
+    expect(owner.registry.getNodes().size).toBe(0)
+  })
+
+  it('releases resources even when the unmount callback fails', () => {
+    const browser = new BrowserFacade()
+    const owner = createRendererRuntimeOwner()
+    const dispose = initializeRendererWindow(browser.window, {
+      owner,
+      beforeDispose: () => {
+        throw new Error('Unmount failed')
+      },
+    })
+
+    expect(dispose).toThrow('Unmount failed')
+    expect(browser.listeners.get('storage')?.size).toBe(0)
+    expect(browser.listeners.get('beforeunload')?.size).toBe(0)
+    expect(owner.registry.getNodes().size).toBe(0)
+    expect(dispose).not.toThrow()
   })
 })

@@ -15,9 +15,10 @@ if (import.meta.hot) import.meta.hot.dispose(() => window.location.reload())
 /** Called once by each window entry, before React paints or bootstrap reads Scope. */
 export function initializeRendererWindow(
   browser: Window,
-  owner: RendererRuntimeOwner = rendererRuntimeOwner,
+  options: { readonly owner?: RendererRuntimeOwner; readonly beforeDispose?: () => void } = {},
 ): () => void {
   const storage = browserPreferenceStorage(browser)
+  const owner = options.owner ?? rendererRuntimeOwner
   const { registry } = owner
   const unsubscribe = hydratePreferences(registry, storage)
   const preferences = registry.get(preferencesAtom)
@@ -31,9 +32,13 @@ export function initializeRendererWindow(
     if (disposed) return
     disposed = true
     browser.removeEventListener('beforeunload', dispose)
-    unsubscribe()
-    releaseWindowQueries(registry)
-    owner.dispose()
+    try {
+      options.beforeDispose?.()
+    } finally {
+      unsubscribe()
+      releaseWindowQueries(registry)
+      owner.dispose()
+    }
   }
   browser.addEventListener('beforeunload', dispose)
   return dispose

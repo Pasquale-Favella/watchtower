@@ -8,7 +8,8 @@ import ReactDOM from 'react-dom/client'
 import { initializeRendererWindow, RendererRoot } from './app/renderer-root'
 import { router } from './app/router'
 
-const disposeRenderer = initializeRendererWindow(window)
+const reactRoot = ReactDOM.createRoot(document.getElementById('root') as HTMLElement)
+const disposeRenderer = initializeRendererWindow(window, { beforeDispose: () => reactRoot.unmount() })
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     disposeRenderer()
@@ -16,7 +17,7 @@ if (import.meta.hot) {
   })
 }
 
-ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
+reactRoot.render(
   <React.StrictMode>
     <RendererRoot>
       <HotkeysProvider>

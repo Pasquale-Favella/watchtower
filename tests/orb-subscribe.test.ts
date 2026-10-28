@@ -156,7 +156,7 @@ describe('panel RPC lifecycle and placement adapter', () => {
     const { createRendererRuntimeOwner } = await import('../src/renderer/src/app/renderer-runtime.js')
     const { preferencesAtom } = await import('../src/renderer/src/features/settings/preferences-atoms.js')
     const owner = createRendererRuntimeOwner()
-    const disposeRoot = initializeRendererWindow(window, owner)
+    const disposeRoot = initializeRendererWindow(window, { owner })
     const storageListener = browser.events.get('storage')
     expect(storageListener).toBeDefined()
     const teardown = subscribeToOrbPanel(registry)
