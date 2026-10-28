@@ -1,8 +1,10 @@
 # The data plane runs on a dedicated worker thread; the main process stays a thin forwarder
 
-Status: accepted
+Status: accepted; the original worker wire protocol is superseded by ADR 0037.
 
-Scan parsing, the ledger (`node:sqlite`, synchronous), and every query-time view builder (ADRs 0002/0008) run on a dedicated `worker_threads` thread — the db-worker (`src/main/db-worker/`, emitted as `out/main/db-worker.js`) — which owns the store from boot. The main process keeps windows, dialogs, IPC plumbing, updates, and the harness-agent surface, and forwards every data IPC channel to the worker as `{ id, op, args }`, relaying the worker's broadcasts (`scan:progress`, `scan:error`, `store:changed`, `scan:idle`, `config:changed`, `currency:changed`) to windows. Key properties:
+This ADR records the original db-worker design. Its `{ id, op, args }` worker wire protocol and frozen renderer IPC clauses were superseded by the versioned Effect RPC boundaries in [ADR 0037](0037-versioned-effect-rpc-boundaries.md). Production uses shared `WorkerRpcGroup` schemas over the official Node worker transport; the main process still supervises one worker and forwards ledger work. This ADR continues to define worker and SQL ownership, scan supervision, and single-writer constraints.
+
+At the time this ADR was accepted, scan parsing, the ledger (`node:sqlite`, synchronous), and every query-time view builder (ADRs 0002/0008) ran on a dedicated `worker_threads` thread — the db-worker (`src/main/db-worker/`, emitted as `out/main/db-worker.js`) — which owned the store from boot. The main process kept windows, dialogs, IPC plumbing, updates, and the harness-agent surface, and forwarded every data IPC channel to the worker as `{ id, op, args }`, relaying the worker's broadcasts (`scan:progress`, `scan:error`, `store:changed`, `scan:idle`, `config:changed`, `currency:changed`) to windows. The original decision's key properties were:
 
 - **Renderer contract frozen** — same channels, same payloads; the renderer's tripwire validation (ADR 0005) is untouched.
 - **Single writer** — one ledger connection owns all reads and writes, so per-file port-in transactions, config upserts, and `clear()` stay serialized by construction. The only companion is the in-app ledger MCP server's read-only connection (a separate process, ADR 0020), which cannot take the locks a writer needs; `clear()` still treats its reclaim (`VACUUM`) as best-effort — the DELETEs are already committed, only the size display may lag.

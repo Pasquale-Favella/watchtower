@@ -65,15 +65,17 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 | Layer | Tech |
 |-------|------|
 | **Main process & db-worker** | Electron 43, Node 22+, TypeScript 5.9.3, Effect 4 services, Layers, and scoped runtimes |
-| **Renderer** | React 19, Tailwind CSS 4, shadcn/ui, Zustand, Recharts, GSAP, TanStack Hotkeys |
+| **Renderer** | React 19, Effect Atom, Tailwind CSS 4, shadcn/ui, Recharts, GSAP, TanStack Router and Hotkeys |
 | **Data & contracts** | SQLite via `@effect/sql-sqlite-node` and built-in `node:sqlite`; Effect Schema contracts shared by backend and renderer |
 | **Build & packaging** | electron-vite 5, Vite 7, electron-builder (Windows NSIS, macOS DMG/zip universal, Linux AppImage/deb, built in CI) |
 | **Tests** | Vitest (`tests/`) + Playwright Electron smoke (`e2e/`, `npm run test:e2e`) + ESLint 9 gate (`npm run lint`) |
 
 The main process coordinates Electron and Coach resources. A dedicated db-worker
 owns scans, application queries, and the writable ledger through its own Effect
-runtime. The renderer uses synchronous Effect Schema validation with React and
-the Promise-based IPC API. The Effect packages are pinned to `4.0.5`. See the
+runtime. Renderer windows own Effect Atom registries and use shared Effect RPC
+contracts for application requests and events. The main process forwards ledger
+work to the worker over typed Effect RPC. A small native shell API remains in
+preload. The Effect packages are pinned to `4.0.5`. See the
 [architecture](docs/architecture.md#the-effect-first-backend) for ownership and
 contract boundaries.
 

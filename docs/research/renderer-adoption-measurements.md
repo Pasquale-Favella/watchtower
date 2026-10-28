@@ -48,8 +48,62 @@ buffers. Production Coach separately bounds its queue to 128 events and
 Reproduce Coach retention with
 `node scripts/probes/run-coach-retention.cjs`. The startup harness now also
 records launch and first-window resolution phases. Opt-in main instrumentation
-is separate from ordinary timing runs. Final whole-window query retention and
-three-window listener measurements remain open.
+is separate from ordinary timing runs.
+
+The subsequent five-run bundled build measured a 5235.7 ms median. Three
+alternating baseline/bundled pairs then measured baseline first frames of
+3462.7, 3425.0 and 3398.2 ms versus bundled frames of 4706.0, 4664.2 and
+4667.1 ms. The paired medians still differ by 1242.1 ms. The faster isolated
+experiment therefore does not establish that bundling resolves the regression.
+Further renderer build investigation remains open.
+
+## Registry, request and listener capture, 2026-10-28
+
+`node scripts/probes/measure-renderer-state.mjs` creates a disposable renderer
+artifact with a test-only Vite transform and the existing main/preload build.
+It exposes public registry inspection only in that artifact. The capture visits
+all seven analytics Sections, changes Scope twenty times, then performs three
+actual native main-window close and panel "See overview" cycles. Its minified
+test renderer is distinct from the ordinary startup artifact; these measurements
+do not supply startup timings or renderer RSS.
+
+| Measurement                                                |  Result |
+| ---------------------------------------------------------- | ------: |
+| Main registry node peak, observed on node addition/removal |     164 |
+| Main query-member peak                                     |       9 |
+| Main settled nodes / query members                         | 158 / 8 |
+| Last five Scope samples, node / query spread               |   0 / 0 |
+| Beacon settled nodes / query members in every cycle        |  23 / 0 |
+| Panel settled nodes / query members in every cycle         |  47 / 2 |
+| Main registry nodes after explicit owner disposal          |       0 |
+| Native workers observed / exited                           |   1 / 1 |
+| Native RPC ports observed / closed                         |   3 / 3 |
+| Maximum active native RPC ports                            |       3 |
+
+All three windows retain the same settled registry counts when returning from
+each panel cycle. The temporary ninth main query member occurs during selection
+replacement; it does not accumulate across the twenty Scope changes. The
+capture has no page errors before disposal. Directly disposing the owner while
+React remains mounted produces one expected "registry is disposed" access;
+that artificial inspection step is recorded separately.
+
+The main wrapper records operation tags and counts, never arguments or response
+payloads. Boot observes one each of `worker:events`, `worker:ready`,
+`ledger-mcp:startup:get`, `currency:get`, `store:status`, `scan:active`,
+`scan:start`, `overview:query`, `cadence:get` and `currency:list`, plus two
+`store:analytics` calls. Each newly visited analytics Section issues one matching
+worker view request. The twenty Scope changes occur in Compare and issue one
+`compare:view` each. This fixture does not establish call counts for every
+application workflow.
+
+The wrapper samples `ipcMain` listeners every 100 ms and on report writes.
+It observes ten channels with at most one listener each; this is a sampled
+high-water count, not a guaranteed transient peak. The five invoke handlers
+are counted synchronously and remain at one per channel. Main-side RPC port
+listener additions are also observed synchronously: at most one message and
+two close listeners per port, excluding the measurement's own close observer.
+No new connection or worker is needed for the three open/close cycles. All
+three ports close and the worker exits during application shutdown.
 
 ## Initial M1 measurements
 
