@@ -775,13 +775,25 @@ async function main() {
       await expect(beaconButton).toBeVisible({ timeout: 30000 })
       await expect(panel.getByText('Spend over time', { exact: true })).toBeVisible({ timeout: 60000 })
 
-      // Native visibility can change before the beacon consumes its placement
-      // event. Wait for the matching action before each toggle, so a second
-      // click cannot reuse the previous render's expanded state.
-      if ((await inspectNativeWindows(app)).find(surface => surface.basename === 'orb-panel.html')?.visible) {
-        await orb.getByRole('button', { name: 'Fold Watchtower panel', exact: true }).click()
-        await expectNativeVisibility(app, expect, 'orb-panel.html', false, 'beacon fold')
-      }
+      // The first-close peek can open between pointer-down and pointer-up.
+      // Let that one-time lifecycle finish before testing a user toggle.
+      await expect
+        .poll(
+          async () => (await inspectNativeWindows(app)).find(surface => surface.basename === 'orb-panel.html')?.visible,
+          {
+            timeout: 60000,
+          },
+        )
+        .toBe(true)
+      await expect(panel.getByText(/^Still watching in the background/)).toBeVisible()
+      await expect
+        .poll(
+          async () => (await inspectNativeWindows(app)).find(surface => surface.basename === 'orb-panel.html')?.visible,
+          {
+            timeout: 15000,
+          },
+        )
+        .toBe(false)
       await orb.getByRole('button', { name: 'Show Watchtower panel', exact: true }).click()
       await expectNativeVisibility(app, expect, 'orb-panel.html', true, 'beacon open')
       const backgroundInventory = await inspectNativeWindows(app)
