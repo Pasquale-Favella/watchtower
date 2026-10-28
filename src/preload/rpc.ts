@@ -1,179 +1,178 @@
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import type * as Fiber from 'effect/Fiber'
 import * as Schema from 'effect/Schema'
-
+import * as Scope from 'effect/Scope'
 import {
   type RpcBridge,
   type RpcConnectionRequest,
-  RpcConnectionRequestSchema,
   RpcConnectionResponseSchema,
   type RpcConnectionResult,
 } from '../shared/rpc/bridge.js'
 
 const CONNECT_CHANNEL = 'rpc:v1:connect'
 const PORT_CHANNEL = 'rpc:v1:port'
-
 interface RpcPreloadPort {
-  postMessage: (message: string) => void
-  start: () => void
-  close: () => void
-  addEventListener: (type: 'message' | 'close' | 'messageerror', listener: (event: { data?: unknown }) => void) => void
-  removeEventListener: (
-    type: 'message' | 'close' | 'messageerror',
-    listener: (event: { data?: unknown }) => void,
-  ) => void
+  postMessage(message: string): void
+  start(): void
+  close(): void
+  addEventListener(type: 'message' | 'close' | 'messageerror', listener: (event: { data?: unknown }) => void): void
+  removeEventListener(type: 'message' | 'close' | 'messageerror', listener: (event: { data?: unknown }) => void): void
 }
-
 interface RpcPreloadEvent {
   readonly ports?: readonly RpcPreloadPort[]
 }
-
 interface RpcIpcRenderer {
-  readonly send: (channel: typeof CONNECT_CHANNEL, request: RpcConnectionRequest) => void
-  readonly on: (channel: typeof PORT_CHANNEL, listener: (event: RpcPreloadEvent, data: unknown) => void) => void
-  readonly removeListener: (
-    channel: typeof PORT_CHANNEL,
-    listener: (event: RpcPreloadEvent, data: unknown) => void,
-  ) => void
+  send(channel: typeof CONNECT_CHANNEL, request: RpcConnectionRequest): void
+  on(channel: typeof PORT_CHANNEL, listener: (event: RpcPreloadEvent, data: unknown) => void): void
+  removeListener(channel: typeof PORT_CHANNEL, listener: (event: RpcPreloadEvent, data: unknown) => void): void
 }
-
 interface PendingConnection {
   readonly requestId: number
-  readonly resolve: (result: RpcConnectionResult) => void
+  readonly result: Deferred.Deferred<RpcConnectionResult>
   readonly promise: Promise<RpcConnectionResult>
-  readonly timeout: ReturnType<typeof setTimeout>
 }
-
 interface ActiveConnection {
   readonly port: RpcPreloadPort
   readonly generation: number
-  readonly onMessage: (event: { data?: unknown }) => void
-  readonly onClose: (event: { data?: unknown }) => void
+  readonly scope: Scope.Closeable
+}
+const closed: RpcConnectionResult = { _tag: 'Failed', code: 'closed' }
+const unavailable: RpcConnectionResult = { _tag: 'Failed', code: 'unavailable' }
+/** Native teardown and consumer callbacks cannot prevent remaining cleanup. */
+function safely(callback: () => void): void {
+  try {
+    callback()
+  } catch {
+    /* Peer or consumer is already gone. */
+  }
 }
 
-/** Builds the fixed preload capability. It never returns the Electron port or IPC object. */
-export const createRpcBridge = (
+/** Effect owns readiness, deadlines and resources; contextBridge carries values and callbacks. */
+export function createRpcBridge(
   ipc: RpcIpcRenderer,
   connectionTimeoutMs = 10_000,
-): {
-  readonly bridge: RpcBridge
-  readonly dispose: () => void
-} => {
+): { readonly bridge: RpcBridge; readonly dispose: () => void } {
+  const ipcScope = Scope.makeUnsafe()
   let nextRequestId = 1
   let pending: PendingConnection | undefined
   let active: ActiveConnection | undefined
   let disposed = false
-  let disposeTimer: ReturnType<typeof setTimeout> | undefined
-  const cancelledRequests = new Set<number>()
-  let listenerAttached = false
-  const messageListeners = new Set<{ readonly generation: number; readonly receive: (frame: unknown) => void }>()
-  const closeListeners = new Set<{ readonly generation: number; readonly close: () => void }>()
-
-  const notifyClosed = (generation: number): void => {
-    for (const listener of [...closeListeners]) if (listener.generation === generation) listener.close()
+  let disposedRequestId: number | undefined
+  let closeGrace: Fiber.Fiber<void> | undefined
+  const messageListeners = new Set<{ generation: number; receive: (frame: unknown) => void }>()
+  const closeListeners = new Set<{ generation: number; close: () => void }>()
+  function detach(): void {
+    Effect.runSync(Scope.close(ipcScope, Exit.void))
+    closeGrace?.interruptUnsafe()
+    closeGrace = undefined
   }
-
-  const closeActive = (notify: boolean): void => {
+  function complete(request: PendingConnection, result: RpcConnectionResult): void {
+    if (pending === request) pending = undefined
+    Deferred.doneUnsafe(request.result, Effect.succeed(result))
+  }
+  function closeActive(): void {
     const connection = active
     if (!connection) return
     active = undefined
-    connection.port.removeEventListener('message', connection.onMessage)
-    connection.port.removeEventListener('close', connection.onClose)
-    connection.port.removeEventListener('messageerror', connection.onClose)
-    connection.port.close()
-    if (notify) notifyClosed(connection.generation)
+    Effect.runSync(Scope.close(connection.scope, Exit.void))
   }
-
-  const onPort = (event: RpcPreloadEvent, raw: unknown): void => {
-    const port = event.ports?.[0]
-    let data: Schema.Schema.Type<typeof RpcConnectionResponseSchema>
-    try {
-      data = Schema.decodeUnknownSync(RpcConnectionResponseSchema)(raw)
-    } catch {
-      port?.close()
-      if (disposed) detachListener()
+  function closePorts(ports: readonly RpcPreloadPort[] = []): void {
+    for (const port of ports) safely(() => port.close())
+  }
+  function onPort(event: RpcPreloadEvent, raw: unknown): void {
+    const decoded = Schema.decodeUnknownResult(RpcConnectionResponseSchema)(raw)
+    if (disposed) {
+      closePorts(event.ports)
+      if (decoded._tag === 'Success' && decoded.success.requestId === disposedRequestId) detach()
       return
     }
     const request = pending
-    if (cancelledRequests.delete(data.requestId)) {
-      port?.close()
-      if (disposed && cancelledRequests.size === 0) detachListener()
+    if (decoded._tag === 'Failure' || !request || decoded.success.requestId !== request.requestId) {
+      closePorts(event.ports)
       return
     }
-    if (!request || request.requestId !== data.requestId) {
-      port?.close()
-      if (disposed) detachListener()
+    const response = decoded.success
+    if (response._tag === 'Rejected') {
+      closePorts(event.ports)
+      complete(request, { _tag: 'Failed', code: response.code })
       return
     }
-    if (data._tag === 'Rejected') {
-      pending = undefined
-      clearTimeout(request.timeout)
-      port?.close()
-      request.resolve({ _tag: 'Failed', code: data.code })
-      return
-    }
+    const [port, ...extra] = event.ports ?? []
+    closePorts(extra)
     if (!port) {
-      pending = undefined
-      clearTimeout(request.timeout)
-      request.resolve({ _tag: 'Failed', code: 'protocol' })
+      complete(request, { _tag: 'Failed', code: 'protocol' })
       return
     }
-
-    closeActive(false)
-    const connection: ActiveConnection = {
-      port,
-      generation: data.generation,
-      onMessage: message => {
-        for (const listener of [...messageListeners])
-          if (listener.generation === connection.generation) listener.receive(message.data)
-      },
-      onClose: () => {
-        if (active !== connection) return
-        closeActive(true)
-      },
+    closeActive()
+    const connection = { port, generation: response.generation, scope: Scope.makeUnsafe() }
+    const onMessage = (message: { data?: unknown }): void => {
+      for (const listener of [...messageListeners])
+        if (listener.generation === connection.generation) safely(() => listener.receive(message.data))
     }
+    const onClose = (): void => {
+      if (active === connection) closeActive()
+    }
+    Effect.runSync(
+      Scope.addFinalizer(
+        connection.scope,
+        Effect.sync(() => {
+          safely(() => port.removeEventListener('message', onMessage))
+          safely(() => port.removeEventListener('close', onClose))
+          safely(() => port.removeEventListener('messageerror', onClose))
+          safely(() => port.close())
+          for (const listener of [...closeListeners]) {
+            if (listener.generation !== connection.generation) continue
+            closeListeners.delete(listener)
+            safely(listener.close)
+          }
+          for (const listener of messageListeners)
+            if (listener.generation === connection.generation) messageListeners.delete(listener)
+        }),
+      ),
+    )
     active = connection
-    port.addEventListener('message', connection.onMessage)
-    port.addEventListener('close', connection.onClose)
-    port.addEventListener('messageerror', connection.onClose)
-    port.start()
-    pending = undefined
-    clearTimeout(request.timeout)
-    request.resolve({ _tag: 'Connected', generation: connection.generation })
+    try {
+      port.addEventListener('message', onMessage)
+      port.addEventListener('close', onClose)
+      port.addEventListener('messageerror', onClose)
+      port.start()
+      complete(request, { _tag: 'Connected', generation: connection.generation })
+    } catch {
+      closeActive()
+      complete(request, unavailable)
+    }
   }
-
-  const detachListener = (): void => {
-    if (!listenerAttached) return
-    listenerAttached = false
-    if (disposeTimer) clearTimeout(disposeTimer)
-    disposeTimer = undefined
-    ipc.removeListener(PORT_CHANNEL, onPort)
-  }
-
-  ipc.on(PORT_CHANNEL, onPort)
-  listenerAttached = true
-
+  Effect.runSync(
+    Effect.acquireRelease(
+      Effect.sync(() => ipc.on(PORT_CHANNEL, onPort)),
+      () => Effect.sync(() => safely(() => ipc.removeListener(PORT_CHANNEL, onPort))),
+    ).pipe(Scope.provide(ipcScope)),
+  )
   const bridge: RpcBridge = {
     connect: () => {
-      if (disposed) return Promise.resolve({ _tag: 'Failed', code: 'closed' })
+      if (disposed) return Promise.resolve(closed)
       if (active) return Promise.resolve({ _tag: 'Connected', generation: active.generation })
       if (pending) return pending.promise
-      let resolve!: (result: RpcConnectionResult) => void
-      const promise = new Promise<RpcConnectionResult>(res => {
-        resolve = res
-      })
       const requestId = nextRequestId++
-      const timeout = setTimeout(() => {
-        if (pending?.requestId !== requestId) return
-        pending = undefined
-        resolve({ _tag: 'Failed', code: 'unavailable' })
-      }, connectionTimeoutMs)
-      const request: PendingConnection = { requestId, resolve, promise, timeout }
+      const result = Deferred.makeUnsafe<RpcConnectionResult>()
+      const promise = Effect.runPromise(
+        Deferred.await(result).pipe(
+          Effect.timeoutOrElse({ duration: connectionTimeoutMs, orElse: () => Effect.succeed(unavailable) }),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              if (pending?.result === result) pending = undefined
+            }),
+          ),
+        ),
+      )
+      const request = { requestId, result, promise }
       pending = request
       try {
-        ipc.send(CONNECT_CHANNEL, Schema.decodeUnknownSync(RpcConnectionRequestSchema)({ version: 1, requestId }))
+        ipc.send(CONNECT_CHANNEL, { version: 1, requestId })
       } catch {
-        pending = undefined
-        clearTimeout(timeout)
-        resolve({ _tag: 'Failed', code: 'unavailable' })
+        complete(request, unavailable)
       }
       return promise
     },
@@ -181,13 +180,15 @@ export const createRpcBridge = (
       const connection = active
       if (disposed || !connection || connection.generation !== generation)
         return Promise.reject(new Error('RPC connection unavailable'))
-      try {
-        connection.port.postMessage(frame)
-        return Promise.resolve()
-      } catch {
-        closeActive(true)
-        return Promise.reject(new Error('RPC send failed'))
-      }
+      return Effect.runPromise(
+        Effect.try({ try: () => connection.port.postMessage(frame), catch: () => new Error('RPC send failed') }).pipe(
+          Effect.tapError(() =>
+            Effect.sync(() => {
+              if (active === connection) closeActive()
+            }),
+          ),
+        ),
+      )
     },
     onMessage: (receive, generation) => {
       const listener = { generation, receive }
@@ -198,7 +199,7 @@ export const createRpcBridge = (
     },
     onClose: (close, generation) => {
       if (active?.generation !== generation) {
-        close()
+        safely(close)
         return () => undefined
       }
       const listener = { generation, close }
@@ -208,31 +209,20 @@ export const createRpcBridge = (
       }
     },
     disconnect: generation => {
-      if (active?.generation === generation) closeActive(true)
+      if (active?.generation === generation) closeActive()
     },
   }
-
-  const dispose = (): void => {
+  function dispose(): void {
     if (disposed) return
     disposed = true
-    if (pending) {
-      clearTimeout(pending.timeout)
-      cancelledRequests.add(pending.requestId)
-      pending.resolve({ _tag: 'Failed', code: 'closed' })
-      pending = undefined
-    }
-    if (cancelledRequests.size > 0) {
-      disposeTimer = setTimeout(() => {
-        cancelledRequests.clear()
-        disposeTimer = undefined
-        detachListener()
-      }, connectionTimeoutMs)
-    } else {
-      detachListener()
-    }
-    closeActive(true)
+    const request = pending
+    disposedRequestId = request?.requestId
+    if (request) complete(request, closed)
+    closeActive()
     messageListeners.clear()
     closeListeners.clear()
+    if (!request) detach()
+    else closeGrace = Effect.runFork(Effect.sleep(connectionTimeoutMs).pipe(Effect.andThen(Effect.sync(detach))))
   }
   return { bridge, dispose }
 }

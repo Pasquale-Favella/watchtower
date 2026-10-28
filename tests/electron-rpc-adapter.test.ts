@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 
 import { Effect } from 'effect'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registerElectronRpc, type RpcWindowRole } from '../src/main/rpc/electron.js'
 import { createRpcBridge } from '../src/preload/rpc.js'
@@ -9,6 +9,7 @@ import type { RpcMessagePort } from '../src/shared/rpc/port-protocol.js'
 
 const CONNECT = 'rpc:v1:connect'
 const PORT = 'rpc:v1:port'
+afterEach(() => vi.useRealTimers())
 
 class FakeMessagePort extends EventEmitter {
   peer?: FakeMessagePort
@@ -140,6 +141,81 @@ const setup = (resolveRole: (url: string) => RpcWindowRole | undefined = () => '
 }
 
 describe('Electron RPC adapters', () => {
+  it('shares pending readiness and closes every unexpected transferred port', async () => {
+    const ipc = new FakeIpcRenderer()
+    const { bridge, dispose } = createRpcBridge(ipc as never)
+    const first = bridge.connect()
+    expect(bridge.connect()).toBe(first)
+    expect(ipc.requests).toHaveLength(1)
+    const ports = [new FakeMessagePort(), new FakeMessagePort()]
+    ipc.deliver(PORT, { invalid: true }, ports)
+    expect(ports.every(port => port.closed)).toBe(true)
+    dispose()
+    await expect(first).resolves.toEqual({ _tag: 'Failed', code: 'closed' })
+    ipc.deliver(PORT, { _tag: 'Rejected', version: 1, requestId: 1, code: 'unavailable' })
+  })
+
+  it('cannot replace a newer connection with a late reply to a timed-out handshake', async () => {
+    vi.useFakeTimers()
+    const ipc = new FakeIpcRenderer()
+    const { bridge, dispose } = createRpcBridge(ipc as never, 20)
+    const first = bridge.connect()
+    await vi.advanceTimersByTimeAsync(20)
+    await expect(first).resolves.toEqual({ _tag: 'Failed', code: 'unavailable' })
+    const second = bridge.connect()
+    const late = new FakeMessagePort()
+    ipc.deliver(PORT, { _tag: 'Ready', version: 1, requestId: 1, generation: 1 }, [late])
+    expect(late.closed).toBe(true)
+    const current = new FakeMessagePort()
+    ipc.deliver(PORT, { _tag: 'Ready', version: 1, requestId: 2, generation: 2 }, [current])
+    await expect(second).resolves.toEqual({ _tag: 'Connected', generation: 2 })
+    expect(current.closed).toBe(false)
+    dispose()
+    expect(current.closed).toBe(true)
+  })
+
+  it('bounds disposal grace and keeps closing malformed late ports until it expires', async () => {
+    vi.useFakeTimers()
+    const ipc = new FakeIpcRenderer()
+    const { bridge, dispose } = createRpcBridge(ipc as never, 20)
+    const pending = bridge.connect()
+    dispose()
+    await expect(pending).resolves.toEqual({ _tag: 'Failed', code: 'closed' })
+    const late = new FakeMessagePort()
+    ipc.deliver(PORT, null, [late])
+    expect(late.closed).toBe(true)
+    expect(ipc.listeners.get(PORT)?.size).toBe(1)
+    await vi.advanceTimersByTimeAsync(20)
+    expect(ipc.listeners.get(PORT)?.size).toBe(0)
+    expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('isolates consumer failures and releases port listeners after send failure', async () => {
+    const { bridge, ipc, dispose } = setup()
+    await bridge.connect()
+    let closed = 0
+    bridge.onClose(() => {
+      throw new Error('consumer failed')
+    }, 1)
+    bridge.onClose(() => {
+      closed++
+    }, 1)
+    const port = new FakeMessagePort()
+    // Replace the first connection through its normal disconnect/reconnect path.
+    bridge.disconnect(1)
+    const next = bridge.connect()
+    ipc.deliver(PORT, { _tag: 'Ready', version: 1, requestId: 2, generation: 2 }, [port])
+    await next
+    port.postMessage = () => {
+      throw new Error('native send failed')
+    }
+    await expect(bridge.send('frame', 2)).rejects.toThrow('RPC send failed')
+    expect(closed).toBe(1)
+    expect(port.closed).toBe(true)
+    expect(port.listenerCount('message')).toBe(0)
+    expect(port.listenerCount('close')).toBe(0)
+    dispose()
+  })
   it('connects through fixed channels and exposes only the narrow bridge capability', async () => {
     const { ipc, bridge, connections } = setup()
     const frames: unknown[] = []
