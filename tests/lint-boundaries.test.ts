@@ -27,6 +27,37 @@ const preloadProbe = 'src/preload/__boundary-probe.ts'
 const deeplyNestedRendererProbe = 'src/renderer/src/features/account/overview/__boundary-probe.ts'
 
 describe('process boundaries (ADR 0005 / ADR 0023)', () => {
+  it('requires renderer components to consume store hooks instead of atoms and query plumbing', async () => {
+    const component = 'src/renderer/src/features/overview/__boundary-probe.tsx'
+    for (const source of ['@/app/atoms/scope', '../settings/preferences-atoms', '@/app/hooks/use-remote-query']) {
+      expect(await errorRules(`import * as state from '${source}'\nexport const probe = state\n`, component)).toContain(
+        'import-x/no-restricted-paths',
+      )
+    }
+    for (const source of ['@effect/atom-react', 'effect/reactivity/Atom']) {
+      expect(await errorRules(`import * as state from '${source}'\nexport const probe = state\n`, component)).toContain(
+        'no-restricted-syntax',
+      )
+    }
+    expect(
+      await errorRules(
+        "import { useOverviewStore } from './use-overview-store'\nexport const probe = useOverviewStore\n",
+        component,
+      ),
+    ).not.toContain('import-x/no-restricted-paths')
+    expect(
+      await errorRules(
+        "import { useAtomValue } from '@effect/atom-react'\nexport const probe = useAtomValue\n",
+        'src/renderer/src/features/overview/use-overview-store.ts',
+      ),
+    ).not.toContain('no-restricted-syntax')
+    expect(
+      await errorRules(
+        "import { RegistryContext } from '@effect/atom-react'\nexport const probe = RegistryContext\n",
+        'src/renderer/src/app/renderer-root.tsx',
+      ),
+    ).not.toContain('no-restricted-syntax')
+  })
   it('rejects Electron imports in the renderer', async () => {
     const rules = await errorRules(
       `import { ipcRenderer } from 'electron'\nexport const probe = typeof ipcRenderer\n`,

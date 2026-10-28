@@ -1,32 +1,27 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { Download, ExternalLink, RefreshCcw } from 'lucide-react'
 
 import { releasePageUrl, REPO_URL } from '@/features/settings/updates'
-import {
-  canRequestUpdate,
-  checkForUpdatesAtom,
-  downloadUpdateAtom,
-  installUpdateAtom,
-  loadUpdateStatusAtom,
-  selectUpdateActivity,
-  selectUpdateCommandVisible,
-  selectUpdateError,
-  selectUpdateStatus,
-  updatesMachineAtom,
-} from '@/features/settings/updates-atoms'
+import { useSettingsUpdatesStore } from '@/features/settings/use-settings-store'
 import { Button } from '@/shared/components/ui/button'
-import { openExternalAtom } from '@/shared/lib/native-capabilities'
+import { useNativeStore } from '@/shared/hooks/use-native-store'
 
 export function AboutSection(): React.JSX.Element {
-  const open = useAtomSet(openExternalAtom)
-  const machine = useAtomValue(updatesMachineAtom)
-  const check = useAtomSet(checkForUpdatesAtom)
-  const download = useAtomSet(downloadUpdateAtom)
-  const install = useAtomSet(installUpdateAtom)
-  const load = useAtomSet(loadUpdateStatusAtom)
-  const status = selectUpdateStatus(machine)
-  const activity = selectUpdateActivity(machine)
-  const error = selectUpdateError(machine)
+  const { openExternal: open } = useNativeStore()
+  const {
+    status,
+    activity,
+    error,
+    loadFailed,
+    canCheck,
+    canDownload,
+    canInstall,
+    showDownload,
+    showInstall,
+    check,
+    download,
+    install,
+    load,
+  } = useSettingsUpdatesStore()
   const releaseUrl = status?.tag ? releasePageUrl(status.tag) : `${REPO_URL}/releases/latest`
 
   return (
@@ -40,19 +35,19 @@ export function AboutSection(): React.JSX.Element {
           type="button"
           variant="outline"
           size="sm"
-          disabled={!canRequestUpdate(machine, 'check')}
+          disabled={!canCheck}
           onClick={() => check(undefined)}
           className="text-[11px]"
         >
           <RefreshCcw className={activity === 'check' ? 'size-3.5 animate-spin' : 'size-3.5'} />
           {activity === 'check' ? 'Checking…' : 'Check for updates'}
         </Button>
-        {selectUpdateCommandVisible(machine, 'download') && (
+        {showDownload && (
           <Button
             type="button"
             variant="outline"
             size="sm"
-            disabled={!canRequestUpdate(machine, 'download')}
+            disabled={!canDownload}
             onClick={() => download(undefined)}
             className="text-[11px]"
           >
@@ -60,11 +55,11 @@ export function AboutSection(): React.JSX.Element {
             Download update
           </Button>
         )}
-        {selectUpdateCommandVisible(machine, 'install') && (
+        {showInstall && (
           <Button
             type="button"
             size="sm"
-            disabled={!canRequestUpdate(machine, 'install')}
+            disabled={!canInstall}
             onClick={() => install(undefined)}
             className="text-[11px]"
           >
@@ -72,7 +67,7 @@ export function AboutSection(): React.JSX.Element {
           </Button>
         )}
       </div>
-      {machine.state === 'load-error' && (
+      {loadFailed && (
         <Button type="button" variant="outline" size="sm" onClick={() => load(undefined)} className="mt-2 text-[11px]">
           Retry update status
         </Button>

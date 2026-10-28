@@ -1,9 +1,8 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 import { useRef } from 'react'
 
-import { refreshScanAtom, scanStateAtom } from '@/app/atoms/scan'
+import { useScanStore } from '@/app/hooks/use-scan-store'
 import { Button } from '@/shared/components/ui/button'
 import { motionClass, motionEnabled } from '@/shared/lib/motion'
 import { cn } from '@/shared/lib/utils'
@@ -25,10 +24,7 @@ import { Tally } from './Tally'
  * scan store.
  */
 export function Splash() {
-  const providers = useAtomValue(scanStateAtom).progress
-  const stage = useAtomValue(scanStateAtom).stage
-  const error = useAtomValue(scanStateAtom).scanError
-  const refresh = useAtomSet(refreshScanAtom)
+  const { progress: providers, stage, scanError: error, refreshScan: refresh } = useScanStore()
 
   const root = useRef<HTMLDivElement>(null)
 

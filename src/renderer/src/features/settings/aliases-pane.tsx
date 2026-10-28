@@ -1,8 +1,5 @@
-import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { pinWindowAtom } from '@/app/hooks/use-remote-query'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import {
   dedupeGroups,
   ModelPickerCombobox,
@@ -10,17 +7,7 @@ import {
   uniqueAliasTargets,
   usagePickerItem,
 } from '@/features/models/model-picker'
-import {
-  aliasesPricingCommands,
-  KNOWN_MODELS_REQUEST,
-  pricedModelsAtom,
-  PRICING_REQUEST,
-  pricingAliasesQuery,
-  pricingCommandErrorsAtom,
-  pricingKnownModelsQuery,
-  pricingOverridesQuery,
-  unpricedModelsAtom,
-} from '@/features/models/pricing-atoms'
+import { useAliasPricingStore } from '@/features/models/use-pricing-store'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { LoadingRegion } from '@/shared/components/skeletons'
 import { Button } from '@/shared/components/ui/button'
@@ -36,22 +23,11 @@ import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
  * side lists the not-yet-mapped models, the priced side the already-priced
  * models. */
 export function AliasesPane() {
-  const registry = useContext(RegistryContext)
-  useEffect(() => {
-    pinWindowAtom(registry, aliasesPricingCommands.addAliasAtom)
-    pinWindowAtom(registry, aliasesPricingCommands.removeAliasAtom)
-  }, [registry])
-  const aliases = useRemoteQuery(pricingAliasesQuery, PRICING_REQUEST, () => 'aliases')
-  const overrides = useRemoteQuery(pricingOverridesQuery, PRICING_REQUEST, () => 'overrides')
-  const knownModels = useRemoteQuery(pricingKnownModelsQuery, KNOWN_MODELS_REQUEST, () => 'known-models')
-  const addAlias = useAtomSet(aliasesPricingCommands.addAliasAtom, { mode: 'promise' })
-  const removeAlias = useAtomSet(aliasesPricingCommands.removeAliasAtom, { mode: 'promise' })
-  const commandErrors = useAtomValue(pricingCommandErrorsAtom)
+  const { aliases, overrides, knownModels, addAlias, removeAlias, commandErrors, unpriced, priced } =
+    useAliasPricingStore()
   const { currency } = useCurrencyFormatter()
   // The lifetime models split by price status are shared with the Models
   // quick-add picker.
-  const unpriced = useAtomValue(unpricedModelsAtom)
-  const priced = useAtomValue(pricedModelsAtom)
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const [busy, setBusy] = useState(false)

@@ -1,9 +1,8 @@
-import { useAtomSet } from '@effect/atom-react'
 import { useState } from 'react'
 
 import { ONBOARDING_STEPS } from '@/app/components/onboarding-steps'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
-import { setPreferencesAtom } from '@/features/settings/preferences-atoms'
+import { useSettingsPreferencesStore } from '@/features/settings/use-settings-store'
 import { Button } from '@/shared/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/shared/components/ui/dialog'
 
@@ -17,7 +16,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/shared/
  * Store-driven (ADR 0011): finishing marks the settings store onboarded.
  */
 export function Onboarding() {
-  const markOnboarded = useAtomSet(setPreferencesAtom)
+  const { setPreferences } = useSettingsPreferencesStore()
   const [step, setStep] = useState(0)
   const last = ONBOARDING_STEPS.length - 1
   const current = ONBOARDING_STEPS[step]!
@@ -26,7 +25,7 @@ export function Onboarding() {
     <Dialog
       open
       onOpenChange={open => {
-        if (!open) markOnboarded({ onboarded: true })
+        if (!open) setPreferences({ onboarded: true })
       }}
     >
       <DialogContent
@@ -77,7 +76,7 @@ export function Onboarding() {
               variant="default"
               size="sm"
               className="min-w-[96px]"
-              onClick={() => markOnboarded({ onboarded: true })}
+              onClick={() => setPreferences({ onboarded: true })}
             >
               Get started
             </Button>
@@ -99,7 +98,7 @@ export function Onboarding() {
           variant="link"
           size="xs"
           className="text-muted-foreground hover:text-foreground mt-0.5 text-[10.5px]"
-          onClick={() => markOnboarded({ onboarded: true })}
+          onClick={() => setPreferences({ onboarded: true })}
         >
           Skip
         </Button>

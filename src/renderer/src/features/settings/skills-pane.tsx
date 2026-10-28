@@ -1,6 +1,4 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
-
-import { preferencesAtom, setPreferencesAtom } from './preferences-atoms'
+import { useSettingsSkillsStore } from './use-settings-store'
 
 /** Settings › Skills detection (ticket 24, ADR 0017): the frequency × spread
  * gate the detection core consumes — the suggested-skill pool the unified
@@ -8,8 +6,7 @@ import { preferencesAtom, setPreferencesAtom } from './preferences-atoms'
  * theme and passed with every `skills:view` request — the values are app
  * settings, not code constants. */
 export function SkillsPane() {
-  const { skillsFrequency: frequency, skillsSpread: spread } = useAtomValue(preferencesAtom)
-  const updatePreferences = useAtomSet(setPreferencesAtom)
+  const { frequency, spread, updatePreferences } = useSettingsSkillsStore()
 
   const clamp = (value: number): number => (Number.isFinite(value) ? Math.max(1, Math.floor(value)) : 1)
 

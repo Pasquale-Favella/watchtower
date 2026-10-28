@@ -1,12 +1,9 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useEffect, useRef } from 'react'
 
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
 
-import { orbControls } from './native-shell'
 import { OrbPanel } from './OrbPanel'
-import { useOrbPanelBootstrap } from './panel-hooks'
-import { placementAtom, requestPlacementAtom } from './placement-atoms'
+import { useOrbPanelAppStore, useOrbPanelBootstrap } from './panel-hooks'
 
 /**
  * The panel window's composition root (see main/background-shell.ts): the
@@ -17,8 +14,7 @@ import { placementAtom, requestPlacementAtom } from './placement-atoms'
  */
 export function OrbPanelApp() {
   useOrbPanelBootstrap()
-  const expanded = useAtomValue(placementAtom).expanded
-  const request = useAtomSet(requestPlacementAtom)
+  const { expanded, request, panelPainted } = useOrbPanelAppStore()
   const rootRef = useRef<HTMLDivElement>(null)
 
   // Open, the root takes DOM focus, so Escape folds a panel the user opened
@@ -33,10 +29,10 @@ export function OrbPanelApp() {
     if (!expanded) return
     rootRef.current?.focus({ preventScroll: true })
     let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => orbControls.panelPainted())
+      frame = requestAnimationFrame(panelPainted)
     })
     return () => cancelAnimationFrame(frame)
-  }, [expanded])
+  }, [expanded, panelPainted])
 
   return (
     <TooltipProvider delay={300}>

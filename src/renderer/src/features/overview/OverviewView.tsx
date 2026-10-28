@@ -1,19 +1,15 @@
-import { useAtomValue } from '@effect/atom-react'
 import { useMemo } from 'react'
 
-import { overviewScopeAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSection } from '@/app/navigation'
-import { overviewQuery } from '@/features/overview/atoms'
 import { type BarItem, BarList } from '@/features/overview/BarList'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
 import { formatChartDate, formatChartValue } from '@/features/overview/lib'
+import { useOverviewStore } from '@/features/overview/use-overview-store'
 import { Panel } from '@/shared/components/Panel'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonBars, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { motionClass } from '@/shared/lib/motion'
-import { keyOfScope } from '@/shared/lib/query-keys'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
@@ -248,8 +244,7 @@ function LocalSavingsPanel({ payload }: { payload: OverviewPayload }) {
 
 export function OverviewView() {
   const { currency } = useCurrencyFormatter()
-  const scope = useAtomValue(overviewScopeAtom)
-  const { data: payload, error } = useRemoteQuery(overviewQuery, scope, keyOfScope)
+  const { data: payload, error } = useOverviewStore()
 
   const chartData = useMemo(() => payload?.daily ?? [], [payload])
   const topModel = payload?.models[0]

@@ -1,13 +1,10 @@
-import { useAtomValue } from '@effect/atom-react'
-
-import { scanStateAtom } from '@/app/atoms/scan'
+import { useScanStore } from '@/app/hooks/use-scan-store'
 import { displayShortcutForAction, sectionsRangeLabel, shortcutForAction } from '@/app/shortcuts'
 
 /** The footer — reads scanning/unparsed from the scan store and the shortcut
  * hints from the registry (ADR 0011). */
 export function StatusBar() {
-  const scanning = useAtomValue(scanStateAtom).scanning
-  const unparsedTotal = useAtomValue(scanStateAtom).unparsedTotal
+  const { scanning, unparsedTotal } = useScanStore()
   const sectionsRange = sectionsRangeLabel()
 
   return (

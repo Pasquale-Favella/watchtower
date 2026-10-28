@@ -1,10 +1,7 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { PanelLeft, RefreshCw } from 'lucide-react'
 import type { ReactElement, ReactNode } from 'react'
 
-import { paletteOpenAtom, setPaletteOpenAtom } from '@/app/atoms/palette'
-import { refreshScanAtom } from '@/app/atoms/scan'
-import { resetSearchAtom, searchTextAtom } from '@/app/atoms/search'
+import { usePaletteStore } from '@/app/hooks/use-palette-store'
 import { usePaletteSearch } from '@/app/hooks/use-search'
 import { navigateToSection, navigateToSession } from '@/app/navigation'
 import { SECTION_ICONS } from '@/app/section-icons'
@@ -66,12 +63,7 @@ export function rowFilterValue(row: PaletteRow): string {
  * refresh reads the scan store, toggleSidebar reads the sidebar context
  * (same source as SidebarToggleShortcut). Mount inside SidebarProvider. */
 export function CommandPalette(): ReactElement {
-  const open = useAtomValue(paletteOpenAtom)
-  const setOpen = useAtomSet(setPaletteOpenAtom)
-  const refresh = useAtomSet(refreshScanAtom)
-  const searchText = useAtomValue(searchTextAtom)
-  const setSearchText = useAtomSet(searchTextAtom)
-  const resetSearch = useAtomSet(resetSearchAtom)
+  const { open, setOpen, refreshScan: refresh, searchText, setSearchText, resetSearch } = usePaletteStore()
   const search = usePaletteSearch(open, searchText)
   const { toggleSidebar } = useSidebar()
 

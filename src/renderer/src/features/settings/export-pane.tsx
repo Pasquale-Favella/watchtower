@@ -1,4 +1,3 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { Download } from 'lucide-react'
 
 import { PaneHeader } from '@/features/settings/pane-parts'
@@ -7,22 +6,10 @@ import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
 
-import {
-  exportMachineAtom,
-  exportNowAtom,
-  selectExportFormat,
-  selectExportFormatAtom,
-  selectExporting,
-  selectExportMessage,
-} from './export-atoms'
+import { useSettingsExportStore } from './use-settings-store'
 
 export function ExportPane() {
-  const machine = useAtomValue(exportMachineAtom)
-  const format = selectExportFormat(machine)
-  const exporting = selectExporting(machine)
-  const result = selectExportMessage(machine)
-  const selectFormat = useAtomSet(selectExportFormatAtom)
-  const exportNow = useAtomSet(exportNowAtom)
+  const { format, exporting, result, selectFormat, exportNow } = useSettingsExportStore()
 
   return (
     <div className="flex max-w-md flex-col gap-3">

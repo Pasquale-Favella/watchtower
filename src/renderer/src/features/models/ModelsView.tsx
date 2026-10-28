@@ -1,17 +1,11 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useMemo, useState } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { modelsQuery } from '@/features/models/atoms'
-import { removeAliasAtom, removeOverrideAtom } from '@/features/models/pricing-atoms'
+import { useModelsStore } from '@/features/models/use-models-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { motionClass } from '@/shared/lib/motion'
-import { keyOfScope } from '@/shared/lib/query-keys'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { cn } from '@/shared/lib/utils'
 
@@ -29,13 +23,15 @@ const LENSES: SegOption[] = [
 ]
 
 export function ModelsView(): React.JSX.Element {
-  const scope = useAtomValue(overviewScopeAtom)
-  const { data: payload, error } = useRemoteQuery(modelsQuery, scope, keyOfScope)
-  const removeAlias = useAtomSet(removeAliasAtom, { mode: 'promise' })
-  const removeOverride = useAtomSet(removeOverrideAtom, { mode: 'promise' })
-  const provider = useAtomValue(providerAtom)
-  const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
+  const {
+    data: payload,
+    error,
+    removeAlias,
+    removeOverride,
+    provider,
+    setProvider,
+    detectedProviders,
+  } = useModelsStore()
   const [lens, setLens] = useState<ModelsLens>('model')
   const [quickAdd, setQuickAdd] = useState<QuickAddTarget | null>(null)
 

@@ -1,24 +1,17 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ExternalLink, EyeOff, Power, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
 import { displayShortcutForAction } from '@/app/shortcuts'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { formatChartDate, formatChartValue, spendTrend } from '@/features/overview/lib'
-import { activeCurrencyAtom } from '@/features/settings/atoms'
 import { SkeletonBars } from '@/shared/components/skeletons'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
-import { querySnapshot } from '../app/hooks/use-remote-query'
-import { orbControls } from './native-shell'
-import { orbRecentQuery, orbTodayQuery, scanStartErrorAtom, scanStartPendingAtom, startScanAtom } from './panel-atoms'
-import { placementAtom } from './placement-atoms'
+import { useOrbPanelStore } from './panel-store'
 
 /** The first-close peek's note (the main process decides when it shows). */
 const BACKGROUNDED_PEEK = 'Still watching in the background'
@@ -39,10 +32,18 @@ function Slot({ className, children }: { className?: string; children: ReactNode
  * the 30-day total with its week-over-week trend, local-model savings, and
  * the same daily-spend chart — plus the way back into the full app. */
 export function OrbPanel({ className }: { className?: string }) {
-  const { currency, formatUsd } = useCurrencyFormatter()
-  const peek = useAtomValue(placementAtom).peek
-  const todayQuery = querySnapshot(useAtomValue(orbTodayQuery.resultAtom))
-  const recentQuery = querySnapshot(useAtomValue(orbRecentQuery.resultAtom))
+  const {
+    currency,
+    formatUsd,
+    peek,
+    today: todayQuery,
+    recent: recentQuery,
+    scanning,
+    scanPending,
+    scanCommandError,
+    startScan,
+    orbControls,
+  } = useOrbPanelStore()
   const today = todayQuery.data
   const recent = recentQuery.data
   // One failure policy: a failed load shows ONE error state in place of the
@@ -52,13 +53,6 @@ export function OrbPanel({ className }: { className?: string }) {
   const recentSettled = recentQuery.status === 'ready'
   const loadError = recentQuery.error ?? todayQuery.error
   const failed = loadError !== null && recent === null
-  const scanning = useAtomValue(scanStateAtom).scanning
-  const scanPending = useAtomValue(scanStartPendingAtom)
-  const scanCommandError = useAtomValue(scanStartErrorAtom)
-  const startScan = useAtomSet(startScanAtom)
-  // Re-render money values when the display currency changes (ADR 0009).
-  useAtomValue(activeCurrencyAtom)
-
   const trend = recent ? spendTrend(recent.daily) : null
 
   return (

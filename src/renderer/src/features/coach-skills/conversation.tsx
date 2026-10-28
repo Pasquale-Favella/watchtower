@@ -1,22 +1,14 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ArrowUp, Square } from 'lucide-react'
 import { useRef, useState } from 'react'
 
-import { querySnapshot } from '@/app/hooks/use-remote-query'
 import {
-  cancelCoachAtom,
-  coachDetection,
-  coachStateAtom,
-  inspectHarnessAtom,
-  resetSessionAtom,
-  sendCoachAtom,
-  setHarnessAtom,
-  setModeIdAtom,
-  setModelIdAtom,
-} from '@/features/coach-skills/atoms'
-import { useCoachState } from '@/features/coach-skills/hooks'
+  useCoachAuthStore,
+  useCoachConversationStore,
+  useCoachPickerStore,
+  useCoachState,
+  useCoachWelcomeStore,
+} from '@/features/coach-skills/hooks'
 import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
-import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
 import { InfoTip } from '@/shared/components/InfoTip'
 import { LoadingRegion, SkeletonPills } from '@/shared/components/skeletons'
 import {
@@ -49,8 +41,7 @@ import { Thread } from './thread'
 function ClaudeAuthHint() {
   const harnessKind = useCoachState(s => s.harnessKind)
   const active = useCoachState(s => s.harnesses.find(h => h.instanceId === harnessKind))
-  const allowApiKeyEnv = useAtomValue(preferencesAtom).allowHarnessApiKeyEnv
-  const setPreferences = useAtomSet(setPreferencesAtom)
+  const { allowApiKeyEnv, setPreferences } = useCoachAuthStore()
   if (active?.kind !== 'claude') return null
   const signedOut = active.auth.status !== 'configured'
   const infoText = allowApiKeyEnv
@@ -121,8 +112,7 @@ export function PatternChips({
   disabled?: boolean
 }) {
   const { formatUsd } = useCurrencyFormatter()
-  const detectionResult = useAtomValue(coachDetection.resultAtom)
-  const detection = querySnapshot(detectionResult)
+  const { detection } = useCoachWelcomeStore()
   const drafts = detection.data?.drafts ?? []
 
   if (detection.status === 'loading' && detection.data === null) {
@@ -277,11 +267,7 @@ export function ConversationComposer({
   const inspectingKind = useCoachState(s => s.inspectingKind)
   const modelId = useCoachState(s => s.modelId)
   const modeId = useCoachState(s => s.modeId)
-  const setHarness = useAtomSet(setHarnessAtom)
-  const resetSession = useAtomSet(resetSessionAtom)
-  const inspectHarness = useAtomSet(inspectHarnessAtom)
-  const setModelId = useAtomSet(setModelIdAtom)
-  const setModeId = useAtomSet(setModeIdAtom)
+  const { setHarness, resetSession, inspectHarness, setModelId, setModeId } = useCoachPickerStore()
 
   const [prompt, setPrompt] = useState('')
   const [pendingSwitch, setPendingSwitch] = useState<{ kind: string; modelId: string | null } | null>(null)
@@ -492,14 +478,7 @@ export function ConversationComposer({
  *  the in-app MCP server; the current UI scope rides the briefing as the
  *  suggested default window for the agent's queries. */
 export function ConversationView() {
-  const state = useAtomValue(coachStateAtom)
-  const harnessKind = state.harnessKind
-  const messages = state.messages
-  const running = state.running
-  const error = state.error
-  const sendCoach = useAtomSet(sendCoachAtom)
-  const cancel = useAtomSet(cancelCoachAtom)
-  const resetSession = useAtomSet(resetSessionAtom)
+  const { harnessKind, messages, running, error, send: sendCoach, cancel, resetSession } = useCoachConversationStore()
 
   const start = (seed: string): void => {
     if (!harnessKind || running) return

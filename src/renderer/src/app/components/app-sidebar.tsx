@@ -1,10 +1,8 @@
-import { useAtomValue } from '@effect/atom-react'
 import { useRouterState } from '@tanstack/react-router'
 import type { ComponentProps, ReactNode } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { customRangeAtom, periodAtom, providerAtom } from '@/app/atoms/scope'
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
+import { useScopeStore } from '@/app/hooks/use-scope-store'
 import { navigateToSection, sectionForPath } from '@/app/navigation'
 import { SECTION_ICONS } from '@/app/section-icons'
 import { displayShortcutForAction, type Section, shortcutForAction } from '@/app/shortcuts'
@@ -113,10 +111,7 @@ export function AppSidebarShell({
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const pathname = useRouterState({ select: s => s.location.pathname })
   const active = sectionForPath(pathname)
-  const period = useAtomValue(periodAtom)
-  const customRange = useAtomValue(customRangeAtom)
-  const provider = useAtomValue(providerAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
+  const { period, customRange, provider, detectedProviders } = useScopeStore()
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider

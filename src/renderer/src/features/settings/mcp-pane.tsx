@@ -1,18 +1,8 @@
-import { RegistryContext, useAtomSet } from '@effect/atom-react'
-import * as Atom from 'effect/reactivity/Atom'
 import { Check, Copy, KeyRound, RotateCcw, Server } from 'lucide-react'
-import { type JSX, useContext, useEffect, useRef, useState } from 'react'
+import { type JSX, useEffect, useRef, useState } from 'react'
 
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { pinWindowAtom } from '@/app/hooks/use-remote-query'
-import {
-  getMcpConnectionAtom,
-  MCP_STATUS_REQUEST,
-  mcpStatusQuery,
-  regenerateMcpTokenAtom,
-  setMcpStartupModeAtom,
-} from '@/features/settings/capability-atoms'
 import { PaneHeader } from '@/features/settings/pane-parts'
+import { useSettingsMcpStore } from '@/features/settings/use-settings-store'
 import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
@@ -28,25 +18,24 @@ const STARTUP_OPTIONS: Array<{ value: LedgerMcpStartupMode; label: string }> = [
  * and explicitly configured local MCP clients. The token is never persisted;
  * copying the config is the explicit action that reveals it to the user. */
 export function McpPane(): JSX.Element {
-  const registry = useContext(RegistryContext)
   const copiedTimer = useRef<number | undefined>(undefined)
-  const { data: status, error: statusError } = useRemoteQuery(mcpStatusQuery, MCP_STATUS_REQUEST, () => 'mcp-status')
+  const {
+    status: statusQuery,
+    setStartupMode: setStartupModeCommand,
+    getConnection,
+    clearConnection,
+    regenerateToken: regenerateTokenCommand,
+  } = useSettingsMcpStore()
+  const { data: status, error: statusError } = statusQuery
   const [busy, setBusy] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const setStartupModeCommand = useAtomSet(setMcpStartupModeAtom, { mode: 'promise' })
-  const getConnection = useAtomSet(getMcpConnectionAtom, { mode: 'promise' })
-  const clearConnection = useAtomSet(getMcpConnectionAtom)
-  const regenerateTokenCommand = useAtomSet(regenerateMcpTokenAtom, { mode: 'promise' })
-
   useEffect(() => {
-    pinWindowAtom(registry, setMcpStartupModeAtom)
-    pinWindowAtom(registry, regenerateMcpTokenAtom)
     return () => {
       if (copiedTimer.current !== undefined) window.clearTimeout(copiedTimer.current)
-      clearConnection(Atom.Reset)
+      clearConnection()
     }
-  }, [registry, clearConnection])
+  }, [clearConnection])
 
   const setStartupMode = async (value: string): Promise<void> => {
     const mode = value as LedgerMcpStartupMode
@@ -82,7 +71,7 @@ export function McpPane(): JSX.Element {
         setError(result.message)
       }
     } finally {
-      clearConnection(Atom.Reset)
+      clearConnection()
       setBusy(false)
     }
   }

@@ -1,8 +1,5 @@
-import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { pinWindowAtom } from '@/app/hooks/use-remote-query'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import {
   dedupeGroups,
   ModelPickerCombobox,
@@ -10,16 +7,7 @@ import {
   uniqueAliasTargets,
   usagePickerItem,
 } from '@/features/models/model-picker'
-import {
-  KNOWN_MODELS_REQUEST,
-  PRICING_REQUEST,
-  pricingAliasesQuery,
-  pricingCommandErrorsAtom,
-  pricingKnownModelsQuery,
-  pricingOverridesQuery,
-  pricingPaneCommands,
-  unpricedModelsAtom,
-} from '@/features/models/pricing-atoms'
+import { useOverridePricingStore } from '@/features/models/use-pricing-store'
 import { validatePricing } from '@/features/settings/lib'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
 import { LoadingRegion } from '@/shared/components/skeletons'
@@ -36,21 +24,18 @@ import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
  * The model is picked with the shared model combobox — existing overrides,
  * aliased targets, and usage models not priced yet. */
 export function PricingPane() {
-  const registry = useContext(RegistryContext)
-  useEffect(() => {
-    pinWindowAtom(registry, pricingPaneCommands.setOverrideAtom)
-    pinWindowAtom(registry, pricingPaneCommands.removeOverrideAtom)
-  }, [registry])
-  const overrideQuery = useRemoteQuery(pricingOverridesQuery, PRICING_REQUEST, () => 'overrides')
-  const aliasQuery = useRemoteQuery(pricingAliasesQuery, PRICING_REQUEST, () => 'aliases')
-  const knownModelsQuery = useRemoteQuery(pricingKnownModelsQuery, KNOWN_MODELS_REQUEST, () => 'known-models')
-  const setOverride = useAtomSet(pricingPaneCommands.setOverrideAtom, { mode: 'promise' })
-  const removeOverride = useAtomSet(pricingPaneCommands.removeOverrideAtom, { mode: 'promise' })
-  const commandErrors = useAtomValue(pricingCommandErrorsAtom)
+  const {
+    overrides: overrideQuery,
+    aliases: aliasQuery,
+    knownModels: knownModelsQuery,
+    setOverride,
+    removeOverride,
+    commandErrors,
+    unpriced,
+  } = useOverridePricingStore()
   const { currency } = useCurrencyFormatter()
   // The usage models with no price yet — the same query-derived split the
   // aliases pane uses, so a not-yet-priced model can be priced directly.
-  const unpriced = useAtomValue(unpricedModelsAtom)
   const overrides = overrideQuery.data
   const aliases = aliasQuery.data
   const [model, setModel] = useState('')

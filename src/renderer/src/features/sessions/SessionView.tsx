@@ -1,22 +1,18 @@
-import { RegistryContext, useAtomSet } from '@effect/atom-react'
 import { useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, GitBranch, Link2, Tag } from 'lucide-react'
 import type { MouseEvent } from 'react'
-import { useContext } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSection } from '@/app/navigation'
-import { sessionQuery } from '@/features/sessions/atoms'
 import type { SessionDetail } from '@/features/sessions/drilldown'
+import { useSessionStore } from '@/features/sessions/use-session-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { openExternalAtom } from '@/shared/lib/native-capabilities'
-import { sessionRequestKey } from '@/shared/lib/query-keys'
+import { useNativeStore } from '@/shared/hooks/use-native-store'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
@@ -94,7 +90,7 @@ function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCal
 }
 
 function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Element {
-  const openExternal = useAtomSet(openExternalAtom)
+  const { openExternal } = useNativeStore()
   const [open, setOpen] = useState(false)
   return (
     <div className="bg-card rounded-md border">
@@ -159,15 +155,12 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
 }
 
 export function SessionView(): React.JSX.Element {
-  const openExternal = useAtomSet(openExternalAtom)
   const { formatUsd } = useCurrencyFormatter()
   const { sessionId } = useParams({ strict: false })
   const { sourceId } = useSearch({ from: '/dashboard/sessions/$sessionId' })
   const request = useMemo(() => (sessionId ? { sessionId, sourceId } : null), [sessionId, sourceId])
-  const { data: session, error: queryError, status } = useRemoteQuery(sessionQuery, request, sessionRequestKey)
+  const { data: session, error: queryError, status, openExternal } = useSessionStore(request)
   const error = queryError ?? (status === 'ready' && session === null ? 'Session not found.' : null)
-  const registry = useContext(RegistryContext)
-  useEffect(() => () => registry.set(sessionQuery.resetAtom, undefined), [registry])
 
   // Owns its max-w-[1180px] column like every other section view (ADR 0014);
   // the router no longer wraps session detail in a width container. The

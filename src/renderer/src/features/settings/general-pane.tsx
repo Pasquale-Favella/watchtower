@@ -1,20 +1,8 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ExternalLink, ShieldAlert, X } from 'lucide-react'
 import { useState } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { querySnapshot, useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { AboutSection } from '@/features/settings/AboutSection'
-import {
-  activeCurrencyAtom,
-  cadenceAtom,
-  currencyOptionsAtom,
-  setCadenceAtom,
-  setCurrencyAtom,
-} from '@/features/settings/atoms'
-import { SETTINGS_INFO_REQUEST, settingsInfoQuery } from '@/features/settings/capability-atoms'
-import { openSystemSettingsAtom } from '@/features/settings/capability-atoms'
-import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
+import { useSettingsGeneralStore } from '@/features/settings/use-settings-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
@@ -32,26 +20,25 @@ const THEME_OPTIONS = [
  * currency dropdown (ADR 0009), and the About/version area (ADR 0012).
  * Deliberately no daily-budget row (lives in Plans) and no Scope row. */
 export function GeneralPane() {
-  const fdaNeeded = useAtomValue(scanStateAtom).fdaNeeded
+  const {
+    fdaNeeded,
+    preferences,
+    cadence,
+    currency,
+    currencyOptions,
+    setPreferences,
+    setCadence,
+    setCurrency,
+    cadencePending,
+    currencyPending,
+    cadenceError,
+    currencyError,
+    openSystemSettings,
+    settingsInfo: settingsInfoQuery,
+  } = useSettingsGeneralStore()
   const [fdaDismissed, setFdaDismissed] = useState(false)
-  const preferences = useAtomValue(preferencesAtom)
-  const cadence = useAtomValue(cadenceAtom)
-  const currency = useAtomValue(activeCurrencyAtom)
-  const currencyOptions = useAtomValue(currencyOptionsAtom)
-  const setPreferences = useAtomSet(setPreferencesAtom)
-  const setCadence = useAtomSet(setCadenceAtom)
-  const setCurrency = useAtomSet(setCurrencyAtom)
-  const cadenceChange = useAtomValue(setCadenceAtom)
-  const currencyChange = useAtomValue(setCurrencyAtom)
-  const cadenceError = querySnapshot(cadenceChange).error
-  const currencyError = querySnapshot(currencyChange).error
-  const openSystemSettings = useAtomSet(openSystemSettingsAtom, { mode: 'promise' })
   const [fdaError, setFdaError] = useState<string | null>(null)
-  const { data: settingsInfo, error: settingsInfoError } = useRemoteQuery(
-    settingsInfoQuery,
-    SETTINGS_INFO_REQUEST,
-    () => 'settings-info',
-  )
+  const { data: settingsInfo, error: settingsInfoError } = settingsInfoQuery
 
   const choosePeriod = (value: string): void => {
     setPreferences({ defaultPeriod: value as typeof preferences.defaultPeriod })
@@ -129,7 +116,7 @@ export function GeneralPane() {
           <div className="flex items-center gap-2">
             <Select
               value={currency.code}
-              disabled={currencyChange.waiting}
+              disabled={currencyPending}
               onValueChange={value => {
                 if (value) setCurrency(value)
               }}
@@ -150,7 +137,7 @@ export function GeneralPane() {
               variant="outline"
               size="sm"
               className="mt-1 shrink-0 text-[11px]"
-              disabled={currency.code === 'USD' || currencyChange.waiting}
+              disabled={currency.code === 'USD' || currencyPending}
               onClick={() => setCurrency('USD')}
             >
               Reset to USD
@@ -207,7 +194,7 @@ export function GeneralPane() {
           </p>
           <Select
             value={cadence}
-            disabled={cadenceChange.waiting}
+            disabled={cadencePending}
             onValueChange={value => {
               if (value) setCadence(value)
             }}

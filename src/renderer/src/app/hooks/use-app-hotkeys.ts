@@ -1,10 +1,9 @@
-import { useAtomSet } from '@effect/atom-react'
 import { useHotkeys } from '@tanstack/react-hotkeys'
 
-import { togglePaletteAtom } from '@/app/atoms/palette'
-import { refreshScanAtom } from '@/app/atoms/scan'
 import { navigateToSection } from '@/app/navigation'
 import { SHORTCUTS } from '@/app/shortcuts'
+
+import { usePaletteStore } from './use-palette-store.js'
 
 /** Shortcut registration, relocated out of AppRoot (ADR 0011). Section
  * actions navigate through the module-level app/navigation.ts (ADR 0014);
@@ -12,8 +11,7 @@ import { SHORTCUTS } from '@/app/shortcuts'
  * palette store. Registered at root mount so ⌘R keeps
  * working during the first-hydrate splash. */
 export function useAppHotkeys(): void {
-  const refresh = useAtomSet(refreshScanAtom)
-  const togglePalette = useAtomSet(togglePaletteAtom)
+  const { refreshScan: refresh, togglePalette } = usePaletteStore()
   useHotkeys(
     // `global` shortcuts are the main process's (OS-wide), not this window's.
     SHORTCUTS.filter(def => def.action !== 'toggleSidebar' && def.scope !== 'global').map(def => ({

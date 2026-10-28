@@ -1,14 +1,10 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { ChevronRight, GitPullRequest } from 'lucide-react'
 import type { KeyboardEvent, MouseEvent } from 'react'
 import { useMemo, useState } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { MetricCard } from '@/features/overview/MetricCard'
-import { pullRequestsQuery } from '@/features/pull-requests/atoms'
 import { payloadSpan, sessionWord, spanLabel, summarizePullRequests } from '@/features/pull-requests/lib'
+import { usePullRequestsStore } from '@/features/pull-requests/use-pull-requests-store'
 import { InfoTip } from '@/shared/components/InfoTip'
 import { Panel } from '@/shared/components/Panel'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
@@ -16,9 +12,8 @@ import { SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonCard, SkeletonMetricCard, SkeletonRows } from '@/shared/components/skeletons'
 import { Card } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
+import { useNativeStore } from '@/shared/hooks/use-native-store'
 import { motionClass } from '@/shared/lib/motion'
-import { openExternalAtom } from '@/shared/lib/native-capabilities'
-import { keyOfScope } from '@/shared/lib/query-keys'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
@@ -75,7 +70,7 @@ function ModelChips({ models, provenance }: ModelChipsProps) {
 }
 
 function PrRowView({ pr, expanded, onToggle }: { pr: PullRequestRow; expanded: boolean; onToggle: () => void }) {
-  const open = useAtomSet(openExternalAtom)
+  const { openExternal: open } = useNativeStore()
   const { formatUsd } = useCurrencyFormatter()
   const models = pr.models ?? []
   const categories = pr.categories ?? []
@@ -184,7 +179,7 @@ function HeroMini({ label, info, children }: { label: string; info?: string; chi
 }
 
 function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
-  const open = useAtomSet(openExternalAtom)
+  const { openExternal: open } = useNativeStore()
   const { formatUsd } = useCurrencyFormatter()
   const { attributedCost } = useMemo(() => summarizePullRequests(payload.rows), [payload])
   const top = payload.rows[0]
@@ -305,11 +300,7 @@ function SummaryBento({ payload }: { payload: PullRequestsPayload }) {
 
 export function PullRequestsView(): React.JSX.Element {
   const { formatUsd } = useCurrencyFormatter()
-  const scope = useAtomValue(overviewScopeAtom)
-  const { data: payload, error } = useRemoteQuery(pullRequestsQuery, scope, keyOfScope)
-  const provider = useAtomValue(providerAtom)
-  const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
+  const { data: payload, error, provider, setProvider, detectedProviders } = usePullRequestsStore()
   const [expandedUrl, setExpandedUrl] = useState<string | null>(null)
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])

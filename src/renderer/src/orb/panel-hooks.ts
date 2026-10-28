@@ -1,3 +1,4 @@
+import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import * as Effect from 'effect/Effect'
 import * as Stream from 'effect/Stream'
 import { useEffect } from 'react'
@@ -8,7 +9,7 @@ import { registry, runtime } from '@/app/renderer-runtime'
 import { orbControls, OrbShell } from './native-shell'
 import { loadOrbOverviewAtom, orbRecentQuery, orbTodayQuery } from './panel-atoms'
 import { panelEventsReadyAtom, subscribeToOrbPanel } from './panel-wiring'
-import { syncPlacementAtom } from './placement-atoms'
+import { placementAtom, requestPlacementAtom, syncPlacementAtom } from './placement-atoms'
 
 const panelBootstrapAtom = runtime(OrbShell.layer).atom(get => {
   get.addFinalizer(subscribeToOrbPanel(get.registry))
@@ -34,4 +35,11 @@ export function useOrbPanelBootstrap(): void {
   useEffect(() => {
     pinWindowAtom(registry, panelBootstrapAtom)
   }, [])
+}
+
+export function useOrbPanelAppStore() {
+  const expanded = useAtomValue(placementAtom).expanded
+  const request = useAtomSet(requestPlacementAtom)
+
+  return { expanded, request, panelPainted: orbControls.panelPainted }
 }

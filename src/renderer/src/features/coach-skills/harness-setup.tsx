@@ -1,4 +1,3 @@
-import { useAtomSet } from '@effect/atom-react'
 import { Check, Clipboard, ExternalLink, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 
@@ -6,13 +5,12 @@ import { Button } from '@/shared/components/ui/button'
 import { cn } from '@/shared/lib/utils'
 
 import type { CoachHarnessRow } from '../../../../shared/schemas/agents.js'
-import { openCoachLoginTerminalAtom, refreshHarnessesAtom } from './atoms'
 import { HarnessStatusDot } from './harness-status'
+import { useCoachHarnessSetupStore } from './hooks'
 import { statusLabel } from './lib'
 
 export function HarnessSetup({ row, compact = false }: { row: CoachHarnessRow; compact?: boolean }) {
-  const refreshHarnesses = useAtomSet(refreshHarnessesAtom, { mode: 'promise' })
-  const openLoginTerminal = useAtomSet(openCoachLoginTerminalAtom, { mode: 'promise' })
+  const { refreshHarnesses, openLoginTerminal } = useCoachHarnessSetupStore()
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)

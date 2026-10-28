@@ -1,12 +1,7 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useMemo } from 'react'
 import type { SankeyLinkProps, SankeyNodeProps } from 'recharts'
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Sankey, Tooltip, XAxis, YAxis } from 'recharts'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { spendQuery } from '@/features/spend/atoms'
 import {
   formatDayLabel,
   providerLabel,
@@ -15,13 +10,13 @@ import {
   type SpendRow,
   stackedRows,
 } from '@/features/spend/lib'
+import { useSpendStore } from '@/features/spend/use-spend-store'
 import { Panel } from '@/shared/components/Panel'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonBars, SkeletonCard } from '@/shared/components/skeletons'
 import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
 import { motionClass } from '@/shared/lib/motion'
-import { keyOfScope } from '@/shared/lib/query-keys'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
@@ -208,11 +203,7 @@ function SankeyFlow({ flow }: { flow: SpendFlow }) {
 }
 
 export function SpendView(): React.JSX.Element {
-  const scope = useAtomValue(overviewScopeAtom)
-  const { data: payload, error } = useRemoteQuery(spendQuery, scope, keyOfScope)
-  const provider = useAtomValue(providerAtom)
-  const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
+  const { data: payload, error, provider, setProvider, detectedProviders } = useSpendStore()
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
   const modelProvenance = useMemo(() => {

@@ -1,11 +1,6 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useMemo, useState } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSession } from '@/app/navigation'
-import { sessionRowsQuery } from '@/features/sessions/atoms'
 import type { SessionRow } from '@/features/sessions/drilldown'
 import {
   filterSessions,
@@ -14,12 +9,12 @@ import {
   sortSessions,
   summarizeSessions,
 } from '@/features/sessions/sessions-lib'
+import { useSessionsStore } from '@/features/sessions/use-sessions-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { motionClass } from '@/shared/lib/motion'
-import { keyOfScope } from '@/shared/lib/query-keys'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
@@ -115,11 +110,7 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
 
 export function SessionsView(): React.JSX.Element {
   const { formatUsd } = useCurrencyFormatter()
-  const scope = useAtomValue(overviewScopeAtom)
-  const { data: rows, error } = useRemoteQuery(sessionRowsQuery, scope, keyOfScope)
-  const provider = useAtomValue(providerAtom)
-  const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
+  const { data: rows, error, provider, setProvider, detectedProviders } = useSessionsStore()
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)

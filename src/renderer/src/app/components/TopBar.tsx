@@ -1,17 +1,8 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useRouterState } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import {
-  customRangeAtom,
-  periodAtom,
-  providerAtom,
-  setCustomRangeAtom,
-  setPeriodAtom,
-  setProviderAtom,
-} from '@/app/atoms/scope'
 import { CustomRangePicker } from '@/app/components/CustomRangePicker'
+import { useScopeStore } from '@/app/hooks/use-scope-store'
 import { sectionForPath } from '@/app/navigation'
 import { shortcutForAction } from '@/app/shortcuts'
 import { SegTabs } from '@/shared/components/SegTabs'
@@ -90,13 +81,7 @@ export function TopBarShell({
 export function TopBar() {
   const pathname = useRouterState({ select: s => s.location.pathname })
   const section = sectionForPath(pathname)
-  const period = useAtomValue(periodAtom)
-  const customRange = useAtomValue(customRangeAtom)
-  const provider = useAtomValue(providerAtom)
-  const setPeriod = useAtomSet(setPeriodAtom)
-  const setProvider = useAtomSet(setProviderAtom)
-  const setCustomRange = useAtomSet(setCustomRangeAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
+  const { period, customRange, provider, setPeriod, setProvider, setCustomRange, detectedProviders } = useScopeStore()
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider

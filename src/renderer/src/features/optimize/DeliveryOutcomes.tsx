@@ -1,11 +1,9 @@
 import { type ReactNode, useState } from 'react'
 
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { navigateToSession } from '@/app/navigation'
-import { yieldQuery } from '@/features/optimize/atoms'
+import { useDeliveryOutcomesStore } from '@/features/optimize/use-delivery-outcomes-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { keyOfScope } from '@/shared/lib/query-keys'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
@@ -204,7 +202,7 @@ export function DeliveryEvidence({ payload, revertsOnly = false }: DeliveryEvide
 }
 
 export function DeliveryOutcomes({ scope, revertsOnly = false }: DeliveryOutcomesProps): React.JSX.Element {
-  const { data: payload, error } = useRemoteQuery(yieldQuery, scope, keyOfScope)
+  const { data: payload, error } = useDeliveryOutcomesStore(scope)
 
   if (payload === null) {
     if (error) return <QueryErrorNotice error={error} hasData={false} />

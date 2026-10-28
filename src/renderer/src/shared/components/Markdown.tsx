@@ -1,9 +1,8 @@
-import { useAtomSet } from '@effect/atom-react'
 import type { AnchorHTMLAttributes, MouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { openExternalAtom } from '@/shared/lib/native-capabilities'
+import { useNativeStore } from '@/shared/hooks/use-native-store'
 
 /** Harness links open in the default browser through the guarded
  *  `open-external` IPC channel (http/https only, main-process enforced) — the
@@ -19,7 +18,7 @@ function openExternalLink(event: MouseEvent<HTMLAnchorElement>, url: string, ope
  *  shadcn/typeset typography (wrap with `.typeset`); the component itself
  *  carries no classes so the typeset container styles everything inside. */
 export function Markdown({ children }: { children: string }): React.JSX.Element {
-  const open = useAtomSet(openExternalAtom)
+  const { openExternal: open } = useNativeStore()
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}

@@ -1,6 +1,5 @@
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { PROVIDERS_REQUEST, providersQuery } from '@/features/settings/capability-atoms'
 import { PaneHeader } from '@/features/settings/pane-parts'
+import { useSettingsProvidersStore } from '@/features/settings/use-settings-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion } from '@/shared/components/skeletons'
 import { Card } from '@/shared/components/ui/card'
@@ -12,7 +11,7 @@ import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 /** Settings › Providers: a read-only list of the providers detected on this
  * machine (auto-detected from local session files — no setup needed). */
 export function ProvidersPane() {
-  const { data, error } = useRemoteQuery(providersQuery, PROVIDERS_REQUEST, () => 'providers')
+  const { data, error } = useSettingsProvidersStore()
   const { formatUsd } = useCurrencyFormatter()
   const providers = data?.providers ?? null
 

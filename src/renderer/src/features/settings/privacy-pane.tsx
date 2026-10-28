@@ -1,11 +1,9 @@
-import { useAtomSet } from '@effect/atom-react'
 import { Database, KeyRound, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { clearDataAtom, SETTINGS_INFO_REQUEST, settingsInfoQuery } from '@/features/settings/capability-atoms'
 import { formatBytes } from '@/features/settings/lib'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
+import { useSettingsPrivacyStore } from '@/features/settings/use-settings-store'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
@@ -16,12 +14,8 @@ import { Separator } from '@/shared/components/ui/separator'
 export function PrivacyPane() {
   const [clearing, setClearing] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
-  const { data: info, error: settingsInfoError } = useRemoteQuery(
-    settingsInfoQuery,
-    SETTINGS_INFO_REQUEST,
-    () => 'settings-info',
-  )
-  const clearData = useAtomSet(clearDataAtom, { mode: 'promise' })
+  const { info: infoQuery, clearData } = useSettingsPrivacyStore()
+  const { data: info, error: settingsInfoError } = infoQuery
 
   const clear = async (): Promise<void> => {
     setClearError(null)

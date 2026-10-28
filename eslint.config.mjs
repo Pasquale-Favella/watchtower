@@ -193,6 +193,36 @@ export default tseslint.config(
     },
   },
 
+  {
+    files: ['src/renderer/**/*.tsx'],
+    ignores: ['src/renderer/src/app/renderer-root.tsx'],
+    rules: {
+      'import-x/no-restricted-paths': ['error', { basePath: import.meta.dirname, zones: [
+        ...processBoundaryZones,
+        ...[
+            'src/renderer/**/atoms.ts',
+            'src/renderer/**/*-atoms.ts',
+            'src/renderer/src/app/atoms/**',
+            'src/renderer/src/app/renderer-runtime.ts',
+            'src/renderer/src/app/hooks/use-remote-query.ts',
+            'src/renderer/src/shared/lib/application-rpc.ts',
+            'src/renderer/src/shared/lib/atom-rpc.ts',
+          ].map(from => ({
+          target: 'src/renderer/**',
+          from,
+          message: 'React components consume store hooks. Atom, registry and query orchestration belong inside those hooks.',
+        })),
+      ] }],
+      'no-restricted-syntax': ['error', {
+        selector: 'ImportDeclaration[source.value="@effect/atom-react"]',
+        message: 'React components consume store hooks; the renderer composition root owns RegistryContext.',
+      }, {
+        selector: 'ImportDeclaration[source.value=/^effect\\/reactivity/]',
+        message: 'React components consume store hooks; reactivity implementation belongs inside hooks.',
+      }],
+    },
+  },
+
   // ── Main + preload + shared + scripts/tests (no React) ──────────────────
   {
     files: [

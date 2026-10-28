@@ -1,4 +1,3 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useRef } from 'react'
 
 import { Markdown } from '@/shared/components/Markdown'
@@ -13,8 +12,9 @@ import {
 } from '@/shared/components/ui/message-scroller'
 import { useChatRowIn } from '@/shared/lib/motion'
 
-import { type ChatMessage, coachStateAtom, retryAssistantAtom } from './atoms'
+import { type ChatMessage } from './hooks'
 import { CopyButton, RetryButton, StreamingDots, ThinkingBlock, ToolCard } from './blocks'
+import { useCoachThreadStore } from './hooks'
 
 /** One thread message (ADR 0017): a user bubble, a streaming assistant turn
  *  with its run-context header, a live Thinking panel (when the harness
@@ -34,7 +34,7 @@ export function MessageBubble({
   canRetry: boolean
   onRetry: () => void
 }) {
-  const running = useAtomValue(coachStateAtom).running
+  const { running } = useCoachThreadStore()
   // The row root differs per role; the same ref lands on either branch so the
   // entrance animation targets whichever root actually renders.
   const rowRef = useRef<HTMLDivElement>(null)
@@ -140,7 +140,7 @@ export function MessageBubble({
 export function Thread({ messages }: { messages: ChatMessage[] }) {
   // Hooks before the empty-transcript early return (rules-of-hooks): the
   // selector subscription must run in the same order on every render.
-  const retryAssistant = useAtomSet(retryAssistantAtom)
+  const { retryAssistant } = useCoachThreadStore()
   if (messages.length === 0) {
     return null
   }

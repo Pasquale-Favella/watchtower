@@ -1,8 +1,5 @@
-import { RegistryContext, useAtomSet } from '@effect/atom-react'
-import { useContext, useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
-import { pinWindowAtom } from '@/app/hooks/use-remote-query'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
@@ -20,7 +17,7 @@ import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { ModelPickerCombobox, type ModelPickerGroup } from './model-picker'
-import { PRICING_REQUEST, pricingAliasesQuery, pricingOverridesQuery, quickAddPricingCommands } from './pricing-atoms'
+import { useQuickAddPricingStore } from './use-pricing-store'
 
 export type QuickAddTarget = {
   provider: string
@@ -57,16 +54,8 @@ export function QuickAddModal({
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const { formatUsd } = useCurrencyFormatter()
-  const registry = useContext(RegistryContext)
-  useEffect(() => {
-    pinWindowAtom(registry, quickAddPricingCommands.addAliasAtom)
-    pinWindowAtom(registry, quickAddPricingCommands.setOverrideAtom)
-  }, [registry])
-  const aliasesQuery = useRemoteQuery(pricingAliasesQuery, PRICING_REQUEST, () => 'aliases')
-  const overridesQuery = useRemoteQuery(pricingOverridesQuery, PRICING_REQUEST, () => 'overrides')
+  const { aliases: aliasesQuery, overrides: overridesQuery, addAlias, setOverride } = useQuickAddPricingStore()
   const aliases = aliasesQuery.data
-  const addAlias = useAtomSet(quickAddPricingCommands.addAliasAtom, { mode: 'promise' })
-  const setOverride = useAtomSet(quickAddPricingCommands.setOverrideAtom, { mode: 'promise' })
 
   // Existing aliases and overrides come from shared query slots. Config
   // changes invalidate them through the window's authoritative event path.

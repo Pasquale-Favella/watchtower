@@ -1,11 +1,6 @@
-import { useAtomSet, useAtomValue } from '@effect/atom-react'
-import { useEffect, useMemo } from 'react'
+import { useEffect } from 'react'
 
-import { overviewScopeAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { coachDetection, loadHarnessesAtom } from '@/features/coach-skills/atoms'
-import { useCoachState } from '@/features/coach-skills/hooks'
-import { preferencesAtom } from '@/features/settings/preferences-atoms'
+import { useCoachOverviewStore } from '@/features/coach-skills/hooks'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
 import { motionClass } from '@/shared/lib/motion'
 import { cn } from '@/shared/lib/utils'
@@ -25,23 +20,11 @@ import { ConversationView } from './conversation'
  *  here, the surface is the colocated conversation components
  *  (elements.ai-sdk.dev-inspired). */
 export function CoachSkillsView(): React.JSX.Element {
-  const scope = useAtomValue(overviewScopeAtom)
-  const preferences = useAtomValue(preferencesAtom)
-  const loadHarnesses = useAtomSet(loadHarnessesAtom)
-  const state = useCoachState(s => s)
-  const request = useMemo(
-    () => ({ scope, frequency: preferences.skillsFrequency, spread: preferences.skillsSpread }),
-    [scope, preferences.skillsFrequency, preferences.skillsSpread],
-  )
-  const detection = useRemoteQuery(
-    coachDetection,
-    request,
-    value => `${JSON.stringify(value.scope)}:${value.frequency}:${value.spread}`,
-  )
+  const { detection, loadHarnesses, hydrated } = useCoachOverviewStore()
 
   useEffect(() => {
-    if (!state.hydrated) loadHarnesses(undefined)
-  }, [state.hydrated, loadHarnesses])
+    if (!hydrated) loadHarnesses(undefined)
+  }, [hydrated, loadHarnesses])
 
   return (
     <div

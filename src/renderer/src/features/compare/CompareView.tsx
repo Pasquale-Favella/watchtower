@@ -1,13 +1,7 @@
-import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
-import * as Option from 'effect/Option'
-import * as AsyncResult from 'effect/reactivity/AsyncResult'
-import { useContext, useEffect, useMemo } from 'react'
+import { useMemo } from 'react'
 
-import { scanStateAtom } from '@/app/atoms/scan'
-import { overviewScopeAtom, providerAtom, setProviderAtom } from '@/app/atoms/scope'
-import { useRemoteQuery } from '@/app/hooks/use-remote-query'
-import { compareQuery, compareRequestKey, compareSelectionAtom, pairFromPayload } from '@/features/compare/atoms'
 import { compareValue } from '@/features/compare/lib'
+import { useCompareStore } from '@/features/compare/use-compare-store'
 import { Panel } from '@/shared/components/Panel'
 import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
@@ -217,32 +211,7 @@ function ModelPicker({
 }
 
 export function CompareView(): React.JSX.Element {
-  const scope = useAtomValue(overviewScopeAtom)
-  const registry = useContext(RegistryContext)
-  const selectedPair = useAtomValue(compareSelectionAtom)
-  const selectPair = useAtomSet(compareSelectionAtom)
-  const request = useMemo(() => {
-    const previous = Option.getOrNull(AsyncResult.value(registry.get(compareQuery.resultAtom)))
-    return { scope, pair: selectedPair ?? pairFromPayload(previous) }
-  }, [scope, selectedPair, registry])
-  const { data: payload, error } = useRemoteQuery(compareQuery, request, compareRequestKey)
-  const pair = request.pair ?? pairFromPayload(payload)
-  const provider = useAtomValue(providerAtom)
-  const setProvider = useAtomSet(setProviderAtom)
-  const detectedProviders = useAtomValue(scanStateAtom).detectedProviders
-
-  // On each payload, keep the current pair if it is still detectable, otherwise
-  // fall back to the top two by cost (the builder's own default).
-  useEffect(() => {
-    const models = payload?.models
-    if (!models) return
-    const available = new Set(models.map(model => model.model))
-    const nextA = pair?.modelA && available.has(pair.modelA) ? pair.modelA : (models[0]?.model ?? null)
-    const nextB = pair?.modelB && available.has(pair.modelB) ? pair.modelB : (models[1]?.model ?? null)
-    if (nextA && nextB && (nextA !== pair?.modelA || nextB !== pair?.modelB)) {
-      selectPair({ modelA: nextA, modelB: nextB } satisfies ComparePair)
-    }
-  }, [payload, pair?.modelA, pair?.modelB, selectPair])
+  const { payload, error, pair, selectPair, provider, setProvider, detectedProviders } = useCompareStore()
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
 
