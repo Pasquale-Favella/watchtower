@@ -2,6 +2,8 @@
 
 Status: accepted and implemented in [PR #175](https://github.com/Pasquale-Favella/watchtower/pull/175), including both RPC boundaries. Verification for each revision is recorded in [issue #174](https://github.com/Pasquale-Favella/watchtower/issues/174).
 
+The unified shell/Orb transport and scoped preload at `1517174` pass [full CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/40716380267), including actual Windows/Linux Electron tests and installer acceptance on Windows, macOS and Linux.
+
 Watchtower adopts shared Effect Schema RPC contracts for application requests and owned event streams, through a versioned Electron capability in the isolated preload. Main authenticates the originating window and frame, applies its capability allowlist, and owns connection lifecycle. The renderer receives no raw Electron or Node access. Main remains the forwarder for ledger work; the single db-worker retains SQL, scans and complete synchronous transaction ownership.
 
 Shell and Orb operations use this same protocol. The preload exposes only `rpcV1` and immutable platform/version metadata. `BackgroundShell` remains the native owner of windows, dragging, placement, tray behavior and navigation. The authenticated connection serializes Orb commands; only the beacon may drag and only the panel may acknowledge painting/data readiness. Each shell event subscription registers before emitting its initial Ready snapshot and fails visibly if its bounded buffer fills. No command is replayed after reconnect.

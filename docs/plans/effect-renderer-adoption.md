@@ -6,6 +6,8 @@ This file is the technical adoption sequence. GitHub remains the authority for e
 
 ## Follow-up: component hooks and one renderer transport
 
+Implemented at `1517174` and verified by [full CI](https://github.com/Pasquale-Favella/watchtower/actions/runs/40716380267): 305 test files, 3,417 tests passed and eight platform skips, all typecheck/lint/Effect/format gates, actual Windows/Linux Electron tests and installer acceptance on Windows, macOS and Linux. Local Orb, Operational log and StrictMode Electron checks pass. The local full suite retains one failure in the unchanged real worker-abort fixture at replacement readiness, also reproduced in isolation and in a quiet full run. No production timeout or assertion was relaxed. Detailed evidence remains in #174.
+
 The owner requested a stricter consumption boundary and less migration plumbing after M1-M3. Complete these changes within the same PR:
 
 1. Expose feature store hooks to React components. Keep Atom/registry/RPC imports behind hooks, with the renderer root as the provider exception. Enforce the boundary with lint tests and avoid broad subscriptions where a component needs only one field.
