@@ -71,6 +71,17 @@ still verify parser drainage before SQL disposal.
 These results supplement the initial probe. They do not replace the final
 packaged Electron and supported-target acceptance recorded in #174.
 
+Full CI at `d390d0b` passed the actual Windows/Linux Electron steps and all
+three installer acceptance targets. The preceding Linux core failure exposed
+the event queue's 256-item bound during a synchronous scan burst. The server
+now permits 4096 queued events while retaining its 2 MiB JSON byte bound and
+1 MiB per-frame bound. A regression test verifies ordered delivery of 1024
+synchronously produced events. Overflow has an explicit safe error code.
+The later strengthened three-window verifier at `2ad1262` passes Windows and
+macOS but fails Linux while opening the panel after a beacon click; its
+preceding packaged worker, SQL and MCP flows pass. That lifecycle gate remains
+open and is tracked separately from the worker protocol evidence.
+
 ## Probe reproduction
 
 Run the focused Node test:
