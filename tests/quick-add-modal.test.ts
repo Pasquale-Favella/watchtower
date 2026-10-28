@@ -16,8 +16,10 @@ vi.mock('../src/renderer/src/app/hooks/use-remote-query.js', () => ({
 }))
 
 vi.mock('../src/renderer/src/shared/components/ui/dialog.js', () => {
-  const element = (name: string) => ({ children, ...props }: { children?: ReactNode }) =>
-    createElement(name, props, children)
+  const element =
+    (name: string) =>
+    ({ children, ...props }: { children?: ReactNode }) =>
+      createElement(name, props, children)
   return {
     Dialog: element('div'),
     DialogContent: element('section'),

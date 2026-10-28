@@ -55,7 +55,45 @@ alternating baseline/bundled pairs then measured baseline first frames of
 3462.7, 3425.0 and 3398.2 ms versus bundled frames of 4706.0, 4664.2 and
 4667.1 ms. The paired medians still differ by 1242.1 ms. The faster isolated
 experiment therefore does not establish that bundling resolves the regression.
-Further renderer build investigation remains open.
+The isolated result did not identify the remaining cause.
+
+Main-process CPU profiling then found two synchronous child-process spawn
+calls consuming about 1.23 and 1.51 seconds before the first React frame.
+They came from ACP harness inspection and harness version probing. Renderer
+profiles showed time waiting in synchronous storage IPC or idle, depending
+on scheduling. These traces identify native harness startup on this host;
+they do not establish that Effect evaluation itself costs those durations.
+The provider fixture isolates session histories but still detects installed
+host harnesses, so the measurements include that host-specific work.
+
+The correction at `9600f14` makes lifecycle hydration read the cached harness
+snapshot without starting discovery. Automatic discovery keeps its existing
+1500 ms delay, anchored to the main window being shown instead of application
+wiring. The app-owned startup fiber remains alive through detection and
+probing, and disposal interrupts and joins both child handles. Tests cover a
+late detection result and disposal while a probe is active. Starting discovery
+immediately at `ready-to-show` was insufficient in an earlier experiment:
+that event can precede the first rendered React frame.
+
+Three subsequent quiet alternating baseline/candidate pairs measured the
+candidate containing this correction. No other local verification process ran
+during these six launches. A preceding set overlapped a TypeScript check and
+is excluded from this comparison.
+
+| Measure                         | Baseline median (ms) | Startup candidate median (ms) |
+| ------------------------------- | -------------------: | ----------------------------: |
+| Launch to first React frame     |               3691.1 |                        3404.8 |
+| Overview to Sessions ready      |                114.5 |                         134.0 |
+| Sessions back to Overview ready |                167.1 |                         146.6 |
+
+Baseline first-frame samples were 3615.5, 3757.0 and 3691.1 ms; candidate
+samples were 3669.8, 3325.0 and 3404.8 ms. The earlier 1242.1 ms paired
+startup regression is absent in this sample. Three pairs on one host do not
+establish a general speed improvement or a release performance budget. There
+were no captured page errors. One baseline close needed the eight-second
+fallback outside the measured interval; all three candidate closes completed
+normally. The final display-only Settings/Quick Add error corrections followed
+this startup artifact and receive separate functional verification.
 
 ## Registry, request and listener capture, 2026-10-28
 
