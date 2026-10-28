@@ -95,6 +95,11 @@ fallback outside the measured interval; all three candidate closes completed
 normally. The final display-only Settings/Quick Add error corrections followed
 this startup artifact and receive separate functional verification.
 
+The ordinary renderer build at final product source `a7aeee3` contains
+4260262 JavaScript bytes and 319890 CSS bytes across all entry assets.
+JavaScript is 360506 bytes larger than the baseline, about 9.2%. This is
+aggregate asset size, not bytes loaded by one window or renderer memory.
+
 ## Registry, request and listener capture, 2026-10-28
 
 `node scripts/probes/measure-renderer-state.mjs` creates a disposable renderer
@@ -104,6 +109,12 @@ all seven analytics Sections, changes Scope twenty times, then performs three
 actual native main-window close and panel "See overview" cycles. Its minified
 test renderer is distinct from the ordinary startup artifact; these measurements
 do not supply startup timings or renderer RSS.
+
+The capture was repeated against final product source `a7aeee3`. It reproduces
+every settled count in the table, the 164-node/nine-query peak, and the same
+boot request counts. All three ports close, the worker exits, and normal app
+close completes. There are no page errors before the intentional direct owner
+disposal described below.
 
 | Measurement                                                |  Result |
 | ---------------------------------------------------------- | ------: |

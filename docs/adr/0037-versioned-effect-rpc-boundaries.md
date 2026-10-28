@@ -1,6 +1,6 @@
 # Versioned Effect RPC contracts connect renderer, main and db-worker
 
-Status: accepted, implementation and transport verification in progress.
+Status: accepted and implemented in [PR #175](https://github.com/Pasquale-Favella/watchtower/pull/175), including both RPC boundaries. Final product source `a7aeee3` passes the supported-platform gates recorded in [issue #174](https://github.com/Pasquale-Favella/watchtower/issues/174).
 
 Watchtower adopts shared Effect Schema RPC contracts for application requests and owned event streams, through a versioned Electron capability in the isolated preload. Main authenticates the originating window and frame, applies its capability allowlist, and owns connection lifecycle. The renderer receives no raw Electron or Node access. Main remains the forwarder for ledger work; the single db-worker retains SQL, scans and complete synchronous transaction ownership.
 

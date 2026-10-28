@@ -79,8 +79,17 @@ now permits 4096 queued events while retaining its 2 MiB JSON byte bound and
 synchronously produced events. Overflow has an explicit safe error code.
 The later strengthened three-window verifier at `2ad1262` passes Windows and
 macOS but fails Linux while opening the panel after a beacon click; its
-preceding packaged worker, SQL and MCP flows pass. That lifecycle gate remains
-open and is tracked separately from the worker protocol evidence.
+preceding packaged worker, SQL and MCP flows pass. This historical failure was
+in the verifier's interaction with the intentional first-close panel peek.
+At `25e3389`, the verifier waits for that peek to open and auto-fold before
+testing the explicit beacon toggle. Full CI then passes the actual
+Windows/Linux Electron steps and installer acceptance on all three targets.
+That result includes the production packaged worker, SQL and MCP flows.
+
+[Final CI at product source `a7aeee3`](https://github.com/Pasquale-Favella/watchtower/actions/runs/40665288212)
+also passes core, Windows process checks, actual Windows/Linux Electron steps
+and all three installer acceptance targets after the final startup and
+retained-query error corrections. M3's supported-target verification is complete.
 
 ## Probe reproduction
 

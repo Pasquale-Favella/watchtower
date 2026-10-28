@@ -1,6 +1,6 @@
 # Effect Atom and scoped workflows own shared renderer state
 
-Status: accepted, implementation in progress.
+Status: accepted and implemented in [PR #175](https://github.com/Pasquale-Favella/watchtower/pull/175). Final product source `a7aeee3` passes the supported-platform gates recorded in [issue #174](https://github.com/Pasquale-Favella/watchtower/issues/174).
 
 Watchtower adopts Effect Atom for shared renderer state and scoped Effect services for asynchronous renderer workflows. Each window owns one Atom registry and runtime factory; React retains rendering and interaction-local state, and TanStack Router retains navigation without data loaders. This removes Zustand and aligns subscriptions, typed failures and remote queries with the existing backend composition model.
 
