@@ -64,10 +64,18 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect.poll(() => visible('panel'), { timeout: 60_000 }).toBe(true)
     await expect(panel.getByText(/^Still watching in the background/)).toBeVisible()
     await expect.poll(() => visible('panel'), { timeout: 15_000 }).toBe(false)
-    await app.evaluate(({ screen }, reader) => {
-      screen.getCursorScreenPoint = reader
-    }, cursorReader)
-    await cursorReader.dispose()
+    // Orb presses must also report an Orb-native cursor position. Otherwise
+    // the panel's blur handler treats a synthetic press as an outside click
+    // and races the renderer's own toggle.
+    await app.evaluate(({ BrowserWindow, screen }, page) => {
+      screen.getCursorScreenPoint = () => {
+        const bounds = BrowserWindow.getAllWindows()
+          .find(win => win.webContents.getURL().endsWith(page))
+          ?.getBounds()
+        if (!bounds) throw new Error('Orb window unavailable')
+        return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+      }
+    }, PAGE.orb)
 
     // A click opens the panel beside the orb — and the orb does not move: its
     // window never resizes (a moving resize repaints at the old origin).
@@ -119,9 +127,11 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
       const cy = box.y + box.height / 2
       await orb.mouse.click(cx, cy)
       await expect.poll(() => visible('panel')).toBe(true)
+      await expect(orbButton).toHaveAccessibleName('Fold Watchtower panel')
       await orb.mouse.down({ clickCount: 2 })
       await orb.mouse.up({ clickCount: 2 })
       await expect.poll(() => visible('panel')).toBe(false)
+      await expect(orbButton).toHaveAccessibleName('Show Watchtower panel')
 
       await orb.mouse.move(cx, cy)
       await orb.mouse.down()
@@ -135,6 +145,10 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     }
     if (!(await visible('panel'))) await orbButton.click()
     await expect.poll(() => visible('panel')).toBe(true)
+    await app.evaluate(({ screen }, reader) => {
+      screen.getCursorScreenPoint = reader
+    }, cursorReader)
+    await cursorReader.dispose()
 
     // One scan, every window: a scan started from the panel streams its
     // progress to the (hidden) main window too, not only to the requester.
