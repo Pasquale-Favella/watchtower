@@ -15,6 +15,7 @@ import {
 import { SETTINGS_INFO_REQUEST, settingsInfoQuery } from '@/features/settings/capability-atoms'
 import { openSystemSettingsAtom } from '@/features/settings/capability-atoms'
 import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
@@ -46,7 +47,11 @@ export function GeneralPane() {
   const currencyError = querySnapshot(currencyChange).error
   const openSystemSettings = useAtomSet(openSystemSettingsAtom, { mode: 'promise' })
   const [fdaError, setFdaError] = useState<string | null>(null)
-  const { data: settingsInfo } = useRemoteQuery(settingsInfoQuery, SETTINGS_INFO_REQUEST, () => 'settings-info')
+  const { data: settingsInfo, error: settingsInfoError } = useRemoteQuery(
+    settingsInfoQuery,
+    SETTINGS_INFO_REQUEST,
+    () => 'settings-info',
+  )
 
   const choosePeriod = (value: string): void => {
     setPreferences({ defaultPeriod: value as typeof preferences.defaultPeriod })
@@ -97,6 +102,7 @@ export function GeneralPane() {
           </button>
         </div>
       )}
+      <QueryErrorNotice error={settingsInfoError} hasData={settingsInfo !== null} />
       <div className="flex flex-col gap-2">
         <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Appearance</p>
         <div className="flex items-center justify-between gap-3">

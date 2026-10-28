@@ -6,6 +6,7 @@ import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { clearDataAtom, SETTINGS_INFO_REQUEST, settingsInfoQuery } from '@/features/settings/capability-atoms'
 import { formatBytes } from '@/features/settings/lib'
 import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
 
@@ -15,7 +16,11 @@ import { Separator } from '@/shared/components/ui/separator'
 export function PrivacyPane() {
   const [clearing, setClearing] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
-  const { data: info } = useRemoteQuery(settingsInfoQuery, SETTINGS_INFO_REQUEST, () => 'settings-info')
+  const { data: info, error: settingsInfoError } = useRemoteQuery(
+    settingsInfoQuery,
+    SETTINGS_INFO_REQUEST,
+    () => 'settings-info',
+  )
   const clearData = useAtomSet(clearDataAtom, { mode: 'promise' })
 
   const clear = async (): Promise<void> => {
@@ -32,6 +37,7 @@ export function PrivacyPane() {
   return (
     <div className="flex max-w-md flex-col gap-3">
       <PaneHeader title="Privacy & data" subtitle="What the app does, and does not do, with your data." />
+      <QueryErrorNotice error={settingsInfoError} hasData={info !== null} />
       <Card className="flex flex-col gap-4 px-4 py-4">
         <div className="flex items-start gap-2.5">
           <ShieldCheck className="text-brand-text mt-0.5 size-4 shrink-0" />

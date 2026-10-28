@@ -3,6 +3,7 @@ import { useContext, useEffect, useMemo, useState } from 'react'
 
 import { pinWindowAtom } from '@/app/hooks/use-remote-query'
 import { useRemoteQuery } from '@/app/hooks/use-remote-query'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
 import {
@@ -61,8 +62,9 @@ export function QuickAddModal({
     pinWindowAtom(registry, quickAddPricingCommands.addAliasAtom)
     pinWindowAtom(registry, quickAddPricingCommands.setOverrideAtom)
   }, [registry])
-  const aliases = useRemoteQuery(pricingAliasesQuery, PRICING_REQUEST, () => 'aliases').data
-  useRemoteQuery(pricingOverridesQuery, PRICING_REQUEST, () => 'overrides')
+  const aliasesQuery = useRemoteQuery(pricingAliasesQuery, PRICING_REQUEST, () => 'aliases')
+  const overridesQuery = useRemoteQuery(pricingOverridesQuery, PRICING_REQUEST, () => 'overrides')
+  const aliases = aliasesQuery.data
   const addAlias = useAtomSet(quickAddPricingCommands.addAliasAtom, { mode: 'promise' })
   const setOverride = useAtomSet(quickAddPricingCommands.setOverrideAtom, { mode: 'promise' })
 
@@ -187,6 +189,9 @@ export function QuickAddModal({
             setError(null)
           }}
         />
+
+        <QueryErrorNotice error={aliasesQuery.error} hasData={aliases !== null} />
+        <QueryErrorNotice error={overridesQuery.error} hasData={overridesQuery.data !== null} />
 
         {mode === 'alias' ? (
           <div className="flex flex-col gap-1.5">

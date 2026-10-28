@@ -1,6 +1,7 @@
 import { useRemoteQuery } from '@/app/hooks/use-remote-query'
 import { PROVIDERS_REQUEST, providersQuery } from '@/features/settings/capability-atoms'
 import { PaneHeader } from '@/features/settings/pane-parts'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion } from '@/shared/components/skeletons'
 import { Card } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
@@ -13,7 +14,7 @@ import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 export function ProvidersPane() {
   const { data, error } = useRemoteQuery(providersQuery, PROVIDERS_REQUEST, () => 'providers')
   const { formatUsd } = useCurrencyFormatter()
-  const providers = error ? [] : (data?.providers ?? null)
+  const providers = data?.providers ?? null
 
   return (
     <div className="flex max-w-md flex-col gap-3">
@@ -21,7 +22,8 @@ export function ProvidersPane() {
         title="Providers"
         subtitle="The app auto-detects coding tools from local session files. No setup needed — this list is read-only."
       />
-      {providers === null ? (
+      {providers === null && error && <QueryErrorNotice error={error} hasData={false} />}
+      {providers === null && !error && (
         <LoadingRegion label="Loading detected providers…" className="flex flex-col gap-3">
           {Array.from({ length: 3 }).map((_, i) => (
             <Card key={i} className="px-4 py-3">
@@ -38,30 +40,36 @@ export function ProvidersPane() {
             </Card>
           ))}
         </LoadingRegion>
-      ) : providers.length === 0 ? (
-        <p className="text-muted-foreground text-[11.5px]">No providers detected yet — run a scan first.</p>
-      ) : (
-        providers.map(provider => (
-          <Card key={provider.name} className="px-4 py-3">
-            <div className="flex items-center gap-2.5">
-              <span
-                aria-hidden="true"
-                className="inline-block size-[9px] shrink-0 rounded-full"
-                style={{ background: seriesColorForModel(provider.name) }}
-              />
-              <span className="text-foreground text-[12.5px] font-medium">{providerTitle(provider.name)}</span>
-              <span className="text-muted-foreground ml-auto flex items-center gap-1.5 text-[11px]">
-                <span className="bg-success inline-block size-[6px] rounded-full" />
-                Detected
-              </span>
-            </div>
-            <div className="text-muted-foreground mt-2 flex gap-4 text-[11px]">
-              <span>{formatUsd(provider.cost)}</span>
-              <span>{provider.calls.toLocaleString('en-US')} calls</span>
-              <span>{provider.sessions.toLocaleString('en-US')} sessions</span>
-            </div>
-          </Card>
-        ))
+      )}
+      {providers !== null && (
+        <>
+          <QueryErrorNotice error={error} hasData />
+          {providers.length === 0 && (
+            <p className="text-muted-foreground text-[11.5px]">No providers detected yet — run a scan first.</p>
+          )}
+          {providers.length > 0 &&
+            providers.map(provider => (
+              <Card key={provider.name} className="px-4 py-3">
+                <div className="flex items-center gap-2.5">
+                  <span
+                    aria-hidden="true"
+                    className="inline-block size-[9px] shrink-0 rounded-full"
+                    style={{ background: seriesColorForModel(provider.name) }}
+                  />
+                  <span className="text-foreground text-[12.5px] font-medium">{providerTitle(provider.name)}</span>
+                  <span className="text-muted-foreground ml-auto flex items-center gap-1.5 text-[11px]">
+                    <span className="bg-success inline-block size-[6px] rounded-full" />
+                    Detected
+                  </span>
+                </div>
+                <div className="text-muted-foreground mt-2 flex gap-4 text-[11px]">
+                  <span>{formatUsd(provider.cost)}</span>
+                  <span>{provider.calls.toLocaleString('en-US')} calls</span>
+                  <span>{provider.sessions.toLocaleString('en-US')} sessions</span>
+                </div>
+              </Card>
+            ))}
+        </>
       )}
     </div>
   )

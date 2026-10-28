@@ -7,11 +7,23 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { QueryErrorNotice } from '../src/renderer/src/shared/components/QueryErrorNotice.js'
+import type { RpcQuerySlot } from '../src/renderer/src/app/atoms/rpc-query.js'
 import { overviewQuery } from '../src/renderer/src/features/overview/atoms.js'
 import { OverviewView } from '../src/renderer/src/features/overview/OverviewView.js'
+import {
+  PROVIDERS_REQUEST,
+  providersQuery,
+  SETTINGS_INFO_REQUEST,
+  settingsInfoQuery,
+} from '../src/renderer/src/features/settings/capability-atoms.js'
+import { GeneralPane } from '../src/renderer/src/features/settings/general-pane.js'
+import { PrivacyPane } from '../src/renderer/src/features/settings/privacy-pane.js'
+import { ProvidersPane } from '../src/renderer/src/features/settings/providers-pane.js'
+import { QueryErrorNotice } from '../src/renderer/src/shared/components/QueryErrorNotice.js'
 import { TooltipProvider } from '../src/renderer/src/shared/components/ui/tooltip.js'
+import type { SettingsInfo } from '../src/shared/schemas/ipc.js'
 import type { OverviewPayload } from '../src/shared/schemas/overview.js'
+import type { AnalyticalViews } from '../src/shared/schemas/views.js'
 
 const payload: OverviewPayload = {
   kpis: {
@@ -76,6 +88,31 @@ function renderFailedOverview(previous?: OverviewPayload): string {
   }
 }
 
+function renderWithRetainedQueryError<Request, Value, Error>(
+  query: RpcQuerySlot<Request, Value, Error>,
+  request: Request,
+  previous: Value,
+  element: React.ReactElement,
+): string {
+  const failure = AsyncResult.fail(
+    new RpcClientError({
+      reason: new RpcClientDefect({ message: 'RPC port disconnected', cause: new Error('closed') }),
+    }),
+    { previousSuccess: Option.some(AsyncResult.success(previous)) },
+  ) as AsyncResult.AsyncResult<Value, Error>
+  const registry = AtomRegistry.make({
+    initialValues: [
+      [query.requestAtom, request],
+      [query.resultAtom, failure],
+    ] as const,
+  })
+  try {
+    return renderToStaticMarkup(createElement(RegistryContext.Provider, { value: registry }, element))
+  } finally {
+    registry.dispose()
+  }
+}
+
 describe('QueryErrorNotice', () => {
   it('renders the actual Overview payload and a nonblocking error after a failed refresh', () => {
     const markup = renderFailedOverview(payload)
@@ -115,5 +152,72 @@ describe('QueryErrorNotice', () => {
     expect(markup).toContain('role="alert"')
     expect(markup).toContain('Unable to load data')
     expect(markup).not.toContain('role="status"')
+  })
+
+  it('keeps detected providers visible with a nonblocking refresh error', () => {
+    const analytics: AnalyticalViews = {
+      providers: [{ name: 'claude', cost: 1.25, calls: 2, sessions: 3 }],
+      models: [],
+      categories: [],
+      skills: [],
+      subagents: [],
+    }
+    const markup = renderWithRetainedQueryError(
+      providersQuery,
+      PROVIDERS_REQUEST,
+      analytics,
+      createElement(ProvidersPane),
+    )
+
+    expect(markup).toContain('Claude')
+    expect(markup).toContain('2 calls')
+    expect(markup).toContain('Refresh failed: Application connection unavailable. Reconnecting.')
+    expect(markup).toContain('role="status"')
+    expect(markup).not.toContain('role="alert"')
+  })
+
+  it('keeps General settings and retained Claude config visible with a refresh error', () => {
+    const settings: SettingsInfo = {
+      dataDir: '/data/watchtower',
+      dbSize: 10,
+      dataDirSize: 20,
+      cacheDir: '/cache',
+      cacheSize: 5,
+      claudeConfigDirs: ['/config/claude'],
+    }
+    const markup = renderWithRetainedQueryError(
+      settingsInfoQuery,
+      SETTINGS_INFO_REQUEST,
+      settings,
+      createElement(GeneralPane),
+    )
+
+    expect(markup).toContain('Theme')
+    expect(markup).toContain('Active config')
+    expect(markup).toContain('Refresh failed: Application connection unavailable. Reconnecting.')
+    expect(markup).toContain('role="status"')
+    expect(markup).not.toContain('role="alert"')
+  })
+
+  it('keeps Privacy store details visible with a settings refresh error', () => {
+    const settings: SettingsInfo = {
+      dataDir: '/data/watchtower',
+      dbSize: 10,
+      dataDirSize: 20,
+      cacheDir: '/cache',
+      cacheSize: 5,
+    }
+    const markup = renderWithRetainedQueryError(
+      settingsInfoQuery,
+      SETTINGS_INFO_REQUEST,
+      settings,
+      createElement(PrivacyPane),
+    )
+
+    expect(markup).toContain('/data/watchtower')
+    expect(markup).toContain('Database size')
+    expect(markup).toContain('Refresh failed: Application connection unavailable. Reconnecting.')
+    expect(markup).toContain('role="status"')
+    expect(markup).not.toContain('role="alert"')
   })
 })
