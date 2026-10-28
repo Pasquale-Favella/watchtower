@@ -57,6 +57,26 @@ afterEach(async () => {
 })
 
 describe('main-owned harness snapshot', () => {
+  it('reads current cached harness rows without detecting or probing, then publishes after startup', async () => {
+    const published: CoachHarnessRow[][] = []
+    const detect = vi.fn(async () => [info])
+    const probe = vi.fn(() => Effect.succeed({ status: 'ready' as const, auth: { status: 'unknown' as const } }))
+    const runtime = makeRuntime(
+      { clientVersion: 'test', appPath: '/app', onHarnessChange: rows => published.push(rows) },
+      { detect, probe },
+    )
+
+    const current = Effect.flatMap(HarnessSnapshot, snapshot => snapshot.current())
+    expect(await runtime.runPromise(current)).toEqual([])
+    expect(detect).not.toHaveBeenCalled()
+    expect(probe).not.toHaveBeenCalled()
+
+    await runtime.runPromise(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.start()))
+    await vi.waitFor(() => expect(published.at(-1)?.[0]?.status).toBe('ready'))
+    expect(detect).toHaveBeenCalledOnce()
+    expect(await runtime.runPromise(current)).toMatchObject([{ instanceId: 'codex', status: 'ready' }])
+  })
+
   it('provides the main operational tracer while acquiring an additional callback service', async () => {
     class Callback extends Context.Service<Callback, { run: () => void }>()('test/main/Callback') {}
     const callbacks = Layer.effect(

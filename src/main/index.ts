@@ -53,12 +53,12 @@ import { AppUpdates, updatesLayer } from './updates.js'
  * harness-agent surface. All data work — the ledger, the scan pipeline, and
  * every query-time view builder — lives on the db-worker thread behind
  * `DbWorkerClient`, so a scan or a heavy aggregation can never freeze the
- * main event loop (and with it every window). Legacy channels retain their
- * payloads while callers migrate to the versioned RPC boundary.
+ * main event loop (and with it every window). Window lifecycle and native
+ * capabilities are registered here; renderer data access uses versioned RPC.
  */
 
 /** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
-let agentsCleanup: { reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
+let agentsCleanup: { start: () => void; reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
 const rendererRoles = new WeakMap<Electron.WebContents, RpcWindowRole>()
@@ -92,7 +92,7 @@ const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
       ),
     currency: () => readWorkerSnapshot('currency:get'),
     updater: () => Effect.flatMap(AppUpdates, updates => updates.status),
-    harnesses: () => Effect.flatMap(HarnessSnapshot, snapshot => snapshot.list()),
+    harnesses: () => Effect.flatMap(HarnessSnapshot, snapshot => snapshot.current()),
   },
 }).pipe(Layer.provideMerge(appUpdatesLayer))
 
@@ -275,7 +275,10 @@ function createWindow(): BrowserWindow {
   })
 
   rendererRoles.set(mainWindow.webContents, 'app')
-  mainWindow.on('ready-to-show', () => mainWindow.show())
+  mainWindow.on('ready-to-show', () => {
+    mainWindow.show()
+    agentsCleanup?.start()
+  })
   backgroundShell?.attachMainWindow(mainWindow)
 
   if (process.env['ELECTRON_RENDERER_URL']) {

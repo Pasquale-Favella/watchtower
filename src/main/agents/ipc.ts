@@ -159,6 +159,7 @@ export interface ApplicationAgentsSources {
 
 /** Compose app-owned harness capabilities for the authenticated RPC layer. */
 export function createApplicationAgents(sources: ApplicationAgentsSources): {
+  start: () => void
   reset: () => Promise<void>
   dispose: () => Promise<void>
   native: NativeCoachIpcCapabilities
@@ -195,21 +196,30 @@ export function createApplicationAgents(sources: ApplicationAgentsSources): {
     }),
   }
 
-  const startup = mainRuntime.runFork(
-    Effect.sleep(Duration.millis(1500)).pipe(
-      Effect.andThen(Effect.flatMap(HarnessSnapshot, snapshot => snapshot.start())),
-      Effect.catchCause(() => Effect.void),
-    ),
-  )
+  let startup: Fiber.Fiber<void> | undefined
+  let disposed = false
   return {
     native,
+    start: () => {
+      if (disposed || startup) return
+      startup = mainRuntime.runFork(
+        Effect.flatMap(HarnessSnapshot, snapshot =>
+          Effect.sleep(Duration.millis(1500)).pipe(
+            Effect.andThen(snapshot.start()),
+            Effect.andThen(Effect.never),
+            Effect.onInterrupt(() => snapshot.shutdown()),
+          ),
+        ).pipe(Effect.catchCause(() => Effect.void)),
+      )
+    },
     reset: async () => {
       await runner.reset()
     },
     dispose: async () => {
+      disposed = true
       // This boundary can run after MainRuntime has started closing, so the
-      // service-free fiber interrupt must not depend on that runtime.
-      await Effect.runPromise(Fiber.interrupt(startup))
+      // startup fiber is interrupted without relying on its service runtime.
+      if (startup) await Effect.runPromise(Fiber.interrupt(startup))
       await runner.dispose()
     },
   }
