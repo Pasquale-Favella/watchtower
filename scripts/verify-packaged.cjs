@@ -315,6 +315,77 @@ async function inspectNativeWindows(app) {
   )
 }
 
+async function installNativeWindowDiagnostics(app) {
+  await app.evaluate(({ BrowserWindow, app: electronApp }) => {
+    const key = '__watchtowerVerifyNativeWindowDiagnostics'
+    if (globalThis[key]) return
+
+    const trace = []
+    const tracked = new WeakSet()
+    const basename = win => {
+      try {
+        return new URL(win.webContents.getURL()).pathname.split('/').filter(Boolean).at(-1) ?? 'unloaded'
+      } catch {
+        return 'unloaded'
+      }
+    }
+    const record = (win, event) => {
+      let visible = false
+      let minimized = false
+      let destroyed = true
+      try {
+        destroyed = win.isDestroyed()
+        if (!destroyed) {
+          visible = win.isVisible()
+          minimized = win.isMinimized()
+        }
+      } catch {
+        // A close transition can invalidate a BrowserWindow between checks.
+      }
+      trace.push({
+        elapsedMs: Math.round(performance.now()),
+        event,
+        basename: basename(win),
+        visible,
+        minimized,
+        destroyed,
+      })
+      if (trace.length > 100) trace.shift()
+    }
+    const track = win => {
+      if (tracked.has(win)) return
+      tracked.add(win)
+      for (const event of ['show', 'hide', 'focus', 'blur', 'minimize', 'restore', 'close', 'closed', 'ready-to-show']) {
+        win.on(event, () => record(win, event))
+      }
+      record(win, 'attached')
+    }
+
+    for (const win of BrowserWindow.getAllWindows()) track(win)
+    electronApp.on('browser-window-created', (_event, win) => track(win))
+    globalThis[key] = trace
+  })
+}
+
+async function nativeWindowDiagnostics(app) {
+  return app.evaluate(() => globalThis.__watchtowerVerifyNativeWindowDiagnostics ?? [])
+}
+
+async function expectNativeVisibility(app, expect, basename, visible, phase) {
+  const isVisible = async () =>
+    (await inspectNativeWindows(app)).find(surface => surface.basename === basename)?.visible ?? false
+  try {
+    await expect.poll(isVisible).toBe(visible)
+  } catch (cause) {
+    const [inventory, events] = await Promise.all([inspectNativeWindows(app), nativeWindowDiagnostics(app)])
+    throw new Error(
+      `Packaged native visibility timed out during ${phase}: ${basename} expected visible=${visible}; ` +
+        JSON.stringify({ inventory, events }),
+      { cause },
+    )
+  }
+}
+
 function assertPackagedSurfaces(inventory, phase) {
   const expected = ['index.html', 'orb-panel.html', 'orb.html']
   const roles = inventory.map(surface => surface.basename)
@@ -679,6 +750,8 @@ async function main() {
         .poll(async () => (await inspectNativeWindows(app)).find(surface => surface.basename === 'index.html')?.visible)
         .toBe(true)
 
+      await installNativeWindowDiagnostics(app)
+
       const orbPagePromise = pageForSurface(app, 'orb.html', expect)
       const panelPagePromise = pageForSurface(app, 'orb-panel.html', expect)
       await app.evaluate(({ BrowserWindow }) => {
@@ -687,9 +760,7 @@ async function main() {
         main.close()
       })
       const [orb, panel] = await Promise.all([orbPagePromise, panelPagePromise])
-      const isNativeWindowVisible = async basename =>
-        (await inspectNativeWindows(app)).find(surface => surface.basename === basename)?.visible ?? false
-      await expect.poll(() => isNativeWindowVisible('index.html')).toBe(false)
+      await expectNativeVisibility(app, expect, 'index.html', false, 'main window close')
       const beaconButton = orb.getByRole('button', { name: /Watchtower panel/ })
       await expect(beaconButton).toBeVisible({ timeout: 30000 })
       await expect(panel.getByText('Spend over time', { exact: true })).toBeVisible({ timeout: 60000 })
@@ -697,19 +768,19 @@ async function main() {
       // The first-close peek can still be visible or may have folded while
       // the panel loaded. Read its native state and use the real beacon to
       // reach the open state in either case.
-      if (await isNativeWindowVisible('orb-panel.html')) {
+      if ((await inspectNativeWindows(app)).find(surface => surface.basename === 'orb-panel.html')?.visible) {
         await beaconButton.click()
-        await expect.poll(() => isNativeWindowVisible('orb-panel.html')).toBe(false)
+        await expectNativeVisibility(app, expect, 'orb-panel.html', false, 'beacon fold')
       }
       await beaconButton.click()
-      await expect.poll(() => isNativeWindowVisible('orb-panel.html')).toBe(true)
+      await expectNativeVisibility(app, expect, 'orb-panel.html', true, 'beacon open')
       const backgroundInventory = await inspectNativeWindows(app)
       assertPackagedSurfaces(backgroundInventory, 'backgrounded')
 
       await panel.getByRole('button', { name: /^See overview/ }).click()
-      await expect.poll(() => isNativeWindowVisible('index.html')).toBe(true)
+      await expectNativeVisibility(app, expect, 'index.html', true, 'See overview navigation')
       await expect(window.getByText('Total spend', { exact: true })).toBeVisible({ timeout: 30000 })
-      await expect.poll(() => isNativeWindowVisible('orb.html')).toBe(false)
+      await expectNativeVisibility(app, expect, 'orb.html', false, 'orb hide after See overview')
       const restoredInventory = await inspectNativeWindows(app)
       assertPackagedSurfaces(restoredInventory, 'restored')
       assert.deepEqual(
