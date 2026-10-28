@@ -42,7 +42,6 @@ export const appBootstrapAtom = runtime(get =>
   Layer.merge(get(ApplicationClient.runtime.layer), ApplicationProtocolLayer),
 ).atom(get => {
   get.mount(hydrateScanProvidersAtom)
-  get.mount(appRpcLifecycleAtom)
   get.mount(setCadenceAtom)
   get.mount(setCurrencyAtom)
   get.addFinalizer(mountCoachWorkflow(get.registry))
@@ -80,6 +79,7 @@ export const appBootstrapAtom = runtime(get =>
 export function useAppBootstrap(): void {
   useEffect(() => {
     pinWindowAtom(registry, navigationAtom)
+    pinWindowAtom(registry, appRpcLifecycleAtom)
     pinWindowAtom(registry, appBootstrapAtom)
   }, [])
 }
