@@ -355,7 +355,17 @@ async function installNativeWindowDiagnostics(app) {
     const track = win => {
       if (tracked.has(win)) return
       tracked.add(win)
-      for (const event of ['show', 'hide', 'focus', 'blur', 'minimize', 'restore', 'close', 'closed', 'ready-to-show']) {
+      for (const event of [
+        'show',
+        'hide',
+        'focus',
+        'blur',
+        'minimize',
+        'restore',
+        'close',
+        'closed',
+        'ready-to-show',
+      ]) {
         win.on(event, () => record(win, event))
       }
       record(win, 'attached')
