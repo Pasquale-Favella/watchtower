@@ -123,6 +123,7 @@ const setup = (resolveRole: (url: string) => RpcWindowRole | undefined = () => '
   const { bridge, dispose } = createRpcBridge(ipc as never)
   const { sender, ipcMain } = createMain(ipc)
   const connections: Array<{ port: RpcMessagePort; role: RpcWindowRole; sender: FakeWebContents }> = []
+  const nativePorts: FakeMessagePort[] = []
   const teardowns: number[] = []
   let generation = 0
   const unregister = registerElectronRpc({
@@ -130,14 +131,16 @@ const setup = (resolveRole: (url: string) => RpcWindowRole | undefined = () => '
     resolveRole: context => resolveRole(context.url),
     createChannel: () => {
       generation++
-      return createChannel() as never
+      const channel = createChannel()
+      nativePorts.push(channel.port1)
+      return channel as never
     },
     onConnection: (port, role, webContents) => {
       connections.push({ port, role, sender: webContents as never })
       return () => teardowns.push(generation)
     },
   })
-  return { ipc, bridge, dispose, sender, connections, teardowns, unregister }
+  return { ipc, bridge, dispose, sender, connections, nativePorts, teardowns, unregister }
 }
 
 describe('Electron RPC adapters', () => {
@@ -293,6 +296,30 @@ describe('Electron RPC adapters', () => {
     expect(connections[0]?.sender.listenerCount('destroyed')).toBe(0)
     expect(connections[0]?.sender.listenerCount('render-process-gone')).toBe(0)
     await expect(bridge.send('late', 1)).rejects.toBeInstanceOf(Error)
+  })
+
+  it('isolates native close listeners and completes server teardown when one throws', async () => {
+    const { bridge, nativePorts, teardowns, unregister, connections } = setup()
+    await bridge.connect()
+    const port = connections[0]?.port
+    if (!port) throw new Error('Expected the RPC server to be connected')
+    let laterListenerCalled = false
+    Effect.runSync(
+      port.subscribeClose(() => {
+        throw new Error('consumer failed')
+      }),
+    )
+    Effect.runSync(
+      port.subscribeClose(() => {
+        laterListenerCalled = true
+      }),
+    )
+
+    unregister()
+
+    expect(laterListenerCalled).toBe(true)
+    expect(teardowns).toHaveLength(1)
+    expect(nativePorts[0]?.closed).toBe(true)
   })
 
   it('rejects unsupported protocol versions through the fixed response channel', async () => {

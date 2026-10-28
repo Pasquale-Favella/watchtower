@@ -51,7 +51,13 @@ const createRpcMessagePort = (native: MessagePortMain): RpcMessagePort => {
   const onNativeClose = (): void => {
     if (closed) return
     closed = true
-    for (const listener of [...closeListeners]) listener()
+    for (const listener of [...closeListeners]) {
+      try {
+        listener()
+      } catch {
+        // A consumer callback must not prevent other close handlers from running.
+      }
+    }
   }
   native.on('close', onNativeClose)
 
