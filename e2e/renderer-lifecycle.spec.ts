@@ -74,13 +74,23 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
                 rpcConnects: number
                 lifecycleSubscriptions: number
                 activeLifecycleSubscriptions: number
+                shellSubscriptions: number
+                activeShellSubscriptions: number
               }
+              diagnostics(): { navigationReadiness: string }
               listeners(): number
               nodes(): number
             }
           }
         ).lifecycleProbe
-        return { ...probe.counts, listeners: probe.listeners(), nodes: probe.nodes() }
+        const nodes = probe.nodes()
+        const navigationReadiness = nodes > 0 ? probe.diagnostics().navigationReadiness : undefined
+        return {
+          ...probe.counts,
+          navigationReadiness,
+          listeners: probe.listeners(),
+          nodes,
+        }
       })
     readFixtureDiagnostics = async () => {
       if (!page) return '(page unavailable)'
@@ -100,6 +110,16 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
         return `diagnostics unavailable: ${error instanceof Error ? error.message : String(error)}`
       }
     }
+    const navigationReadiness = () =>
+      activePage.evaluate(() => {
+        const probe = (
+          globalThis as typeof globalThis & {
+            lifecycleProbe?: { diagnostics(): { navigationReadiness: string } }
+          }
+        ).lifecycleProbe
+        return probe?.diagnostics().navigationReadiness
+      })
+    await expect.poll(navigationReadiness).toBe('ready')
     await expect(activePage.locator('[data-ready="true"]')).toHaveText('$10.00', { timeout: 10_000 })
     await expect.poll(async () => (await state()).nativeReads['currency:get']).toBe(1)
     expect(await state()).toMatchObject({
@@ -113,6 +133,7 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
         'currency:get': 1,
         'updates:status': 1,
         'coach:harnesses': 1,
+        'shell:events': 1,
       }),
       unexpectedRequests: [],
       attaches: 1,
@@ -120,6 +141,9 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
       rpcConnects: 1,
       lifecycleSubscriptions: 1,
       activeLifecycleSubscriptions: 1,
+      shellSubscriptions: 1,
+      activeShellSubscriptions: 1,
+      navigationReadiness: 'ready',
     })
     await activePage.evaluate(() =>
       (
@@ -206,6 +230,7 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
       detaches: 1,
       listeners: 0,
       activeLifecycleSubscriptions: 0,
+      activeShellSubscriptions: 0,
     })
     expect(errors).toEqual([])
   } catch (error) {

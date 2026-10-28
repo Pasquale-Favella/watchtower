@@ -35,7 +35,16 @@ describe('main RPC worker forwarding', () => {
     const request = vi.fn(() => Promise.resolve(null))
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const client = yield* RpcTest.makeClient(PanelRpcGroup.omit('panel:events', 'scan:start'))
+        const client = yield* RpcTest.makeClient(
+          PanelRpcGroup.omit(
+            'panel:events',
+            'scan:start',
+            'shell:events',
+            'shell:notice',
+            'orb:placement',
+            'orb:command',
+          ),
+        )
         return yield* Effect.exit(client['overview:query']({ scope: { period: 'lifetime' } }))
       }).pipe(Effect.scoped, Effect.provide(analyticsHandlers({ request }, 'panel'))),
     )

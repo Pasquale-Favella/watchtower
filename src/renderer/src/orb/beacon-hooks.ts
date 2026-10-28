@@ -6,10 +6,11 @@ import { pinWindowAtom } from '@/app/hooks/use-remote-query'
 import { registry, runtime } from '@/app/renderer-runtime'
 
 import { beaconEventsReadyAtom, subscribeToOrbBeacon } from './beacon-wiring'
-import { orbControls, OrbShell } from './native-shell'
+import { BeaconRoleClient } from './beacon-role-client'
+import { orbControls } from './native-shell'
 import { syncPlacementAtom } from './placement-atoms'
 
-const beaconBootstrapAtom = runtime(OrbShell.layer).atom(get => {
+const beaconBootstrapAtom = BeaconRoleClient.runtime.atom(get => {
   get.addFinalizer(subscribeToOrbBeacon(get.registry))
   return Effect.gen(function* () {
     yield* Stream.runDrain(

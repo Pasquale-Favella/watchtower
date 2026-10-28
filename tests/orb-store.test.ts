@@ -10,7 +10,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { restartRpcQuery } from '../src/renderer/src/app/atoms/rpc-query.js'
 import { scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
-import { createOrbShell, OrbShell } from '../src/renderer/src/orb/native-shell.js'
 import type { PanelOverviewQuery } from '../src/renderer/src/orb/panel-atoms.js'
 import { createPanelAtoms, createPanelScanCommandAtoms, ORB_SCOPES } from '../src/renderer/src/orb/panel-atoms.js'
 import { applyPanelLifecycleFrame, panelEventsReadyAtom } from '../src/renderer/src/orb/panel-wiring.js'
@@ -64,16 +63,11 @@ const payload: OverviewPayload = {
   localModelSavings: { totalUSD: 0, calls: 0, byModel: [], byProvider: [] },
 }
 
-function setup(overrides: Partial<OrbShell['Service']> = {}) {
+function setup() {
   const registry = AtomRegistry.make()
   registries.push(registry)
   const factory = Atom.context()
-  const layer = Layer.succeed(OrbShell, {
-    getOrbPlacement: () => Effect.succeed(collapsed),
-    requestOrbPanel: request => Effect.succeed(request === 'fold' ? collapsed : expanded),
-    ...overrides,
-  })
-  return { registry, factory, layer }
+  return { registry, factory }
 }
 
 function readResult<A, E>(
@@ -96,6 +90,13 @@ function panelClient(
       'overview:query': ({ scope }) => getOverview(scope),
       'scan:start': () => startScan(),
       'panel:events': () => Stream.empty,
+      'shell:events': () => Stream.empty,
+      'shell:notice': () => Effect.void,
+      'shell:open-external': () => Effect.void,
+      'shell:open-settings': () => Effect.succeed(false),
+      'orb:placement': () => Effect.succeed(collapsed),
+      'orb:command': command =>
+        Effect.succeed(command._tag === 'Panel' ? (command.request === 'fold' ? collapsed : expanded) : null),
     }),
   )
   return AtomRpc.Service<object>()('test/OrbPanelRpc', {
@@ -116,32 +117,14 @@ function panelQuery(
 }
 
 describe('orb placement atoms', () => {
-  it('validates native placement responses and returns fixed failures', async () => {
-    const shell = createOrbShell({
-      getPlacement: async () => ({ expanded: 'invalid' }) as never,
-      requestPanel: async () => {
-        throw new Error('private bridge detail')
-      },
-    })
-
-    await expect(Effect.runPromise(shell.getOrbPlacement())).rejects.toMatchObject({
-      _tag: 'OrbShellError',
-      operation: 'orb:placement:get',
-      message: expect.stringContaining('Invalid orb placement payload'),
-    })
-    await expect(Effect.runPromise(shell.requestOrbPanel('open'))).rejects.toMatchObject({
-      _tag: 'OrbShellError',
-      operation: 'orb:panel:request',
-      message: 'Unable to update the orb panel.',
-    })
-  })
-
   it('loads the current placement unless a newer placement event arrived', async () => {
     let finishRead!: (placement: OrbPlacement) => void
-    const { registry, factory, layer } = setup({
-      getOrbPlacement: () => Effect.promise(() => new Promise(resolve => (finishRead = resolve))),
-    })
-    const { placementAtom, syncPlacementAtom } = createPlacementAtoms(factory, layer)
+    const { registry, factory } = setup()
+    const { placementAtom, syncPlacementAtom } = createPlacementAtoms(
+      factory(Layer.empty),
+      Effect.promise(() => new Promise(resolve => (finishRead = resolve))),
+      () => Effect.succeed(collapsed),
+    )
     registry.set(syncPlacementAtom, undefined)
     const syncing = readResult(registry, syncPlacementAtom)
     registry.set(placementAtom, { ...expanded, peek: true })
@@ -154,8 +137,12 @@ describe('orb placement atoms', () => {
     const requestOrbPanel = vi.fn((request: 'open' | 'fold') =>
       Effect.succeed(request === 'fold' ? collapsed : expanded),
     )
-    const { registry, factory, layer } = setup({ requestOrbPanel })
-    const { placementAtom, requestPlacementAtom } = createPlacementAtoms(factory, layer)
+    const { registry, factory } = setup()
+    const { placementAtom, requestPlacementAtom } = createPlacementAtoms(
+      factory(Layer.empty),
+      Effect.succeed(collapsed),
+      requestOrbPanel,
+    )
     registry.set(requestPlacementAtom, 'open')
     await readResult(registry, requestPlacementAtom)
     expect(requestOrbPanel).toHaveBeenCalledExactlyOnceWith('open')
@@ -164,10 +151,12 @@ describe('orb placement atoms', () => {
 
   it('lets a later event win over an in-flight panel command', async () => {
     let finishRequest!: (placement: OrbPlacement) => void
-    const { registry, factory, layer } = setup({
-      requestOrbPanel: () => Effect.promise(() => new Promise(resolve => (finishRequest = resolve))),
-    })
-    const { placementAtom, requestPlacementAtom } = createPlacementAtoms(factory, layer)
+    const { registry, factory } = setup()
+    const { placementAtom, requestPlacementAtom } = createPlacementAtoms(
+      factory(Layer.empty),
+      Effect.succeed(collapsed),
+      () => Effect.promise(() => new Promise(resolve => (finishRequest = resolve))),
+    )
     registry.set(requestPlacementAtom, 'open')
     const request = readResult(registry, requestPlacementAtom)
     const latest = { ...collapsed, horizontal: 'left' } satisfies OrbPlacement

@@ -23,23 +23,25 @@ import {
   exportMachineAtom,
   exportNowAtom,
   selectExportFormat,
+  selectExportFormatAtom,
   selectExporting,
   selectExportMessage,
-  selectExportFormatAtom,
 } from './export-atoms'
 import { preferencesAtom, setPreferencesAtom } from './preferences-atoms'
 import {
   canRequestUpdate,
-  selectUpdateActivity,
-  selectUpdateCommandVisible,
-  selectUpdateError,
-  selectUpdateStatus,
   checkForUpdatesAtom,
   downloadUpdateAtom,
   installUpdateAtom,
   loadUpdateStatusAtom,
+  selectUpdateActivity,
+  selectUpdateCommandVisible,
+  selectUpdateError,
+  selectUpdateStatus,
   updatesMachineAtom,
 } from './updates-atoms'
+
+const fdaNeededAtom = Atom.make(get => get(scanStateAtom).fdaNeeded)
 
 export function useSettingsPreferencesStore() {
   return { preferences: useAtomValue(preferencesAtom), setPreferences: useAtomSet(setPreferencesAtom) }
@@ -51,7 +53,7 @@ export function useSettingsGeneralStore() {
   const cadenceError = querySnapshot(cadenceChange).error
   const currencyError = querySnapshot(currencyChange).error
   return {
-    fdaNeeded: useAtomValue(scanStateAtom).fdaNeeded,
+    fdaNeeded: useAtomValue(fdaNeededAtom),
     preferences: useAtomValue(preferencesAtom),
     cadence: useAtomValue(cadenceAtom),
     currency: useAtomValue(activeCurrencyAtom),

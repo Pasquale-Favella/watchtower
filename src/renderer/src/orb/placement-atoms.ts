@@ -2,13 +2,16 @@ import * as Effect from 'effect/Effect'
 import * as Atom from 'effect/reactivity/Atom'
 
 import type { OrbPanelRequest, OrbPlacement } from '../../../shared/schemas/orb.js'
-import { runtime } from '../app/renderer-runtime.js'
-import { OrbShell } from './native-shell.js'
+import { BeaconRoleClient } from './beacon-role-client.js'
+import { PanelRoleClient } from './panel-role-client.js'
 
 const initialPlacement: OrbPlacement = { expanded: false, peek: false, horizontal: 'right', vertical: 'bottom' }
 
-export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer = OrbShell.layer) {
-  const remote = factory(layer)
+export function createPlacementAtoms<R, E>(
+  remote: Atom.AtomRuntime<R>,
+  read: Effect.Effect<OrbPlacement | null, E, R>,
+  requestPanel: (request: OrbPanelRequest) => Effect.Effect<OrbPlacement | null, E, R>,
+) {
   const currentPlacementAtom = Atom.keepAlive(Atom.make(initialPlacement))
   const placementRevisionAtom = Atom.keepAlive(Atom.make(0))
 
@@ -23,8 +26,7 @@ export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer
   const syncPlacementAtom = remote.fn<undefined>()((_, get) =>
     Effect.gen(function* () {
       const revision = get.registry.get(placementRevisionAtom)
-      const api = yield* OrbShell
-      const placement = yield* api.getOrbPlacement()
+      const placement = yield* read
       if (placement && revision === get.registry.get(placementRevisionAtom)) get.set(placementAtom, placement)
       return placement
     }),
@@ -33,8 +35,7 @@ export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer
   const requestPlacementAtom = remote.fn<OrbPanelRequest>()((request, get) =>
     Effect.gen(function* () {
       const revision = get.registry.get(placementRevisionAtom)
-      const api = yield* OrbShell
-      const placement = yield* api.requestOrbPanel(request)
+      const placement = yield* requestPanel(request)
       if (placement && revision === get.registry.get(placementRevisionAtom)) get.set(placementAtom, placement)
       return placement
     }),
@@ -43,4 +44,18 @@ export function createPlacementAtoms(factory: Atom.RegistryRuntimeFactory, layer
   return { placementAtom, syncPlacementAtom, requestPlacementAtom }
 }
 
-export const { placementAtom, syncPlacementAtom, requestPlacementAtom } = createPlacementAtoms(runtime)
+const beaconPlacement = createPlacementAtoms(
+  BeaconRoleClient.runtime,
+  Effect.flatMap(BeaconRoleClient, rpc => rpc('orb:placement', undefined)),
+  request => Effect.flatMap(BeaconRoleClient, rpc => rpc('orb:command', { _tag: 'Panel', request })),
+)
+const panelPlacement = createPlacementAtoms(
+  PanelRoleClient.runtime,
+  Effect.flatMap(PanelRoleClient, rpc => rpc('orb:placement', undefined)),
+  request => Effect.flatMap(PanelRoleClient, rpc => rpc('orb:command', { _tag: 'Panel', request })),
+)
+export const { placementAtom, syncPlacementAtom, requestPlacementAtom } = globalThis.location?.pathname.endsWith(
+  '/orb-panel.html',
+)
+  ? panelPlacement
+  : beaconPlacement

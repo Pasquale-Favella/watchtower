@@ -16,14 +16,14 @@ instances and SQLite connections.
 ```mermaid
 flowchart TB
     subgraph renderer["Sandboxed renderer"]
-        ui["React views and Effect atoms"]
+        ui["React views and feature store hooks"]
         workflows["Window-owned query and workflow atoms"]
         decoder["Synchronous Effect Schema decoder"]
         ui --> workflows
         workflows ~~~ decoder
     end
 
-    preload["Preload contextBridge<br/>Versioned RPC port and native shell capabilities"]
+    preload["Preload contextBridge<br/>Versioned RPC port and immutable metadata"]
 
     subgraph main["Electron main process · MainRuntime"]
         ipc["RPC/IPC handlers and worker client"]
@@ -53,7 +53,7 @@ flowchart TB
     ledger[("ledger.db<br/>Transcript facts and persisted settings")]
 
     workflows -->|"AtomRpc queries and Effect workflows"| preload
-    preload -->|"RPC MessagePort / native shell IPC"| ipc
+    preload -->|"Effect RPC over MessagePort"| ipc
     ipc -->|"Results and events"| preload
     preload -->|"Incoming payloads"| decoder
     decoder -->|"Validated data or visible error state"| ui
@@ -151,7 +151,10 @@ the same application queries run with a separate read-only service graph.
 
 The renderer composition follows [ADR 0036](./adr/0036-effect-renderer-composition.md).
 Window roots own bootstrap, subscriptions and disposal across React remounts.
-Scope, preferences and workflow state use atoms. Query slots hold one current
+Scope, preferences and workflow state use atoms behind feature store hooks.
+Components consume domain values and commands; ESLint prevents direct imports
+of atoms, registries and RPC clients outside the renderer composition root.
+Query slots hold one current
 request per feature, discard previous data on identity changes and retain
 same-request data during refresh. Formatting reads an explicit currency
 snapshot and never refetches ledger data merely to change the display symbol.
@@ -159,9 +162,10 @@ snapshot and never refetches ledger data merely to change the display symbol.
 The versioned RPC implementation follows
 [ADR 0037](./adr/0037-versioned-effect-rpc-boundaries.md). Shared schemas,
 generated clients and an authenticated MessagePort adapter serve all application
-requests and lifecycle/Coach streams. The remaining preload adapters cover
-native shell navigation, links, Full Disk Access, notices and orb geometry.
-Their responses and events retain synchronous schema validation.
+requests and lifecycle/Coach streams, including native shell navigation, links,
+Full Disk Access, notices and Orb commands/placement. The preload exposes only
+the scoped RPC transport and immutable platform/version metadata. Role-specific
+contracts and authenticated native owners retain beacon/panel restrictions.
 Main/worker requests use the internal `WorkerRpcGroup` over the official Node
 worker adapter. Each supervisor-owned worker generation has one protocol scope
 and one event consumer. Application readiness follows event subscription and

@@ -4,8 +4,17 @@ import * as Stream from 'effect/Stream'
 
 import { nativeHandlers } from '../../src/main/rpc/native-handlers.js'
 import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'
+import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native RPC operation in a data-query test'))
+
+export const unexpectedShellRpcs = ShellRpcGroup.of({
+  'shell:events': () => Stream.die(new Error('Unexpected shell subscription in a data-query test')),
+  'shell:notice': unexpected,
+  'shell:open-external': unexpected,
+  'shell:open-settings': unexpected,
+})
+export const unexpectedShellHandlers = ShellRpcGroup.toLayer(unexpectedShellRpcs)
 
 export const unexpectedCoachHandlers = CoachRpcGroup.toLayer({
   'coach:run': () => Stream.die(new Error('Unexpected Coach run in a data-query test')),
@@ -14,7 +23,7 @@ export const unexpectedCoachHandlers = CoachRpcGroup.toLayer({
 })
 
 /** Keep data-query tests on the production group while refusing unrelated capabilities. */
-export const unexpectedNativeHandlers = Layer.merge(
+export const unexpectedNativeHandlers = Layer.mergeAll(
   nativeHandlers({
     startScan: unexpected,
     isScanActive: unexpected,
@@ -36,4 +45,5 @@ export const unexpectedNativeHandlers = Layer.merge(
     openCoachLoginTerminal: unexpected,
   }),
   unexpectedCoachHandlers,
+  unexpectedShellHandlers,
 )

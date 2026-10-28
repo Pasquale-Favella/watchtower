@@ -12,7 +12,7 @@ import {
   scanStateAtom,
 } from '@/app/atoms/scan'
 import { registry, runtime } from '@/app/renderer-runtime'
-import { subscribeToNavigation } from '@/app/stores/subscribe'
+import { navigationAtom } from '@/app/stores/subscribe'
 import { coachDetection, mountCoachWorkflow } from '@/features/coach-skills/atoms'
 import { loadCadenceAtom, loadCurrencyOptionsAtom, setCadenceAtom, setCurrencyAtom } from '@/features/settings/atoms'
 import { mountSettingsCapabilityWorkflow } from '@/features/settings/capability-atoms'
@@ -47,7 +47,6 @@ export const appBootstrapAtom = runtime(get =>
   get.mount(setCurrencyAtom)
   get.addFinalizer(mountCoachWorkflow(get.registry))
   get.addFinalizer(mountSettingsCapabilityWorkflow(get.registry))
-  get.addFinalizer(subscribeToNavigation(get.registry))
   const preferences = get.registry.get(preferencesAtom)
   let thresholdKey = `${preferences.skillsFrequency}\0${preferences.skillsSpread}`
   get.subscribe(preferencesAtom, next => {
@@ -80,6 +79,7 @@ export const appBootstrapAtom = runtime(get =>
 /** The window root owns bootstrap and event subscriptions across React remounts. */
 export function useAppBootstrap(): void {
   useEffect(() => {
+    pinWindowAtom(registry, navigationAtom)
     pinWindowAtom(registry, appBootstrapAtom)
   }, [])
 }

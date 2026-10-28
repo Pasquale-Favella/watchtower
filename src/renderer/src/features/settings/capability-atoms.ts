@@ -8,7 +8,6 @@ import { appliedLedgerGenerationAtom } from '@/app/atoms/config-change'
 import { createRpcQuerySlot } from '@/app/atoms/rpc-query'
 import { refreshScanAtom } from '@/app/atoms/scan'
 import { ApplicationClient } from '@/shared/lib/application-rpc'
-import { openSystemSettings } from '@/shared/lib/native-shell'
 
 import { ConfigRpcError } from '../../../../shared/rpc/errors.js'
 import { NativeRpcError } from '../../../../shared/rpc/native.js'
@@ -107,7 +106,9 @@ export function createSettingsCapabilityAtoms(client: typeof ApplicationClient, 
     }),
   )
 
-  const openSystemSettingsAtom = client.runtime.fn<undefined>()(() => openSystemSettings())
+  const openSystemSettingsAtom = client.runtime.fn<undefined>()(() =>
+    Effect.flatMap(client, rpc => rpc('shell:open-settings', undefined)),
+  )
 
   return {
     settingsInfoQuery,

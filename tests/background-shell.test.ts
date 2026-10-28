@@ -1,11 +1,14 @@
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, Tray } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { BackgroundShell, backgroundShellLayer } from '../src/main/background-shell.js'
+import { type ShellEvent, ShellRpcError } from '../src/shared/rpc/shell.js'
 
 const surfaces = vi.hoisted(() => ({ windows: [] as BrowserWindow[], loading: false }))
 
@@ -138,6 +141,16 @@ async function startShell() {
   return { runtime, shell, main, advance }
 }
 
+function captureShellEvents(
+  runtime: ManagedRuntime.ManagedRuntime<BackgroundShell | TestClock.TestClock, never>,
+  shell: import('../src/main/background-shell.js').BackgroundShellHandle,
+  sender: Electron.WebContents,
+): { events: ShellEvent[]; stop: () => Promise<void> } {
+  const events: ShellEvent[] = []
+  const fiber = runtime.runFork(Stream.runForEach(shell.events(sender), event => Effect.sync(() => events.push(event))))
+  return { events, stop: () => runtime.runPromise(Fiber.interrupt(fiber)) }
+}
+
 beforeEach(() => {
   surfaces.windows = []
   surfaces.loading = false
@@ -165,7 +178,7 @@ describe('main-scoped background shell', () => {
     expect(globalShortcut.unregister).toHaveBeenCalledOnce()
   })
 
-  it('removes IPC, screen and main-window listeners and pending readiness work on disposal', async () => {
+  it('removes shell event, screen and main-window listeners and pending readiness work on disposal', async () => {
     const { runtime, main, advance } = await startShell()
     surfaces.loading = true
     main.close()
@@ -173,7 +186,24 @@ describe('main-scoped background shell', () => {
     const orb = surfaces.windows[1]
     expect(orb.listenerCount('ready-to-show')).toBe(1)
     await runtime.dispose()
-    expect(ipcMain.listenerCount('orb:panel-data-ready')).toBe(0)
+    for (const channel of [
+      'orb:panel-data-ready',
+      'orb:panel-painted',
+      'orb:panel:request',
+      'orb:placement:get',
+      'orb:drag-start',
+      'orb:drag-move',
+      'orb:drag-end',
+      'orb:open-app',
+      'orb:hide',
+      'orb:quit',
+      'open-external',
+      'open-fda-settings',
+      'log:notice',
+      'app:navigate',
+    ]) {
+      expect(ipcMain.listenerCount(channel)).toBe(0)
+    }
     expect(screen.listenerCount('display-removed')).toBe(0)
     expect(main.listenerCount('close')).toBe(0)
     expect(orb.listenerCount('ready-to-show')).toBe(0)
@@ -182,22 +212,26 @@ describe('main-scoped background shell', () => {
   })
 
   it('retains a first-close explanation when data arrives after the main window returned', async () => {
-    const { shell, main, advance } = await startShell()
+    const { shell, runtime, main, advance } = await startShell()
     main.close()
     await advance(150)
     const [orb, panel] = surfaces.windows.slice(1)
+    const shellEvents = captureShellEvents(runtime, shell, panel.webContents)
+    await vi.waitFor(() => expect(shellEvents.events[0]).toEqual({ _tag: 'Ready', placement: expect.any(Object) }))
     shell.showMainWindow()
     await advance(150)
-    ipcMain.emit('orb:panel-data-ready', { sender: panel.webContents })
+    shell.command(panel.webContents, { _tag: 'PanelDataReady' })
     expect(panel.isVisible()).toBe(false)
     main.close()
     await advance(150)
     expect(orb.isVisible()).toBe(true)
     expect(panel.isVisible()).toBe(true)
-    expect(vi.mocked(panel.webContents.send).mock.calls.at(-1)).toEqual([
-      'orb:placement',
-      expect.objectContaining({ expanded: true, peek: true }),
-    ])
+    await vi.waitFor(() =>
+      expect(shellEvents.events).toContainEqual({
+        _tag: 'Placement',
+        placement: expect.objectContaining({ expanded: true, peek: true }),
+      }),
+    )
     await advance(200)
     await advance(6000)
     expect(panel.isVisible()).toBe(false)
@@ -206,14 +240,15 @@ describe('main-scoped background shell', () => {
     main.close()
     await advance(150)
     expect(panel.isVisible()).toBe(false)
+    await shellEvents.stop()
   })
 
   it('holds a hovered peek, then folds it on the next clock-controlled recheck', async () => {
-    const { main, advance } = await startShell()
+    const { shell, main, advance } = await startShell()
     main.close()
     await advance(150)
-    const panel = surfaces.windows[2]
-    ipcMain.emit('orb:panel-data-ready', { sender: panel.webContents })
+    const [, panel] = surfaces.windows.slice(1)
+    shell.command(panel.webContents, { _tag: 'PanelDataReady' })
     await advance(200)
     const bounds = panel.getBounds()
     vi.mocked(screen.getCursorScreenPoint).mockReturnValueOnce({ x: bounds.x + 1, y: bounds.y + 1 })
@@ -228,7 +263,7 @@ describe('main-scoped background shell', () => {
     main.close()
     await advance(150)
     const panel = surfaces.windows[2]
-    ipcMain.emit('orb:panel-data-ready', { sender: panel.webContents })
+    shell.command(panel.webContents, { _tag: 'PanelDataReady' })
     expect(panel.getOpacity()).toBe(0)
     shell.showMainWindow()
     await advance(150)
@@ -248,5 +283,71 @@ describe('main-scoped background shell', () => {
     await runtime.dispose()
     await runtime.dispose()
     expect(tray.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('enforces beacon drag and panel paint/data-ready roles for RPC commands', async () => {
+    const { shell, main, advance } = await startShell()
+    main.close()
+    await advance(150)
+    const [orb, panel] = surfaces.windows.slice(1)
+
+    expect(() => shell.command(panel.webContents, { _tag: 'DragStart' })).toThrow(
+      expect.objectContaining({ _tag: 'ShellRpcError', code: 'unauthorized' }),
+    )
+    expect(() => shell.command(orb.webContents, { _tag: 'PanelPainted' })).toThrow(
+      expect.objectContaining({ _tag: 'ShellRpcError', code: 'unauthorized' }),
+    )
+    expect(() => shell.command(orb.webContents, { _tag: 'PanelDataReady' })).toThrow(
+      expect.objectContaining({ _tag: 'ShellRpcError', code: 'unauthorized' }),
+    )
+
+    expect(() => shell.command(orb.webContents, { _tag: 'DragStart' })).not.toThrow()
+    expect(() => shell.command(orb.webContents, { _tag: 'DragEnd' })).not.toThrow()
+    await advance(0)
+  })
+
+  it('sends Ready before section navigation and releases the event listener on interruption', async () => {
+    const { shell, runtime, main } = await startShell()
+    const shellEvents = captureShellEvents(runtime, shell, main.webContents)
+    await vi.waitFor(() => expect(shellEvents.events[0]).toEqual({ _tag: 'Ready', placement: null }))
+
+    shell.showMainWindow('models')
+    await vi.waitFor(() => expect(shellEvents.events[1]).toEqual({ _tag: 'Navigate', section: 'models' }))
+    expect(shellEvents.events.slice(0, 2)).toEqual([
+      { _tag: 'Ready', placement: null },
+      { _tag: 'Navigate', section: 'models' },
+    ])
+
+    const countBeforeInterruption = shellEvents.events.length
+    await shellEvents.stop()
+    shell.showMainWindow('sessions')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(shellEvents.events).toHaveLength(countBeforeInterruption)
+  })
+
+  it('fails a shell event subscriber that exceeds its bounded navigation queue', async () => {
+    const { shell, runtime, main } = await startShell()
+    let resolveReady!: () => void
+    let releaseReady!: () => void
+    const ready = new Promise<void>(resolve => (resolveReady = resolve))
+    const held = new Promise<void>(resolve => (releaseReady = resolve))
+    const events = shell.events(main.webContents).pipe(
+      Stream.tap(event =>
+        event._tag === 'Ready'
+          ? Effect.promise(() => {
+              resolveReady()
+              return held
+            })
+          : Effect.void,
+      ),
+    )
+    const collecting = runtime.runPromise(Stream.runCollect(events))
+    await ready
+    for (let index = 0; index < 300; index++) shell.showMainWindow('models')
+    releaseReady()
+
+    await expect(collecting).rejects.toMatchObject(
+      new ShellRpcError({ code: 'lagged', message: 'Shell subscriber fell behind' }),
+    )
   })
 })

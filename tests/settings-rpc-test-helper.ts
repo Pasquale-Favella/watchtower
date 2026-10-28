@@ -10,8 +10,9 @@ import { lifecycleHandlers, lifecycleLayer } from '../src/main/rpc/lifecycle.js'
 import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
 import { nativeHandlers } from '../src/main/rpc/native-handlers.js'
 import { ApplicationClient } from '../src/renderer/src/shared/lib/application-rpc.js'
+import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
-import { unexpectedCoachHandlers } from './fixtures/unexpected-native-rpc.js'
+import { unexpectedCoachHandlers, unexpectedShellRpcs } from './fixtures/unexpected-native-rpc.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native operation in a settings RPC test'))
 
@@ -42,6 +43,7 @@ export function makeSettingsRpcTestClient(
   request: RpcDataWorker['request'],
   nativeOverrides: Partial<NativeRpcCapabilities> = {},
   ledgerGeneration: Effect.Effect<number> = Effect.succeed(0),
+  shellOverrides: { readonly openSettings?: () => Effect.Effect<boolean> } = {},
 ) {
   const lifecycle = lifecycleLayer({
     epoch: 'settings-test',
@@ -55,6 +57,7 @@ export function makeSettingsRpcTestClient(
   })
   const handlers = Layer.mergeAll(
     unexpectedCoachHandlers,
+    ShellRpcGroup.toLayer({ ...unexpectedShellRpcs, 'shell:open-settings': shellOverrides.openSettings ?? unexpected }),
     analyticsHandlers({ request }),
     configHandlers(
       { request },

@@ -32,6 +32,10 @@ export function useScanning(): boolean {
   return useAtomValue(scanningAtom)
 }
 
+export function useUnparsedTotal(): number {
+  return useAtomValue(unparsedTotalAtom)
+}
+
 export function useScanHydrated(): boolean {
   return useAtomValue(hydratedAtom)
 }

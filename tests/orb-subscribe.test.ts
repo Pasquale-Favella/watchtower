@@ -19,10 +19,10 @@ import {
   panelEventsReadyAtom,
   subscribeToOrbPanel,
 } from '../src/renderer/src/orb/panel-wiring.js'
-import { placementAtom } from '../src/renderer/src/orb/placement-atoms.js'
-import type { RoleLifecycleCursor } from '../src/renderer/src/orb/role-lifecycle.js'
-import { runRoleLifecycle } from '../src/renderer/src/orb/role-lifecycle.js'
+import type { RoleLifecycleCursor } from '../src/renderer/src/shared/lib/rpc-events.js'
+import { runRoleLifecycle } from '../src/renderer/src/shared/lib/rpc-events.js'
 import { PanelRpcGroup } from '../src/shared/rpc/application.js'
+import type { RpcBridge } from '../src/shared/rpc/bridge.js'
 import type { BeaconLifecycleFrame, PanelLifecycleFrame } from '../src/shared/rpc/lifecycle.js'
 import { LifecycleRpcError } from '../src/shared/rpc/lifecycle.js'
 import { RendererConnection } from '../src/shared/rpc/reconnecting-protocol.js'
@@ -31,35 +31,23 @@ import type { OrbPlacement } from '../src/shared/schemas/orb.js'
 let registry: AtomRegistry.AtomRegistry
 const placement = { expanded: false, peek: false, horizontal: 'left', vertical: 'top' } satisfies OrbPlacement
 
-/** The legacy API is present for placement only; data lifecycle is RPC-owned. */
+/** The renderer API exposes only the versioned RPC transport and runtime metadata. */
 function orbWindow() {
-  const listeners: Record<string, (payload?: unknown) => void> = {}
   const storage = new Map<string, string>()
   const events = new Map<string, (event: unknown) => void>()
-  const unsub = vi.fn()
-  const capture =
-    (name: string) =>
-    (cb: (payload?: unknown) => void): (() => void) => {
-      listeners[name] = cb
-      return unsub
-    }
-  const api = {
-    onProgress: capture('onProgress'),
-    onError: capture('onError'),
-    onChanged: capture('onChanged'),
-    onIdle: capture('onIdle'),
-    onConfigChanged: capture('onConfigChanged'),
-    onCurrencyChanged: capture('onCurrencyChanged'),
-    getScanStatus: vi.fn(async () => ({ scanned: true })),
-    getAnalytics: vi.fn(async () => null),
-    getOverview: vi.fn(async () => null),
-    orb: {
-      onPlacement: capture('onPlacement'),
-      requestPanel: vi.fn(async () => ({ ...placement, expanded: true })),
-    },
+  const unsubscribe = vi.fn()
+  const rpcV1: RpcBridge = {
+    connect: vi.fn(async () => ({ _tag: 'Connected', generation: 1 }) as const),
+    send: vi.fn(async () => undefined),
+    onMessage: vi.fn(() => unsubscribe),
+    onClose: vi.fn(() => unsubscribe),
+    disconnect: vi.fn(),
   }
-  const notifyNotice = vi.fn(async () => undefined)
-  vi.stubGlobal('api', { notifyNotice })
+  const api = {
+    rpcV1,
+    platform: 'win32',
+    versions: { electron: 'test', chrome: 'test', node: 'test' },
+  }
   vi.stubGlobal('window', {
     api,
     document: { documentElement: { classList: { toggle: vi.fn() } } },
@@ -77,7 +65,7 @@ function orbWindow() {
     addEventListener: (type: string, cb: (event: unknown) => void) => events.set(type, cb),
     removeEventListener: (type: string) => events.delete(type),
   })
-  return { api, listeners, events, unsub, notifyNotice }
+  return { api, events, unsubscribe }
 }
 
 beforeEach(() => {
@@ -118,35 +106,30 @@ describe('beacon RPC lifecycle', () => {
       ),
     )
     expect(registry.get(scanStateAtom)).toMatchObject({ scanning: true, stage: 'parse' })
-    expect(api.getScanStatus).not.toHaveBeenCalled()
-    expect(api.getOverview).not.toHaveBeenCalled()
-    expect(api.getAnalytics).not.toHaveBeenCalled()
+    expect(Object.keys(api).sort()).toEqual(['platform', 'rpcV1', 'versions'])
+    expect(api).not.toHaveProperty('orb')
   })
 
   it('keeps transport failure separate from scan activity', async () => {
-    const { listeners } = orbWindow()
+    const { api } = orbWindow()
     const teardown = subscribeToOrbBeacon(registry)
     await flushEvents()
     expect(registry.get(scanStateAtom)).toEqual(initialScanState())
-    expect(Object.keys(listeners)).toEqual(['onPlacement'])
+    expect(api.rpcV1.connect).toHaveBeenCalled()
+    expect(api).not.toHaveProperty('orb')
     teardown()
   })
 })
 
 describe('panel RPC lifecycle and placement adapter', () => {
-  it('mirrors placement through the scoped native adapter and drops malformed updates', async () => {
-    const { listeners, notifyNotice } = orbWindow()
+  it('subscribes to placement through role-scoped RPC with no legacy native listeners', async () => {
+    const { api } = orbWindow()
     const teardown = subscribeToOrbPanel(registry)
     await flushEvents()
-    expect(Object.keys(listeners)).toEqual(['onPlacement'])
-    listeners.onPlacement?.({ ...placement, horizontal: 'right' })
-    listeners.onPlacement?.(placement)
-    await flushEvents()
-    expect(registry.get(placementAtom)).toEqual(placement)
-    listeners.onPlacement?.({ expanded: 'yes' })
-    await flushEvents()
-    expect(registry.get(placementAtom)).toEqual(placement)
-    expect(notifyNotice).toHaveBeenCalledExactlyOnceWith('orb placement', expect.any(String))
+    expect(api.rpcV1.connect).toHaveBeenCalled()
+    expect(api.rpcV1.send).toHaveBeenCalled()
+    expect(api.rpcV1.onMessage).toHaveBeenCalled()
+    expect(api).not.toHaveProperty('orb')
     teardown()
   })
 
@@ -162,7 +145,7 @@ describe('panel RPC lifecycle and placement adapter', () => {
     const teardown = subscribeToOrbPanel(registry)
     await flushEvents()
     expect(browser.events.get('storage')).toBe(storageListener)
-    expect(Object.keys(browser.listeners)).toEqual(['onPlacement'])
+    expect(browser.api).not.toHaveProperty('orb')
     storageListener?.({
       key: 'watchtower:settings',
       newValue: JSON.stringify({ state: { theme: 'dark' }, version: 0 }),
@@ -174,7 +157,7 @@ describe('panel RPC lifecycle and placement adapter', () => {
   })
 
   it('hydrates the panel snapshot, invalidates config once, and repaints currency without a refetch event', async () => {
-    const { listeners, api } = orbWindow()
+    const { api } = orbWindow()
     const cursor: RoleLifecycleCursor = { epoch: undefined, sequence: -1, generation: undefined }
     const snapshot: PanelLifecycleFrame = {
       _tag: 'Snapshot',
@@ -214,8 +197,7 @@ describe('panel RPC lifecycle and placement adapter', () => {
     expect(registry.get(scanStateAtom).hydrated).toBe(true)
     expect(registry.get(activeCurrencyAtom)).toMatchObject({ code: 'JPY', rate: 150 })
     expect(registry.get(configInvalidationRevisionAtom)).toBe(3)
-    expect(api.getOverview).not.toHaveBeenCalled()
-    expect(listeners.onCurrencyChanged).toBeUndefined()
+    expect(api).not.toHaveProperty('getOverview')
   })
 
   it('resnapshots after a dropped role stream and releases the RPC subscriber on disposal', async () => {
@@ -262,6 +244,12 @@ describe('panel RPC lifecycle and placement adapter', () => {
             ),
           )
         },
+        'shell:events': () => Stream.make({ _tag: 'Ready', placement }),
+        'shell:notice': () => Effect.void,
+        'shell:open-external': () => Effect.void,
+        'shell:open-settings': () => Effect.succeed(false),
+        'orb:placement': () => Effect.succeed(placement),
+        'orb:command': () => Effect.succeed(placement),
       }),
     )
     const client = AtomRpc.Service<object>()('test/OrbLifecycleRpc', {
@@ -304,13 +292,14 @@ describe('panel RPC lifecycle and placement adapter', () => {
     await vi.waitFor(() => expect(active.size).toBe(0))
   })
 
-  it('closes the placement listener on teardown', async () => {
-    const { unsub } = orbWindow()
+  it('releases RPC transport listeners on teardown', async () => {
+    const { api, unsubscribe } = orbWindow()
     const teardown = subscribeToOrbPanel(registry)
     await flushEvents()
     teardown()
     await flushEvents()
-    expect(unsub).toHaveBeenCalledOnce()
+    expect(unsubscribe).toHaveBeenCalled()
+    expect(api.rpcV1.disconnect).toHaveBeenCalled()
   })
 })
 

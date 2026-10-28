@@ -1,7 +1,6 @@
 import { Schema } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { parseEvent, parsePayload } from '../src/renderer/src/shared/lib/contract-decoder.js'
 import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
 import { cadenceOptionSchema, cadenceValueSchema } from '../src/shared/schemas/cadence.js'
 import { exportResultSchema } from '../src/shared/schemas/export.js'
@@ -134,39 +133,33 @@ describe('renderer Effect Schema decoding', () => {
     ])
     const nullableSchema = Schema.NullOr(Schema.String)
 
-    expect(parsePayload(nestedSchema, 'settings', { settings: { cadence: false } })).toEqual({
+    expect(decodeSchema(nestedSchema, { settings: { cadence: false } })).toEqual({
       ok: false,
-      error: 'Invalid settings payload (settings.cadence: has an unexpected type)',
+      path: 'settings.cadence',
+      message: 'has an unexpected type',
     })
-    expect(parsePayload(unionSchema, 'union', { kind: 'count', value: Number.POSITIVE_INFINITY })).toEqual({
+    expect(decodeSchema(unionSchema, { kind: 'count', value: Number.POSITIVE_INFINITY })).toEqual({
       ok: false,
-      error: 'Invalid union payload (value: has an invalid value)',
+      path: 'value',
+      message: 'has an invalid value',
     })
     expect(decodeSchema(nullableSchema, null)).toEqual({ ok: true, value: null })
-    expect(parsePayload(nullableSchema, 'nullable', 1)).toEqual({
+    expect(decodeSchema(nullableSchema, 1)).toEqual({
       ok: false,
-      error: 'Invalid nullable payload (payload: does not match the expected shape)',
+      path: 'payload',
+      message: 'does not match the expected shape',
     })
   })
 
-  it('drops unexpected event schema defects and forwards only the label and location', () => {
-    const notices: Array<[string, string]> = []
-    vi.stubGlobal('api', {
-      notifyNotice: async (label: string, location: string) => {
-        notices.push([label, location])
-      },
-    })
-
+  it('contains decoder defects without retaining private payloads', () => {
     const payload = Object.defineProperty({}, 'private', {
       enumerable: true,
       get: () => {
         throw new Error('secret payload contents')
       },
     })
-    const parsed = parseEvent(Schema.Struct({ private: Schema.String }), 'test event', payload)
-
-    expect(parsed).toBeNull()
-    expect(notices).toEqual([['test event', 'payload']])
-    expect(JSON.stringify(notices)).not.toContain('secret')
+    const parsed = decodeSchema(Schema.Struct({ private: Schema.String }), payload)
+    expect(parsed).toEqual({ ok: false, path: 'payload', message: 'could not be validated' })
+    expect(JSON.stringify(parsed)).not.toContain('secret')
   })
 })

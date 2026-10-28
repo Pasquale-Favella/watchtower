@@ -4,15 +4,15 @@ import { StrictMode, useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 
 import { appLifecycleReadinessAtom } from '@/app/atoms/rpc-lifecycle'
-import { appBootstrapAtom } from '@/app/hooks/use-app-bootstrap'
 import { scanStateAtom } from '@/app/atoms/scan'
+import { appBootstrapAtom } from '@/app/hooks/use-app-bootstrap'
 import { useAppBootstrap } from '@/app/hooks/use-app-bootstrap'
 import { initializeRendererWindow, RendererRoot } from '@/app/renderer-root'
 import { rendererRuntimeOwner } from '@/app/renderer-runtime'
+import { navigationReadinessAtom } from '@/app/stores/subscribe'
 import { AboutSection } from '@/features/settings/AboutSection'
 import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
-const listeners = new Map()
 const counts = {
   effectSetups: 0,
   effectCleanups: 0,
@@ -24,11 +24,14 @@ const counts = {
   rpcConnects: 0,
   lifecycleSubscriptions: 0,
   activeLifecycleSubscriptions: 0,
+  shellSubscriptions: 0,
+  activeShellSubscriptions: 0,
 }
 let nextGeneration = 1
 const rpcMessages = new Map()
 const rpcCloses = new Map()
 const lifecycleRequests = new Map()
+const shellRequests = new Map()
 let scanned = false
 let lifecycleSequence = 0
 const metadata = {
@@ -53,6 +56,8 @@ const lifecycleSnapshot = {
 }
 const delay = value => new Promise(resolve => setTimeout(() => resolve(value), 15))
 const currency = { code: 'USD', symbol: '$', rate: 1 }
+/** @type {import('../../src/shared/rpc/shell').ShellEvent} */
+const shellReadyEvent = { _tag: 'Ready', placement: null }
 const updateStatus = {
   revision: 0,
   currentVersion: 'fixture',
@@ -87,6 +92,15 @@ const publishLifecycle = event => {
           },
         },
       ],
+    })
+  }
+}
+const publishShellEvent = event => {
+  for (const [requestId, generation] of shellRequests) {
+    reply(generation, {
+      _tag: 'Chunk',
+      requestId,
+      values: [event],
     })
   }
 }
@@ -137,18 +151,8 @@ const readNative = async (tag, request, generation) => {
     exit: { _tag: 'Success', value },
   })
 }
-const subscribe = name => listener => {
-  if (listeners.has(name)) throw new Error(`Duplicate event owner: ${name}`)
-  counts.attaches++
-  listeners.set(name, listener)
-  return () => {
-    counts.detaches++
-    listeners.delete(name)
-  }
-}
 window.api = {
   platform: 'win32',
-  ...Object.fromEntries(['onCoachEvent', 'onNavigate'].map(name => [name, subscribe(name)])),
   rpcV1: {
     connect: async () => {
       counts.rpcConnects++
@@ -168,17 +172,35 @@ window.api = {
           reply(generation, { _tag: 'Chunk', requestId: message.id, values: [lifecycleSnapshot] })
           return
         }
+        if (message.tag === 'shell:events') {
+          counts.nativeReads[message.tag] = (counts.nativeReads[message.tag] ?? 0) + 1
+          counts.shellSubscriptions++
+          counts.activeShellSubscriptions++
+          shellRequests.set(message.id, generation)
+          await delay(undefined)
+          publishShellEvent(shellReadyEvent)
+          return
+        }
         await readNative(message.tag, message, generation)
-      } else if (message._tag === 'Interrupt' && lifecycleRequests.delete(message.requestId)) {
-        counts.activeLifecycleSubscriptions--
+      } else if (message._tag === 'Interrupt') {
+        if (lifecycleRequests.delete(message.requestId)) counts.activeLifecycleSubscriptions--
+        if (shellRequests.delete(message.requestId)) counts.activeShellSubscriptions--
       } else {
         if (message._tag === 'Ping') reply(generation, { _tag: 'Pong' })
       }
     },
     onMessage: (listener, generation) => {
-      const listeners = rpcMessages.get(generation)
-      listeners?.add(listener)
-      return () => listeners?.delete(listener)
+      const generationListeners = rpcMessages.get(generation)
+      if (generationListeners && !generationListeners.has(listener)) {
+        generationListeners.add(listener)
+        counts.attaches++
+      }
+      let subscribed = generationListeners?.has(listener) ?? false
+      return () => {
+        if (!subscribed) return
+        subscribed = false
+        if (generationListeners?.delete(listener)) counts.detaches++
+      }
     },
     onClose: (listener, generation) => {
       const listeners = rpcCloses.get(generation)
@@ -191,6 +213,17 @@ window.api = {
           lifecycleRequests.delete(requestId)
           counts.activeLifecycleSubscriptions--
         }
+      }
+      for (const [requestId, owner] of shellRequests) {
+        if (owner === generation) {
+          shellRequests.delete(requestId)
+          counts.activeShellSubscriptions--
+        }
+      }
+      const messageListeners = rpcMessages.get(generation)
+      if (messageListeners) {
+        counts.detaches += messageListeners.size
+        messageListeners.clear()
       }
       for (const listener of rpcCloses.get(generation) ?? []) listener()
       rpcMessages.delete(generation)
@@ -225,12 +258,14 @@ function Probe() {
 
 window.lifecycleProbe = {
   counts,
-  listeners: () => listeners.size,
+  listeners: () =>
+    Array.from(rpcMessages.values()).reduce((total, generationListeners) => total + generationListeners.size, 0),
   nodes: () => rendererRuntimeOwner.registry.getNodes().size,
   diagnostics: () => ({
     counts,
     scan: rendererRuntimeOwner.registry.get(scanStateAtom),
     readiness: rendererRuntimeOwner.registry.get(appLifecycleReadinessAtom),
+    navigationReadiness: rendererRuntimeOwner.registry.get(navigationReadinessAtom),
     bootstrap: rendererRuntimeOwner.registry.get(appBootstrapAtom),
   }),
   setCurrency: nextCurrency => publishLifecycle({ _tag: 'CurrencyChanged', currency: nextCurrency }),

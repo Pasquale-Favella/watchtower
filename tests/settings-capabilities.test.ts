@@ -47,6 +47,7 @@ const analytics = {
 interface SettingsOverrides {
   readonly request?: RpcDataWorker['request']
   readonly native?: Partial<NativeRpcCapabilities>
+  readonly openSettings?: () => Effect.Effect<boolean>
   readonly ledgerGeneration?: number
 }
 
@@ -75,6 +76,7 @@ function setup(overrides: SettingsOverrides = {}) {
     request,
     overrides.native,
     Effect.succeed(overrides.ledgerGeneration ?? 0),
+    { openSettings: overrides.openSettings },
   )
   const atoms = createSettingsCapabilityAtoms(client, {
     rescan: () => events.push('rescan'),
@@ -329,10 +331,9 @@ describe('settings capability atoms', () => {
     expect('connection' in atoms).toBe(false)
   })
 
-  it('keeps System Settings behind the narrow native shell adapter', async () => {
-    const openSystemSettings = vi.fn(async () => true)
-    vi.stubGlobal('window', { api: { openSystemSettings } })
-    const { atoms, registry } = setup()
+  it('opens System Settings through the generated RPC client', async () => {
+    const openSystemSettings = vi.fn(() => Effect.succeed(true))
+    const { atoms, registry } = setup({ openSettings: openSystemSettings })
     await expect(dispatch(registry, atoms.openSystemSettingsAtom, undefined)).resolves.toBe(true)
     expect(openSystemSettings).toHaveBeenCalledTimes(1)
   })

@@ -5,45 +5,7 @@ import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { configHandlers } from '../src/main/rpc/handlers.js'
-import { parseEvent, parsePayload } from '../src/renderer/src/shared/lib/contract-decoder.js'
 import { ConfigRpcGroup } from '../src/shared/rpc/config.js'
-
-describe('retained shell contract decoder', () => {
-  const scanStatus = Schema.Struct({ scanned: Schema.Boolean })
-
-  afterEach(() => vi.unstubAllGlobals())
-
-  it('accepts a valid shell response and distinguishes a valid null payload', () => {
-    expect(parsePayload(scanStatus, 'scan status', { scanned: true })).toEqual({
-      ok: true,
-      data: { scanned: true },
-    })
-    expect(parsePayload(Schema.NullOr(Schema.String), 'nullable result', null)).toEqual({ ok: true, data: null })
-  })
-
-  it('rejects malformed shell payloads with a safe field location', () => {
-    expect(parsePayload(scanStatus, 'scan status', { scanned: 'yes' })).toEqual({
-      ok: false,
-      error: 'Invalid scan status payload (scanned: has an unexpected type)',
-    })
-  })
-
-  it('drops malformed shell events and emits only their label and failure path', () => {
-    const notices: Array<[string, string]> = []
-    vi.stubGlobal('api', { notifyNotice: async (label: string, location: string) => notices.push([label, location]) })
-    const payload = Object.defineProperty({}, 'private', {
-      enumerable: true,
-      get: () => {
-        throw new Error('secret payload contents')
-      },
-    })
-    const parsed = parseEvent(Schema.Struct({ private: Schema.String }), 'test event', payload)
-
-    expect(parsed).toBeNull()
-    expect(notices).toEqual([['test event', 'payload']])
-    expect(JSON.stringify(notices)).not.toContain('secret')
-  })
-})
 
 describe('generated config RPC contracts', () => {
   it('preserves arbitrary cadence strings, validates FX payloads, and hides malformed worker data', async () => {

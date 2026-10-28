@@ -6,6 +6,7 @@ import { expect, type Page, test } from '@playwright/test'
 import type { Api } from '../src/preload/index.js'
 import { acceleratorFor, SHORTCUTS } from '../src/shared/lib/shortcuts'
 import { dismissOnboarding, withApp } from './app'
+import { invokeRpc } from './rpc-probe'
 
 /**
  * Background shell: closing the main window keeps the app alive in the tray
@@ -42,6 +43,12 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
 
     const orbOpened = opened('orb')
     const panelOpened = opened('panel')
+    // Playwright's synthetic pointer does not move the host's native cursor.
+    // Keep this auto-fold assertion independent of someone using the computer.
+    const cursorReader = await app.evaluateHandle(({ screen }) => screen.getCursorScreenPoint)
+    await app.evaluate(({ screen }) => {
+      screen.getCursorScreenPoint = () => ({ x: -100_000, y: -100_000 })
+    })
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close())
     const [orb, panel] = await Promise.all([orbOpened, panelOpened])
     const surfaceErrors: Error[] = []
@@ -57,6 +64,10 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect.poll(() => visible('panel'), { timeout: 60_000 }).toBe(true)
     await expect(panel.getByText(/^Still watching in the background/)).toBeVisible()
     await expect.poll(() => visible('panel'), { timeout: 15_000 }).toBe(false)
+    await app.evaluate(({ screen }, reader) => {
+      screen.getCursorScreenPoint = reader
+    }, cursorReader)
+    await cursorReader.dispose()
 
     // A click opens the panel beside the orb — and the orb does not move: its
     // window never resizes (a moving resize repaints at the old origin).
@@ -65,6 +76,31 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect.poll(() => visible('panel')).toBe(true)
     await expect(panel.getByText('Spend over time', { exact: true })).toBeVisible()
     expect((await surface('orb'))?.bounds).toEqual(before)
+
+    // Main admits drag commands only from the beacon and panel paint
+    // acknowledgements only from the panel. An admitted drag updates native
+    // window bounds through the RPC owner.
+    expect((await invokeRpc(panel, 'orb:command', { _tag: 'DragStart' })).ok).toBe(false)
+    expect((await invokeRpc(orb, 'orb:command', { _tag: 'PanelPainted' })).ok).toBe(false)
+    const drag = await app.evaluate(({ BrowserWindow, screen }, page) => {
+      const win = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().endsWith(page))
+      if (!win) return null
+      const bounds = win.getBounds()
+      const area = screen.getDisplayMatching(bounds).workArea
+      return {
+        bounds,
+        dx: bounds.x + bounds.width / 2 < area.x + area.width / 2 ? 16 : -16,
+        dy: bounds.y + bounds.height / 2 < area.y + area.height / 2 ? 16 : -16,
+      }
+    }, PAGE.orb)
+    expect(drag).not.toBeNull()
+    if (drag) {
+      expect((await invokeRpc(panel, 'orb:command', { _tag: 'PanelPainted' })).ok).toBe(true)
+      expect((await invokeRpc(orb, 'orb:command', { _tag: 'DragStart' })).ok).toBe(true)
+      expect((await invokeRpc(orb, 'orb:command', { _tag: 'DragMove', dx: drag.dx, dy: drag.dy })).ok).toBe(true)
+      expect((await invokeRpc(orb, 'orb:command', { _tag: 'DragEnd' })).ok).toBe(true)
+      expect((await surface('orb'))?.bounds).not.toEqual(drag.bounds)
+    }
     // It is shown transparent and revealed once its page painted a fresh
     // frame (no stale-frame flicker) — and always ends up fully opaque.
     await expect.poll(async () => (await surface('panel'))?.opacity).toBe(1)

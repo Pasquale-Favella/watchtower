@@ -1,3 +1,4 @@
+import { unexpectedShellHandlers } from './fixtures/unexpected-native-rpc.js'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Queue from 'effect/Queue'
@@ -109,6 +110,7 @@ export function makeCoachRpcTestClient(runtime: Atom.RegistryRuntimeFactory, ove
     },
   })
   const handlers = Layer.mergeAll(
+    unexpectedShellHandlers,
     analyticsHandlers({ request: workerRequest }),
     configHandlers({ request: workerRequest }, Effect.succeed(0)),
     nativeHandlers(nativeCapabilities),

@@ -1,10 +1,11 @@
-import { useScanStore } from '@/app/hooks/use-scan-store'
+import { useScanning, useUnparsedTotal } from '@/app/hooks/use-scan-store'
 import { displayShortcutForAction, sectionsRangeLabel, shortcutForAction } from '@/app/shortcuts'
 
 /** The footer — reads scanning/unparsed from the scan store and the shortcut
  * hints from the registry (ADR 0011). */
 export function StatusBar() {
-  const { scanning, unparsedTotal } = useScanStore()
+  const scanning = useScanning()
+  const unparsedTotal = useUnparsedTotal()
   const sectionsRange = sectionsRangeLabel()
 
   return (

@@ -5,7 +5,7 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
 
-import { RendererConnection, type RendererConnectionState } from '../../../shared/rpc/reconnecting-protocol.js'
+import { RendererConnection, type RendererConnectionState } from '../../../../shared/rpc/reconnecting-protocol.js'
 
 const FIRST_RETRY_DELAY_MS = 100
 const MAX_RETRY_DELAY_MS = 3_000
@@ -45,7 +45,16 @@ export const runRoleLifecycle = Effect.fnUntraced(function* <Frame, Services>(
     let state: RendererConnectionState = yield* connection.current
     while (state._tag !== 'Connected') {
       registry.set(readinessAtom, state._tag === 'Failed' ? 'failed' : 'pending')
-      const next = yield* Stream.runHead(connection.changes.pipe(Stream.filter(next => next._tag === 'Connected')))
+      const next = yield* Stream.runHead(
+        connection.changes.pipe(
+          Stream.tap(next =>
+            Effect.sync(() => {
+              if (next._tag !== 'Connected') registry.set(readinessAtom, next._tag === 'Failed' ? 'failed' : 'pending')
+            }),
+          ),
+          Stream.filter(next => next._tag === 'Connected'),
+        ),
+      )
       if (Option.isSome(next)) state = next.value
       else yield* Effect.sleep(FIRST_RETRY_DELAY_MS)
     }

@@ -1,25 +1,21 @@
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
-import * as Queue from 'effect/Queue'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
-import * as Stream from 'effect/Stream'
 
 import { configInvalidationRevisionAtom } from '@/app/atoms/config-change'
 import { restartRpcQuery } from '@/app/atoms/rpc-query'
 import { scanStateAtom } from '@/app/atoms/scan'
 import { currencyChangedAtom } from '@/features/settings/atoms'
-import { parseEvent } from '@/shared/lib/contract-decoder'
 import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
 
 import type { PanelLifecycleEvent, PanelLifecycleFrame } from '../../../shared/rpc/lifecycle.js'
-import { type OrbPlacement, orbPlacementSchema } from '../../../shared/schemas/orb.js'
 import { registry, runtime } from '../app/renderer-runtime.js'
 import { orbRecentQuery, orbTodayQuery } from './panel-atoms.js'
 import { PanelRoleClient } from './panel-role-client.js'
 import { placementAtom } from './placement-atoms.js'
-import { type RoleConnectionReadiness, type RoleLifecycleCursor, runRoleLifecycle } from './role-lifecycle.js'
+import { type RoleConnectionReadiness, type RoleLifecycleCursor, runRoleLifecycle } from '../shared/lib/rpc-events.js'
 
 export const panelEventsReadyAtom = Atom.keepAlive(Atom.make<RoleConnectionReadiness>('inactive'))
 
@@ -147,24 +143,20 @@ const panelLifecycleAtom = panelRuntime.atom(get =>
   }),
 )
 
-const placementEventsAtom = runtime(Layer.empty).atom(get =>
-  Stream.runForEach(
-    Stream.callback<OrbPlacement>(
-      Effect.fnUntraced(function* (queue) {
-        yield* Effect.acquireRelease(
-          Effect.sync(() =>
-            window.api.orb.onPlacement(raw => {
-              const decoded = parseEvent(orbPlacementSchema, 'orb placement', raw)
-              if (decoded) Queue.offerUnsafe(queue, decoded)
-            }),
-          ),
-          unsubscribe => Effect.sync(unsubscribe),
-        )
+const shellEventsReadyAtom = Atom.keepAlive(Atom.make<RoleConnectionReadiness>('inactive'))
+const placementEventsAtom = panelRuntime.atom(get =>
+  runRoleLifecycle(get, {
+    readinessAtom: shellEventsReadyAtom,
+    events: () => Effect.map(PanelRoleClient, rpc => rpc('shell:events', undefined)),
+    apply: event =>
+      Effect.sync(() => {
+        if (event._tag === 'Ready') {
+          if (event.placement) get.registry.set(placementAtom, event.placement)
+          get.registry.set(shellEventsReadyAtom, 'ready')
+        } else if (event._tag === 'Placement') get.registry.set(placementAtom, event.placement)
+        return true
       }),
-      { bufferSize: 1, strategy: 'sliding' },
-    ).pipe(Stream.mapEffect(placement => Effect.sync(() => get.registry.set(placementAtom, placement)))),
-    () => Effect.void,
-  ),
+  }),
 )
 
 /** Mounts the role RPC stream and the narrow main-owned placement adapter. */

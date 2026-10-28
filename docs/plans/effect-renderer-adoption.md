@@ -1,8 +1,17 @@
 # Effect renderer and RPC adoption plan
 
-Status: M1, M2 and M3 implemented in [PR #175](https://github.com/Pasquale-Favella/watchtower/pull/175), tracked by [issue #174](https://github.com/Pasquale-Favella/watchtower/issues/174). [Full CI at final product source `a7aeee3`](https://github.com/Pasquale-Favella/watchtower/actions/runs/40665288212) passes core, actual Windows/Linux Electron tests and installer acceptance on Windows, macOS and Linux. The original assessment used checkout `5187054df75a5bbd98ccbb81e82469b762d5ad7b` on 2026-10-22. Read [the accompanying research](../research/effect-renderer-adoption-2026-10-22.md) for the original findings and upstream references. Detailed verification evidence and the known local Playwright close limitation belong in the issue and PR.
+Status: M1, M2 and M3 implemented in [PR #175](https://github.com/Pasquale-Favella/watchtower/pull/175), tracked by [issue #174](https://github.com/Pasquale-Favella/watchtower/issues/174). [Full CI at source `a7aeee3`](https://github.com/Pasquale-Favella/watchtower/actions/runs/40665288212) passed core, actual Windows/Linux Electron tests and installer acceptance on Windows, macOS and Linux. The subsequent hook/preload/Orb cleanup below requires its own gates; that historical run does not verify the new source. The original assessment used checkout `5187054df75a5bbd98ccbb81e82469b762d5ad7b` on 2026-10-22. Read [the accompanying research](../research/effect-renderer-adoption-2026-10-22.md) for the original findings and upstream references. Detailed verification evidence and the known local Playwright close limitation belong in the issue and PR.
 
 This file is the technical adoption sequence. GitHub remains the authority for executable issues and PRDs under [the issue-tracker convention](../agents/issue-tracker.md). Slice IDs identify review boundaries within #174. ADRs 0036 and 0037 authorize the renderer and versioned RPC changes. The completed backend migrations #148 and #156 remain closed.
+
+## Follow-up: component hooks and one renderer transport
+
+The owner requested a stricter consumption boundary and less migration plumbing after M1-M3. Complete these changes within the same PR:
+
+1. Expose feature store hooks to React components. Keep Atom/registry/RPC imports behind hooks, with the renderer root as the provider exception. Enforce the boundary with lint tests and avoid broad subscriptions where a component needs only one field.
+2. Remove the remaining native shell preload methods and Orb IPC channels. Add shared shell/Orb RPC contracts, preserve authenticated window capabilities and existing native ownership, and reuse the scoped renderer event loop for navigation and placement.
+3. Replace manual preload readiness promises/timers with Effect Deferred, timeout and Scope. Preserve generation fences, late-port cleanup, idempotent disposal and isolation of throwing consumer callbacks. Do not introduce a second RPC runtime or domain state in preload.
+4. Remove obsolete decoder/navigation/native adapter layers. Verify serialized command ordering, invalid payload rejection, bounded streams, reload, role isolation, native dragging and packaged application behavior. Run the full core and supported-platform gates for the resulting source.
 
 ## Intended result and scope
 
@@ -33,7 +42,9 @@ flowchart TD
     Queries[AtomRpc query atoms]
     Workflows[Renderer workflow services]
     Protocol[Electron RpcClient.Protocol adapter]
-    React --> Registry
+    Hooks[Feature store hooks]
+    React --> Hooks
+    Hooks --> Registry
     Registry --> State
     Registry --> Queries
     Registry --> Workflows
@@ -54,7 +65,7 @@ Events return through an explicit window-owned subscription. Each window invalid
 | Owner                | Responsibilities                                                                                                          |
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------- |
 | Renderer window root | Registry, one Atom runtime factory, browser adapters, event-consumer scopes, bootstrap and disposal                       |
-| React component      | Read atoms; dispatch commands; retain interaction-local state where appropriate                                           |
+| React component      | Consume domain store hooks; retain interaction-local state where appropriate                                              |
 | Preload              | Fixed bridge capabilities, Electron adaptation, port/listener lifetime, no business state or SQL                          |
 | Main runtime         | Window and sender identity, native capabilities, RPC server lifecycle, worker supervisor and harness ownership            |
 | Db-worker runtime    | Ledger, complete synchronous SQL operations, scans, cadence, pricing/FX persistence and application queries               |

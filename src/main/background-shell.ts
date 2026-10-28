@@ -1,18 +1,18 @@
+import * as Cause from 'effect/Cause'
 import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as FiberMap from 'effect/FiberMap'
 import * as Layer from 'effect/Layer'
+import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import {
   app,
   BrowserWindow,
   type BrowserWindowConstructorOptions,
   type Event as ElectronEvent,
   globalShortcut,
-  ipcMain,
-  type IpcMainEvent,
-  type IpcMainInvokeEvent,
   Menu,
   nativeImage,
   screen,
@@ -22,8 +22,9 @@ import { existsSync } from 'fs'
 import { join } from 'path'
 
 import { acceleratorFor, SHORTCUTS } from '../shared/lib/shortcuts.js'
-import { type Section, sectionSchema } from '../shared/schemas/navigation.js'
-import { orbPanelRequestSchema, type OrbPlacement } from '../shared/schemas/orb.js'
+import { type Section } from '../shared/schemas/navigation.js'
+import { type OrbPlacement } from '../shared/schemas/orb.js'
+import { type OrbCommand, type ShellEvent, ShellRpcError } from '../shared/rpc/shell.js'
 import { logCodeFor, safeLogOperationalEvent } from './operational-log.js'
 import { clampToWorkArea, defaultOrbPosition, orbBounds, panelLayout } from './orb-geometry.js'
 import { containsPoint, createHeldRequest, createPeekGate, offsetAnchor, type Point } from './orb-policy.js'
@@ -49,9 +50,6 @@ import { DEFAULT_SHELL_PREFERENCES, loadShellPreferences, saveShellPreferences }
  * Every panel open/fold decision is made here, the first-close peek included
  * (when it opens, its note, its timer): the pages only ask and render.
  */
-
-const isSection = Schema.is(sectionSchema)
-const isPanelRequest = Schema.is(orbPanelRequestSchema)
 
 /** How long a revealed panel may wait, transparent, for its page to report a
  * painted frame before it is made opaque regardless. */
@@ -98,6 +96,9 @@ export interface BackgroundShellHandle {
   markQuitting: () => void
   /** Whether the app should stay alive with no windows open. */
   keepsRunning: () => boolean
+  placement: (sender: Electron.WebContents) => OrbPlacement | null
+  command: (sender: Electron.WebContents, command: OrbCommand) => OrbPlacement | null
+  events: (sender: Electron.WebContents) => Stream.Stream<ShellEvent, ShellRpcError>
 }
 
 export class BackgroundShell extends Context.Service<BackgroundShell, BackgroundShellHandle>()(
@@ -175,6 +176,7 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
   let mainWindowShown = false
   /** Set while the panel is shown but still transparent (see revealPanel). */
   let revealing = false
+  const eventListeners = new Set<{ sender: Electron.WebContents; receive: (event: ShellEvent) => void }>()
 
   function showWhenReady(win: BrowserWindow, key: string, show: () => void): void {
     cancel(key)
@@ -214,17 +216,17 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
   }
 
   /** Either orb window (the orb or its panel). */
-  function isOrbSurface(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
-    return event.sender === live(orbWindow)?.webContents || event.sender === live(panelWindow)?.webContents
+  function isOrbSurface(sender: Electron.WebContents): boolean {
+    return sender === live(orbWindow)?.webContents || sender === live(panelWindow)?.webContents
   }
 
   /** The orb window itself — the only one that drags. */
-  function isOrbSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
-    return event.sender === live(orbWindow)?.webContents
+  function isOrbSender(sender: Electron.WebContents): boolean {
+    return sender === live(orbWindow)?.webContents
   }
 
-  function isPanelSender(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
-    return event.sender === live(panelWindow)?.webContents
+  function isPanelSender(sender: Electron.WebContents): boolean {
+    return sender === live(panelWindow)?.webContents
   }
 
   function currentPlacement(): OrbPlacement {
@@ -233,7 +235,8 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
 
   function broadcastPlacement(): OrbPlacement {
     const placement = currentPlacement()
-    for (const win of [live(orbWindow), live(panelWindow)]) win?.webContents.send('orb:placement', placement)
+    for (const listener of eventListeners)
+      if (isOrbSurface(listener.sender)) listener.receive({ _tag: 'Placement', placement })
     return placement
   }
 
@@ -457,7 +460,9 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
     if (mainWindow.isMinimized()) mainWindow.restore()
     mainWindow.show()
     mainWindow.focus()
-    if (section) mainWindow.webContents.send('app:navigate', section)
+    if (section)
+      for (const listener of eventListeners)
+        if (listener.sender === mainWindow.webContents) listener.receive({ _tag: 'Navigate', section })
   }
 
   function setOrbEnabled(enabled: boolean): void {
@@ -562,53 +567,86 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
     ),
   )
 
-  function registerOrbIpc(): void {
-    handle('orb:placement:get', event => (isOrbSurface(event) ? currentPlacement() : null))
-    handle('orb:panel:request', (event, request: unknown) => {
-      if (!isOrbSurface(event) || !isPanelRequest(request)) return null
-      return request === 'fold' ? applyPanel(false) : openPanel('open')
-    })
-    // The panel's data is in: the first-close peek may open now (once).
-    listen('orb:panel-data-ready', event => {
-      if (isPanelSender(event) && peekGate.dataReady()) openPanel('peek')
-    })
-    listen('orb:drag-start', event => {
-      if (!isOrbSender(event)) return
-      // The panel is anchored to the orb: a drag folds it rather than leave it behind.
-      if (expanded) applyPanel(false)
-      dragOrigin = { ...anchor }
-    })
-    listen('orb:drag-move', (event, dx: unknown, dy: unknown) => {
-      if (!isOrbSender(event) || !dragOrigin || typeof dx !== 'number' || typeof dy !== 'number') return
-      if (!Number.isFinite(dx) || !Number.isFinite(dy)) return
-      // Free movement while dragging; the clamp to the work area lands on drop.
-      anchor = offsetAnchor(dragOrigin, dx, dy)
-      live(orbWindow)?.setBounds(orbBounds(anchor))
-    })
-    listen('orb:drag-end', event => {
-      if (!isOrbSender(event) || !dragOrigin) return
-      dragOrigin = null
-      anchor = clampToWorkArea(anchor)
-      live(orbWindow)?.setBounds(orbBounds(anchor))
-      broadcastPlacement()
-      prefs.orbPosition = anchor
-      savePreferences()
-    })
-    listen('orb:open-app', (event, section: unknown) => {
-      if (!isOrbSurface(event)) return
-      if (expanded) applyPanel(false)
-      showMainWindow(isSection(section) ? section : undefined)
-    })
-    listen('orb:hide', event => {
-      if (isOrbSurface(event)) setOrbEnabled(false)
-    })
-    listen('orb:quit', event => {
-      if (isOrbSurface(event)) app.quit()
-    })
-    // The panel page painted a fresh frame after opening: reveal it.
-    listen('orb:panel-painted', event => {
-      if (revealing && isPanelSender(event)) finishReveal()
-    })
+  function command(sender: Electron.WebContents, input: OrbCommand): OrbPlacement | null {
+    if (quitting) throw new ShellRpcError({ code: 'unavailable', message: 'Shell unavailable' })
+    const dragging = input._tag === 'DragStart' || input._tag === 'DragMove' || input._tag === 'DragEnd'
+    const panelOnly = input._tag === 'PanelPainted' || input._tag === 'PanelDataReady'
+    if (!isOrbSurface(sender) || (dragging && !isOrbSender(sender)) || (panelOnly && !isPanelSender(sender)))
+      throw new ShellRpcError({ code: 'unauthorized', message: 'Shell capability denied' })
+    switch (input._tag) {
+      case 'Panel':
+        return input.request === 'fold' ? applyPanel(false) : openPanel('open')
+      case 'PanelDataReady':
+        if (peekGate.dataReady()) openPanel('peek')
+        break
+      case 'PanelPainted':
+        if (revealing) finishReveal()
+        break
+      case 'DragStart':
+        if (expanded) applyPanel(false)
+        dragOrigin = { ...anchor }
+        break
+      case 'DragMove':
+        if (dragOrigin) {
+          anchor = offsetAnchor(dragOrigin, input.dx, input.dy)
+          live(orbWindow)?.setBounds(orbBounds(anchor))
+        }
+        break
+      case 'DragEnd':
+        if (!dragOrigin) break
+        dragOrigin = null
+        anchor = clampToWorkArea(anchor)
+        live(orbWindow)?.setBounds(orbBounds(anchor))
+        broadcastPlacement()
+        prefs.orbPosition = anchor
+        savePreferences()
+        break
+      case 'OpenApp':
+        if (expanded) applyPanel(false)
+        showMainWindow(input.section)
+        break
+      case 'Hide':
+        setOrbEnabled(false)
+        break
+      case 'Quit':
+        app.quit()
+        break
+    }
+    return null
+  }
+
+  function events(sender: Electron.WebContents): Stream.Stream<ShellEvent, ShellRpcError> {
+    return Stream.callback<ShellEvent, ShellRpcError>(
+      queue =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            if (quitting || (!isOrbSurface(sender) && sender !== live(mainWindow)?.webContents)) {
+              Queue.failCauseUnsafe(
+                queue,
+                Cause.fail(new ShellRpcError({ code: 'unauthorized', message: 'Shell capability denied' })),
+              )
+              return () => {}
+            }
+            const listener = {
+              sender,
+              receive: (event: ShellEvent) => {
+                if (!Queue.offerUnsafe(queue, event))
+                  Queue.failCauseUnsafe(
+                    queue,
+                    Cause.fail(new ShellRpcError({ code: 'lagged', message: 'Shell subscriber fell behind' })),
+                  )
+              },
+            }
+            eventListeners.add(listener)
+            listener.receive({ _tag: 'Ready', placement: isOrbSurface(sender) ? currentPlacement() : null })
+            return () => {
+              eventListeners.delete(listener)
+            }
+          }),
+          unsubscribe => Effect.sync(unsubscribe),
+        ),
+      { bufferSize: 256 },
+    )
   }
 
   // Monitors come and go (laptop undocked): keep the orb on a live screen.
@@ -633,17 +671,6 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
   // Remove only this shell's subscriptions; other main-process IPC stays live
   // until its own owner shuts down.
   const subscriptions: Array<() => void> = []
-  const listen = (channel: string, listener: (event: IpcMainEvent, ...args: unknown[]) => void): void => {
-    const active = (event: IpcMainEvent, ...args: unknown[]): void => {
-      if (!quitting) listener(event, ...args)
-    }
-    ipcMain.on(channel, active)
-    subscriptions.push(() => ipcMain.removeListener(channel, active))
-  }
-  const handle = (channel: string, listener: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown): void => {
-    ipcMain.handle(channel, (event, ...args: unknown[]) => (quitting ? null : listener(event, ...args)))
-    subscriptions.push(() => ipcMain.removeHandler(channel))
-  }
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       markQuitting()
@@ -653,7 +680,6 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
       live(orbWindow)?.destroy()
     }),
   )
-  registerOrbIpc()
   registerSummonShortcut()
   screen.on('display-removed', onDisplayRemoved)
   runTask('tray', createTray)
@@ -693,6 +719,9 @@ const createBackgroundShell = Effect.fn('BackgroundShell.acquire')(function* (op
       })
     },
     showMainWindow,
+    command,
+    events,
+    placement: sender => (isOrbSurface(sender) && !quitting ? currentPlacement() : null),
     markQuitting,
     keepsRunning: () => !quitting && prefs.runInBackground,
   })

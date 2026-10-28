@@ -8,13 +8,12 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as RpcServer from 'effect/rpc/RpcServer'
 import * as Schema from 'effect/Schema'
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '../shared/rpc/application.js'
 import { serverProtocolLayer } from '../shared/rpc/port-protocol.js'
-import { rendererNoticeSchema } from '../shared/schemas/ipc.js'
 import type { LedgerMcpStartupMode } from '../shared/schemas/ledger-mcp.js'
 import { createApplicationAgents } from './agents/ipc.js'
 import { HarnessSnapshot } from './agents/snapshot.js'
@@ -26,13 +25,7 @@ import { DbWorkerClient } from './db-worker/client.js'
 import { acquireElectronUpdates } from './electron-updates.js'
 import { initAppPaths, readAppPathsEffect } from './env.js'
 import { makeMainRuntime, type MainServices } from './main-runtime.js'
-import {
-  closeOperationalLog,
-  initOperationalLog,
-  logCodeFor,
-  logIpcError,
-  safeLogOperationalEvent,
-} from './operational-log.js'
+import { closeOperationalLog, initOperationalLog, logCodeFor, safeLogOperationalEvent } from './operational-log.js'
 import { closeMainResources, createQuitCoordinator } from './quit-coordinator.js'
 import { coachHandlers } from './rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from './rpc/electron.js'
@@ -45,6 +38,7 @@ import {
   type LifecyclePublishEvent,
 } from './rpc/lifecycle.js'
 import { lifecycleEventFromWorker } from './rpc/worker-events.js'
+import { shellHandlers } from './rpc/shell-handlers.js'
 import { nativeHandlers } from './rpc/native-handlers.js'
 import { AppUpdates, updatesLayer } from './updates.js'
 
@@ -151,21 +145,6 @@ function readWorkerSnapshot(operation: string): Effect.Effect<unknown, Error> {
   })
 }
 
-/** Single IPC failure seam: operation name + short code only, never args. */
-function handleLogged<T extends unknown[]>(
-  channel: string,
-  listener: (event: Electron.IpcMainInvokeEvent, ...args: T) => unknown,
-): void {
-  ipcMain.handle(channel, async (event, ...args) => {
-    try {
-      return await listener(event, ...(args as T))
-    } catch (err) {
-      logIpcError(channel, err)
-      throw err
-    }
-  })
-}
-
 function ledgerMcpContext(): { execPath: string; entryPath: string; dbPath: string } {
   return {
     execPath: process.execPath,
@@ -191,35 +170,6 @@ function relayWorkerEvents(db: DbWorkerClient): void {
   })
 }
 
-function registerShellCapabilities(): void {
-  handleLogged('log:notice', (_event, notice: unknown): { ok: true } => {
-    const parsed = Schema.decodeUnknownResult(rendererNoticeSchema)(notice)
-    if (parsed._tag === 'Failure') throw new Error('invalid renderer notice')
-    safeLogOperationalEvent(
-      'warn',
-      'renderer.notice',
-      { label: parsed.success.label, location: parsed.success.location },
-      'renderer',
-    )
-    return { ok: true }
-  })
-
-  handleLogged('open-external', (_event, url: string) => {
-    try {
-      const { protocol } = new URL(url)
-      if (protocol === 'https:' || protocol === 'http:') return shell.openExternal(url)
-    } catch {
-      // Unsupported or malformed URLs cannot open native protocol handlers.
-    }
-    return undefined
-  })
-
-  handleLogged('open-fda-settings', (): boolean => {
-    if (process.platform !== 'darwin') return false
-    shell.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles').catch(() => {})
-    return true
-  })
-}
 function registerApplicationAgents(db: DbWorkerClient): ReturnType<typeof createApplicationAgents> {
   // One coordinator owns harness runs and their conversation workspace.
   return createApplicationAgents({
@@ -340,7 +290,6 @@ app.whenReady().then(async () => {
       openCoachLoginTerminal: agents.native.openLoginTerminal,
     },
   )
-  registerShellCapabilities()
   disposeRendererRpc = registerElectronRpc({
     ipcMain,
     resolveRole: ({ webContents, url }) => {
@@ -355,7 +304,7 @@ app.whenReady().then(async () => {
         : pathToFileURL(join(__dirname, '../renderer', filename)).href
       return new URL(url).href === expected ? role : undefined
     },
-    onConnection: (port, role) => {
+    onConnection: (port, role, sender) => {
       const handlers = Layer.mergeAll(
         analyticsHandlers(db, role === 'panel' ? 'panel' : 'app'),
         configHandlers(
@@ -365,11 +314,12 @@ app.whenReady().then(async () => {
         ),
         lifecycleHandlers,
         nativeHandlers(nativeCapabilities),
+        shellHandlers(sender),
       )
       const protocol = serverProtocolLayer(port)
       const options = { disableTracing: true, disableFatalDefects: true } as const
       const provideHandlers = Effect.provide(Layer.merge(handlers, protocol))
-      let program: Effect.Effect<never, never, LifecycleHub | MainServices | AppUpdates>
+      let program: Effect.Effect<never, never, LifecycleHub | MainServices | AppUpdates | BackgroundShell>
       switch (role) {
         case 'app':
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
