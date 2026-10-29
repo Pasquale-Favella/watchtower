@@ -1,8 +1,8 @@
 # Agent workspace implementation
 
 Status: implementation in progress. Application service, driver, operational
-store and dedicated worker prototypes are under test, but are not connected to
-production execution. No workspace release or native protocol certification is
+store, worker, supervisor and checkout-resolver prototypes are under test, but
+are not connected to production execution. No workspace release or native protocol certification is
 complete on this branch yet.
 
 [Issue #178](https://github.com/Pasquale-Favella/watchtower/issues/178) owns the
@@ -30,7 +30,9 @@ authority under [the tracker convention](../agents/issue-tracker.md).
 
 The 2026-10-29 driver checkpoint is published as `efa93ba`; operational storage
 and the application service are published as `8ec99c3`, following `92068f5`.
-The dedicated worker follow-up builds on `8ec99c3`. Exact published references
+The dedicated worker follow-up builds on `8ec99c3`. The checkout resolver,
+driver registry, durable deliveries and queue, worker supervisor and delta
+coalescer follow `2de0a02`. Exact published references
 and subsequent checkpoints are recorded in
 [PR #179](https://github.com/Pasquale-Favella/watchtower/pull/179). The evidence
 below covers these prototypes, not a completed workspace release:
@@ -69,10 +71,34 @@ below covers these prototypes, not a completed workspace release:
   and concurrency bounds. Three handler tests and eleven shared Schema tests
   pass. The production build includes a separate workspace-worker entry, but
   main, renderer and Coach do not use it yet.
-- Full Vitest: 317 files passed, 3,530 tests passed and 5 skipped. All four
+- The checkout resolver derives canonical identity from native realpath, so
+  case, symlink and junction aliases collapse, and from the canonical common
+  Git directory, so same-leaf repositories differ and linked worktrees map to
+  their main checkout. Worktree creation refuses non-empty targets and branch
+  collisions; removal refuses dirty and main checkouts. Twenty-five tests use
+  real Git repositories. Store admission does not consume it yet.
+- ExecutionService routes each claim through an AgentDriverRegistry. Unknown
+  drivers settle as launch failures before native calls; connections remain
+  scoped per Run. Codex, Claude and ACP are registered; ACP command
+  configuration is not forwarded yet.
+- Migration 6 persists request responses and steering as receipted intents
+  before native delivery, rejects stale requests and settles explicit
+  accepted, failed or uncertain outcomes. Worker recovery marks pending
+  deliveries of the retired epoch uncertain without resending. A durable
+  follow-up queue promotes the next Run atomically only when its Conversation is
+  idle. Snapshots are bounded; cursor pages expose full queue and delivery
+  histories within worker frames. Worker protocol version 3 exposes these.
+- A workspace-worker supervisor provides a stable store over the current worker,
+  bounded replacement with backoff, one recovery per replacement and typed
+  failure without resend for in-flight calls. Unconfirmed cleanup becomes a
+  terminal unavailable state instead of a second writer. It is not started by
+  the application yet.
+- A pure delta coalescer bounds buffered text by bytes, age and event count and
+  flushes before every critical event. The service does not use it yet.
+- Full Vitest: 321 files passed, 3,621 tests passed and 5 skipped. All four
   TypeScript projects, Effect diagnostics and diagnostic fixtures, ESLint,
-  Prettier and the Electron production build passed. Three real Electron smoke
-  tests passed for boot/navigation, renderer lifetime and Operational log.
+  Prettier and the Electron production build passed. Electron smoke and
+  packaging checks were last run on `2de0a02`.
 - Windows NSIS packaging and the packaged application verifier passed again
   with the new build entry, including boot, RPC/SQLite, MCP stdio/HTTP, export
   and configuration. These generic application checks do not exercise the new
@@ -80,14 +106,15 @@ below covers these prototypes, not a completed workspace release:
   install/uninstall acceptance requires a disposable hosted runner and was not
   run locally. macOS/Linux packaging and native-driver execution remain unverified.
 
-This does not complete M0.2, M0.3, M1.1 or M1.3. Production workspace-worker
-composition and replacement supervision, service/driver routing and RPC,
-durable queue/response commands, admission and backlog budgets, text batching,
-fault injection, streaming measurements and Coach migration remain open. A
+This does not complete M0.2, M0.3, M1.1, M1.2 or M1.3. Durable owner-epoch
+allocation, production composition of the supervisor, registry and service,
+service respond/steer/queue dispatch, coalescer integration with backpressure,
+ACP connection configuration, resolver-backed store admission, workspace RPC,
+fault injection, streaming/load measurements and Coach migration remain open. A
 reported shutdown timeout retains uncertainty; it does not establish that an
 uncooperative native process was terminated.
-Exact stored-path exclusion is not canonical filesystem identity: case aliases,
-symlinks and junctions still require the checkout resolver. Authenticated native
+Worktrees and the resolver do not provide filesystem sandboxing or exclude
+external writers. Authenticated native
 turns, permitted Claude distribution and packaged-driver/cross-platform checks
 remain release gates. Ordinary tests make no paid inference calls.
 
