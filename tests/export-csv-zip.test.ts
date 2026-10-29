@@ -8,7 +8,7 @@ import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { exportCsvZip, type ExportCsvZipPorts } from '../src/main/application/export-csv-zip.js'
+import { exportCsvZip, type ExportCsvZipPorts } from '../src/platform/electron/main/application/export-csv-zip.js'
 import type { ExportResult } from '../src/shared/schemas/export.js'
 
 let root = ''

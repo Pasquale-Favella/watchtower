@@ -12,7 +12,7 @@ const hooks = vi.hoisted(() => ({
   releaseRead: undefined as (() => void) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
+vi.mock('../src/infrastructure/ingestion/cursor-cache.js', async () => {
   const { Effect } = await import('effect')
   return {
     readCachedResultsEffect: (dbPath: string) =>
@@ -35,9 +35,9 @@ import {
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import { createCursorProvider } from '../src/main/pipeline/providers/cursor.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/pricing/models.js'
+import { createCursorProvider } from '../src/infrastructure/provider-adapters/cursor.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'cursor-captured-pricing-model'

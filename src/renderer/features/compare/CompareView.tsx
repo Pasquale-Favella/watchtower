@@ -1,0 +1,315 @@
+import { useMemo } from 'react'
+
+import { compareValue } from '@/features/compare/lib'
+import { useCompareStore } from '@/features/compare/use-compare-store'
+import { Panel } from '@/components/Panel'
+import { QueryErrorNotice } from '@/components/QueryErrorNotice'
+import { SegTabs } from '@/components/SegTabs'
+import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/components/skeletons'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Skeleton } from '@/components/ui/skeleton'
+import { categoryLabel } from '@/shared/lib/models'
+import { seriesColorForModel } from '@/shared/lib/modelSeries'
+import { motionClass } from '@/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+import { cn } from '@/shared/lib/utils'
+
+import type {
+  CategoryComparison,
+  CompareModelStat,
+  ComparePair,
+  CompareWinner,
+  ComparisonRow,
+  WorkingStyleRow,
+} from '../../../shared/schemas/compare.js'
+
+const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_150px_150px] gap-x-3'
+const VALUE_CELL = 'text-right font-mono tabular-nums'
+
+function modelOptionLabel(model: CompareModelStat): string {
+  return `${model.displayName} · ${model.calls.toLocaleString('en-US')} calls`
+}
+
+function winnerClass(winner: CompareWinner, side: 'a' | 'b'): string {
+  return winner === side ? 'text-success' : 'text-muted-foreground'
+}
+
+/** Shared Metric | A | B row grid used by the metrics and working-style cards
+ * (ADR 0008): the model names in the header, then one row per metric with
+ * each side's formatted value, green when it wins (metrics card only). */
+function CompareRows({
+  rows,
+  modelA,
+  modelB,
+  showWinners,
+}: {
+  rows: Array<ComparisonRow | WorkingStyleRow>
+  modelA: string
+  modelB: string
+  showWinners: boolean
+}) {
+  const { currency } = useCurrencyFormatter()
+  return (
+    <div className="flex flex-col">
+      <div className={cn(ROW_GRID, 'border-border border-b pb-1.5')}>
+        <span className="text-muted-foreground text-[10.5px] tracking-wide uppercase">Metric</span>
+        <span className={cn(VALUE_CELL, 'text-foreground truncate text-[10.5px] font-medium')} title={modelA}>
+          {modelA}
+        </span>
+        <span className={cn(VALUE_CELL, 'text-foreground truncate text-[10.5px] font-medium')} title={modelB}>
+          {modelB}
+        </span>
+      </div>
+      {rows.map(row => {
+        const winner = 'winner' in row ? row.winner : 'none'
+        return (
+          <div key={row.label} className={cn(ROW_GRID, 'items-center py-[5px]')}>
+            <span className="text-muted-foreground truncate text-[11.5px]" title={row.label}>
+              {row.label}
+            </span>
+            <span
+              className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'a') : 'text-foreground')}
+            >
+              {compareValue(row.valueA, row.formatFn, currency)}
+            </span>
+            <span
+              className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'b') : 'text-foreground')}
+            >
+              {compareValue(row.valueB, row.formatFn, currency)}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function MetricsCard({ rows, modelA, modelB }: { rows: ComparisonRow[]; modelA: string; modelB: string }) {
+  return (
+    <Panel title="Metrics comparison" right="Green = better">
+      <CompareRows rows={rows} modelA={modelA} modelB={modelB} showWinners />
+    </Panel>
+  )
+}
+
+function CategoryCard({
+  categories,
+  modelA,
+  modelB,
+}: {
+  categories: CategoryComparison[]
+  modelA: string
+  modelB: string
+}) {
+  return (
+    <Panel title="Category head-to-head" right="One-shot rate · edit turns">
+      <div className="mb-2.5 flex items-center gap-3">
+        <span className="text-muted-foreground flex items-center gap-1.5 text-[10.5px]">
+          <span className="size-[8px] rounded-full" style={{ background: seriesColorForModel(modelA) }} />
+          {modelA}
+        </span>
+        <span className="text-muted-foreground flex items-center gap-1.5 text-[10.5px]">
+          <span className="size-[8px] rounded-full" style={{ background: seriesColorForModel(modelB) }} />
+          {modelB}
+        </span>
+      </div>
+      <div className="flex flex-col">
+        {categories.map(category => (
+          <div key={category.category} className="grid grid-cols-[minmax(0,1fr)_170px] items-center gap-x-3 py-[5px]">
+            <span className="text-muted-foreground truncate text-[11.5px]" title={category.category}>
+              {categoryLabel(category.category)}
+            </span>
+            <div className="flex flex-col gap-[3px]">
+              <BarRow
+                rate={category.oneShotRateA}
+                turns={category.editTurnsA}
+                winner={category.winner === 'a'}
+                color={seriesColorForModel(modelA)}
+              />
+              <BarRow
+                rate={category.oneShotRateB}
+                turns={category.editTurnsB}
+                winner={category.winner === 'b'}
+                color={seriesColorForModel(modelB)}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
+  )
+}
+
+function BarRow({
+  rate,
+  turns,
+  winner,
+  color,
+}: {
+  rate: number | null
+  turns: number
+  winner: boolean
+  color: string
+}) {
+  const { currency } = useCurrencyFormatter()
+  return (
+    <div className="flex items-center gap-2">
+      <span className="bg-muted h-[6px] flex-1 overflow-hidden rounded-full">
+        <span className="block h-full rounded-full" style={{ width: `${rate ?? 0}%`, background: color }} />
+      </span>
+      <span className={cn(VALUE_CELL, 'w-[72px] text-[10.5px]', winner ? 'text-success' : 'text-muted-foreground')}>
+        {compareValue(rate, 'percent', currency)} <span className="text-muted-foreground">({turns})</span>
+      </span>
+    </div>
+  )
+}
+
+function WorkingStyleCard({ rows, modelA, modelB }: { rows: WorkingStyleRow[]; modelA: string; modelB: string }) {
+  return (
+    <Panel title="Working style" right="per turn">
+      <CompareRows rows={rows} modelA={modelA} modelB={modelB} showWinners={false} />
+    </Panel>
+  )
+}
+
+function ModelPicker({
+  models,
+  value,
+  onChange,
+  label,
+}: {
+  models: CompareModelStat[]
+  value: string | null
+  onChange: (model: string) => void
+  label: string
+}) {
+  const selected = models.find(model => model.model === value)
+  return (
+    <Select
+      value={value ?? ''}
+      onValueChange={next => {
+        if (next) onChange(next)
+      }}
+    >
+      <SelectTrigger
+        size="sm"
+        aria-label={label}
+        className="border-border text-foreground h-[26px] rounded-md px-2 text-[11px]"
+      >
+        <SelectValue>{selected?.displayName ?? 'Pick a model'}</SelectValue>
+      </SelectTrigger>
+      <SelectContent align="center">
+        {models.map(model => (
+          <SelectItem key={model.model} value={model.model}>
+            {modelOptionLabel(model)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
+}
+
+export function CompareView(): React.JSX.Element {
+  const { payload, error, pair, selectPair, provider, setProvider, detectedProviders } = useCompareStore()
+
+  const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
+
+  // Keep the two pickers distinct: picking a model already held by the other
+  // side nudges that side to the next available model.
+  const pick = (side: 'a' | 'b', next: string): void => {
+    const other = side === 'a' ? pair?.modelB : pair?.modelA
+    const nudge = other !== next ? other : (payload?.models.find(model => model.model !== next)?.model ?? null)
+    const modelA = side === 'a' ? next : nudge
+    const modelB = side === 'b' ? next : nudge
+    if (modelA && modelB && modelA !== modelB) {
+      selectPair({ modelA, modelB } satisfies ComparePair)
+    }
+  }
+
+  const models = payload?.models ?? []
+
+  return (
+    <div className={cn('w-full max-w-[1180px]', motionClass('flex flex-col gap-3', 'section-fade'))}>
+      {providerOptions.length > 1 && (
+        <div className="flex justify-center">
+          <SegTabs options={providerOptions} value={provider} onChange={setProvider} />
+        </div>
+      )}
+
+      {payload === null ? (
+        error ? (
+          <QueryErrorNotice error={error} hasData={false} />
+        ) : (
+          <LoadingRegion label="Loading comparison…" className="flex flex-col gap-4">
+            <div className="flex items-center justify-center gap-2.5">
+              <Skeleton className="h-[26px] w-44 rounded-md" />
+              <Skeleton className="h-3 w-6" />
+              <Skeleton className="h-[26px] w-44 rounded-md" />
+            </div>
+            <SkeletonCard title>
+              <SkeletonLines lines={6} />
+            </SkeletonCard>
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <SkeletonCard title>
+                <SkeletonLines lines={5} />
+              </SkeletonCard>
+              <SkeletonCard title>
+                <SkeletonLines lines={5} />
+              </SkeletonCard>
+            </div>
+          </LoadingRegion>
+        )
+      ) : models.length < 2 ? (
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-center text-[12px]">
+            Need at least two models with usage in this range to compare.
+          </div>
+        </>
+      ) : (
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="flex items-center justify-center gap-2.5" aria-label="Models being compared">
+            <ModelPicker
+              models={models}
+              value={pair?.modelA ?? null}
+              onChange={next => pick('a', next)}
+              label="First model"
+            />
+            <span className="text-muted-foreground text-[11px] font-medium tracking-wide uppercase">vs</span>
+            <ModelPicker
+              models={models}
+              value={pair?.modelB ?? null}
+              onChange={next => pick('b', next)}
+              label="Second model"
+            />
+          </div>
+
+          {payload.report && (
+            <>
+              <MetricsCard
+                rows={payload.report.metrics}
+                modelA={payload.report.modelA.displayName}
+                modelB={payload.report.modelB.displayName}
+              />
+
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <CategoryCard
+                  categories={payload.report.categories}
+                  modelA={payload.report.modelA.displayName}
+                  modelB={payload.report.modelB.displayName}
+                />
+                <WorkingStyleCard
+                  rows={payload.report.workingStyle}
+                  modelA={payload.report.modelA.displayName}
+                  modelB={payload.report.modelB.displayName}
+                />
+              </div>
+            </>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

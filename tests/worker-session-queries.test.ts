@@ -12,16 +12,21 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { querySessionSearch } from '../src/main/application/session-search-query.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries, LedgerSessionReads } from '../src/main/store/ledger-repository.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { querySessionSearch } from '../src/core/application/queries/session-search-query.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import { captureModelPricingCatalogue } from '../src/infrastructure/pricing/models.js'
+import {
+  LedgerConfig,
+  LedgerIngest,
+  LedgerQueries,
+  LedgerSessionReads,
+} from '../src/infrastructure/sqlite/ledger-repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 interface WorkerOwner {
   dbPath: string
-  runtime: WorkerRuntime
+  runtime: EngineRuntime
 }
 
 function removeTemporaryDirectory(directory: string): void {
@@ -46,10 +51,10 @@ async function withWorker(
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-session-query-'))
   const dbPath = join(directory, 'ledger.db')
-  let runtime: WorkerRuntime | undefined
+  let runtime: EngineRuntime | undefined
   let context: DbWorkerContext | undefined
   try {
-    runtime = openWorkerRuntime(dbPath, undefined, overrides)
+    runtime = openEngineRuntime(dbPath, undefined, overrides)
     const owner = { dbPath, runtime }
     context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, {
       runtime,

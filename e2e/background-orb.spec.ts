@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 import { expect, type Page, test } from '@playwright/test'
 
-import type { Api } from '../src/preload/index.js'
+import type { Api } from '../src/platform/electron/preload/index.js'
 import { acceleratorFor, SHORTCUTS } from '../src/shared/lib/shortcuts'
 import { dismissOnboarding, withApp } from './app'
 import { invokeRpc } from './rpc-probe'

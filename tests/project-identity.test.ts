@@ -1,18 +1,18 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { querySpendView } from '../src/main/application/spend-query.js'
-import { normalizeProjectPathKey } from '../src/main/pipeline/parser-calculations.js'
-import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { querySpendView } from '../src/core/application/queries/spend-query.js'
+import { normalizeProjectPathKey } from '../src/core/ingestion/normalization/parser-calculations.js'
+import type { SessionSummary } from '../src/core/domain/observations/types.js'
 import {
   buildSessionRowsFromSnapshot,
   buildSessionSummariesFromSnapshot,
   groupSummariesIntoProjects,
-} from '../src/main/store/aggregate-calculation.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
-import type { LedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
-import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
-import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+} from '../src/core/analytics/projections/aggregate-calculation.js'
+import { LedgerIngest } from '../src/core/ports/repository.js'
+import type { LedgerQuerySnapshot } from '../src/core/application/queries/ledger-query-snapshot.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/core/application/queries/ledger-query-snapshot.js'
+import type { EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import type { PortInput } from '../src/shared/schemas/port.js'
 import type { SpendPayload } from '../src/shared/schemas/spend.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
@@ -27,26 +27,26 @@ const NATIVE = process.platform === 'win32' ? 'C:/Users/tester/watchtower' : '/h
 
 const FULL_RANGE = { start: new Date('2026-06-02T00:00:00.000Z'), end: new Date('2026-08-01T00:00:00.000Z') }
 
-function portIn(runtime: WorkerRuntime, input: PortInput): void {
+function portIn(runtime: EngineRuntime, input: PortInput): void {
   runtime.runSync(Effect.flatMap(LedgerIngest, ingest => ingest.portIn(input)))
 }
 
-function snapshot(runtime: WorkerRuntime): LedgerQuerySnapshot {
+function snapshot(runtime: EngineRuntime): LedgerQuerySnapshot {
   const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
   return runtime.runSync(loadLedgerQuerySnapshotEffect({ catalogue, proxyPaths }))
 }
 
-function loadSummaries(runtime: WorkerRuntime): SessionSummary[] {
+function loadSummaries(runtime: EngineRuntime): SessionSummary[] {
   return buildSessionSummariesFromSnapshot(snapshot(runtime), { range: FULL_RANGE })
 }
 
-function querySpend(runtime: WorkerRuntime): SpendPayload {
+function querySpend(runtime: EngineRuntime): SpendPayload {
   const now = new Date('2026-08-01T00:00:00.000Z')
   return runtime.runSync(atTime(querySpendView(viewInputs({ period: 'lifetime' })), now))
 }
 
 function portSession(
-  runtime: WorkerRuntime,
+  runtime: EngineRuntime,
   opts: {
     provider: string
     sessionId: string
@@ -82,7 +82,7 @@ function portSession(
   })
 }
 
-function portCheckout(runtime: WorkerRuntime): void {
+function portCheckout(runtime: EngineRuntime): void {
   portSession(runtime, {
     provider: 'opencode',
     sessionId: 'sess-a',

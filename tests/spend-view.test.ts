@@ -1,13 +1,13 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { querySpendView } from '../src/main/application/spend-query.js'
-import { normalizeProjectPathKey } from '../src/main/pipeline/parser-calculations.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
-import type { WorkerRuntime } from '../src/main/worker-runtime.js'
-import { formatDayLabel, providerLabel, sankeyData, stackedRows } from '../src/renderer/src/features/spend/lib.js'
-import { isOtherNode, seriesColorForModel, seriesKeyForModel } from '../src/renderer/src/shared/lib/modelSeries.js'
+import { querySpendView } from '../src/core/application/queries/spend-query.js'
+import { normalizeProjectPathKey } from '../src/core/ingestion/normalization/parser-calculations.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import { LedgerIngest } from '../src/core/ports/repository.js'
+import type { EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
+import { formatDayLabel, providerLabel, sankeyData, stackedRows } from '../src/renderer/features/spend/lib.js'
+import { isOtherNode, seriesColorForModel, seriesKeyForModel } from '../src/renderer/shared/lib/modelSeries.js'
 import type { PortInput } from '../src/shared/schemas/port.js'
 import type { SpendPayload } from '../src/shared/schemas/spend.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
@@ -20,11 +20,11 @@ const NOW = new Date(2026, 6, 15)
 // the aggregation seam (range + provider at the SQL read, sessions count by
 // their in-range turns). Fixtures are ported through `portIn`.
 
-function portIn(runtime: WorkerRuntime, input: PortInput): void {
+function portIn(runtime: EngineRuntime, input: PortInput): void {
   runtime.runSync(Effect.flatMap(LedgerIngest, ingest => ingest.portIn(input)))
 }
 
-function querySpend(runtime: WorkerRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): SpendPayload {
+function querySpend(runtime: EngineRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): SpendPayload {
   return runtime.runSync(atTime(querySpendView(viewInputs(scope)), now))
 }
 
@@ -61,7 +61,7 @@ function spendCachedFile(spec: SpendSessionSpec): CachedFile {
   })
 }
 
-function portSpendSessions(runtime: WorkerRuntime, specs: SpendSessionSpec[]): void {
+function portSpendSessions(runtime: EngineRuntime, specs: SpendSessionSpec[]): void {
   specs.forEach((spec, i) => {
     portIn(runtime, {
       provider: spec.provider,

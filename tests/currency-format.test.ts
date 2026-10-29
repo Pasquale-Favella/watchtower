@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { formatConverted, formatUsd } from '../src/renderer/src/shared/lib/currency.js'
+import { formatConverted, formatUsd } from '../src/renderer/shared/lib/currency.js'
 
 const USD = { code: 'USD', symbol: '$', rate: 1 } as const
 const EUR = { code: 'EUR', symbol: '€', rate: 0.9 } as const

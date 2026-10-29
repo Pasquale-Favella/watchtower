@@ -29,15 +29,15 @@ import type * as Layer from 'effect/Layer'
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
 
-import { runClaudeAuthProbe } from '../src/main/agents/auth-probe.js'
+import { runClaudeAuthProbe } from '../src/infrastructure/agent-harnesses/auth-probe.js'
 import {
   CommandError,
   type CommandResult,
   CommandRunner,
   type CommandRunOptions,
   makeRecordingCommandRunner,
-} from '../src/main/agents/command-runner.js'
-import { CommandRunnerLiveLayer } from '../src/main/agents/command-runner-live.js'
+} from '../src/core/ports/process.js'
+import { CommandRunnerLiveLayer } from '../src/infrastructure/agent-harnesses/command-runner-live.js'
 
 /** One `run` through whichever `CommandRunner` layer the case is exercising —
  *  the recording fake or `CommandRunnerLiveLayer` — returned UNRUN so a case can

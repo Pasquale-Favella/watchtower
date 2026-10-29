@@ -5,7 +5,7 @@ import { RpcClient } from 'effect/rpc'
 import type { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Stream from 'effect/Stream'
 
-import { rpcMessagePortFromBridge } from '../../src/renderer/src/shared/lib/rpc-port.js'
+import { rpcMessagePortFromBridge } from '../../src/renderer/shared/lib/rpc-port.js'
 import type { RpcBridge } from '../../src/shared/rpc/bridge.js'
 import type { CoachRunFrame } from '../../src/shared/rpc/coach.js'
 import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'

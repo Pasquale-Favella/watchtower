@@ -1,20 +1,20 @@
 /**
  * Frozen legacy store-list/search/detail builders copied from
- * `git show 05d56de:src/main/views.ts` (issue #148 wave17 baseline).
+ * `git show 05d56de:src/platform/electron/main/views.ts` (issue #148 wave17 baseline).
  * This test-only reference remains until the new application query paths have
  * shipped. Keep the bodies and their legacy dependencies aligned with that
  * baseline; production code must not import this module.
  */
 import * as Schema from 'effect/Schema'
 
-import { sessionRowFromSummary } from '../../src/main/pipeline/sessions-report.js'
-import type { SessionSummary } from '../../src/main/pipeline/types.js'
-import { CATEGORY_LABELS } from '../../src/main/pipeline/types.js'
+import { sessionRowFromSummary } from '../../src/infrastructure/ingestion/sessions-report.js'
+import type { SessionSummary } from '../../src/core/domain/observations/types.js'
+import { CATEGORY_LABELS } from '../../src/core/domain/observations/types.js'
 import {
   buildSessionRowsFromSnapshot,
   buildSessionSummariesFromSnapshot,
   sessionProjectKey,
-} from '../../src/main/store/aggregate-calculation.js'
+} from '../../src/core/analytics/projections/aggregate-calculation.js'
 import {
   type ProjectRow,
   projectRowSchema,

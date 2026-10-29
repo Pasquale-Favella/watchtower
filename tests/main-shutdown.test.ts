@@ -3,7 +3,7 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { describe, expect, it } from 'vitest'
 
-import { closeMainResources } from '../src/main/quit-coordinator.js'
+import { closeMainResources } from '../src/platform/electron/main/quit-coordinator.js'
 
 describe('main resource shutdown', () => {
   it('keeps the runtime available for final worker events after Coach has stopped', async () => {

@@ -11,7 +11,7 @@ import {
   loadShellPreferences,
   saveShellPreferences,
   shellPreferencesSchema,
-} from '../src/main/shell-preferences.js'
+} from '../src/platform/electron/main/shell-preferences.js'
 
 const directories: string[] = []
 function preferencesFile(): string {

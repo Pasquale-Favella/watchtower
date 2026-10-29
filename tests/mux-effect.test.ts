@@ -51,17 +51,17 @@ vi.mock('fs', async importOriginal => {
   }
 })
 
-import { type AppPaths, appPaths, Env, type ProviderOverrides } from '../src/main/env.js'
-import { setModelAliases, setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createMuxProvider } from '../src/main/pipeline/providers/mux.js'
+import { type AppPaths, appPaths, Env, type ProviderOverrides } from '../src/infrastructure/config/environment.js'
+import { setModelAliases, setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createMuxProvider } from '../src/infrastructure/provider-adapters/mux.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let root = ''
 

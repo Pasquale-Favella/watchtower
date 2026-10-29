@@ -8,38 +8,44 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
-import { AssistantSetup } from '../src/main/application/assistant-setup.js'
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
+import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
 import {
   inspectYieldProjects,
   RepositoryInspection,
   RepositoryInspectionError,
-} from '../src/main/application/repository-inspection.js'
-import { calculateComparePayload } from '../src/main/compare-calculation.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { calculateModelsPayload } from '../src/main/models-calculation.js'
-import { calculateOptimizePayload } from '../src/main/optimize-calculation.js'
-import { overviewDateRange, scopeDateRange } from '../src/main/overview-scope.js'
-import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
-import { calculatePullRequestsPayload } from '../src/main/pull-requests-calculation.js'
-import { calculateSessionsView } from '../src/main/sessions-calculation.js'
-import { calculateSkillsView } from '../src/main/skills-calculation.js'
-import { calculateSpendView } from '../src/main/spend-calculation.js'
+} from '../src/core/ports/repository-inspection.js'
+import { calculateComparePayload } from '../src/core/analytics/projections/compare-calculation.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import { calculateModelsPayload } from '../src/core/analytics/projections/models-calculation.js'
+import { calculateOptimizePayload } from '../src/core/analytics/detectors/optimize-calculation.js'
+import { overviewDateRange, scopeDateRange } from '../src/core/domain/sessions/overview-scope.js'
+import { captureLocalModelSavings } from '../src/infrastructure/pricing/models.js'
+import { calculatePullRequestsPayload } from '../src/core/analytics/projections/pull-requests-calculation.js'
+import { calculateSessionsView } from '../src/core/analytics/projections/sessions-calculation.js'
+import { calculateSkillsView } from '../src/core/analytics/detectors/skills-calculation.js'
+import { calculateSpendView } from '../src/core/analytics/projections/spend-calculation.js'
 import {
   buildSessionSummariesFromSnapshotResult,
   groupSummariesIntoProjects,
-} from '../src/main/store/aggregate-calculation.js'
-import { type LedgerQuerySnapshot, loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
+} from '../src/core/analytics/projections/aggregate-calculation.js'
+import {
+  type LedgerQuerySnapshot,
+  loadLedgerQuerySnapshotEffect,
+} from '../src/core/application/queries/ledger-query-snapshot.js'
 import {
   LedgerConfig,
   LedgerIngest,
   LedgerQueries,
   type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-repository.js'
-import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
-import { buildAnalyticalViewsFromSnapshot, buildDashboardViewsFromSnapshot } from '../src/main/views-calculation.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
-import { calculateYieldPayload } from '../src/main/yield-calculation.js'
+} from '../src/infrastructure/sqlite/ledger-repository.js'
+import { LedgerViewReads } from '../src/core/ports/ledger-view-reads.js'
+import {
+  buildAnalyticalViewsFromSnapshot,
+  buildDashboardViewsFromSnapshot,
+} from '../src/core/analytics/projections/views-calculation.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
+import { calculateYieldPayload } from '../src/core/analytics/attribution/yield-calculation.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
 import { yieldPayloadSchema } from '../src/shared/schemas/yield.js'
 import { DEFAULT_SKILLS_THRESHOLDS } from '../src/shared/skills-defaults.js'
@@ -54,7 +60,7 @@ import { calculateOverviewFromSnapshot } from './fixtures/pre-native-overview-ca
 
 interface WorkerOwner {
   dbPath: string
-  runtime: WorkerRuntime
+  runtime: EngineRuntime
 }
 
 function removeTemporaryDirectory(directory: string): void {
@@ -100,10 +106,10 @@ async function withWorker(run: (context: DbWorkerContext, owner: WorkerOwner) =>
     }),
   )
   const dbPath = join(directory, 'ledger.db')
-  let runtime: WorkerRuntime | undefined
+  let runtime: EngineRuntime | undefined
   let context: DbWorkerContext | undefined
   try {
-    runtime = openWorkerRuntime(dbPath, undefined, Layer.mergeAll(setup, repositories))
+    runtime = openEngineRuntime(dbPath, undefined, Layer.mergeAll(setup, repositories))
     const owner = { dbPath, runtime }
     context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, {
       runtime,

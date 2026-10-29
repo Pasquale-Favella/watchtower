@@ -15,8 +15,8 @@ const hooks = vi.hoisted(() => ({
   released: 0,
 }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   return {
     ...actual,
     readSessionLinesStream: (
@@ -31,13 +31,13 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   }
 })
 
-import { appPaths, initAppPaths } from '../src/main/env.js'
-import { SessionLineReadError } from '../src/main/pipeline/fs-utils.js'
+import { appPaths, initAppPaths } from '../src/infrastructure/config/environment.js'
+import { SessionLineReadError } from '../src/infrastructure/ingestion/fs-utils.js'
 import {
   createAntigravityProvider,
   getAntigravityStatusLineEventsPath,
-} from '../src/main/pipeline/providers/antigravity.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/provider-adapters/antigravity.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 
 let root = ''
 let priorCacheDir = ''

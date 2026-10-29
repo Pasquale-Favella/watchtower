@@ -8,14 +8,14 @@ import {
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
+} from '../src/infrastructure/pricing/models.js'
 import {
   capturePricingCatalogue,
   findUnpricedModels,
   getLocalSavingsBaseline,
   isExpectedFreeModel,
   type ModelCosts,
-} from '../src/main/pipeline/pricing-calculation.js'
+} from '../src/core/domain/pricing/pricing-calculation.js'
 
 afterEach(() => {
   setLocalModelSavings({})

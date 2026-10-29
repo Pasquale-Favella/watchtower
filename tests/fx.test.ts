@@ -17,8 +17,8 @@ import {
   type RefreshFxRateEffectOptions,
   refreshFxRateWithRates,
   roundForActiveCurrency,
-} from '../src/main/fx.js'
-import { LedgerIngest } from '../src/main/store/ledger-repository.js'
+} from '../src/infrastructure/pricing/fx.js'
+import { LedgerIngest } from '../src/infrastructure/sqlite/ledger-repository.js'
 import { type LedgerFixture, openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 function fakeFetchPayload(payload: unknown): typeof fetch {

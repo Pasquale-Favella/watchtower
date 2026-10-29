@@ -6,26 +6,26 @@ import * as SqlError from 'effect/sql/SqlError'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { queryOverview } from '../src/main/application/overview-query.js'
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { calculateOverviewFromData } from '../src/main/overview-calculation.js'
-import { captureLocalModelSavings, setLocalModelSavings } from '../src/main/pipeline/models.js'
+import { queryOverview } from '../src/core/application/queries/overview-query.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { calculateOverviewFromData } from '../src/core/analytics/projections/overview-calculation.js'
+import { captureLocalModelSavings, setLocalModelSavings } from '../src/infrastructure/pricing/models.js'
 import {
   capturePricingCatalogue,
   type ModelCosts,
   type PricingCatalogue,
-} from '../src/main/pipeline/pricing-calculation.js'
-import type { SessionSummary, TaskCategory } from '../src/main/pipeline/types.js'
+} from '../src/core/domain/pricing/pricing-calculation.js'
+import type { SessionSummary, TaskCategory } from '../src/core/domain/observations/types.js'
 import {
   LedgerConfig,
   LedgerIngest,
   LedgerQueries,
   type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-ports.js'
-import { makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
-import { LedgerViewReads, type LedgerViewReadsPort } from '../src/main/store/ledger-view-reads.js'
-import type { OverviewReadData } from '../src/main/store/overview-read-projections.js'
-import type { LedgerViewData } from '../src/main/store/view-read-projections.js'
+} from '../src/core/ports/repository.js'
+import { makeLedgerQuerySnapshot } from '../src/core/application/queries/ledger-query-snapshot.js'
+import { LedgerViewReads, type LedgerViewReadsPort } from '../src/core/ports/ledger-view-reads.js'
+import type { OverviewReadData } from '../src/core/analytics/projections/overview-read-projections.js'
+import type { LedgerViewData } from '../src/core/analytics/projections/view-read-projections.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'

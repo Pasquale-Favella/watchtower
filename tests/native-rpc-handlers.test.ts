@@ -4,7 +4,7 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it, vi } from 'vitest'
 
-import { nativeHandlers, type NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
+import { nativeHandlers, type NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { NativeRpcError, NativeRpcGroup } from '../src/shared/rpc/native.js'
 import { skillsDismissalRequestSchema } from '../src/shared/schemas/skills.js'
 

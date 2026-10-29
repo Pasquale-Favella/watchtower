@@ -9,17 +9,17 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { serveHttp, serveStdio } from '../src/main/agents/ledger-mcp/entry.js'
-import type { LedgerMcpQueries } from '../src/main/agents/ledger-mcp/query-api.js'
-import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
-import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { serveHttp, serveStdio } from '../src/platform/mcp/entry.js'
+import type { LedgerMcpQueries } from '../src/platform/mcp/query-api.js'
+import { createLedgerMcpQueryRuntime } from '../src/platform/mcp/query-runtime.js'
+import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 const TOKEN = 'entry-lifetime-test-token'
 
 async function makeDatabase(): Promise<{ dbPath: string; cleanup: () => void }> {
   const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-entry-'))
   const dbPath = join(dir, 'ledger.db')
-  await openWorkerRuntime(dbPath).dispose()
+  await openEngineRuntime(dbPath).dispose()
   return { dbPath, cleanup: () => rmSync(dir, { recursive: true, force: true }) }
 }
 
@@ -120,7 +120,7 @@ describe('ledger MCP scoped process lifetime', () => {
     let disposals = 0
     const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-entry-'))
     const dbPath = join(dir, 'ledger.db')
-    await openWorkerRuntime(dbPath).dispose()
+    await openEngineRuntime(dbPath).dispose()
     let queryOwner: Awaited<ReturnType<typeof createLedgerMcpQueryRuntime>> | undefined
     const output = waitForReady()
     const serving = serveHttp({ dbPath, token: TOKEN }, async path => {

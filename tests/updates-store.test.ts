@@ -4,13 +4,13 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
+import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import {
   createUpdatesAtoms,
   selectUpdateActivity,
   selectUpdateCommandVisible,
   selectUpdateStatus,
-} from '../src/renderer/src/features/settings/updates-atoms.js'
+} from '../src/renderer/features/settings/updates-atoms.js'
 import type { UpdateStatus } from '../src/shared/schemas/updates.js'
 import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 

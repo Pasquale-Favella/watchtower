@@ -2,8 +2,8 @@ import * as Effect from 'effect/Effect'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import { CommandRunner } from '../src/main/agents/command-runner.js'
-import { CommandRunnerLiveLayer } from '../src/main/agents/command-runner-live.js'
+import { CommandRunner } from '../src/core/ports/process.js'
+import { CommandRunnerLiveLayer } from '../src/infrastructure/agent-harnesses/command-runner-live.js'
 
 describe('CommandRunner fast child startup', () => {
   it('keeps output from a child that writes and exits immediately', async () => {

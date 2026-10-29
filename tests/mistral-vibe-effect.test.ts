@@ -23,10 +23,10 @@ vi.mock('fs', async importOriginal => {
 
 import { mkdir, writeFile } from 'node:fs/promises'
 
-import { Env } from '../src/main/env.js'
-import { createMistralVibeProvider } from '../src/main/pipeline/providers/mistral-vibe.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createMistralVibeProvider } from '../src/infrastructure/provider-adapters/mistral-vibe.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''

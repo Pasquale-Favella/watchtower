@@ -22,14 +22,22 @@ import {
   RESPAWN_BACKOFF_CAP_MS,
   RESPAWN_BACKOFF_RESET_AFTER_MS,
   respawnBackoffDelayForAttempt,
-} from '../src/main/db-worker/client.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import { Env } from '../src/main/env.js'
-import { OperationalLog, type OperationalLogSink, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
-import { openWorkerRuntime, type WorkerOverrides, type WorkerRuntime } from '../src/main/worker-runtime.js'
+} from '../src/platform/electron/workers/client.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import {
+  OperationalLog,
+  type OperationalLogSink,
+  SCAN_DURATION_COUNTER,
+} from '../src/infrastructure/logging/operational-log.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
+import { runScan, ScanAbortedError, type ScanMetadata } from '../src/infrastructure/ingestion/scan.js'
+import {
+  openEngineRuntime,
+  type EngineOverrides,
+  type EngineRuntime,
+} from '../src/infrastructure/runtime/engine-runtime.js'
 import {
   type ControlledCall,
   type ControlledTransport,
@@ -65,14 +73,14 @@ function throwingFetch(message = 'offline'): typeof fetch {
 describe('DbWorkerContext ops (ADR 0023)', () => {
   let dir = ''
   let ctx: DbWorkerContext | null = null
-  let runtime: WorkerRuntime | null = null
+  let runtime: EngineRuntime | null = null
   const events: DbWorkerEvent[] = []
 
   /** Uses the same runtime, client and migrations as worker boot. */
-  function openWith<Overrides extends WorkerOverrides = never>(runtimeLayer?: Layer.Layer<Overrides>): DbWorkerContext {
+  function openWith<Overrides extends EngineOverrides = never>(runtimeLayer?: Layer.Layer<Overrides>): DbWorkerContext {
     dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    runtime = openWorkerRuntime(init.dbPath, undefined, runtimeLayer)
+    runtime = openEngineRuntime(init.dbPath, undefined, runtimeLayer)
     ctx = new DbWorkerContext(init, event => events.push(event), { runtime })
     return ctx
   }
@@ -198,7 +206,7 @@ describe('DbWorkerContext ops (ADR 0023)', () => {
   it('emits ledger reset after the clear commits even when post-clear settings info fails', async () => {
     dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    runtime = openWorkerRuntime(init.dbPath)
+    runtime = openEngineRuntime(init.dbPath)
     ctx = new DbWorkerContext(init, event => events.push(event), {
       runtime,
       readSettingsInfo: () => Effect.fail(new Error('post-clear settings info failed')),
@@ -1478,11 +1486,11 @@ describe('DbWorkerContext cadence jitter (Wave 7 §4.4)', () => {
     vi.useFakeTimers()
     const dir = tempDataDir()
     const init = { dbPath: join(dir, 'ledger.db'), dataDir: dir, cacheDir: join(dir, 'cache') }
-    let runtime: WorkerRuntime | null = null
+    let runtime: EngineRuntime | null = null
     let workerContext: DbWorkerContext | null = null
     const tickTimes: number[] = []
     try {
-      runtime = openWorkerRuntime(init.dbPath)
+      runtime = openEngineRuntime(init.dbPath)
       workerContext = new DbWorkerContext(init, () => {}, { runtime })
       const triggerScan = vi
         .spyOn(

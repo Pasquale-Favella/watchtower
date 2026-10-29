@@ -5,13 +5,13 @@ import {
   hydratePreferences,
   preferencesAtom,
   updatePreferences,
-} from '../src/renderer/src/features/settings/preferences-atoms.js'
+} from '../src/renderer/features/settings/preferences-atoms.js'
 import {
   defaultPreferences,
   type Preferences,
   PREFERENCES_STORAGE_KEY,
   type PreferenceStorage,
-} from '../src/renderer/src/shared/lib/preferences.js'
+} from '../src/renderer/shared/lib/preferences.js'
 
 class MemoryStorage implements PreferenceStorage {
   value: string | null = null

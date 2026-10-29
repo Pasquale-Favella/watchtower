@@ -4,14 +4,14 @@ import * as Exit from 'effect/Exit'
 import * as Option from 'effect/Option'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('../src/main/pipeline/scan.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../src/main/pipeline/scan.js')>()),
+vi.mock('../src/infrastructure/ingestion/scan.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../src/infrastructure/ingestion/scan.js')>()),
   runScan: vi.fn(),
 }))
 
-import { GatewayReports } from '../src/main/application/gateway-reports.js'
-import { scanLedger } from '../src/main/application/scan-ledger.js'
-import { runScan, ScanAbortedError, type ScanMetadata } from '../src/main/pipeline/scan.js'
+import { GatewayReports } from '../src/core/ports/gateway-reports.js'
+import { scanLedger } from '../src/core/application/commands/scan-ledger.js'
+import { runScan, ScanAbortedError, type ScanMetadata } from '../src/infrastructure/ingestion/scan.js'
 import { atTime, openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const metadata: ScanMetadata = {

@@ -45,11 +45,11 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { type AppPaths, appPaths, Env } from '../src/main/env.js'
-import { createCodebuffProvider } from '../src/main/pipeline/providers/codebuff.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { type AppPaths, appPaths, Env } from '../src/infrastructure/config/environment.js'
+import { createCodebuffProvider } from '../src/infrastructure/provider-adapters/codebuff.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let root = ''
 

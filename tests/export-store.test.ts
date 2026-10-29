@@ -4,7 +4,7 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
+import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import {
   createExportAtoms,
   type ExportMachine,
@@ -12,7 +12,7 @@ import {
   selectExporting,
   selectExportMessage,
   transitionExport,
-} from '../src/renderer/src/features/settings/export-atoms.js'
+} from '../src/renderer/features/settings/export-atoms.js'
 import type { ExportResult } from '../src/shared/schemas/export.js'
 import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 

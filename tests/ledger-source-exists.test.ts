@@ -12,12 +12,12 @@ import * as Layer from 'effect/Layer'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { LedgerIngest, LedgerQueries } from '../src/infrastructure/sqlite/ledger-repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const directories: string[] = []
-const runtimes: WorkerRuntime[] = []
+const runtimes: EngineRuntime[] = []
 
 function removeFixture(directory: string): void {
   const target = resolve(directory)
@@ -29,7 +29,7 @@ function removeFixture(directory: string): void {
 function openOwner() {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-ledger-source-exists-'))
   directories.push(directory)
-  const runtime = openWorkerRuntime(join(directory, 'ledger.db'))
+  const runtime = openEngineRuntime(join(directory, 'ledger.db'))
   runtimes.push(runtime)
   return { runtime, dbPath: join(directory, 'ledger.db') }
 }

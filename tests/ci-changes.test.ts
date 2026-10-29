@@ -55,7 +55,11 @@ describe('CI change selection', () => {
   })
 
   it('verifies application directories for runtime changes without building installers', () => {
-    expect(classifyChanges(['src/main/index.ts'])).toEqual({ checks: true, runtime: true, installers: false })
+    expect(classifyChanges(['src/platform/electron/main/index.ts'])).toEqual({
+      checks: true,
+      runtime: true,
+      installers: false,
+    })
   })
 
   it.each([

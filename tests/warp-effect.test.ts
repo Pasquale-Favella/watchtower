@@ -13,8 +13,8 @@ const databaseState = vi.hoisted(() => ({
   closeError: undefined as Error | undefined,
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase(path: string) {
@@ -36,15 +36,15 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
+import { Env } from '../src/infrastructure/config/environment.js'
 import type {
   Provider,
   ProviderScanContext,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { createWarpProvider } from '../src/main/pipeline/providers/warp.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { createWarpProvider } from '../src/infrastructure/provider-adapters/warp.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let root = ''
 

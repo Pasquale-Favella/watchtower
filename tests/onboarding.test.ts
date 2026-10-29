@@ -4,7 +4,7 @@ import {
   markOnboarded,
   ONBOARDING_KEY,
   ONBOARDING_STEPS,
-} from '../src/renderer/src/app/components/onboarding-steps.js'
+} from '../src/renderer/components/shell/onboarding-steps.js'
 
 describe('ONBOARDING_STEPS', () => {
   it('covers the welcome screen plus the 9 sections that exist in the app today', () => {

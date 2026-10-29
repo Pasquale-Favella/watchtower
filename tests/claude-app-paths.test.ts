@@ -5,8 +5,17 @@ import { delimiter as pathDelimiter, isAbsolute, join, resolve } from 'node:path
 import { Effect } from 'effect'
 import { describe, expect, it } from 'vitest'
 
-import { type AppPaths, appPaths, type PlatformPaths, type ProviderOverrides } from '../src/main/env.js'
-import { claude, getClaudeConfigDirsEffect, getDesktopSessionsDirs } from '../src/main/pipeline/providers/claude.js'
+import {
+  type AppPaths,
+  appPaths,
+  type PlatformPaths,
+  type ProviderOverrides,
+} from '../src/infrastructure/config/environment.js'
+import {
+  claude,
+  getClaudeConfigDirsEffect,
+  getDesktopSessionsDirs,
+} from '../src/infrastructure/provider-adapters/claude.js'
 
 // `claude.ts` seam composition, not the resolver: `overrideFor` / `platformFor`
 // / `resolveProviderOverrides` and the override key list are already pinned in

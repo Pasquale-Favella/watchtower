@@ -11,11 +11,11 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
-import { queryActiveCurrency, selectDisplayCurrency } from '../src/main/application/currency-commands.js'
-import { FxRates } from '../src/main/fx.js'
-import { initializeLedger } from '../src/main/store/ledger-initialization.js'
-import { LedgerConfig } from '../src/main/store/ledger-ports.js'
-import { makeWorkerRuntime } from '../src/main/worker-runtime.js'
+import { queryActiveCurrency, selectDisplayCurrency } from '../src/core/application/commands/currency-commands.js'
+import { FxRates } from '../src/infrastructure/pricing/fx.js'
+import { initializeLedger } from '../src/infrastructure/sqlite/ledger-initialization.js'
+import { LedgerConfig } from '../src/core/ports/repository.js'
+import { makeEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
 
 function fakeRates(overrides: Partial<FxRates['Service']> = {}): FxRates['Service'] {
@@ -187,7 +187,7 @@ describe('currency application commands', () => {
 
   it('roundtrips a selected currency and cached rate through the native worker root', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-currency-'))
-    const runtime = makeWorkerRuntime(join(directory, 'ledger.db'))
+    const runtime = makeEngineRuntime(join(directory, 'ledger.db'))
     try {
       runtime.runSync(initializeLedger)
       await runtime

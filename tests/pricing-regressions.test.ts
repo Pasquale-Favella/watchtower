@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { billableOutputTokens } from '../src/main/pipeline/billable-output.js'
-import { calculateCost, getModelCosts } from '../src/main/pipeline/models.js'
+import { billableOutputTokens } from '../src/core/ingestion/normalization/billable-output.js'
+import { calculateCost, getModelCosts } from '../src/infrastructure/pricing/models.js'
 
 /**
  * Regression guards for the pricing-correctness work recorded in ADR 0033.

@@ -4,8 +4,8 @@ import {
   type DbWorkerTransport,
   type DbWorkerTransportCallbacks,
   type DbWorkerTransportFactory,
-} from '../src/main/db-worker/client.js'
-import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
+} from '../src/platform/electron/workers/client.js'
+import type { DbWorkerData } from '../src/platform/electron/workers/protocol.js'
 
 export interface ControlledWorker extends DbWorkerPort {
   readonly listeners: Map<string, Array<(...args: unknown[]) => void>>

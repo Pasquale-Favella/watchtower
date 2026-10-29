@@ -6,17 +6,17 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { queryPullRequestsView } from '../src/main/application/pull-requests-query.js'
-import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { queryPullRequestsView } from '../src/core/application/queries/pull-requests-query.js'
+import type { ScopedViewQueryInputs } from '../src/core/application/queries/view-queries.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
 import {
   LedgerConfig,
   LedgerIngest,
   LedgerQueries,
   type LedgerQueriesPort,
   type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-ports.js'
+} from '../src/core/ports/repository.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 

@@ -5,6 +5,84 @@ data pipeline: it discovers and parses tool session files, maintains the
 session cache, and writes per-file changes to the local SQLite ledger. Views
 derive their results from that ledger at query time.
 
+## Engine and interface boundaries
+
+Watchtower uses the source structure defined in
+[ADR 0038](./adr/0038-engine-core-and-desktop-adapters.md). Desktop and MCP
+already consume the same application queries. The separation makes that reuse
+explicit and prevents the core from depending on either interface.
+
+```text
+src/
+  core/
+    domain/
+      observations/
+      sessions/
+      providers/
+      pricing/
+      evidence/
+    ingestion/
+      discovery/
+      parsers/
+      normalization/
+      reconciliation/
+    analytics/
+      metrics/
+      detectors/
+      attribution/
+      projections/
+    application/
+      queries/
+      commands/
+    ports/
+      repository.ts
+      filesystem.ts
+      clock.ts
+      process.ts
+  infrastructure/
+    sqlite/
+    provider-adapters/
+    agent-harnesses/
+    ingestion/
+    pricing/
+    runtime/
+  platform/
+    electron/
+      main/
+      preload/
+      workers/
+    mcp/
+  renderer/
+    components/
+    features/
+    stores/
+  shared/
+```
+
+The tree lists the main ownership boundaries. Core queries and commands depend
+on capability contracts in `core/ports/`. Infrastructure implements those
+contracts. The Node engine composition in
+[`infrastructure/runtime/engine-runtime.ts`](../src/infrastructure/runtime/engine-runtime.ts)
+selects the SQLite connection, provider IO and live services. Worker supervision
+and transport remain in `platform/electron/workers/`; the MCP adapter composes a
+separate read-only query runtime. `ScanSources` keeps provider/cache IO outside
+the core scan command, and the process port keeps Harness detection and ACP
+dependencies out of ingestion. The filesystem and clock ports use the existing
+Effect services.
+
+The renderer consumes shared contracts through the preload bridge. ESLint
+rejects renderer/preload imports of engine implementations and rejects core
+imports of infrastructure, platform, Electron or React, including types.
+Source relocation preserves the three emitted entries under `out/main/`, so
+worker and MCP launch paths retain their existing representation.
+
+This separation does not establish a new distributable product. A future CLI
+can compose the engine in plain Node, as the ingestion/query smoke test does,
+but must choose its own database/cache paths and disposal policy. The desktop
+ledger still has one writer. Provider path and pricing snapshots remain local
+to their isolate. Replacing SQLite, Effect or the desktop stack would address
+different problems; this extraction provides no evidence for doing so.
+
 ## App map
 
 Each backend isolate owns its Effect runtime and resources. Each renderer
@@ -32,7 +110,7 @@ flowchart TB
         pool["MCP pool and sidecar lifecycle"]
     end
 
-    subgraph worker["db-worker thread · WorkerRuntime"]
+    subgraph worker["db-worker thread · EngineRuntime"]
         supervisor["Scan supervisor<br/>Cadence, coalescing, cancellation"]
         scan["scanLedger and provider pipeline<br/>Discovery, extraction, cache, deltas"]
         queries["Application queries and commands<br/>Schema-validated query results"]
@@ -142,11 +220,11 @@ and event paths are drawn explicitly.
    becomes an error state; a malformed broadcast is dropped by the tripwire.
 
 To trace these paths in source, start with the
-[worker supervisor](../src/main/db-worker/entry.ts),
-[scan application](../src/main/application/scan-ledger.ts),
-[query dispatcher](../src/main/db-worker/query-dispatch.ts), and
-[Overview query](../src/main/application/overview-query.ts). The
-[MCP query runtime](../src/main/agents/ledger-mcp/query-runtime.ts) shows how
+[worker supervisor](../src/platform/electron/workers/entry.ts),
+[scan application](../src/core/application/commands/scan-ledger.ts),
+[query dispatcher](../src/platform/electron/workers/query-dispatch.ts), and
+[Overview query](../src/core/application/queries/overview-query.ts). The
+[MCP query runtime](../src/platform/mcp/query-runtime.ts) shows how
 the same application queries run with a separate read-only service graph.
 
 The renderer composition follows [ADR 0036](./adr/0036-effect-renderer-composition.md).
@@ -323,7 +401,8 @@ the native API.
 
 ### Application workflows and repository boundaries
 
-`src/main/application/` contains query and command workflows. They compose
+`src/core/application/queries/` and `src/core/application/commands/` contain
+query and command workflows. They compose
 focused capabilities such as `LedgerViewReads`, `LedgerSessionReads`,
 `LedgerExportReads`, `LedgerIngest`, and `LedgerConfig`. Repository
 implementations are focused capability layers that resolve the isolate's existing

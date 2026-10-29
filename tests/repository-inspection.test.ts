@@ -9,14 +9,9 @@ import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import {
-  CommandError,
-  type CommandHandle,
-  CommandRunner,
-  type CommandStart,
-} from '../src/main/agents/command-runner.js'
-import { RepositoryInspection, RepositoryInspectionError } from '../src/main/application/repository-inspection.js'
-import { RepositoryInspectionLive } from '../src/main/repository-inspection-live.js'
+import { CommandError, type CommandHandle, CommandRunner, type CommandStart } from '../src/core/ports/process.js'
+import { RepositoryInspection, RepositoryInspectionError } from '../src/core/ports/repository-inspection.js'
+import { RepositoryInspectionLive } from '../src/infrastructure/services/repository-inspection-live.js'
 import { runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 const directories: string[] = []

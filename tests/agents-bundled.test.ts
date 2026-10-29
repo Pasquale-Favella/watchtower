@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { resolveBundledEntry } from '../src/main/agents/harnesses/bundled.js'
-import type { HarnessSpec } from '../src/main/agents/harnesses/types.js'
+import { resolveBundledEntry } from '../src/infrastructure/agent-harnesses/harnesses/bundled.js'
+import type { HarnessSpec } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
 
 const dirs: string[] = []
 function fakeAppRoot(): string {

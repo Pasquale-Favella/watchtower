@@ -4,16 +4,16 @@ import { tmpdir } from 'os'
 import { dirname, join } from 'path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Env } from '../src/main/env.js'
-import { createOpenDesignProvider } from '../src/main/pipeline/providers/open-design.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createOpenDesignProvider } from '../src/infrastructure/provider-adapters/open-design.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''

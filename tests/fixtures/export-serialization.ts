@@ -1,4 +1,4 @@
-import type { ExportRows } from '../../src/main/export-calculation.js'
+import type { ExportRows } from '../../src/core/analytics/projections/export-calculation.js'
 
 export function buildExportSerializationRows(): ExportRows {
   return {

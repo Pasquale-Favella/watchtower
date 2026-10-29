@@ -6,10 +6,10 @@ import * as SchemaAST from 'effect/SchemaAST'
 import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it } from 'vitest'
 
-import { clearLedger } from '../src/main/application/clear-ledger.js'
-import { LedgerMaintenance } from '../src/main/application/ledger-maintenance.js'
-import { initializeLedger } from '../src/main/store/ledger-initialization.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { clearLedger } from '../src/core/application/commands/clear-ledger.js'
+import { LedgerMaintenance } from '../src/core/ports/ledger-maintenance.js'
+import { initializeLedger } from '../src/infrastructure/sqlite/ledger-initialization.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
 import {
   currencyRateRowSchema,
   ledgerCallRowSchema,

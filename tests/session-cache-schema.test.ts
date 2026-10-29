@@ -7,7 +7,12 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { emptyCache, loadCacheEffect, saveCacheEffect, sessionCachePath } from '../src/main/pipeline/session-cache.js'
+import {
+  emptyCache,
+  loadCacheEffect,
+  saveCacheEffect,
+  sessionCachePath,
+} from '../src/infrastructure/ingestion/session-cache.js'
 import { sessionCacheSchema } from '../src/shared/schemas/session-cache.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 

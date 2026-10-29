@@ -6,12 +6,12 @@ import * as Effect from 'effect/Effect'
 import { RpcServer, RpcWorker } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { DbWorkerContext } from '../../src/main/db-worker/context.js'
-import type { DbWorkerData } from '../../src/main/db-worker/protocol.js'
-import { dbWorkerRpcServerLayer } from '../../src/main/db-worker/rpc-server.js'
-import { LedgerIngest } from '../../src/main/store/ledger-repository.js'
-import { LedgerViewReads } from '../../src/main/store/ledger-view-reads.js'
-import { openWorkerRuntime } from '../../src/main/worker-runtime.js'
+import { DbWorkerContext } from '../../src/platform/electron/workers/context.js'
+import type { DbWorkerData } from '../../src/platform/electron/workers/protocol.js'
+import { dbWorkerRpcServerLayer } from '../../src/platform/electron/workers/rpc-server.js'
+import { LedgerIngest } from '../../src/infrastructure/sqlite/ledger-repository.js'
+import { LedgerViewReads } from '../../src/core/ports/ledger-view-reads.js'
+import { openEngineRuntime } from '../../src/infrastructure/runtime/engine-runtime.js'
 import { WorkerRpcGroup } from '../../src/shared/rpc/worker.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './cached-file.js'
 
@@ -22,7 +22,7 @@ const init = workerData as DbWorkerData
 const snapshotGate = Deferred.makeUnsafe<undefined, never>()
 const serverLayer = dbWorkerRpcServerLayer({
   createContext: async emit => {
-    const runtime = openWorkerRuntime(init.dbPath)
+    const runtime = openEngineRuntime(init.dbPath)
     try {
       runtime.runSync(
         Effect.flatMap(LedgerIngest, ingest =>

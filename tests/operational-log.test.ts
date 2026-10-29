@@ -6,7 +6,7 @@ import * as Effect from 'effect/Effect'
 import * as Metric from 'effect/Metric'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { makeMainRuntime } from '../src/main/main-runtime.js'
+import { makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
 import {
   closeOperationalLog,
   FETCH_TIMEOUT_COUNTER,
@@ -19,7 +19,7 @@ import {
   PROBE_OUTCOME_COUNTER,
   safeLogOperationalEvent,
   SCAN_DURATION_COUNTER,
-} from '../src/main/operational-log.js'
+} from '../src/infrastructure/logging/operational-log.js'
 import { sanitizeOperationalRecord } from '../src/shared/logging.js'
 
 let dir = ''

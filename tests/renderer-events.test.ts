@@ -1,7 +1,7 @@
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
-import { setRouter } from '../src/renderer/src/app/navigation.js'
-import { navigationReadinessAtom, subscribeToNavigation } from '../src/renderer/src/app/stores/subscribe.js'
+import { setRouter } from '../src/renderer/app/navigation.js'
+import { navigationReadinessAtom, subscribeToNavigation } from '../src/renderer/stores/subscribe.js'
 import { makeShellBridge } from './shell-bridge.js'
 
 describe('serialized shell navigation', () => {

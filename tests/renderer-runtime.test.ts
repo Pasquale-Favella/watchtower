@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { periodAtom } from '../src/renderer/src/app/atoms/scope.js'
-import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
+import { periodAtom } from '../src/renderer/stores/atoms/scope.js'
+import { createRendererRuntimeOwner } from '../src/renderer/app/renderer-runtime.js'
 
 describe('renderer runtime owner', () => {
   it('creates independent registries with an injectable initial period', () => {

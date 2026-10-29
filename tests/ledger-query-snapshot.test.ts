@@ -8,9 +8,9 @@ import * as SqlError from 'effect/sql/SqlError'
 import * as Tracer from 'effect/Tracer'
 import { describe, expect, it } from 'vitest'
 
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/core/application/queries/ledger-query-snapshot.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 

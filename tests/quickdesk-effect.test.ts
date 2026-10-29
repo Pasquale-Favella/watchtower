@@ -6,12 +6,12 @@ import { DatabaseSync } from 'node:sqlite'
 import { Effect, Stream } from 'effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { Env } from '../src/main/env.js'
-import { setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createQuickdeskProvider } from '../src/main/pipeline/providers/quickdesk.js'
-import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
-import { estimateTokensFromChars } from '../src/main/pipeline/token-estimate.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createQuickdeskProvider } from '../src/infrastructure/provider-adapters/quickdesk.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
+import { estimateTokensFromChars } from '../src/core/ingestion/parsers/token-estimate.js'
 
 const directories: string[] = []
 

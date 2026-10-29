@@ -1,10 +1,10 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { AssistantSetup } from '../src/main/application/assistant-setup.js'
-import { queryOptimizeView } from '../src/main/application/optimize-query.js'
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
+import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
+import { queryOptimizeView } from '../src/core/application/queries/optimize-query.js'
+import { LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '../src/core/application/queries/ledger-query-snapshot.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 

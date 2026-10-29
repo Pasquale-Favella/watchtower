@@ -12,7 +12,7 @@ import {
   routingPolicyFor,
   type SelectionProvider,
   SelectionUnavailableError,
-} from '../src/main/agents/model-routing.js'
+} from '../src/infrastructure/agent-harnesses/model-routing.js'
 
 function select(id: string, category: string, currentValue: string, values: string[]) {
   return {

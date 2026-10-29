@@ -8,19 +8,19 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Stream from 'effect/Stream'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { configInvalidationRevisionAtom } from '../src/renderer/src/app/atoms/config-change.js'
-import { initialScanState } from '../src/renderer/src/app/atoms/scan.js'
-import { scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
-import { activeCurrencyAtom } from '../src/renderer/src/features/settings/atoms.js'
-import { applyBeaconLifecycleFrame } from '../src/renderer/src/orb/beacon-wiring.js'
-import { subscribeToOrbBeacon } from '../src/renderer/src/orb/beacon-wiring.js'
+import { configInvalidationRevisionAtom } from '../src/renderer/stores/atoms/config-change.js'
+import { initialScanState } from '../src/renderer/stores/atoms/scan.js'
+import { scanStateAtom } from '../src/renderer/stores/atoms/scan.js'
+import { activeCurrencyAtom } from '../src/renderer/features/settings/atoms.js'
+import { applyBeaconLifecycleFrame } from '../src/renderer/orb/beacon-wiring.js'
+import { subscribeToOrbBeacon } from '../src/renderer/orb/beacon-wiring.js'
 import {
   applyPanelLifecycleFrame,
   panelEventsReadyAtom,
   subscribeToOrbPanel,
-} from '../src/renderer/src/orb/panel-wiring.js'
-import type { RoleLifecycleCursor } from '../src/renderer/src/shared/lib/rpc-events.js'
-import { runRoleLifecycle } from '../src/renderer/src/shared/lib/rpc-events.js'
+} from '../src/renderer/orb/panel-wiring.js'
+import type { RoleLifecycleCursor } from '../src/renderer/shared/lib/rpc-events.js'
+import { runRoleLifecycle } from '../src/renderer/shared/lib/rpc-events.js'
 import { PanelRpcGroup } from '../src/shared/rpc/application.js'
 import type { RpcBridge } from '../src/shared/rpc/bridge.js'
 import type { BeaconLifecycleFrame, PanelLifecycleFrame } from '../src/shared/rpc/lifecycle.js'
@@ -135,9 +135,9 @@ describe('panel RPC lifecycle and placement adapter', () => {
 
   it('uses the root-owned preference storage listener and does not add legacy data listeners', async () => {
     const browser = orbWindow()
-    const { initializeRendererWindow } = await import('../src/renderer/src/app/renderer-root.js')
-    const { createRendererRuntimeOwner } = await import('../src/renderer/src/app/renderer-runtime.js')
-    const { preferencesAtom } = await import('../src/renderer/src/features/settings/preferences-atoms.js')
+    const { initializeRendererWindow } = await import('../src/renderer/app/renderer-root.js')
+    const { createRendererRuntimeOwner } = await import('../src/renderer/app/renderer-runtime.js')
+    const { preferencesAtom } = await import('../src/renderer/features/settings/preferences-atoms.js')
     const owner = createRendererRuntimeOwner()
     const disposeRoot = initializeRendererWindow(window, { owner })
     const storageListener = browser.events.get('storage')

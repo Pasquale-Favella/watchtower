@@ -11,12 +11,12 @@ import * as SqlClient from 'effect/sql/SqlClient'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { clearLedger } from '../src/main/application/clear-ledger.js'
-import { LedgerMaintenance } from '../src/main/application/ledger-maintenance.js'
-import { LedgerMaintenanceLive } from '../src/main/ledger-maintenance-live.js'
-import { initializeLedger } from '../src/main/store/ledger-initialization.js'
-import { LedgerConfig } from '../src/main/store/ledger-ports.js'
-import { LedgerIngest, LedgerPortsLayer } from '../src/main/store/ledger-repository.js'
+import { clearLedger } from '../src/core/application/commands/clear-ledger.js'
+import { LedgerMaintenance } from '../src/core/ports/ledger-maintenance.js'
+import { LedgerMaintenanceLive } from '../src/infrastructure/services/ledger-maintenance-live.js'
+import { initializeLedger } from '../src/infrastructure/sqlite/ledger-initialization.js'
+import { LedgerConfig } from '../src/core/ports/repository.js'
+import { LedgerIngest, LedgerPortsLayer } from '../src/infrastructure/sqlite/ledger-repository.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const tempDirs: string[] = []

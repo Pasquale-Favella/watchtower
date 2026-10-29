@@ -10,7 +10,7 @@ import * as Layer from 'effect/Layer'
 import * as PlatformError from 'effect/PlatformError'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { ensureZipSuffix, exportStamp, zipExportFolder } from '../src/main/export-zip.js'
+import { ensureZipSuffix, exportStamp, zipExportFolder } from '../src/platform/electron/main/export-zip.js'
 
 describe('export-zip', () => {
   const bases: string[] = []

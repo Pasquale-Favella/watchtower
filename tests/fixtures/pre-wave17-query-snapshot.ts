@@ -1,9 +1,12 @@
 /** Frozen snapshot adapter used only by the independent legacy view oracle. */
 import * as Effect from 'effect/Effect'
 
-import { captureModelPricingCatalogue, captureProxyPaths } from '../../src/main/pipeline/models.js'
-import type { LedgerConfigPort, LedgerQueriesPort } from '../../src/main/store/ledger-ports.js'
-import { type LedgerQuerySnapshot, makeLedgerQuerySnapshot } from '../../src/main/store/ledger-query-snapshot.js'
+import { captureModelPricingCatalogue, captureProxyPaths } from '../../src/infrastructure/pricing/models.js'
+import type { LedgerConfigPort, LedgerQueriesPort } from '../../src/core/ports/repository.js'
+import {
+  type LedgerQuerySnapshot,
+  makeLedgerQuerySnapshot,
+} from '../../src/core/application/queries/ledger-query-snapshot.js'
 
 export type { LedgerQuerySnapshot }
 

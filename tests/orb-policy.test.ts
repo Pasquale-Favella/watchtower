@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { containsPoint, createHeldRequest, createPeekGate, offsetAnchor } from '../src/main/orb-policy.js'
+import {
+  containsPoint,
+  createHeldRequest,
+  createPeekGate,
+  offsetAnchor,
+} from '../src/platform/electron/main/orb-policy.js'
 
 describe('orb geometry helpers', () => {
   it('offsets a drag anchor in whole DIPs', () => {

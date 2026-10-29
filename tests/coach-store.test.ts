@@ -5,10 +5,10 @@ import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Stream from 'effect/Stream'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { overviewScopeAtom, periodAtom } from '../src/renderer/src/app/atoms/scope.js'
-import { createCoachAtoms, mountCoachAtoms } from '../src/renderer/src/features/coach-skills/atoms.js'
-import { harnessBadge, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
-import { preferencesAtom } from '../src/renderer/src/features/settings/preferences-atoms.js'
+import { overviewScopeAtom, periodAtom } from '../src/renderer/stores/atoms/scope.js'
+import { createCoachAtoms, mountCoachAtoms } from '../src/renderer/features/coach-skills/atoms.js'
+import { harnessBadge, statusLabel } from '../src/renderer/features/coach-skills/lib.js'
+import { preferencesAtom } from '../src/renderer/features/settings/preferences-atoms.js'
 import { CoachRpcError, type CoachRunFrame } from '../src/shared/rpc/coach.js'
 import type {
   CoachEventEnvelope,

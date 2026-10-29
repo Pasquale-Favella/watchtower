@@ -6,8 +6,8 @@ import * as Schema from 'effect/Schema'
 import { build } from 'esbuild'
 import { describe, expect, it, vi } from 'vitest'
 
-import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
-import type { DbWorkerData, DbWorkerEvent } from '../src/main/db-worker/protocol.js'
+import { DbWorkerClient, type DbWorkerPort } from '../src/platform/electron/workers/client.js'
+import type { DbWorkerData, DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
 import { dashboardViewsSchema } from '../src/shared/schemas/views.js'
 
 const isReadOrderingMarker = (event: DbWorkerEvent): boolean =>

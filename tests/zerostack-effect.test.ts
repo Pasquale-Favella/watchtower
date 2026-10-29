@@ -25,10 +25,10 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { createZerostackProvider } from '../src/main/pipeline/providers/zerostack.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { createZerostackProvider } from '../src/infrastructure/provider-adapters/zerostack.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 let root = ''
 

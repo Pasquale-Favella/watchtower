@@ -8,7 +8,7 @@ import * as Fiber from 'effect/Fiber'
 import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { openWorkerRpcTransport } from '../src/main/db-worker/rpc-transport.js'
+import { openWorkerRpcTransport } from '../src/platform/electron/workers/rpc-transport.js'
 import { WORKER_REQUEST_CAPACITY, type WorkerEvent, WorkerRpcError } from '../src/shared/rpc/worker.js'
 
 let fixtureDir = ''

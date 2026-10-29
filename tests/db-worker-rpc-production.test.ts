@@ -6,8 +6,8 @@ import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { prepareProviderFixture } from '../scripts/fixtures/provider.cjs'
-import { DbWorkerClient } from '../src/main/db-worker/client.js'
-import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
+import { DbWorkerClient } from '../src/platform/electron/workers/client.js'
+import type { DbWorkerData } from '../src/platform/electron/workers/protocol.js'
 
 function addCodexSessionBurst(profile: string, count: number): void {
   const dateParts = new Date().toISOString().slice(0, 10).split('-')
@@ -43,7 +43,7 @@ describe('production db-worker over official typed RPC', () => {
     directory = mkdtempSync(join(resolve('node_modules/.cache'), 'watchtower-worker-rpc-production-'))
     entry = join(directory, 'worker.mjs')
     await build({
-      entryPoints: [resolve('src/main/db-worker/entry.ts')],
+      entryPoints: [resolve('src/platform/electron/workers/entry.ts')],
       outfile: entry,
       bundle: true,
       packages: 'external',

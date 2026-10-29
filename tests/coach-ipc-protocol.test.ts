@@ -5,11 +5,11 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Stream from 'effect/Stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import { createApplicationAgents } from '../src/main/agents/ipc.js'
-import { HarnessSnapshot } from '../src/main/agents/snapshot.js'
-import { makeMainRuntime } from '../src/main/main-runtime.js'
-import { coachHandlers } from '../src/main/rpc/coach-handlers.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import { createApplicationAgents } from '../src/platform/electron/main/coach/ipc.js'
+import { HarnessSnapshot } from '../src/infrastructure/agent-harnesses/snapshot.js'
+import { makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
+import { coachHandlers } from '../src/platform/electron/main/rpc/coach-handlers.js'
 import { CoachRpcError, CoachRpcGroup } from '../src/shared/rpc/coach.js'
 
 afterEach(() => vi.useRealTimers())

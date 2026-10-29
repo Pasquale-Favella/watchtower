@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_PERIOD_VALUES } from '../src/renderer/src/shared/lib/settings-constants'
+import { DEFAULT_PERIOD_VALUES } from '../src/renderer/shared/lib/settings-constants'
 import {
   formatBytes,
   parseRate,
   readStoredDefaultPeriod,
   writeStoredDefaultPeriod,
   validatePricing,
-} from '../src/renderer/src/features/settings/lib'
+} from '../src/renderer/features/settings/lib'
 
 class FakeStorage {
   private store = new Map<string, string>()

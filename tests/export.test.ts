@@ -5,16 +5,16 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
-import { queryExport } from '../src/main/application/export-query.js'
+import { queryExport } from '../src/core/application/queries/export-query.js'
 import {
   buildCsvExportFilesFromRows,
   buildJsonExportFromRows,
   CSV_TABLE_HEADERS,
   type ExportRow,
   type ExportRows,
-} from '../src/main/export-calculation.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
+} from '../src/core/analytics/projections/export-calculation.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { buildExportSerializationRows } from './fixtures/export-serialization.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'

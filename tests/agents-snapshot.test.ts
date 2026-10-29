@@ -8,8 +8,8 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import type { ProbeResult } from '../src/main/agents/probe.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import type { ProbeResult } from '../src/infrastructure/agent-harnesses/probe.js'
 import {
   type HarnessInstance,
   HarnessProbe,
@@ -17,14 +17,14 @@ import {
   type HarnessSnapshotCounters,
   harnessSnapshotLayer,
   type HarnessSnapshotService,
-} from '../src/main/agents/snapshot.js'
+} from '../src/infrastructure/agent-harnesses/snapshot.js'
 import {
   closeOperationalLog,
   initOperationalLog,
   OperationalLog,
   OperationalLogLoggerLayer,
   PROBE_OUTCOME_COUNTER,
-} from '../src/main/operational-log.js'
+} from '../src/infrastructure/logging/operational-log.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
 
 const infos: HarnessInfo[] = [

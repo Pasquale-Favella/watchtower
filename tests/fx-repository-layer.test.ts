@@ -5,9 +5,9 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it } from 'vitest'
 
-import { FxRates, refreshFxRateWithRates } from '../src/main/fx.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { LedgerConfig } from '../src/main/store/ledger-repository.js'
+import { FxRates, refreshFxRateWithRates } from '../src/infrastructure/pricing/fx.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
+import { LedgerConfig } from '../src/infrastructure/sqlite/ledger-repository.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 function configLayer(overrides: Partial<LedgerConfig['Service']> = {}): Layer.Layer<LedgerConfig> {

@@ -4,10 +4,10 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setModelAliases, setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createKiroProvider } from '../src/main/pipeline/providers/kiro.js'
-import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { setModelAliases, setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createKiroProvider } from '../src/infrastructure/provider-adapters/kiro.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const tempDirs: string[] = []

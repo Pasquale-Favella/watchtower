@@ -6,9 +6,9 @@ import * as Effect from 'effect/Effect'
 import { RpcServer, RpcWorker } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import type { DbWorkerEmit } from '../../src/main/db-worker/context.js'
-import type { DbWorkerData } from '../../src/main/db-worker/protocol.js'
-import { dbWorkerRpcServerLayer } from '../../src/main/db-worker/rpc-server.js'
+import type { DbWorkerEmit } from '../../src/platform/electron/workers/context.js'
+import type { DbWorkerData } from '../../src/platform/electron/workers/protocol.js'
+import { dbWorkerRpcServerLayer } from '../../src/platform/electron/workers/rpc-server.js'
 import { WorkerRpcGroup } from '../../src/shared/rpc/worker.js'
 
 interface FixtureData extends DbWorkerData {

@@ -3,16 +3,16 @@ import * as Fiber from 'effect/Fiber'
 import * as Stream from 'effect/Stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { Provider } from '../src/main/pipeline/providers/types.js'
+import type { Provider } from '../src/infrastructure/provider-adapters/types.js'
 import { deferred } from './helpers/deferred.js'
 
 const mockState = vi.hoisted(() => ({
   load: undefined as ((name: string) => Promise<unknown>) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/providers/forge.js', async () => ({ forge: await mockState.load?.('forge') }))
-vi.mock('../src/main/pipeline/providers/zcode.js', async () => ({ zcode: await mockState.load?.('zcode') }))
-vi.mock('../src/main/pipeline/providers/zed.js', async () => ({ zed: await mockState.load?.('zed') }))
+vi.mock('../src/infrastructure/provider-adapters/forge.js', async () => ({ forge: await mockState.load?.('forge') }))
+vi.mock('../src/infrastructure/provider-adapters/zcode.js', async () => ({ zcode: await mockState.load?.('zcode') }))
+vi.mock('../src/infrastructure/provider-adapters/zed.js', async () => ({ zed: await mockState.load?.('zed') }))
 
 const optionalProviderNames = [
   'antigravity',
@@ -41,10 +41,10 @@ function provider(name: string): Provider {
 
 async function registryWithMocks(
   load: (name: string) => Promise<Provider>,
-): Promise<typeof import('../src/main/pipeline/providers/index.js')> {
+): Promise<typeof import('../src/infrastructure/provider-adapters/index.js')> {
   vi.resetModules()
   mockState.load = load
-  return import('../src/main/pipeline/providers/index.js')
+  return import('../src/infrastructure/provider-adapters/index.js')
 }
 
 afterEach(() => {
@@ -91,7 +91,7 @@ describe('native optional provider registry', () => {
       }
       return provider(name)
     })
-    const { ScanAbortedError } = await import('../src/main/pipeline/scan-control.js')
+    const { ScanAbortedError } = await import('../src/core/ingestion/reconciliation/scan-control.js')
     const abort = new ScanAbortedError({ message: 'scan aborted' })
     let stopCalled = false
     const fiber = Effect.runFork(

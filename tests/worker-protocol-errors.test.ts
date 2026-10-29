@@ -11,14 +11,14 @@ import * as SqlError from 'effect/sql/SqlError'
 import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { CurrencyCommandValidationError } from '../src/main/application/currency-commands.js'
-import { LedgerConfigValidationError } from '../src/main/application/ledger-config-commands.js'
-import { workerRpcError } from '../src/main/db-worker/rpc-errors.js'
-import { openWorkerRpcTransport, type WorkerRpcClient } from '../src/main/db-worker/rpc-transport.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import { UnsupportedLedgerSchemaVersion } from '../src/main/store/ledger-initialization.js'
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { CurrencyCommandValidationError } from '../src/core/application/commands/currency-commands.js'
+import { LedgerConfigValidationError } from '../src/core/application/commands/ledger-config-commands.js'
+import { workerRpcError } from '../src/platform/electron/workers/rpc-errors.js'
+import { openWorkerRpcTransport, type WorkerRpcClient } from '../src/platform/electron/workers/rpc-transport.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import { UnsupportedLedgerSchemaVersion } from '../src/infrastructure/sqlite/ledger-initialization.js'
+import { LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { type WorkerEvent, WorkerRpcError } from '../src/shared/rpc/worker.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
@@ -30,7 +30,7 @@ beforeAll(async () => {
   tempRoot = await mkdtemp(join(process.cwd(), 'node_modules', '.watchtower-worker-error-test-'))
   workerPath = join(tempRoot, 'db-worker.mjs')
   await build({
-    entryPoints: [fileURLToPath(new URL('../src/main/db-worker/entry.ts', import.meta.url))],
+    entryPoints: [fileURLToPath(new URL('../src/platform/electron/workers/entry.ts', import.meta.url))],
     outfile: workerPath,
     bundle: true,
     packages: 'external',
@@ -46,7 +46,7 @@ afterAll(async () => {
 
 async function seedLedger(directory: string): Promise<string> {
   const dbPath = join(directory, 'ledger.db')
-  const runtime = openWorkerRuntime(dbPath)
+  const runtime = openEngineRuntime(dbPath)
   try {
     await runtime.runPromise(
       Effect.flatMap(LedgerIngest, ingest =>
@@ -66,7 +66,7 @@ async function seedLedger(directory: string): Promise<string> {
 }
 
 async function rejectedSnapshot(dbPath: string): Promise<unknown> {
-  const runtime = openWorkerRuntime(dbPath)
+  const runtime = openEngineRuntime(dbPath)
   try {
     return await runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getRequestSnapshotData())).then(
       () => undefined,

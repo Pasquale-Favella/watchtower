@@ -1,4 +1,4 @@
-// Regenerates `src/main/pipeline/data/litellm-snapshot.json` — the bundled
+// Regenerates `src/infrastructure/pricing/data/litellm-snapshot.json` — the bundled
 // LiteLLM price catalog the pricing engine falls back to when a live fetch
 // fails or times out (ADR 0010).
 //
@@ -17,7 +17,7 @@
 // gate in `test.yml`.
 //
 // Two invariants this script must never break (the engine reads the file
-// directly from `loadSnapshot` in `src/main/pipeline/models.ts`):
+// directly from `loadSnapshot` in `src/infrastructure/pricing/models.ts`):
 //
 //  1. Schema. A flat object: key = model id, value =
 //     `[input, output, cacheWrite, cacheRead, fastMultiplier]`, every rate in
@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url'
 
 const UPSTREAM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json'
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
-const DEFAULT_SNAPSHOT_PATH = join(REPO_ROOT, 'src', 'main', 'pipeline', 'data', 'litellm-snapshot.json')
+const DEFAULT_SNAPSHOT_PATH = join(REPO_ROOT, 'src', 'infrastructure', 'pricing', 'data', 'litellm-snapshot.json')
 
 // `sample_spec` is LiteLLM's schema documentation block, not a model: it is the
 // one top-level key whose "rates" are literal zeroes, so without this it would
@@ -67,7 +67,7 @@ const FETCH_TIMEOUT_MS = 60_000
 
 /**
  * Clamp a per-token rate to a sane non-negative value. A standalone mirror of
- * `safePerTokenRate` in `src/main/pipeline/models.ts` — duplicated on purpose,
+ * `safePerTokenRate` in `src/infrastructure/pricing/models.ts` — duplicated on purpose,
  * so the script needs no build step and no import of Effect-using engine code.
  *
  * `Number.isFinite` rejects NaN/Infinity, negatives are rejected so a corrupt
@@ -153,7 +153,7 @@ function toTuple(entry) {
  * `provider_specific_entry.fast` multiplier that only their direct rows publish,
  * which silently priced fast mode at 1x.
  *
- * `fetchAndCachePricingEffect` in `src/main/pipeline/models.ts` applies the same
+ * `fetchAndCachePricingEffect` in `src/infrastructure/pricing/models.ts` applies the same
  * rule to the live path. Keep the two in step: if you change one, change the
  * other, or the offline and online engines will disagree about the same model.
  */

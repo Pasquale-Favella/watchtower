@@ -7,10 +7,10 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, FileSystem, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { type AppPaths, appPaths } from '../src/main/env.js'
-import { writeCachedResultsEffect } from '../src/main/pipeline/cursor-cache.js'
-import { createCursorProvider } from '../src/main/pipeline/providers/cursor.js'
-import type { ParsedProviderCall, Provider } from '../src/main/pipeline/providers/types.js'
+import { type AppPaths, appPaths } from '../src/infrastructure/config/environment.js'
+import { writeCachedResultsEffect } from '../src/infrastructure/ingestion/cursor-cache.js'
+import { createCursorProvider } from '../src/infrastructure/provider-adapters/cursor.js'
+import type { ParsedProviderCall, Provider } from '../src/infrastructure/provider-adapters/types.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 const state = vi.hoisted(() => ({ fsCalls: [] as string[], home: '' }))

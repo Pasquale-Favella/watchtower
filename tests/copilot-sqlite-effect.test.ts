@@ -8,8 +8,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const sqliteHooks = vi.hoisted(() => ({ failPath: '', queryFailure: undefined as Error | undefined }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase(path: string) {
@@ -25,9 +25,9 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { createCopilotProvider } from '../src/infrastructure/provider-adapters/copilot.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 let root = ''
 let closeSpy: ReturnType<typeof vi.spyOn> | undefined

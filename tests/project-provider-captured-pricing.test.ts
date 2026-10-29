@@ -4,18 +4,18 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setModelAliases, setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createLingTaiTuiProvider } from '../src/main/pipeline/providers/lingtai-tui.js'
-import { createMistralVibeProvider } from '../src/main/pipeline/providers/mistral-vibe.js'
-import { createMuxProvider } from '../src/main/pipeline/providers/mux.js'
-import { createOpenDesignProvider } from '../src/main/pipeline/providers/open-design.js'
+import { setModelAliases, setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createLingTaiTuiProvider } from '../src/infrastructure/provider-adapters/lingtai-tui.js'
+import { createMistralVibeProvider } from '../src/infrastructure/provider-adapters/mistral-vibe.js'
+import { createMuxProvider } from '../src/infrastructure/provider-adapters/mux.js'
+import { createOpenDesignProvider } from '../src/infrastructure/provider-adapters/open-design.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const tempDirs: string[] = []

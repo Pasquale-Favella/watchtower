@@ -12,7 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   appliedLedgerGenerationAtom,
   configInvalidationRevisionAtom,
-} from '../src/renderer/src/app/atoms/config-change.js'
+} from '../src/renderer/stores/atoms/config-change.js'
 import {
   APP_LIFECYCLE_CATEGORIES,
   type AppLifecycleReadiness,
@@ -20,11 +20,11 @@ import {
   createRpcLifecycleAtom,
   dispatchAppLifecycleEvent,
   type LifecycleCursor,
-} from '../src/renderer/src/app/atoms/rpc-lifecycle.js'
-import { initialScanState, scanHydrationStateAtom, scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
-import { coachStateAtom } from '../src/renderer/src/features/coach-skills/atoms.js'
-import { activeCurrencyAtom } from '../src/renderer/src/features/settings/atoms.js'
-import { updatesMachineAtom } from '../src/renderer/src/features/settings/updates-atoms.js'
+} from '../src/renderer/stores/atoms/rpc-lifecycle.js'
+import { initialScanState, scanHydrationStateAtom, scanStateAtom } from '../src/renderer/stores/atoms/scan.js'
+import { coachStateAtom } from '../src/renderer/features/coach-skills/atoms.js'
+import { activeCurrencyAtom } from '../src/renderer/features/settings/atoms.js'
+import { updatesMachineAtom } from '../src/renderer/features/settings/updates-atoms.js'
 import type { AppLifecycleFrame } from '../src/shared/rpc/lifecycle.js'
 import { RendererConnection, type RendererConnectionState } from '../src/shared/rpc/reconnecting-protocol.js'
 

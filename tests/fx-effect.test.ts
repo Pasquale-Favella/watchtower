@@ -13,8 +13,8 @@ import {
   FxRates,
   type RefreshFxRateEffectOptions,
   refreshFxRateWithRates,
-} from '../src/main/fx.js'
-import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
+} from '../src/infrastructure/pricing/fx.js'
+import { HttpFetch, worstCaseRetryWindowMs } from '../src/infrastructure/ingestion/fetch-utils.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
 import { type LedgerFixture, openLedgerFixture } from './fixtures/ledger-runtime.js'
 import { runWithTestClockWindow } from './helpers/run-effect-test.js'

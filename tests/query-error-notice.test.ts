@@ -7,20 +7,20 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import type { RpcQuerySlot } from '../src/renderer/src/app/atoms/rpc-query.js'
-import { overviewQuery } from '../src/renderer/src/features/overview/atoms.js'
-import { OverviewView } from '../src/renderer/src/features/overview/OverviewView.js'
+import type { RpcQuerySlot } from '../src/renderer/stores/atoms/rpc-query.js'
+import { overviewQuery } from '../src/renderer/features/overview/atoms.js'
+import { OverviewView } from '../src/renderer/features/overview/OverviewView.js'
 import {
   PROVIDERS_REQUEST,
   providersQuery,
   SETTINGS_INFO_REQUEST,
   settingsInfoQuery,
-} from '../src/renderer/src/features/settings/capability-atoms.js'
-import { GeneralPane } from '../src/renderer/src/features/settings/general-pane.js'
-import { PrivacyPane } from '../src/renderer/src/features/settings/privacy-pane.js'
-import { ProvidersPane } from '../src/renderer/src/features/settings/providers-pane.js'
-import { QueryErrorNotice } from '../src/renderer/src/shared/components/QueryErrorNotice.js'
-import { TooltipProvider } from '../src/renderer/src/shared/components/ui/tooltip.js'
+} from '../src/renderer/features/settings/capability-atoms.js'
+import { GeneralPane } from '../src/renderer/features/settings/general-pane.js'
+import { PrivacyPane } from '../src/renderer/features/settings/privacy-pane.js'
+import { ProvidersPane } from '../src/renderer/features/settings/providers-pane.js'
+import { QueryErrorNotice } from '../src/renderer/components/QueryErrorNotice.js'
+import { TooltipProvider } from '../src/renderer/components/ui/tooltip.js'
 import type { SettingsInfo } from '../src/shared/schemas/ipc.js'
 import type { OverviewPayload } from '../src/shared/schemas/overview.js'
 import type { AnalyticalViews } from '../src/shared/schemas/views.js'

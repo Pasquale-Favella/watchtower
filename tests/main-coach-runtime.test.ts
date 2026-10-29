@@ -5,9 +5,9 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import { CoachHarnessExecution, type HarnessSdk } from '../src/main/agents/runtime.js'
-import { type MainRuntime, makeMainRuntime } from '../src/main/main-runtime.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import { CoachHarnessExecution, type HarnessSdk } from '../src/infrastructure/agent-harnesses/runtime.js'
+import { type MainRuntime, makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
 
 const harness: HarnessInfo = {
   instanceId: 'codex',

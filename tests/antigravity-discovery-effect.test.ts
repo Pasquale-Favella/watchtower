@@ -20,13 +20,13 @@ vi.mock('fs/promises', async importOriginal => {
   return { ...actual, stat: vi.fn(actual.stat), readdir: vi.fn(actual.readdir) }
 })
 
-import { appPaths, Env, initAppPaths } from '../src/main/env.js'
+import { appPaths, Env, initAppPaths } from '../src/infrastructure/config/environment.js'
 import {
   antigravity,
   discoverAntigravitySessionsEffect,
   getAntigravityStatusLineEventsPath,
-} from '../src/main/pipeline/providers/antigravity.js'
-import type { Provider } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/provider-adapters/antigravity.js'
+import type { Provider } from '../src/infrastructure/provider-adapters/types.js'
 
 let root = ''
 let priorCacheDir = ''

@@ -9,11 +9,11 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
-import { ledgerMcpTransportFor } from '../src/main/agents/ledger-mcp/config.js'
-import { handleLedgerMcpHttpRequest } from '../src/main/agents/ledger-mcp/http-server.js'
-import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
-import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { bearerHeaderValue } from '../src/platform/mcp/auth.js'
+import { ledgerMcpTransportFor } from '../src/platform/mcp/config.js'
+import { handleLedgerMcpHttpRequest } from '../src/platform/mcp/http-server.js'
+import { createLedgerMcpQueryRuntime } from '../src/platform/mcp/query-runtime.js'
+import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 const TOKEN = 'test-bearer-token'
 
@@ -22,7 +22,7 @@ const TOKEN = 'test-bearer-token'
 async function seedLedger(): Promise<{ dbPath: string; cleanup: () => void }> {
   const dir = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-http-'))
   const dbPath = join(dir, 'ledger.db')
-  await openWorkerRuntime(dbPath).dispose()
+  await openEngineRuntime(dbPath).dispose()
 
   const db = new DatabaseSync(dbPath)
   db.exec('BEGIN')

@@ -14,8 +14,8 @@ const hooks = vi.hoisted(() => ({
   afterQuery: undefined as ((sql: string) => void) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     isSqliteAvailable: () => true,
@@ -40,18 +40,18 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { appPaths, Env } from '../src/main/env.js'
-import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import { setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createCrushProvider } from '../src/main/pipeline/providers/crush.js'
+import { appPaths, Env } from '../src/infrastructure/config/environment.js'
+import { takeQueuedLogRecords } from '../src/infrastructure/ingestion/file-errors.js'
+import { setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createCrushProvider } from '../src/infrastructure/provider-adapters/crush.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let root = ''
 

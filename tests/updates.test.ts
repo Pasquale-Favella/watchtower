@@ -7,9 +7,9 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
-import { acquireElectronUpdates, configureElectronUpdater } from '../src/main/electron-updates.js'
-import { createQuitCoordinator } from '../src/main/quit-coordinator.js'
-import { releasePageUrl } from '../src/renderer/src/features/settings/updates.js'
+import { acquireElectronUpdates, configureElectronUpdater } from '../src/platform/electron/main/electron-updates.js'
+import { createQuitCoordinator } from '../src/platform/electron/main/quit-coordinator.js'
+import { releasePageUrl } from '../src/renderer/features/settings/updates.js'
 
 const library = vi.hoisted(() => ({ updater: {} }))
 vi.mock('electron-updater', () => ({

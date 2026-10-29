@@ -4,10 +4,10 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   resolve: {
-    // Mirror tsconfig.web.json's `@/*` → src/renderer/src/* so renderer modules
+    // Mirror tsconfig.web.json's `@/*` → src/renderer/* so renderer modules
     // imported from tests resolve their `@/lib/...` imports.
     alias: {
-      '@': fileURLToPath(new URL('./src/renderer/src', import.meta.url)),
+      '@': fileURLToPath(new URL('./src/renderer', import.meta.url)),
     },
   },
   test: {

@@ -6,13 +6,13 @@ import { join } from 'node:path'
 import { Effect, Stream } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { createCopilotProvider } from '../src/infrastructure/provider-adapters/copilot.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 
 const hooks = vi.hoisted(() => ({ failPath: '' }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   const { Stream } = await import('effect')
   return {
     ...actual,

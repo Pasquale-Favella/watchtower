@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { Effect, Fiber, Stream } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Env } from '../src/main/env.js'
+import { Env } from '../src/infrastructure/config/environment.js'
 
 const nativeIo = vi.hoisted(() => ({
   onReadStarted: undefined as (() => void) | undefined,
@@ -40,9 +40,9 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { createGeminiProvider } from '../src/main/pipeline/providers/gemini.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { createGeminiProvider } from '../src/infrastructure/provider-adapters/gemini.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''

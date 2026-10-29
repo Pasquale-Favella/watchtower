@@ -4,13 +4,13 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setModelAliases, setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createClineProvider } from '../src/main/pipeline/providers/cline.js'
-import { createIBMBobProvider } from '../src/main/pipeline/providers/ibm-bob.js'
-import { createKiloCodeProvider } from '../src/main/pipeline/providers/kilo-code.js'
-import { createRooCodeProvider } from '../src/main/pipeline/providers/roo-code.js'
-import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { setModelAliases, setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createClineProvider } from '../src/infrastructure/provider-adapters/cline.js'
+import { createIBMBobProvider } from '../src/infrastructure/provider-adapters/ibm-bob.js'
+import { createKiloCodeProvider } from '../src/infrastructure/provider-adapters/kilo-code.js'
+import { createRooCodeProvider } from '../src/infrastructure/provider-adapters/roo-code.js'
+import type { ParsedProviderCall, SessionParser } from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const tempDirs: string[] = []

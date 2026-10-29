@@ -6,7 +6,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { settingsInfoEffect, type SettingsInfoFileSystem } from '../src/main/application/settings-info.js'
+import { settingsInfoEffect, type SettingsInfoFileSystem } from '../src/infrastructure/filesystem/settings-info.js'
 
 let root = ''
 

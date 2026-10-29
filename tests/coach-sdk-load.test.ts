@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { loadHarnessSdk } from '../src/main/agents/runtime.js'
+import { loadHarnessSdk } from '../src/infrastructure/agent-harnesses/runtime.js'
 
 vi.mock('ai', () => {
   throw new Error('private import path C:\\Users\\person\\sdk token=secret')

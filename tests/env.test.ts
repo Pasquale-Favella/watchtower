@@ -32,7 +32,7 @@ import {
   resolveSnapshotEnvVar,
   SNAPSHOT_ENV_VARS,
   type SnapshotEnvVar,
-} from '../src/main/env.js'
+} from '../src/infrastructure/config/environment.js'
 
 /** Repo root, for the one case that reads a source file to check a claim. */
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
@@ -438,7 +438,7 @@ describe('resolveProviderOverrides + overrideFor/platformFor (rollout step 1)', 
 
   it('providers do not read process.env directly', () => {
     expect(REMAINING_DIRECT_ENV_READS).toEqual({})
-    const providerDir = join(repoRoot, 'src', 'main', 'pipeline', 'providers')
+    const providerDir = join(repoRoot, 'src', 'infrastructure', 'provider-adapters')
     for (const name of readdirSync(providerDir).filter(name => name.endsWith('.ts'))) {
       const source = ts.createSourceFile(name, readFileSync(join(providerDir, name), 'utf8'), ts.ScriptTarget.Latest)
       const reads: string[] = []

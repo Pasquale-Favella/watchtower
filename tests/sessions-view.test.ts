@@ -1,17 +1,17 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { querySessionsView } from '../src/main/application/sessions-query.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
-import type { WorkerRuntime } from '../src/main/worker-runtime.js'
-import type { SessionRow } from '../src/renderer/src/features/sessions/drilldown.js'
+import { querySessionsView } from '../src/core/application/queries/sessions-query.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import { LedgerIngest } from '../src/core/ports/repository.js'
+import type { EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
+import type { SessionRow } from '../src/renderer/features/sessions/drilldown.js'
 import {
   filterSessions,
   groupSessionsByProvider,
   sortSessions,
   summarizeSessions,
-} from '../src/renderer/src/features/sessions/sessions-lib.js'
+} from '../src/renderer/features/sessions/sessions-lib.js'
 import type { PortInput } from '../src/shared/schemas/port.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
@@ -23,11 +23,11 @@ import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime
 // turns. Fixtures are ported through `portIn`, exactly as the delta seam (T3)
 // will feed the ledger.
 
-function portIn(runtime: WorkerRuntime, input: PortInput): void {
+function portIn(runtime: EngineRuntime, input: PortInput): void {
   runtime.runSync(Effect.flatMap(LedgerIngest, ingest => ingest.portIn(input)))
 }
 
-function querySessions(runtime: WorkerRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): SessionRow[] {
+function querySessions(runtime: EngineRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): SessionRow[] {
   return runtime.runSync(atTime(querySessionsView(viewInputs(scope)), now))
 }
 
@@ -58,7 +58,7 @@ function cachedFileFor(spec: SessionSpec): CachedFile {
   return buildFixtureCachedFile({ title: spec.title ?? '', turns })
 }
 
-function portThreeSessions(runtime: WorkerRuntime): void {
+function portThreeSessions(runtime: EngineRuntime): void {
   portIn(runtime, {
     provider: 'claude',
     envFingerprint: 'env-demo',

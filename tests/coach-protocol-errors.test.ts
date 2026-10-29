@@ -1,8 +1,8 @@
 import * as Cause from 'effect/Cause'
 import { describe, expect, it } from 'vitest'
 
-import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
-import { coachProtocolError } from '../src/main/agents/coach-protocol-errors.js'
+import { CoachSdkFailure } from '../src/infrastructure/agent-harnesses/coach-errors.js'
+import { coachProtocolError } from '../src/infrastructure/agent-harnesses/coach-protocol-errors.js'
 
 describe('Coach protocol error messages', () => {
   it('maps expected SDK failures without raw native rejection text', () => {

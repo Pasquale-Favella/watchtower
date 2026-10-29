@@ -5,12 +5,12 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
-import { type AppPaths, appPaths, type ProviderOverrides } from '../src/main/env.js'
+import { type AppPaths, appPaths, type ProviderOverrides } from '../src/infrastructure/config/environment.js'
 import {
   createSqliteSessionParser,
   OPENCODE_FAMILY_1X,
   type SqliteProviderConfig,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
+} from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // The shared reader's ONE env consumer: the verbose "yielded 0 calls" notice

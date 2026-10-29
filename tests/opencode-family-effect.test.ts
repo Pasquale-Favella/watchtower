@@ -12,9 +12,9 @@ import {
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
   type SqliteProviderConfig,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
-import * as sqlite from '../src/main/pipeline/sqlite.js'
+} from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
+import * as sqlite from '../src/infrastructure/ingestion/sqlite.js'
 
 const temporaryDirectories: string[] = []
 

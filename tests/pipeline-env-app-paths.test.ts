@@ -2,12 +2,16 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { type AppPaths, appPaths, type ProviderOverrides } from '../src/main/env.js'
-import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import { readSessionFileSync } from '../src/main/pipeline/fs-utils.js'
-import { calculateCost } from '../src/main/pipeline/models.js'
-import { emitScanProgress, PROGRESS_LINE_PREFIX, type ScanProgressEvent } from '../src/main/pipeline/parser.js'
-import { renderTable, type SessionRow } from '../src/main/pipeline/sessions-report.js'
+import { type AppPaths, appPaths, type ProviderOverrides } from '../src/infrastructure/config/environment.js'
+import { takeQueuedLogRecords } from '../src/infrastructure/ingestion/file-errors.js'
+import { readSessionFileSync } from '../src/infrastructure/ingestion/fs-utils.js'
+import { calculateCost } from '../src/infrastructure/pricing/models.js'
+import {
+  emitScanProgress,
+  PROGRESS_LINE_PREFIX,
+  type ScanProgressEvent,
+} from '../src/infrastructure/ingestion/parser.js'
+import { renderTable, type SessionRow } from '../src/infrastructure/ingestion/sessions-report.js'
 
 // Pipeline-level `process.env` reads (Wave 9 rollout, step 2). ZERO
 // `process.env` mutation in this file: every record is built by spread and

@@ -71,10 +71,10 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { createCursorAgentProvider } from '../src/main/pipeline/providers/cursor-agent.js'
-import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createCursorAgentProvider } from '../src/infrastructure/provider-adapters/cursor-agent.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 let root = ''
 

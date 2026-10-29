@@ -17,10 +17,10 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { createKiroProvider } from '../src/main/pipeline/providers/kiro.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createKiroProvider } from '../src/infrastructure/provider-adapters/kiro.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 const roots: string[] = []

@@ -3,9 +3,9 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { type AppPaths, appPaths, initAppPaths } from '../src/main/env.js'
-import { codex, createCodexProvider } from '../src/main/pipeline/providers/codex.js'
-import type { Provider } from '../src/main/pipeline/providers/types.js'
+import { type AppPaths, appPaths, initAppPaths } from '../src/infrastructure/config/environment.js'
+import { codex, createCodexProvider } from '../src/infrastructure/provider-adapters/codex.js'
+import type { Provider } from '../src/infrastructure/provider-adapters/types.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 async function probeRoots(provider: Pick<Provider, 'name' | 'probeRoots'>) {

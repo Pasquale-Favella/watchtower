@@ -1,0 +1,70 @@
+import { useState } from 'react'
+
+import { Separator } from '@/components/ui/separator'
+import { SidebarTrigger } from '@/components/ui/sidebar'
+import { GeneralPane } from '@/features/settings/general-pane'
+import { ProvidersPane } from '@/features/settings/providers-pane'
+import { AliasesPane } from '@/features/settings/aliases-pane'
+import { PricingPane } from '@/features/settings/pricing-pane'
+import { ExportPane } from '@/features/settings/export-pane'
+import { PrivacyPane } from '@/features/settings/privacy-pane'
+import { SkillsPane } from '@/features/settings/skills-pane'
+import { McpPane } from '@/features/settings/mcp-pane'
+
+type SettingsPane = 'general' | 'providers' | 'aliases' | 'pricing' | 'export' | 'privacy' | 'skills' | 'mcp'
+
+const RAIL_ITEMS: Array<{ id: SettingsPane; label: string }> = [
+  { id: 'general', label: 'General' },
+  { id: 'providers', label: 'Providers' },
+  { id: 'aliases', label: 'Model aliases' },
+  { id: 'pricing', label: 'Pricing' },
+  { id: 'export', label: 'Export' },
+  { id: 'skills', label: 'Skills detection' },
+  { id: 'mcp', label: 'Local MCP' },
+  { id: 'privacy', label: 'Privacy & data' },
+]
+
+/** The Settings section: an eight-pane rail. Each pane is colocated in its
+ * own file under features/settings/. */
+export function SettingsView(): React.JSX.Element {
+  const [pane, setPane] = useState<SettingsPane>('general')
+
+  return (
+    <div className="flex flex-1 flex-col">
+      <div className="border-border flex items-center gap-2.5 border-b px-4 pt-[13px] pb-[11px]">
+        <SidebarTrigger className="-ml-1" />
+        <Separator orientation="vertical" className="mr-1 h-4" />
+        <div className="text-sm font-semibold tracking-tight">Settings</div>
+        <div className="flex-1" />
+      </div>
+      <div className="flex flex-1">
+        <nav
+          className="border-border flex w-[198px] shrink-0 flex-col gap-0.5 overflow-y-auto border-r p-3.5"
+          aria-label="Settings sections"
+        >
+          {RAIL_ITEMS.map(item => (
+            <button
+              key={item.id}
+              type="button"
+              aria-current={pane === item.id ? 'page' : undefined}
+              onClick={() => setPane(item.id)}
+              className={`hover:bg-accent hover:text-foreground cursor-pointer rounded-md px-2.5 py-[7px] text-left text-[12.5px] ${pane === item.id ? 'bg-accent text-foreground' : 'text-muted-foreground'}`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </nav>
+        <div className="min-h-0 flex-1 overflow-y-auto p-5">
+          {pane === 'general' && <GeneralPane />}
+          {pane === 'providers' && <ProvidersPane />}
+          {pane === 'aliases' && <AliasesPane />}
+          {pane === 'pricing' && <PricingPane />}
+          {pane === 'export' && <ExportPane />}
+          {pane === 'skills' && <SkillsPane />}
+          {pane === 'mcp' && <McpPane />}
+          {pane === 'privacy' && <PrivacyPane />}
+        </div>
+      </div>
+    </div>
+  )
+}

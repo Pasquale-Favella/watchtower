@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createCoachEventNormalizer, deriveCoachEvents } from '../src/main/agents/events.js'
+import { createCoachEventNormalizer, deriveCoachEvents } from '../src/infrastructure/agent-harnesses/events.js'
 
 describe('deriveCoachEvents — AI SDK stream part → CoachEvent (seam: pure logic)', () => {
   it('maps a text-delta part to a text event', () => {

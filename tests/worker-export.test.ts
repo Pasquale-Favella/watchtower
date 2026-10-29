@@ -8,18 +8,23 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it, vi } from 'vitest'
 
-import { ExportFileError, ExportFiles } from '../src/main/application/export-files.js'
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import type { ExportFileContent } from '../src/main/export-calculation.js'
-import { FxRates } from '../src/main/fx.js'
-import { LedgerConfig, LedgerExportReads, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { ExportFileError, ExportFiles } from '../src/core/ports/export-files.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import type { ExportFileContent } from '../src/core/analytics/projections/export-calculation.js'
+import { FxRates } from '../src/infrastructure/pricing/fx.js'
+import {
+  LedgerConfig,
+  LedgerExportReads,
+  LedgerIngest,
+  LedgerQueries,
+} from '../src/infrastructure/sqlite/ledger-repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 interface WorkerOwner {
   dbPath: string
-  runtime: WorkerRuntime
+  runtime: EngineRuntime
 }
 
 function removeTemporaryDirectory(directory: string): void {
@@ -82,10 +87,10 @@ async function withWorker(
     PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void }),
   )
   const dbPath = join(directory, 'ledger.db')
-  let runtime: WorkerRuntime | undefined
+  let runtime: EngineRuntime | undefined
   let context: DbWorkerContext | undefined
   try {
-    runtime = openWorkerRuntime(dbPath, undefined, Layer.mergeAll(files, fx, diagnostics))
+    runtime = openEngineRuntime(dbPath, undefined, Layer.mergeAll(files, fx, diagnostics))
     const owner = { dbPath, runtime }
     context = new DbWorkerContext({ dbPath, dataDir: directory, cacheDir: join(directory, 'cache') }, () => {}, {
       runtime,

@@ -10,13 +10,13 @@ import * as Exit from 'effect/Exit'
 import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/infrastructure/sqlite/ledger-repository.js'
+import { LedgerSessionReads } from '../src/core/ports/ledger-session-reads.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
 const directories: string[] = []
-const runtimes: WorkerRuntime[] = []
+const runtimes: EngineRuntime[] = []
 
 function removeFixture(directory: string): void {
   const target = resolve(directory)
@@ -29,7 +29,7 @@ function openOwner() {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-ledger-session-reads-'))
   directories.push(directory)
   const dbPath = join(directory, 'ledger.db')
-  const runtime = openWorkerRuntime(dbPath)
+  const runtime = openEngineRuntime(dbPath)
   runtimes.push(runtime)
   return { dbPath, runtime }
 }

@@ -4,7 +4,7 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Schema from 'effect/Schema'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { configHandlers } from '../src/main/rpc/handlers.js'
+import { configHandlers } from '../src/platform/electron/main/rpc/handlers.js'
 import { ConfigRpcGroup } from '../src/shared/rpc/config.js'
 
 describe('generated config RPC contracts', () => {

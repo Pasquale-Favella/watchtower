@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { ledgerQueryRequest } from '../src/main/db-worker/query-dispatch.js'
+import { ledgerQueryRequest } from '../src/platform/electron/workers/query-dispatch.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 const scope = { period: 'lifetime' }

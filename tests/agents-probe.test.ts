@@ -9,15 +9,18 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import { HARNESS_HANDSHAKE_TIMEOUT_MS, probeTimeoutFor } from '../src/main/agents/harness-timeouts.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import {
+  HARNESS_HANDSHAKE_TIMEOUT_MS,
+  probeTimeoutFor,
+} from '../src/infrastructure/agent-harnesses/harness-timeouts.js'
 import {
   type ProbeChild,
   type ProbeConnection,
   probeHarness,
   type ProbeResult,
   type ProbeSpawn,
-} from '../src/main/agents/probe.js'
+} from '../src/infrastructure/agent-harnesses/probe.js'
 
 class FakeChild extends EventEmitter implements ProbeChild {
   pid = 4321

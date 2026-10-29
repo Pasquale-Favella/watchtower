@@ -39,11 +39,11 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { calculateCost } from '../src/main/pipeline/models.js'
-import { createQwenProvider } from '../src/main/pipeline/providers/qwen.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { calculateCost } from '../src/infrastructure/pricing/models.js'
+import { createQwenProvider } from '../src/infrastructure/provider-adapters/qwen.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''

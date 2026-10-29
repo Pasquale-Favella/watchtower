@@ -9,9 +9,9 @@ import * as Exit from 'effect/Exit'
 import * as RpcTest from 'effect/rpc/RpcTest'
 import { expect, it, vi } from 'vitest'
 
-import { createDbWorkerContext } from '../src/main/db-worker/bootstrap.js'
-import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
-import { dbWorkerRpcServerLayer } from '../src/main/db-worker/rpc-server.js'
+import { createDbWorkerContext } from '../src/platform/electron/workers/bootstrap.js'
+import type { DbWorkerData } from '../src/platform/electron/workers/protocol.js'
+import { dbWorkerRpcServerLayer } from '../src/platform/electron/workers/rpc-server.js'
 import { WorkerRpcError, WorkerRpcGroup } from '../src/shared/rpc/worker.js'
 
 it('closes the real driver and returns a typed safe ready failure if context construction fails', async () => {

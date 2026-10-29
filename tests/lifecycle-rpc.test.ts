@@ -6,7 +6,11 @@ import * as Option from 'effect/Option'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import { LifecycleHub, lifecycleLayer, type LifecycleSnapshotReader } from '../src/main/rpc/lifecycle.js'
+import {
+  LifecycleHub,
+  lifecycleLayer,
+  type LifecycleSnapshotReader,
+} from '../src/platform/electron/main/rpc/lifecycle.js'
 import type { LifecycleEvent } from '../src/shared/rpc/lifecycle.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
 import type { ActiveCurrency } from '../src/shared/schemas/fx.js'

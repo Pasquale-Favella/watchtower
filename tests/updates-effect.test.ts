@@ -6,7 +6,7 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { describe, expect, it, vi } from 'vitest'
 
-import { AppUpdates, type UpdateDriver, UpdateError, updatesLayer } from '../src/main/updates.js'
+import { AppUpdates, type UpdateDriver, UpdateError, updatesLayer } from '../src/platform/electron/main/updates.js'
 import type { UpdateStatus } from '../src/shared/schemas/updates.js'
 
 function fixture(overrides: Partial<UpdateDriver> = {}) {

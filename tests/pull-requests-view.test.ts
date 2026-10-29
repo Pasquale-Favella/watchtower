@@ -1,18 +1,18 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { queryModelsView } from '../src/main/application/models-query.js'
-import { queryPullRequestsView } from '../src/main/application/pull-requests-query.js'
-import { calculateCost } from '../src/main/pipeline/models.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
-import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+import { queryModelsView } from '../src/core/application/queries/models-query.js'
+import { queryPullRequestsView } from '../src/core/application/queries/pull-requests-query.js'
+import { calculateCost } from '../src/infrastructure/pricing/models.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
+import type { EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import {
   payloadSpan,
   sessionWord,
   spanLabel,
   summarizePullRequests,
-} from '../src/renderer/src/features/pull-requests/lib.js'
+} from '../src/renderer/features/pull-requests/lib.js'
 import type { PortInput } from '../src/shared/schemas/port.js'
 import type { ModelsPayload } from '../src/shared/schemas/models.js'
 import type { PullRequestsPayload } from '../src/shared/schemas/pull-requests.js'
@@ -35,28 +35,28 @@ type PrSessionSpec = {
   model?: string
 }
 
-function portIn(runtime: WorkerRuntime, input: PortInput): void {
+function portIn(runtime: EngineRuntime, input: PortInput): void {
   runtime.runSync(Effect.flatMap(LedgerIngest, ingest => ingest.portIn(input)))
 }
 
 function queryPullRequests(
-  runtime: WorkerRuntime,
+  runtime: EngineRuntime,
   scope: Parameters<typeof viewInputs>[0],
   now: Date,
 ): PullRequestsPayload {
   return runtime.runSync(atTime(queryPullRequestsView(viewInputs(scope)), now))
 }
 
-function queryModels(runtime: WorkerRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): ModelsPayload {
+function queryModels(runtime: EngineRuntime, scope: Parameters<typeof viewInputs>[0], now: Date): ModelsPayload {
   return runtime.runSync(atTime(queryModelsView(viewInputs(scope)), now))
 }
 
-function setModelAlias(runtime: WorkerRuntime, model: string, aliasOf: string): void {
+function setModelAlias(runtime: EngineRuntime, model: string, aliasOf: string): void {
   runtime.runSync(Effect.flatMap(LedgerConfig, config => config.setModelAlias(model, aliasOf)))
 }
 
 function setPriceOverride(
-  runtime: WorkerRuntime,
+  runtime: EngineRuntime,
   model: string,
   override: { inputPricePerMillion: number; outputPricePerMillion: number },
 ): void {
@@ -84,7 +84,7 @@ function prCachedFile(index: number, opts: PrSessionSpec): CachedFile {
   return buildFixtureCachedFile({ canonicalProjectName: 'demo', title: '', prLinks: opts.prLinks, turns })
 }
 
-function prPort(runtime: WorkerRuntime, specs: PrSessionSpec[]): void {
+function prPort(runtime: EngineRuntime, specs: PrSessionSpec[]): void {
   specs.forEach((spec, i) => {
     portIn(runtime, {
       provider: spec.provider,

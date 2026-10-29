@@ -8,8 +8,12 @@ import * as TestClock from 'effect/testing/TestClock'
 import { build } from 'esbuild'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DbWorkerClient, type DbWorkerPort, SCAN_ABORT_DRAIN_TIMEOUT_MS } from '../src/main/db-worker/client.js'
-import type { DbWorkerData, DbWorkerEvent } from '../src/main/db-worker/protocol.js'
+import {
+  DbWorkerClient,
+  type DbWorkerPort,
+  SCAN_ABORT_DRAIN_TIMEOUT_MS,
+} from '../src/platform/electron/workers/client.js'
+import type { DbWorkerData, DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
 import { makeControlledDbWorker } from './db-worker-transport-helper.js'
 
 function deferred<A>(): { promise: Promise<A>; resolve(value: A): void } {

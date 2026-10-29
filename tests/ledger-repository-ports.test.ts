@@ -28,8 +28,8 @@ import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import { describe, expect, it } from 'vitest'
 
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import type { PortInput } from '../src/main/store/port.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import type { PortInput } from '../src/infrastructure/sqlite/port.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { atTime, openLedgerFixture } from './fixtures/ledger-runtime.js'
 

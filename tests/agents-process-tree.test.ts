@@ -2,7 +2,7 @@ import * as childProcess from 'node:child_process'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { killProcessTree, killProcessTreeSync } from '../src/main/agents/process-tree.js'
+import { killProcessTree, killProcessTreeSync } from '../src/infrastructure/agent-harnesses/process-tree.js'
 
 const TASKKILL_COMMAND = 'taskkill'
 const TASKKILL_ARGS = ['/pid', '4321', '/T', '/F']

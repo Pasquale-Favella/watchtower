@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads'
 import { build } from 'esbuild'
 import { describe, expect, it } from 'vitest'
 
-import { executablePathEnv, which } from '../src/main/agents/detect.js'
+import { executablePathEnv, which } from '../src/infrastructure/agent-harnesses/detect.js'
 
 const GIT_FIXTURE_PREFIX = 'watchtower-worker-git-path-'
 
@@ -70,9 +70,9 @@ describe('Windows worker command lookup', () => {
             import * as Effect from 'effect/Effect'
             import * as Stream from 'effect/Stream'
             import { parentPort, workerData } from 'node:worker_threads'
-            import { which } from './src/main/agents/detect.ts'
-            import { CommandRunner } from './src/main/agents/command-runner.ts'
-            import { CommandRunnerLiveLayer } from './src/main/agents/command-runner-live.ts'
+            import { which } from './src/infrastructure/agent-harnesses/detect.ts'
+            import { CommandRunner } from './src/core/ports/process.ts'
+            import { CommandRunnerLiveLayer } from './src/infrastructure/agent-harnesses/command-runner-live.ts'
             const probe = Effect.scoped(Effect.gen(function* () {
               const runner = yield* CommandRunner
               const handle = yield* runner.start('git', ['log', '-1', '--format=%H|%cI|%s'], { cwd: workerData.directory })

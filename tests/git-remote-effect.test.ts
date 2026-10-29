@@ -4,8 +4,8 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import { describe, expect, it } from 'vitest'
 
-import { CommandError, makeRecordingCommandRunner } from '../src/main/agents/command-runner.js'
-import { getRepoUrlEffect } from '../src/main/pipeline/git-remote.js'
+import { CommandError, makeRecordingCommandRunner } from '../src/core/ports/process.js'
+import { getRepoUrlEffect } from '../src/core/ingestion/discovery/git-remote.js'
 
 function runWith(respond: Parameters<typeof makeRecordingCommandRunner>[0], cwd: string) {
   const { layer, calls } = makeRecordingCommandRunner(respond)

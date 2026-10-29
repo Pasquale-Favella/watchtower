@@ -23,7 +23,7 @@ const hooks = vi.hoisted(() => ({
   busyError: new Error('SQLITE_BUSY: database is locked'),
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', () => ({
+vi.mock('../src/infrastructure/ingestion/sqlite.js', () => ({
   isSqliteAvailable: () => true,
   isSqliteBusyError: (error: unknown) =>
     error === hooks.busyError || (error instanceof Error && error.cause === hooks.busyError),
@@ -111,7 +111,7 @@ vi.mock('../src/main/pipeline/sqlite.js', () => ({
   },
 }))
 
-vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
+vi.mock('../src/infrastructure/ingestion/cursor-cache.js', async () => {
   const { Effect } = await import('effect')
   return {
     readCachedResultsEffect: (_dbPath: string, timeFloor: string) => {
@@ -126,14 +126,14 @@ vi.mock('../src/main/pipeline/cursor-cache.js', async () => {
   }
 })
 
-import { Env } from '../src/main/env.js'
+import { Env } from '../src/infrastructure/config/environment.js'
 import {
   clearCursorWorkspaceMapCache,
   createCursorProvider,
   getCursorTimeFloor,
-} from '../src/main/pipeline/providers/cursor.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/cursor.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 function source(): SessionSource {
   return { path: 'cursor-test-db', project: 'cursor', provider: 'cursor' }

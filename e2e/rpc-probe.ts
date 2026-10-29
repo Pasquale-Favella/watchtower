@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test'
 
-import type { Api } from '../src/preload/index.js'
+import type { Api } from '../src/platform/electron/preload/index.js'
 
 export type RpcProbeResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false }
 

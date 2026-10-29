@@ -24,12 +24,12 @@
     ],
     "baseUrl": ".",
     "paths": {
-      "@/*": ["src/renderer/src/*"]
+      "@/*": ["src/renderer/*"]
     }
   },
   "include": [
-    "src/renderer/src/**/*",
-    "src/preload/index.d.ts",
+    "src/renderer/**/*",
+    "src/platform/electron/preload/index.d.ts",
     "src/shared/**/*"
   ]
 }

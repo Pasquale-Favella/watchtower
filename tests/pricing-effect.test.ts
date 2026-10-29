@@ -8,14 +8,14 @@ import * as Effect from 'effect/Effect'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Env } from '../src/main/env.js'
-import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { HttpFetch, worstCaseRetryWindowMs } from '../src/infrastructure/ingestion/fetch-utils.js'
 import {
   getModelCosts,
   loadPricingEffect,
   PricingRefreshError,
   refreshPricingNowEffect,
-} from '../src/main/pipeline/models.js'
+} from '../src/infrastructure/pricing/models.js'
 import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 
 function okResponse(body: unknown): Response {
@@ -174,9 +174,9 @@ describe('pricing effects (Effect-native pricing boundary)', () => {
     // Fresh module graph: proves the fallback path itself merges the snapshot
     // rather than passing on leftover state from earlier tests.
     vi.resetModules()
-    const freshModels = await import('../src/main/pipeline/models.js')
-    const freshFetch = await import('../src/main/pipeline/fetch-utils.js')
-    const freshEnv = await import('../src/main/env.js')
+    const freshModels = await import('../src/infrastructure/pricing/models.js')
+    const freshFetch = await import('../src/infrastructure/ingestion/fetch-utils.js')
+    const freshEnv = await import('../src/infrastructure/config/environment.js')
     await Effect.runPromise(
       freshModels.loadPricingEffect().pipe(
         Effect.provide(freshFetch.HttpFetch.layerWithFetch(throwingFetch())),

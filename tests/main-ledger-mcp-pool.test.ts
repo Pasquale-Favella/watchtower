@@ -5,8 +5,8 @@ import { PassThrough } from 'node:stream'
 import * as Effect from 'effect/Effect'
 import { afterEach, expect, it, vi } from 'vitest'
 
-import { LedgerMcpPool } from '../src/main/agents/ledger-mcp/pool.js'
-import { type MainRuntime, makeMainRuntime } from '../src/main/main-runtime.js'
+import { LedgerMcpPool } from '../src/platform/mcp/pool.js'
+import { type MainRuntime, makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
 
 const fixtures: Array<{ runtime: MainRuntime; close: () => void }> = []
 

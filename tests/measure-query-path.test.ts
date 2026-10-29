@@ -2,9 +2,9 @@ import { createRequire } from 'node:module'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
-import { captureProxyPaths } from '../src/main/pipeline/models.js'
-import * as viewCalculation from '../src/main/view-aggregate-calculation.js'
+import { captureModelPricingCatalogue } from '../src/infrastructure/pricing/models.js'
+import { captureProxyPaths } from '../src/infrastructure/pricing/models.js'
+import * as viewCalculation from '../src/core/analytics/metrics/view-aggregate-calculation.js'
 
 const testRequire = createRequire(import.meta.url)
 const { measure, measureAsync, measureViewInputProbe, watchNativeStatements } = testRequire(

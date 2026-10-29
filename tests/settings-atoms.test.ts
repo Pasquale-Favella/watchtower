@@ -3,7 +3,7 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { createSettingsAtoms } from '../src/renderer/src/features/settings/atoms.js'
+import { createSettingsAtoms } from '../src/renderer/features/settings/atoms.js'
 import type { ActiveCurrency, CurrencyOption } from '../src/shared/schemas/fx.js'
 import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 

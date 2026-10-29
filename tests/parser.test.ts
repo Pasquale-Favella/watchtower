@@ -5,14 +5,14 @@ import { join } from 'node:path'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import { readSessionLinesStream } from '../src/main/pipeline/fs-utils.js'
-import { claudeSlugFallbackPath } from '../src/main/pipeline/parser.js'
+import { readSessionLinesStream } from '../src/infrastructure/ingestion/fs-utils.js'
+import { claudeSlugFallbackPath } from '../src/infrastructure/ingestion/parser.js'
 import {
   deriveCanonicalProjectKey,
   normalizeProjectPathKey,
   projectNameFromPath,
-} from '../src/main/pipeline/parser-calculations.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+} from '../src/core/ingestion/normalization/parser-calculations.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 // Canonical project identity (#103): one checkout, one grouping key,
 // whatever the provider's spelling. Expected values are hand-written

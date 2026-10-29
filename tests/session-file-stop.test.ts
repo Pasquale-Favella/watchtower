@@ -4,8 +4,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const io = vi.hoisted(() => ({ stat: vi.fn(), readFile: vi.fn() }))
 vi.mock('fs/promises', () => ({ stat: io.stat, readFile: io.readFile }))
 
-import { MAX_SESSION_FILE_BYTES, readSessionFileEffect } from '../src/main/pipeline/fs-utils.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { MAX_SESSION_FILE_BYTES, readSessionFileEffect } from '../src/infrastructure/ingestion/fs-utils.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 import { readSessionFileForTest } from './fixtures/fs-effects.js'
 import { deferred } from './helpers/deferred.js'
 

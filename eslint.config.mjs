@@ -31,32 +31,48 @@ const bareNodeCores = builtinModules.filter(name => !name.startsWith('node:') &&
 // These files own a process runtime or adapt an external Promise/callback
 // contract. Other main-process modules return Effects to their owner.
 const EFFECT_COMPOSITION_ROOTS = [
-  'src/preload/rpc.ts',
-  'src/main/main-runtime.ts',
-  'src/main/worker-runtime.ts',
-  'src/main/agents/runtime.ts',
-  'src/main/agents/ledger-mcp/sidecar.ts',
-  'src/main/agents/ledger-mcp/pool.ts',
-  'src/main/agents/auth-probe.ts',
-  'src/main/agents/process-tree.ts',
-  'src/main/db-worker/context.ts',
-  'src/main/db-worker/client.ts',
+  'src/platform/electron/preload/rpc.ts',
+  'src/platform/electron/main/main-runtime.ts',
+  'src/infrastructure/runtime/engine-runtime.ts',
+  'src/infrastructure/agent-harnesses/runtime.ts',
+  'src/platform/mcp/sidecar.ts',
+  'src/platform/mcp/pool.ts',
+  'src/infrastructure/agent-harnesses/auth-probe.ts',
+  'src/infrastructure/agent-harnesses/process-tree.ts',
+  'src/platform/electron/workers/context.ts',
+  'src/platform/electron/workers/client.ts',
 ]
 const processBoundaryZones = [
   {
     target: 'src/renderer/**',
-    from: ['src/main/**', 'src/preload/**'],
-    message: 'Renderer code must use shared contracts and the preload bridge (ADR 0005).',
+    from: ['src/core/**', 'src/infrastructure/**', 'src/platform/**'],
+    message: 'Renderer code uses shared contracts and the preload bridge (ADR 0005 / ADR 0038).',
   },
   {
-    target: 'src/main/**',
-    from: ['src/renderer/**', 'src/preload/**'],
-    message: 'Main must not depend on renderer or preload code.',
+    target: [
+      'src/core/**',
+      'src/infrastructure/**',
+      'src/platform/electron/main/**',
+      'src/platform/electron/workers/**',
+      'src/platform/mcp/**',
+    ],
+    from: ['src/renderer/**', 'src/platform/electron/preload/**'],
+    message: 'Backend code cannot depend on renderer or preload implementations.',
   },
   {
     target: 'src/shared/**',
-    from: ['src/main/**', 'src/renderer/**', 'src/preload/**'],
-    message: 'Shared modules cannot depend on process-specific code.',
+    from: ['src/core/**', 'src/infrastructure/**', 'src/platform/**', 'src/renderer/**'],
+    message: 'Shared contracts cannot depend on implementation or platform code.',
+  },
+  {
+    target: 'src/core/**',
+    from: ['src/infrastructure/**', 'src/platform/**', 'src/renderer/**'],
+    message: 'Core declares domain policy and ports; implementations depend on core (ADR 0038).',
+  },
+  {
+    target: 'src/platform/electron/preload/**',
+    from: ['src/core/**', 'src/infrastructure/**'],
+    message: 'Preload uses shared contracts rather than engine implementations (ADR 0038).',
   },
 ]
 export default tseslint.config(
@@ -130,8 +146,11 @@ export default tseslint.config(
   {
     files: [
       'electron-builder.config.cjs',
-      'src/main/**/*.{ts,mts,cts}',
-      'src/preload/**/*.ts',
+      'src/core/**/*.{ts,mts,cts}',
+      'src/infrastructure/**/*.{ts,mts,cts}',
+      'src/platform/**/*.{ts,mts,cts}',
+      'src/platform/electron/main/**/*.{ts,mts,cts}',
+      'src/platform/electron/preload/**/*.ts',
       'scripts/**/*.?(c|m)js',
       'tests/**/*.ts',
       'tests/fixtures/**/*.cjs',
@@ -196,7 +215,7 @@ export default tseslint.config(
 
   {
     files: ['src/renderer/**/*.tsx'],
-    ignores: ['src/renderer/src/app/renderer-root.tsx'],
+    ignores: ['src/renderer/app/renderer-root.tsx'],
     rules: {
       'import-x/no-restricted-paths': [
         'error',
@@ -207,11 +226,11 @@ export default tseslint.config(
             ...[
               'src/renderer/**/atoms.ts',
               'src/renderer/**/*-atoms.ts',
-              'src/renderer/src/app/atoms/**',
-              'src/renderer/src/app/renderer-runtime.ts',
-              'src/renderer/src/app/hooks/use-remote-query.ts',
-              'src/renderer/src/shared/lib/application-rpc.ts',
-              'src/renderer/src/shared/lib/atom-rpc.ts',
+              'src/renderer/stores/atoms/**',
+              'src/renderer/app/renderer-runtime.ts',
+              'src/renderer/stores/hooks/use-remote-query.ts',
+              'src/renderer/shared/lib/application-rpc.ts',
+              'src/renderer/shared/lib/atom-rpc.ts',
             ].map(from => ({
               target: 'src/renderer/**',
               from,
@@ -238,8 +257,10 @@ export default tseslint.config(
   // ── Main + preload + shared + scripts/tests (no React) ──────────────────
   {
     files: [
-      'src/main/**/*.ts',
-      'src/preload/**/*.ts',
+      'src/platform/electron/main/**/*.ts',
+      'src/core/**/*.ts',
+      'src/infrastructure/**/*.ts',
+      'src/platform/electron/preload/**/*.ts',
       'src/shared/**/*.ts',
       'scripts/**/*',
       'tests/**/*.ts',
@@ -258,7 +279,7 @@ export default tseslint.config(
   {
     // Main must not reach back into the renderer (ADR 0023: the data plane has
     // no view dependency) nor into the bridge implementation.
-    files: ['src/main/**/*.ts'],
+    files: ['src/platform/**/*.ts', 'src/core/**/*.ts', 'src/infrastructure/**/*.ts'],
     rules: {
       'no-restricted-globals': [
         'error',
@@ -266,6 +287,22 @@ export default tseslint.config(
         { name: 'document', message: 'Main has no DOM — renderer-only global.' },
         { name: 'navigator', message: 'Main has no DOM — renderer-only global.' },
         { name: 'localStorage', message: 'Main has no DOM storage — persist via the ledger or settings file.' },
+      ],
+    },
+  },
+  {
+    files: ['src/core/**/*.ts', 'src/infrastructure/**/*.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              regex: '^(?:electron(?:$|[/-])|@electron/|react(?:$|[/-])|@effect/atom-react(?:$|/)|@/)',
+              message: 'Engine code depends on Node and shared contracts, not Electron or React (ADR 0038).',
+            },
+          ],
+        },
       ],
     },
   },
@@ -287,7 +324,7 @@ export default tseslint.config(
     // `allowTypeImports` keeps the IPC wire-type contract (`import type` from
     // ../main/**) while a value import from main — the thing that would break
     // the sandbox — fails the gate. The tree has zero value imports today.
-    files: ['src/preload/**/*.ts'],
+    files: ['src/platform/electron/preload/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',

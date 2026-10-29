@@ -18,13 +18,13 @@ import {
   initOperationalLog,
   OperationalLogLoggerLayer,
   safeLogOperationalEvent,
-} from '../src/main/operational-log.js'
+} from '../src/infrastructure/logging/operational-log.js'
 import {
   HttpFetch,
   type HttpFetchCounters,
   HttpFetchError,
   type HttpFetchResponse,
-} from '../src/main/pipeline/fetch-utils.js'
+} from '../src/infrastructure/ingestion/fetch-utils.js'
 
 function okResponse(body: unknown = {}): Response {
   return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
