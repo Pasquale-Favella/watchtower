@@ -1,4 +1,9 @@
-import type { ProjectSummary, SessionSummary, TaskCategory, TokenUsage } from '../../src/main/pipeline/types.js'
+import type {
+  ProjectSummary,
+  SessionSummary,
+  TaskCategory,
+  TokenUsage,
+} from '../../src/core/domain/observations/types.js'
 
 const usage: TokenUsage = {
   inputTokens: 100,

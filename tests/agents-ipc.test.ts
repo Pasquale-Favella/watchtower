@@ -10,17 +10,17 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import type { Mock } from 'vitest'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
+import { CoachSdkFailure } from '../src/infrastructure/agent-harnesses/coach-errors.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import type { AcpMcpServer } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
 import {
   type CoachRunner,
   createCoachRunner,
   type HarnessSource,
   type LedgerMcpAttachment,
   type NativeHarnessSource,
-} from '../src/main/agents/ipc.js'
-import { encodeResumeCursor } from '../src/main/agents/resume-cursor.js'
+} from '../src/platform/electron/main/coach/ipc.js'
+import { encodeResumeCursor } from '../src/infrastructure/agent-harnesses/resume-cursor.js'
 import type {
   ControlledHarnessInspection,
   ControlledHarnessRun,
@@ -29,10 +29,10 @@ import type {
   HarnessRunInput,
   HarnessRuntime,
   NativeHarnessRun,
-} from '../src/main/agents/runtime.js'
-import { CoachHarnessExecution, type HarnessSdk } from '../src/main/agents/runtime.js'
-import { type MainRuntime, makeMainRuntime } from '../src/main/main-runtime.js'
-import { closeOperationalLog, initOperationalLog } from '../src/main/operational-log.js'
+} from '../src/infrastructure/agent-harnesses/runtime.js'
+import { CoachHarnessExecution, type HarnessSdk } from '../src/infrastructure/agent-harnesses/runtime.js'
+import { type MainRuntime, makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
+import { closeOperationalLog, initOperationalLog } from '../src/infrastructure/logging/operational-log.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
 /** A fake detect result: one configured claude harness (ADR 0016 shape). */

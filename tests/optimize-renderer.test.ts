@@ -2,11 +2,11 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { DeliveryEvidence } from '../src/renderer/src/features/optimize/DeliveryOutcomes.js'
-import { FindingRow, OptimizeFindings } from '../src/renderer/src/features/optimize/OptimizeFindings.js'
-import { OptimizeSummary } from '../src/renderer/src/features/optimize/OptimizeSummary.js'
+import { DeliveryEvidence } from '../src/renderer/features/optimize/DeliveryOutcomes.js'
+import { FindingRow, OptimizeFindings } from '../src/renderer/features/optimize/OptimizeFindings.js'
+import { OptimizeSummary } from '../src/renderer/features/optimize/OptimizeSummary.js'
 import type { OptimizeFinding, OptimizePayload } from '../src/shared/schemas/optimize.js'
-import { calculateYieldPayload } from '../src/main/yield-calculation.js'
+import { calculateYieldPayload } from '../src/core/analytics/attribution/yield-calculation.js'
 import { buildFixtureReport } from './fixtures/report.js'
 
 describe('Optimize evidence presentation', () => {

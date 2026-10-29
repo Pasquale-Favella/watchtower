@@ -4,22 +4,22 @@ import {
   overviewDateRange,
   periodWindowStart,
   sessionFirstDateKey,
-} from '../../src/main/overview-scope.js'
-import { EDIT_TOOLS } from '../../src/main/pipeline/classifier.js'
-import { getShortModelName } from '../../src/main/pipeline/model-names.js'
+} from '../../src/core/domain/sessions/overview-scope.js'
+import { EDIT_TOOLS } from '../../src/core/analytics/detectors/classifier.js'
+import { getShortModelName } from '../../src/core/domain/pricing/model-names.js'
 import {
   findUnpricedModels,
   isExpectedFreeModel,
   type LocalModelSavings,
   type PricingCatalogue,
   resolveModelNameAlias,
-} from '../../src/main/pipeline/pricing-calculation.js'
-import { CATEGORY_LABELS, type SessionSummary, type TaskCategory } from '../../src/main/pipeline/types.js'
+} from '../../src/core/domain/pricing/pricing-calculation.js'
+import { CATEGORY_LABELS, type SessionSummary, type TaskCategory } from '../../src/core/domain/observations/types.js'
 import {
   buildSessionSummariesFromSnapshotResult,
   queryScopeFromSnapshotResult,
-} from '../../src/main/store/aggregate-calculation.js'
-import type { LedgerQuerySnapshot } from '../../src/main/store/ledger-query-snapshot.js'
+} from '../../src/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQuerySnapshot } from '../../src/core/application/queries/ledger-query-snapshot.js'
 import {
   type EfficiencyGrade,
   type OverviewActivityRow,

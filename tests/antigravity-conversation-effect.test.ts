@@ -19,8 +19,8 @@ const hooks = vi.hoisted(() => ({
   requests: [] as Array<{ path: string; body: string }>,
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase: (path: string) => {
@@ -171,12 +171,12 @@ vi.mock('https', async importOriginal => {
   return { ...actual, request, Agent, default: { ...actual, request, Agent } } as unknown as typeof actual
 })
 
-import type { SessionSource } from '../src/main/pipeline/providers/types.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import type { SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let root = ''
-let provider: typeof import('../src/main/pipeline/providers/antigravity.js')
-let appPaths: typeof import('../src/main/env.js')
+let provider: typeof import('../src/infrastructure/provider-adapters/antigravity.js')
+let appPaths: typeof import('../src/infrastructure/config/environment.js')
 
 beforeEach(async () => {
   vi.resetModules()
@@ -187,9 +187,9 @@ beforeEach(async () => {
   hooks.databaseBusyQuery = null
   hooks.databaseCloseFailurePath = null
   hooks.requests.length = 0
-  appPaths = await import('../src/main/env.js')
+  appPaths = await import('../src/infrastructure/config/environment.js')
   appPaths.initAppPaths({ cacheDir: root })
-  provider = await import('../src/main/pipeline/providers/antigravity.js')
+  provider = await import('../src/infrastructure/provider-adapters/antigravity.js')
 })
 
 afterEach(() => {

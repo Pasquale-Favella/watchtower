@@ -3,26 +3,26 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import type { AcpMcpServer } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
 import {
   type CoachRunner,
   createCoachRunner,
   type HarnessSource,
   type LedgerMcpAttachment,
   type NativeHarnessSource,
-} from '../src/main/agents/ipc.js'
-import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
-import { createSidecarPool } from '../src/main/agents/ledger-mcp/pool.js'
-import type { StartedLedgerMcpHttp } from '../src/main/agents/ledger-mcp/sidecar.js'
+} from '../src/platform/electron/main/coach/ipc.js'
+import type { LedgerMcpSpawnContext } from '../src/platform/mcp/config.js'
+import { createSidecarPool } from '../src/platform/mcp/pool.js'
+import type { StartedLedgerMcpHttp } from '../src/platform/mcp/sidecar.js'
 import type {
   ControlledHarnessInspection,
   HarnessProviderInput,
   HarnessRunInput,
   HarnessRuntime,
   NativeHarnessRun,
-} from '../src/main/agents/runtime.js'
-import type { MainRuntime } from '../src/main/main-runtime.js'
+} from '../src/infrastructure/agent-harnesses/runtime.js'
+import type { MainRuntime } from '../src/platform/electron/main/main-runtime.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
 /**

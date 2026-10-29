@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectHarnesses, pickPreferredHarness } from '../src/main/agents/detect.js'
-import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
+import { detectHarnesses, pickPreferredHarness } from '../src/infrastructure/agent-harnesses/detect.js'
+import { harnessSpecs } from '../src/infrastructure/agent-harnesses/harnesses/index.js'
 
 /** A commandExists lookup seeded with installed binaries. */
 function lookup(installed: string[]): (cmd: string) => string | null {

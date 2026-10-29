@@ -18,8 +18,8 @@ const hooks = vi.hoisted(() => ({
   closedDatabase: vi.fn(),
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase: (path: string) => {
@@ -155,8 +155,8 @@ vi.mock('https', async importOriginal => {
   return { ...actual, request, Agent: TestAgent, default: { Agent: TestAgent, request } } as unknown as typeof actual
 })
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   return {
     ...actual,
     readSessionLinesStream: (
@@ -183,15 +183,18 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   }
 })
 
-import { appPaths, initAppPaths } from '../src/main/env.js'
+import { appPaths, initAppPaths } from '../src/infrastructure/config/environment.js'
 import {
   captureScanPricing,
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import { createAntigravityProvider, flushAntigravityCacheEffect } from '../src/main/pipeline/providers/antigravity.js'
-import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/pricing/models.js'
+import {
+  createAntigravityProvider,
+  flushAntigravityCacheEffect,
+} from '../src/infrastructure/provider-adapters/antigravity.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'antigravity-captured-pricing-model'

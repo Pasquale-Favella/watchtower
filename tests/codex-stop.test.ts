@@ -71,11 +71,11 @@ vi.mock('fs/promises', async importOriginal => {
 
 import { writeFile } from 'node:fs/promises'
 
-import { appPaths, Env, initAppPaths } from '../src/main/env.js'
-import { flushCodexCacheEffect, lookupCachedCodexResultsEffect } from '../src/main/pipeline/codex-cache.js'
-import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
-import type { ProviderScanContext, SessionParser } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { appPaths, Env, initAppPaths } from '../src/infrastructure/config/environment.js'
+import { flushCodexCacheEffect, lookupCachedCodexResultsEffect } from '../src/infrastructure/ingestion/codex-cache.js'
+import { createCodexProvider } from '../src/infrastructure/provider-adapters/codex.js'
+import type { ProviderScanContext, SessionParser } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''

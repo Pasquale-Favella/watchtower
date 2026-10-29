@@ -1,18 +1,21 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { calculateCost } from '../src/main/pipeline/models.js'
-import { buildSessionSummary, cachedTurnToClassified } from '../src/main/pipeline/parser.js'
-import { aggregateSessions } from '../src/main/pipeline/sessions-report.js'
-import type { ClassifiedTurn, SessionSummary } from '../src/main/pipeline/types.js'
+import { calculateCost } from '../src/infrastructure/pricing/models.js'
+import { buildSessionSummary, cachedTurnToClassified } from '../src/infrastructure/ingestion/parser.js'
+import { aggregateSessions } from '../src/infrastructure/ingestion/sessions-report.js'
+import type { ClassifiedTurn, SessionSummary } from '../src/core/domain/observations/types.js'
 import {
   buildSessionRowsFromSnapshot,
   buildSessionSummariesFromSnapshot,
   defaultRange,
   queryScopeFromSnapshot,
-} from '../src/main/store/aggregate-calculation.js'
-import { LedgerConfig, LedgerIngest, type LedgerIngestPort } from '../src/main/store/ledger-ports.js'
-import { type LedgerQuerySnapshot, loadLedgerQuerySnapshotEffect } from '../src/main/store/ledger-query-snapshot.js'
+} from '../src/core/analytics/projections/aggregate-calculation.js'
+import { LedgerConfig, LedgerIngest, type LedgerIngestPort } from '../src/core/ports/repository.js'
+import {
+  type LedgerQuerySnapshot,
+  loadLedgerQuerySnapshotEffect,
+} from '../src/core/application/queries/ledger-query-snapshot.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 

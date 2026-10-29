@@ -7,9 +7,9 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { DbWorkerContext, DbWorkerEmit } from '../src/main/db-worker/context.js'
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import { dbWorkerRpcServerLayer } from '../src/main/db-worker/rpc-server.js'
+import type { DbWorkerContext, DbWorkerEmit } from '../src/platform/electron/workers/context.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
+import { dbWorkerRpcServerLayer } from '../src/platform/electron/workers/rpc-server.js'
 import { WorkerEventSchema, WorkerRpcError, WorkerRpcGroup } from '../src/shared/rpc/worker.js'
 
 function fakeContext(emit: DbWorkerEmit) {

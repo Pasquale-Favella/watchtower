@@ -9,11 +9,11 @@ import * as Layer from 'effect/Layer'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LedgerMaintenance } from '../src/main/application/ledger-maintenance.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { LedgerIngest } from '../src/main/store/ledger-repository.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { LedgerMaintenance } from '../src/core/ports/ledger-maintenance.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import { LedgerQueries } from '../src/core/ports/repository.js'
+import { LedgerIngest } from '../src/infrastructure/sqlite/ledger-repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
@@ -25,7 +25,7 @@ function removeFixture(directory: string): void {
 }
 
 async function withWorker(
-  run: (context: DbWorkerContext, owner: { runtime: WorkerRuntime; dbPath: string }) => Promise<void>,
+  run: (context: DbWorkerContext, owner: { runtime: EngineRuntime; dbPath: string }) => Promise<void>,
   hasSources?: LedgerQueries['Service']['hasSources'],
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-source-status-'))
@@ -45,9 +45,9 @@ async function withWorker(
         }),
       )
     : undefined
-  let runtime: WorkerRuntime
+  let runtime: EngineRuntime
   try {
-    runtime = openWorkerRuntime(dbPath, undefined, overrides)
+    runtime = openEngineRuntime(dbPath, undefined, overrides)
   } catch (error) {
     removeFixture(directory)
     throw error

@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { AssistantSetup } from '../src/main/application/assistant-setup.js'
-import { queryOptimizeView } from '../src/main/application/optimize-query.js'
+import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
+import { queryOptimizeView } from '../src/core/application/queries/optimize-query.js'
 import {
   aggregateMcpCoverage,
   calculateOptimizePayload,
@@ -33,17 +33,17 @@ import {
   type FindingId,
   findLowWorthCandidates,
   formatTokens,
-} from '../src/main/optimize-calculation.js'
-import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
+} from '../src/core/analytics/detectors/optimize-calculation.js'
+import type { CachedCall, CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
 import type {
   ClassifiedTurn,
   ParsedApiCall,
   ProjectSummary,
   SessionSummary,
   ToolCall,
-} from '../src/main/pipeline/types.js'
-import type { OptimizeSetup } from '../src/main/setup-facts.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+} from '../src/core/domain/observations/types.js'
+import type { OptimizeSetup } from '../src/core/domain/evidence/setup-facts.js'
+import { LedgerIngest } from '../src/core/ports/repository.js'
 import type { OptimizePayload } from '../src/shared/schemas/optimize.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'

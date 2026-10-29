@@ -3,8 +3,8 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
-import { createSearchAtoms, paletteSearchKey } from '../src/renderer/src/app/atoms/search.js'
-import { paletteSearchRequest } from '../src/renderer/src/app/hooks/use-search.js'
+import { createSearchAtoms, paletteSearchKey } from '../src/renderer/stores/atoms/search.js'
+import { paletteSearchRequest } from '../src/renderer/stores/hooks/use-search.js'
 import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 
 describe('command palette search', () => {

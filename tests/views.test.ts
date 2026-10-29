@@ -3,17 +3,17 @@ import { DatabaseSync, StatementSync } from 'node:sqlite'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it, vi } from 'vitest'
 
-import { queryOverview } from '../src/main/application/overview-query.js'
-import { querySessionDetail } from '../src/main/application/session-detail-query.js'
-import { querySessionSearch } from '../src/main/application/session-search-query.js'
-import { queryProjectRows, querySessionRows } from '../src/main/application/store-row-queries.js'
-import { queryAnalyticalViews, queryDashboardViews } from '../src/main/application/view-queries.js'
-import { captureLocalModelSavings } from '../src/main/pipeline/models.js'
-import { normalizeProxyPath } from '../src/main/pipeline/proxy-paths.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
-import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+import { queryOverview } from '../src/core/application/queries/overview-query.js'
+import { querySessionDetail } from '../src/core/application/queries/session-detail-query.js'
+import { querySessionSearch } from '../src/core/application/queries/session-search-query.js'
+import { queryProjectRows, querySessionRows } from '../src/core/application/queries/store-row-queries.js'
+import { queryAnalyticalViews, queryDashboardViews } from '../src/core/application/queries/view-queries.js'
+import { captureLocalModelSavings } from '../src/infrastructure/pricing/models.js'
+import { normalizeProxyPath } from '../src/core/domain/sessions/proxy-paths.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import { LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { LedgerViewReads } from '../src/core/ports/ledger-view-reads.js'
+import type { EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import type { OverviewPayload, OverviewScope } from '../src/shared/schemas/overview.js'
 import type {
   AnalyticalViews,
@@ -48,7 +48,7 @@ type ViewsSessionSpec = {
 
 type SessionFilter = { project?: string; since?: string; until?: string }
 
-function portViews(runtime: WorkerRuntime, specs: ViewsSessionSpec[]): void {
+function portViews(runtime: EngineRuntime, specs: ViewsSessionSpec[]): void {
   runtime.runSync(
     Effect.flatMap(LedgerIngest, ingest =>
       Effect.forEach(specs, spec =>
@@ -92,34 +92,34 @@ function viewsCachedFile(spec: ViewsSessionSpec): CachedFile {
   })
 }
 
-function projectRows(runtime: WorkerRuntime): ProjectRow[] {
+function projectRows(runtime: EngineRuntime): ProjectRow[] {
   return runtime.runSync(queryProjectRows({ catalogue: viewInputs({ period: 'lifetime' }).catalogue }))
 }
 
-function sessionRows(runtime: WorkerRuntime, filter: SessionFilter = {}): SessionRow[] {
+function sessionRows(runtime: EngineRuntime, filter: SessionFilter = {}): SessionRow[] {
   return runtime.runSync(querySessionRows({ catalogue: viewInputs({ period: 'lifetime' }).catalogue, filter }))
 }
 
-function sessionDetail(runtime: WorkerRuntime, sessionId: string): SessionDetail | null {
+function sessionDetail(runtime: EngineRuntime, sessionId: string): SessionDetail | null {
   const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
   return runtime.runSync(querySessionDetail({ catalogue, proxyPaths, sessionId }))
 }
 
-function sessionSearch(runtime: WorkerRuntime, query: string): SearchHit[] {
+function sessionSearch(runtime: EngineRuntime, query: string): SearchHit[] {
   return runtime.runSync(querySessionSearch({ catalogue: viewInputs({ period: 'lifetime' }).catalogue, query }))
 }
 
-function dashboardViews(runtime: WorkerRuntime): DashboardViews {
+function dashboardViews(runtime: EngineRuntime): DashboardViews {
   const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
   return runtime.runSync(queryDashboardViews({ catalogue, proxyPaths }))
 }
 
-function analyticalViews(runtime: WorkerRuntime): AnalyticalViews {
+function analyticalViews(runtime: EngineRuntime): AnalyticalViews {
   const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
   return runtime.runSync(queryAnalyticalViews({ catalogue, proxyPaths }))
 }
 
-function overviewView(runtime: WorkerRuntime, scope: OverviewScope, now: Date): OverviewPayload {
+function overviewView(runtime: EngineRuntime, scope: OverviewScope, now: Date): OverviewPayload {
   return runtime.runSync(atTime(queryOverview({ ...viewInputs(scope), localSavings: captureLocalModelSavings() }), now))
 }
 

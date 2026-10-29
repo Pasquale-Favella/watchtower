@@ -24,9 +24,9 @@ vi.mock('fs', async importOriginal => {
   }
 })
 
-import { appPaths, Env, initAppPaths } from '../src/main/env.js'
-import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
-import type { Provider } from '../src/main/pipeline/providers/types.js'
+import { appPaths, Env, initAppPaths } from '../src/infrastructure/config/environment.js'
+import { createCodexProvider } from '../src/infrastructure/provider-adapters/codex.js'
+import type { Provider } from '../src/infrastructure/provider-adapters/types.js'
 
 let root = ''
 let priorCacheDir = ''

@@ -14,10 +14,10 @@ import { Deferred, Effect, Exit, Fiber, FiberHandle, Layer, Option, Ref, Schedul
 import * as TestClock from 'effect/testing/TestClock'
 import { describe, expect, it } from 'vitest'
 
-import { HARNESS_HANDSHAKE_TIMEOUT_MS } from '../src/main/agents/harness-timeouts.js'
-import { HarnessProbe } from '../src/main/agents/snapshot.js'
-import { Env } from '../src/main/env.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { HARNESS_HANDSHAKE_TIMEOUT_MS } from '../src/infrastructure/agent-harnesses/harness-timeouts.js'
+import { HarnessProbe } from '../src/infrastructure/agent-harnesses/snapshot.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
 
 // ---------------------------------------------------------------------------
 // Fakes mirroring the current seam shapes (runtime.ts / detect.ts)

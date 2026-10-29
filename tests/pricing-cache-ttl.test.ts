@@ -21,9 +21,13 @@ import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { DEFAULT_PRICING_CACHE_TTL_MS, Env, resolvePricingCacheTtlMs } from '../src/main/env.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { getModelCosts, loadPricingEffect } from '../src/main/pipeline/models.js'
+import {
+  DEFAULT_PRICING_CACHE_TTL_MS,
+  Env,
+  resolvePricingCacheTtlMs,
+} from '../src/infrastructure/config/environment.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
+import { getModelCosts, loadPricingEffect } from '../src/infrastructure/pricing/models.js'
 
 const MS_PER_HOUR = 60 * 60 * 1000
 
@@ -72,7 +76,7 @@ describe('resolvePricingCacheTtlMs', () => {
 
   it('regression: an unset TTL is 24 hours, not Infinity (the cache-never-expires defect)', () => {
     // The exact failure mode, named. `Infinity` here means
-    // `parseCachedPricingPayload` in `src/main/pipeline/models.ts` never rejects
+    // `parseCachedPricingPayload` in `src/infrastructure/pricing/models.ts` never rejects
     // a cache and `loadPricingEffect` never reaches `fetchAndCachePricingEffect`
     // — the first-launch-offline machine is stuck on the bundled snapshot
     // forever. 24h is long enough that a normal user is not re-fetching on every

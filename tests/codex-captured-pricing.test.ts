@@ -12,8 +12,8 @@ const hooks = vi.hoisted(() => ({
   releaseRead: undefined as (() => void) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   return {
     ...actual,
     readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) => {
@@ -35,16 +35,16 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
 
 import { readFile, writeFile } from 'node:fs/promises'
 
-import { appPaths, initAppPaths } from '../src/main/env.js'
-import { flushCodexCacheEffect } from '../src/main/pipeline/codex-cache.js'
+import { appPaths, initAppPaths } from '../src/infrastructure/config/environment.js'
+import { flushCodexCacheEffect } from '../src/infrastructure/ingestion/codex-cache.js'
 import {
   captureScanPricing,
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import { createCodexProvider } from '../src/main/pipeline/providers/codex.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/pricing/models.js'
+import { createCodexProvider } from '../src/infrastructure/provider-adapters/codex.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'codex-captured-pricing-model'

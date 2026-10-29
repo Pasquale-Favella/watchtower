@@ -11,7 +11,7 @@ import {
   type HydrationHandleEffect,
   loadCacheEffect,
   saveCacheEffect,
-} from '../src/main/pipeline/session-cache.js'
+} from '../src/infrastructure/ingestion/session-cache.js'
 
 const withFileSystem = <A, E>(
   effect: Effect.Effect<A, E, import('effect/FileSystem').FileSystem>,

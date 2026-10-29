@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
+import { decodeSchema } from '../src/renderer/shared/lib/schema-decoder.js'
 import { exportResultSchema } from '../src/shared/schemas/export.js'
 import { activeCurrencySchema, currencyOptionSchema, currencyOptionsSchema } from '../src/shared/schemas/fx.js'
 import { appVersionSchema, updateStatusSchema } from '../src/shared/schemas/updates.js'

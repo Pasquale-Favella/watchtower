@@ -3,8 +3,8 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { describe, expect, it, vi } from 'vitest'
 
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import { readDirectoryOrEmpty, scanIo } from '../src/main/pipeline/scan-io.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import { readDirectoryOrEmpty, scanIo } from '../src/infrastructure/ingestion/scan-io.js'
 import { deferred } from './helpers/deferred.js'
 
 describe('scan native IO ownership', () => {

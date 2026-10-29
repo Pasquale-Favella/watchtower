@@ -5,16 +5,16 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { type CompareQueryInputs, queryCompareView } from '../src/main/application/compare-query.js'
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
+import { type CompareQueryInputs, queryCompareView } from '../src/core/application/queries/compare-query.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
 import {
   LedgerConfig,
   LedgerIngest,
   LedgerQueries,
   type LedgerQueriesPort,
   type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-ports.js'
+} from '../src/core/ports/repository.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 

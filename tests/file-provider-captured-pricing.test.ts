@@ -10,8 +10,8 @@ const hooks = vi.hoisted(() => ({
   pause: undefined as (() => Promise<void>) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   return {
     ...actual,
     readSessionFileEffect: (...args: Parameters<typeof actual.readSessionFileEffect>) =>
@@ -26,17 +26,22 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   }
 })
 
-import { calculateCost, captureScanPricing, setModelAliases, setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createOmpProvider, createPiProvider } from '../src/main/pipeline/providers/pi.js'
-import { createQwenProvider } from '../src/main/pipeline/providers/qwen.js'
+import {
+  calculateCost,
+  captureScanPricing,
+  setModelAliases,
+  setPriceOverrides,
+} from '../src/infrastructure/pricing/models.js'
+import { createOmpProvider, createPiProvider } from '../src/infrastructure/provider-adapters/pi.js'
+import { createQwenProvider } from '../src/infrastructure/provider-adapters/qwen.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { createZcodeProvider } from '../src/main/pipeline/providers/zcode.js'
-import { createZerostackProvider } from '../src/main/pipeline/providers/zerostack.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { createZcodeProvider } from '../src/infrastructure/provider-adapters/zcode.js'
+import { createZerostackProvider } from '../src/infrastructure/provider-adapters/zerostack.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 import { deferred } from './helpers/deferred.js'
 

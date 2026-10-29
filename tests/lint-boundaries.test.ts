@@ -1,4 +1,4 @@
-import { resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 
 import { ESLint } from 'eslint'
 import { describe, expect, it } from 'vitest'
@@ -21,15 +21,115 @@ async function errorRules(code: string, file: string): Promise<string[]> {
   return result.messages.filter(message => message.severity === 2).map(message => String(message.ruleId))
 }
 
-const rendererProbe = 'src/renderer/src/__boundary-probe.ts'
-const mainProbe = 'src/main/__boundary-probe.ts'
-const preloadProbe = 'src/preload/__boundary-probe.ts'
-const deeplyNestedRendererProbe = 'src/renderer/src/features/account/overview/__boundary-probe.ts'
+const rendererProbe = 'src/renderer/__boundary-probe.ts'
+const mainProbe = 'src/platform/electron/main/__boundary-probe.ts'
+const preloadProbe = 'src/platform/electron/preload/__boundary-probe.ts'
+const deeplyNestedRendererProbe = 'src/renderer/features/account/overview/__boundary-probe.ts'
+const engineProbe = 'src/core/application/queries/nested/__boundary-probe.ts'
+
+function sourceImport(file: string, target: string): string {
+  const source = relative(dirname(resolve(file)), resolve(target)).replaceAll('\\', '/')
+  return source.startsWith('.') ? source : './' + source
+}
+
+describe('engine dependency boundaries (ADR 0038)', () => {
+  it('rejects desktop, renderer and preload dependencies, including types and resolved aliases', async () => {
+    for (const target of [
+      'src/platform/electron/main/main-runtime.ts',
+      'src/infrastructure/runtime/engine-runtime.ts',
+      'src/platform/electron/preload/rpc.ts',
+      'src/renderer/shared/lib/utils.ts',
+    ]) {
+      for (const source of [sourceImport(engineProbe, target), `@/${target.slice(4)}`]) {
+        for (const qualifier of ['', 'type ']) {
+          expect(
+            await errorRules(
+              `import ${qualifier}* as dependency from '${source}'\nexport { dependency }\n`,
+              engineProbe,
+            ),
+          ).toContain('import-x/no-restricted-paths')
+        }
+      }
+    }
+    expect(
+      await errorRules(
+        "import * as dependency from '@/renderer/shared/lib/utils'\nexport { dependency }\n",
+        engineProbe,
+      ),
+    ).toContain('import-x/no-restricted-paths')
+  })
+
+  it('rejects Electron and React dependencies even when only their types are imported', async () => {
+    for (const source of [
+      'electron',
+      'electron/main',
+      'electron-updater',
+      'react',
+      'react/jsx-runtime',
+      'react-dom/client',
+      '@effect/atom-react',
+    ]) {
+      for (const qualifier of ['', 'type ']) {
+        expect(
+          await errorRules(`import ${qualifier}* as dependency from '${source}'\nexport { dependency }\n`, engineProbe),
+        ).toContain('no-restricted-imports')
+      }
+    }
+  })
+
+  it('keeps engine implementations out of renderer, preload and shared contracts', async () => {
+    for (const probe of [rendererProbe, preloadProbe, 'src/shared/__boundary-probe.ts']) {
+      expect(
+        await errorRules(
+          `import type { EngineRuntime } from '${sourceImport(probe, 'src/infrastructure/runtime/engine-runtime.ts')}'\nexport type Probe = EngineRuntime\n`,
+          probe,
+        ),
+      ).toContain('import-x/no-restricted-paths')
+    }
+  })
+
+  it('allows Node and shared contracts in the engine, and engine queries in desktop adapters', async () => {
+    expect(
+      await errorRules("import { readFileSync } from 'node:fs'\nexport const probe = readFileSync\n", engineProbe),
+    ).toEqual([])
+    expect(
+      await errorRules(
+        `import type { OverviewScope } from '${sourceImport(engineProbe, 'src/shared/schemas/overview.ts')}'\nexport type Probe = OverviewScope\n`,
+        engineProbe,
+      ),
+    ).toEqual([])
+    expect(
+      await errorRules(
+        `import { openEngineRuntime } from '${sourceImport(mainProbe, 'src/infrastructure/runtime/engine-runtime.ts')}'\nexport const probe = openEngineRuntime\n`,
+        mainProbe,
+      ),
+    ).toEqual([])
+  })
+})
+
+describe('source-root aliases', () => {
+  it('allows aliases in every application layer', async () => {
+    for (const [file, source] of [
+      [engineProbe, '@/core/ports/process.js'],
+      ['src/infrastructure/process/__boundary-probe.ts', '@/core/ports/process.js'],
+      [mainProbe, '@/infrastructure/runtime/engine-runtime.js'],
+      [preloadProbe, '@/shared/schemas/ipc.js'],
+      [rendererProbe, '@/shared/schemas/ipc.js'],
+      ['src/shared/__boundary-probe.ts', '@/shared/schemas/overview.js'],
+    ]) {
+      expect(await errorRules(`import * as dependency from '${source}'\nexport { dependency }\n`, file)).toEqual([])
+    }
+  })
+})
 
 describe('process boundaries (ADR 0005 / ADR 0023)', () => {
   it('requires renderer components to consume store hooks instead of atoms and query plumbing', async () => {
-    const component = 'src/renderer/src/features/overview/__boundary-probe.tsx'
-    for (const source of ['@/app/atoms/scope', '../settings/preferences-atoms', '@/app/hooks/use-remote-query']) {
+    const component = 'src/renderer/features/overview/__boundary-probe.tsx'
+    for (const source of [
+      '@/renderer/stores/atoms/scope',
+      '../settings/preferences-atoms',
+      '@/renderer/stores/hooks/use-remote-query',
+    ]) {
       expect(await errorRules(`import * as state from '${source}'\nexport const probe = state\n`, component)).toContain(
         'import-x/no-restricted-paths',
       )
@@ -48,13 +148,13 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
     expect(
       await errorRules(
         "import { useAtomValue } from '@effect/atom-react'\nexport const probe = useAtomValue\n",
-        'src/renderer/src/features/overview/use-overview-store.ts',
+        'src/renderer/features/overview/use-overview-store.ts',
       ),
     ).not.toContain('no-restricted-syntax')
     expect(
       await errorRules(
         "import { RegistryContext } from '@effect/atom-react'\nexport const probe = RegistryContext\n",
-        'src/renderer/src/app/renderer-root.tsx',
+        'src/renderer/app/renderer-root.tsx',
       ),
     ).not.toContain('no-restricted-syntax')
   })
@@ -78,7 +178,7 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
 
   it('rejects main/preload source imports from the renderer', async () => {
     const rules = await errorRules(
-      `import type { OverviewScope } from '../../main/overview-scope.js'\nexport type Probe = OverviewScope\n`,
+      `import type { MainRuntime } from '../platform/electron/main/main-runtime.js'\nexport type Probe = MainRuntime\n`,
       rendererProbe,
     )
     expect(rules).toContain('import-x/no-restricted-paths')
@@ -86,13 +186,13 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
 
   it('rejects resolved aliases and deep relative imports across process boundaries', async () => {
     const aliasRules = await errorRules(
-      `import { overviewDateRange } from '@/../../main/overview-scope.js'\nexport const probe = overviewDateRange\n`,
+      `import { makeMainRuntime } from '@/renderer/../platform/electron/main/main-runtime.js'\nexport const probe = makeMainRuntime\n`,
       deeplyNestedRendererProbe,
     )
     expect(aliasRules).toContain('import-x/no-restricted-paths')
 
     const deepRules = await errorRules(
-      `import { overviewDateRange } from '../../../../../main/overview-scope.js'\nexport const probe = overviewDateRange\n`,
+      `import { makeMainRuntime } from '../../../../platform/electron/main/main-runtime.js'\nexport const probe = makeMainRuntime\n`,
       deeplyNestedRendererProbe,
     )
     expect(deepRules).toContain('import-x/no-restricted-paths')
@@ -100,7 +200,7 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
 
   it('rejects renderer imports and DOM globals in main', async () => {
     const importRules = await errorRules(
-      `import { localDateKey } from '../renderer/src/shared/lib/utils.js'\nexport const probe = localDateKey\n`,
+      `import { localDateKey } from '../../../renderer/shared/lib/utils.js'\nexport const probe = localDateKey\n`,
       mainProbe,
     )
     expect(importRules).toContain('import-x/no-restricted-paths')
@@ -110,12 +210,12 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
 
   it('allows preload shared type imports but rejects value imports from main', async () => {
     const typeRules = await errorRules(
-      `import type { OverviewScope } from '../../shared/schemas/overview.js'\nexport type Probe = OverviewScope\n`,
+      `import type { MainRuntime } from '../../shared/schemas/overview.js'\nexport type Probe = MainRuntime\n`,
       preloadProbe,
     )
     expect(typeRules).not.toContain('no-restricted-imports')
     const valueRules = await errorRules(
-      `import { overviewDateRange } from '../main/overview-scope.js'\nexport const probe = typeof overviewDateRange\n`,
+      `import { makeMainRuntime } from '../main/main-runtime.js'\nexport const probe = typeof makeMainRuntime\n`,
       preloadProbe,
     )
     expect(valueRules).toContain('no-restricted-imports')
@@ -135,14 +235,14 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
   })
 
   it('allows a preload type import from main and rejects its value import at arbitrary depth', async () => {
-    const deepPreloadProbe = 'src/preload/nested/contracts/__boundary-probe.ts'
+    const deepPreloadProbe = 'src/platform/electron/preload/nested/contracts/__boundary-probe.ts'
     const typeRules = await errorRules(
-      `import type { OverviewScope } from '../../../main/overview.js'\nexport type Probe = OverviewScope\n`,
+      `import type { MainRuntime } from '../../../main/main-runtime.js'\nexport type Probe = MainRuntime\n`,
       deepPreloadProbe,
     )
     expect(typeRules).not.toContain('no-restricted-imports')
     const valueRules = await errorRules(
-      `import { overviewDateRange } from '../../../main/overview-scope.js'\nexport const probe = typeof overviewDateRange\n`,
+      `import { makeMainRuntime } from '../../../main/main-runtime.js'\nexport const probe = typeof makeMainRuntime\n`,
       deepPreloadProbe,
     )
     expect(valueRules).toContain('no-restricted-imports')

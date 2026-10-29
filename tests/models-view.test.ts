@@ -1,10 +1,10 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { queryModelsView } from '../src/main/application/models-query.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import type { TokenUsage } from '../src/main/pipeline/types.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
+import { queryModelsView } from '../src/core/application/queries/models-query.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import type { TokenUsage } from '../src/core/domain/observations/types.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
 import {
   categoryLabel,
   formatCompact,
@@ -14,7 +14,7 @@ import {
   isUnpriced,
   providerTitle,
   sumGroup,
-} from '../src/renderer/src/shared/lib/models.js'
+} from '../src/renderer/shared/lib/models.js'
 import type { ModelsConfig, ModelsPayload } from '../src/shared/schemas/models.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'

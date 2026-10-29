@@ -3,5 +3,5 @@
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"]
   },
-  "include": ["e2e/**/*", "src/preload/index.d.ts", "src/renderer/src/env.d.ts"]
+  "include": ["e2e/**/*", "src/platform/electron/preload/index.d.ts", "src/renderer/env.d.ts"]
 }

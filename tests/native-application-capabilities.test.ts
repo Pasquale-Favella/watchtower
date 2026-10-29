@@ -10,17 +10,17 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import type { SaveDialogOptions } from 'electron'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
-import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
-import { LedgerMcpPool } from '../src/main/agents/ledger-mcp/pool.js'
-import type { NativeApplicationServices } from '../src/main/application/native-capabilities.js'
+import type { AcpMcpServer } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
+import type { LedgerMcpSpawnContext } from '../src/platform/mcp/config.js'
+import { LedgerMcpPool } from '../src/platform/mcp/pool.js'
+import type { NativeApplicationServices } from '../src/platform/electron/main/application/native-capabilities.js'
 import {
   createNativeApplicationCapabilities,
   type NativeApplicationPorts,
-} from '../src/main/application/native-capabilities.js'
-import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
-import { nativeHandlers } from '../src/main/rpc/native-handlers.js'
-import { AppUpdates } from '../src/main/updates.js'
+} from '../src/platform/electron/main/application/native-capabilities.js'
+import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
+import { nativeHandlers } from '../src/platform/electron/main/rpc/native-handlers.js'
+import { AppUpdates } from '../src/platform/electron/main/updates.js'
 import { NativeRpcGroup } from '../src/shared/rpc/native.js'
 
 type LedgerMcpPoolService = LedgerMcpPool['Service']

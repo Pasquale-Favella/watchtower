@@ -4,7 +4,7 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { createScanAtoms } from '../src/renderer/src/app/atoms/scan.js'
+import { createScanAtoms } from '../src/renderer/stores/atoms/scan.js'
 import type { ScanResult, ScanStatus } from '../src/shared/schemas/ipc.js'
 import type { AnalyticalViews } from '../src/shared/schemas/views.js'
 import { makeScanRpcTestClient, type ScanRpcTestOverrides } from './scan-rpc-test-helper.js'

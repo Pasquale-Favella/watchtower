@@ -15,7 +15,7 @@ import {
   makeOperationalLogTracer,
   OperationalLogTracerLayer,
   SPAN_EVENT,
-} from '../src/main/operational-log.js'
+} from '../src/infrastructure/logging/operational-log.js'
 
 /**
  * A7: the Operational-log `Tracer`. The proof is the FILE, not a spy — every

@@ -1,11 +1,11 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { cadenceValueSchema } from '../schemas/cadence.js'
-import { activeCurrencySchema, currencyOptionsSchema } from '../schemas/fx.js'
-import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '../schemas/ipc.js'
-import { modelAliasSchema, priceOverrideSchema } from '../schemas/models.js'
-import { ConfigRpcError } from './errors.js'
+import { cadenceValueSchema } from '@/shared/schemas/cadence.js'
+import { activeCurrencySchema, currencyOptionsSchema } from '@/shared/schemas/fx.js'
+import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '@/shared/schemas/ipc.js'
+import { modelAliasSchema, priceOverrideSchema } from '@/shared/schemas/models.js'
+import { ConfigRpcError } from '@/shared/rpc/errors.js'
 
 const modelRequestSchema = Schema.Struct({ model: Schema.String })
 const cadenceRequestSchema = Schema.Struct({ value: cadenceValueSchema })

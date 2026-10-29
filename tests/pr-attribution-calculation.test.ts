@@ -1,8 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { allocateEven, buildPrAttribution } from '../src/main/pipeline/pr-attribution.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import type { ClassifiedTurn, ParsedApiCall, SessionSummary, TaskCategory } from '../src/main/pipeline/types.js'
+import { allocateEven, buildPrAttribution } from '../src/core/analytics/attribution/pr-attribution.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import type {
+  ClassifiedTurn,
+  ParsedApiCall,
+  SessionSummary,
+  TaskCategory,
+} from '../src/core/domain/observations/types.js'
 
 const PR_A = 'https://github.com/acme/repo/pull/12'
 const PR_B = 'https://github.com/acme/repo/pull/34'

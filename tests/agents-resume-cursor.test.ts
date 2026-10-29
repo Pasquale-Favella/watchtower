@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { decodeResumeCursor, encodeResumeCursor } from '../src/main/agents/resume-cursor.js'
+import { decodeResumeCursor, encodeResumeCursor } from '../src/infrastructure/agent-harnesses/resume-cursor.js'
 
 describe('opaque resume cursor', () => {
   it('round-trips an instance-bound session id', () => {

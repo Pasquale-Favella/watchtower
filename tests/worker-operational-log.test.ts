@@ -8,13 +8,13 @@ import * as Metric from 'effect/Metric'
 import * as SqlClient from 'effect/sql/SqlClient'
 import { describe, expect, it, vi } from 'vitest'
 
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { makeWorkerOperationalLogSink } from '../src/main/db-worker/operational-log-sink.js'
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import { OperationalLog, SCAN_DURATION_COUNTER } from '../src/main/operational-log.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { LedgerConfig } from '../src/main/store/ledger-repository.js'
-import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import { makeWorkerOperationalLogSink } from '../src/platform/electron/workers/operational-log-sink.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
+import { OperationalLog, SCAN_DURATION_COUNTER } from '../src/infrastructure/logging/operational-log.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
+import { LedgerConfig } from '../src/infrastructure/sqlite/ledger-repository.js'
+import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 function removeTemporaryDirectory(directory: string, prefix: string): void {
   const resolvedDirectory = resolve(directory)
@@ -44,10 +44,10 @@ describe('worker operational log forwarding', () => {
     }
     const fetch = vi.fn<typeof globalThis.fetch>()
     const dbPath = join(directory, 'ledger.db')
-    let runtime: ReturnType<typeof openWorkerRuntime> | undefined
+    let runtime: ReturnType<typeof openEngineRuntime> | undefined
     let context: DbWorkerContext | undefined
     try {
-      runtime = openWorkerRuntime(dbPath, makeWorkerOperationalLogSink(emit), HttpFetch.layerWithFetch(fetch))
+      runtime = openEngineRuntime(dbPath, makeWorkerOperationalLogSink(emit), HttpFetch.layerWithFetch(fetch))
       runtime.runSync(
         Effect.gen(function* () {
           const config = yield* LedgerConfig
@@ -89,9 +89,9 @@ describe('worker operational log forwarding', () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-log-'))
     const events: DbWorkerEvent[] = []
     const sink = makeWorkerOperationalLogSink(event => events.push(event))
-    let runtime: ReturnType<typeof openWorkerRuntime> | undefined
+    let runtime: ReturnType<typeof openEngineRuntime> | undefined
     try {
-      runtime = openWorkerRuntime(join(directory, 'ledger.db'), sink)
+      runtime = openEngineRuntime(join(directory, 'ledger.db'), sink)
       const metrics = await runtime.runPromise(
         Effect.gen(function* () {
           const before = yield* Metric.value(Metric.counter(SCAN_DURATION_COUNTER))
@@ -172,9 +172,9 @@ describe('worker operational log forwarding', () => {
     const sink = makeWorkerOperationalLogSink(() => {
       throw new Error('closed port')
     })
-    let runtime: ReturnType<typeof openWorkerRuntime> | undefined
+    let runtime: ReturnType<typeof openEngineRuntime> | undefined
     try {
-      runtime = openWorkerRuntime(join(directory, 'ledger.db'), sink)
+      runtime = openEngineRuntime(join(directory, 'ledger.db'), sink)
       await expect(
         runtime.runPromise(
           Effect.gen(function* () {

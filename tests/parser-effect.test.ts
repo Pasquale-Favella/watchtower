@@ -2,8 +2,8 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Env } from '../src/main/env.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
 const hooks = vi.hoisted(() => ({
   events: [] as string[],
   discovered: vi.fn(),
@@ -16,7 +16,7 @@ vi.mock('fs/promises', () => ({
   stat: vi.fn(),
 }))
 
-vi.mock('../src/main/pipeline/providers/index.js', () => ({
+vi.mock('../src/infrastructure/provider-adapters/index.js', () => ({
   discoverAllSessionsEffect: (...args: unknown[]) =>
     Effect.tryPromise({
       try: () => hooks.discovered(...args) as Promise<unknown>,
@@ -24,7 +24,7 @@ vi.mock('../src/main/pipeline/providers/index.js', () => ({
     }),
 }))
 
-vi.mock('../src/main/pipeline/session-cache.js', async () => {
+vi.mock('../src/infrastructure/ingestion/session-cache.js', async () => {
   const Effect = await import('effect/Effect')
   const cache = { version: 7, complete: true, providers: {} }
   return {
@@ -47,7 +47,7 @@ vi.mock('../src/main/pipeline/session-cache.js', async () => {
   }
 })
 
-vi.mock('../src/main/pipeline/cache-refresh-lock.js', async () => {
+vi.mock('../src/infrastructure/ingestion/cache-refresh-lock.js', async () => {
   const Effect = await import('effect/Effect')
   return {
     acquireCacheRefreshLockEffect: vi.fn(() =>
@@ -59,7 +59,7 @@ vi.mock('../src/main/pipeline/cache-refresh-lock.js', async () => {
   }
 })
 
-import { clearSessionCache, parseAllSessionsEffect } from '../src/main/pipeline/parser.js'
+import { clearSessionCache, parseAllSessionsEffect } from '../src/infrastructure/ingestion/parser.js'
 
 describe('parser Effect workflow', () => {
   afterEach(() => {

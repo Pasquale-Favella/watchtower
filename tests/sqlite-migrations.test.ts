@@ -1,7 +1,7 @@
 import * as SqlClient from 'effect/sql/SqlClient'
 import { describe, expect, it } from 'vitest'
 
-import { executeSqliteScript, runSqliteMigrations } from '../src/main/store/sqlite-migrations.js'
+import { executeSqliteScript, runSqliteMigrations } from '../src/infrastructure/sqlite/sqlite-migrations.js'
 import { withNativeSqliteRuntime } from './fixtures/native-sqlite-runtime.js'
 
 describe('SQLite migrations', () => {

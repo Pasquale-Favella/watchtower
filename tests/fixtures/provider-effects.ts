@@ -1,13 +1,13 @@
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, FileSystem, Stream } from 'effect'
 
-import { Env } from '../../src/main/env.js'
+import { Env } from '../../src/infrastructure/config/environment.js'
 import type {
   ParsedProviderCall,
   Provider,
   ProviderScanContext,
   SessionParser,
-} from '../../src/main/pipeline/providers/types.js'
+} from '../../src/infrastructure/provider-adapters/types.js'
 
 /** Supply the platform selected by standalone provider tests, preserving other requirements. */
 export function withProviderFileSystem<A, E, R>(

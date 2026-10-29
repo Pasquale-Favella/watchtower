@@ -1,10 +1,15 @@
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { parseSidecarLogLine } from '../src/main/agents/ledger-mcp/sidecar.js'
-import { logCodeFor } from '../src/main/operational-log.js'
-import { fileErrorCode, logFileName, queueLogRecord, takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import { buildScanSummaryRecords } from '../src/main/pipeline/scan.js'
+import { parseSidecarLogLine } from '../src/platform/mcp/sidecar.js'
+import { logCodeFor } from '../src/infrastructure/logging/operational-log.js'
+import {
+  fileErrorCode,
+  logFileName,
+  queueLogRecord,
+  takeQueuedLogRecords,
+} from '../src/infrastructure/ingestion/file-errors.js'
+import { buildScanSummaryRecords } from '../src/infrastructure/ingestion/scan.js'
 import { rendererNoticeSchema } from '../src/shared/schemas/ipc.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 

@@ -32,8 +32,13 @@ import type { SqlError } from 'effect/sql/SqlError'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { Env } from '../src/main/env.js'
-import { type ActiveCurrency, FX_CACHE_TTL_MS, FxRates, refreshFxRateWithRates } from '../src/main/fx.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import {
+  type ActiveCurrency,
+  FX_CACHE_TTL_MS,
+  FxRates,
+  refreshFxRateWithRates,
+} from '../src/infrastructure/pricing/fx.js'
 import {
   fetchJsonWithRetry,
   HttpFetch,
@@ -42,11 +47,14 @@ import {
   TRANSIENT_RETRY_RETRIES,
   transientRetrySchedule,
   worstCaseRetryWindowMs,
-} from '../src/main/pipeline/fetch-utils.js'
-import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import { PricingRefreshError, refreshPricingNowEffect } from '../src/main/pipeline/models.js'
-import { fetchVercelGatewayReportEffect, type ReportRow } from '../src/main/pipeline/providers/vercel-gateway.js'
-import type { DateRange } from '../src/main/pipeline/types.js'
+} from '../src/infrastructure/ingestion/fetch-utils.js'
+import { takeQueuedLogRecords } from '../src/infrastructure/ingestion/file-errors.js'
+import { PricingRefreshError, refreshPricingNowEffect } from '../src/infrastructure/pricing/models.js'
+import {
+  fetchVercelGatewayReportEffect,
+  type ReportRow,
+} from '../src/infrastructure/provider-adapters/vercel-gateway.js'
+import type { DateRange } from '../src/core/domain/observations/types.js'
 import type { CurrencyRate } from '../src/shared/schemas/ledger.js'
 
 const RANGE: DateRange = {

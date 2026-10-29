@@ -7,17 +7,17 @@ import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as RpcTest from 'effect/rpc/RpcTest'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { RpcDataWorker } from '../src/main/rpc/handlers.js'
-import { analyticsHandlers, configHandlers } from '../src/main/rpc/handlers.js'
-import { lifecycleHandlers, lifecycleLayer } from '../src/main/rpc/lifecycle.js'
-import { configInvalidationRevisionAtom } from '../src/renderer/src/app/atoms/config-change.js'
-import { querySnapshot } from '../src/renderer/src/app/hooks/use-remote-query.js'
+import type { RpcDataWorker } from '../src/platform/electron/main/rpc/handlers.js'
+import { analyticsHandlers, configHandlers } from '../src/platform/electron/main/rpc/handlers.js'
+import { lifecycleHandlers, lifecycleLayer } from '../src/platform/electron/main/rpc/lifecycle.js'
+import { configInvalidationRevisionAtom } from '../src/renderer/stores/atoms/config-change.js'
+import { querySnapshot } from '../src/renderer/stores/hooks/use-remote-query.js'
 import {
   createPricingAtoms,
   createPricingCommandFamily,
   KNOWN_MODELS_REQUEST,
   PRICING_REQUEST,
-} from '../src/renderer/src/features/models/pricing-atoms.js'
+} from '../src/renderer/features/models/pricing-atoms.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import type { ModelReportRow, ModelsPayload } from '../src/shared/schemas/models.js'
 import { unexpectedNativeHandlers } from './fixtures/unexpected-native-rpc.js'

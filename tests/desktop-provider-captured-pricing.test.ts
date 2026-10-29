@@ -5,16 +5,16 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { setPriceOverrides } from '../src/main/pipeline/models.js'
+import { setPriceOverrides } from '../src/infrastructure/pricing/models.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { createWarpProvider } from '../src/main/pipeline/providers/warp.js'
-import { createZedProvider } from '../src/main/pipeline/providers/zed.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { createWarpProvider } from '../src/infrastructure/provider-adapters/warp.js'
+import { createZedProvider } from '../src/infrastructure/provider-adapters/zed.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const tempDirs: string[] = []

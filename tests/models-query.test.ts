@@ -4,17 +4,17 @@ import * as SqlError from 'effect/sql/SqlError'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { queryModelsView } from '../src/main/application/models-query.js'
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
+import { queryModelsView } from '../src/core/application/queries/models-query.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import type { ScopedViewQueryInputs } from '../src/core/application/queries/view-queries.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
 import {
   LedgerConfig,
   LedgerIngest,
   LedgerQueries,
   type LedgerQueriesPort,
   type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-ports.js'
+} from '../src/core/ports/repository.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 

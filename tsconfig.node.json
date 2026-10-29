@@ -1,4 +1,5 @@
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -23,5 +24,12 @@
     ],
     "types": ["node"]
   },
-  "include": ["electron.vite.config.ts", "playwright.config.ts", "src/main/**/*", "src/preload/**/*", "src/shared/**/*"]
+  "include": [
+    "electron.vite.config.ts",
+    "playwright.config.ts",
+    "src/core/**/*",
+    "src/infrastructure/**/*",
+    "src/platform/**/*",
+    "src/shared/**/*"
+  ]
 }

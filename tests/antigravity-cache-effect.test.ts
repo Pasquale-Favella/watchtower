@@ -56,7 +56,7 @@ vi.mock('child_process', async importOriginal => {
 })
 
 let root = ''
-let provider: typeof import('../src/main/pipeline/providers/antigravity.js')
+let provider: typeof import('../src/infrastructure/provider-adapters/antigravity.js')
 let openedTempFiles: FileSystem.File[] = []
 
 function hookedFileSystem(fs: FileSystem.FileSystem): FileSystem.FileSystem {
@@ -150,9 +150,9 @@ beforeEach(async () => {
   hooks.cleanupAfterClose.length = 0
   hooks.closedBeforeRename.length = 0
   openedTempFiles = []
-  const env = await import('../src/main/env.js')
+  const env = await import('../src/infrastructure/config/environment.js')
   env.initAppPaths({ cacheDir: root })
-  provider = await import('../src/main/pipeline/providers/antigravity.js')
+  provider = await import('../src/infrastructure/provider-adapters/antigravity.js')
 })
 
 afterEach(async () => {
@@ -241,9 +241,9 @@ describe('Antigravity native cache effects', () => {
     expect(await loadThroughParser(sourcePath)).toEqual([])
 
     vi.resetModules()
-    const env = await import('../src/main/env.js')
+    const env = await import('../src/infrastructure/config/environment.js')
     env.initAppPaths({ cacheDir: root })
-    provider = await import('../src/main/pipeline/providers/antigravity.js')
+    provider = await import('../src/infrastructure/provider-adapters/antigravity.js')
     hooks.failCacheRead = true
     expect(await loadThroughParser(sourcePath)).toEqual([])
   })

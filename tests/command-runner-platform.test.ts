@@ -1,3 +1,4 @@
+import { CommandRunnerLive } from '../src/infrastructure/process/command-runner.js'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as PlatformError from 'effect/PlatformError'
@@ -6,7 +7,7 @@ import * as Sink from 'effect/Sink'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import { CommandError, CommandRunner } from '../src/main/agents/command-runner.js'
+import { CommandError, CommandRunner } from '../src/core/ports/process.js'
 
 function spawnerLayer(
   stdout: Stream.Stream<Uint8Array, PlatformError.PlatformError>,
@@ -26,7 +27,7 @@ function spawnerLayer(
     unref: Effect.succeed(Effect.void),
   })
   const spawner = ChildProcessSpawner.make(() => Effect.succeed(handle))
-  return CommandRunner.layer.pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)))
+  return CommandRunnerLive.pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)))
 }
 
 const bytes = (value: string) => new TextEncoder().encode(value)
@@ -88,9 +89,7 @@ describe('CommandRunner official spawner adapter', () => {
       description: 'missing executable',
     })
     const spawner = ChildProcessSpawner.make(() => Effect.fail(cause))
-    const layer = CommandRunner.layer.pipe(
-      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-    )
+    const layer = CommandRunnerLive.pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)))
     const error = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {

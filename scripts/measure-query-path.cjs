@@ -4,7 +4,7 @@
 //
 // What is REAL here (not a reproduction):
 //   - the schema: the shared worker runtime runs the actual ledger initializer
-//     in src/main/store/ledger-initialization.ts through the actual Migrator.
+//     in src/infrastructure/sqlite/ledger-initialization.ts through the actual Migrator.
 //     No DDL is transcribed into this file. A drift guard compares the live
 //     schema against EXPECTED_COLUMNS and aborts on drift.
 //   - the data: rows are produced by the real `LedgerIngest.portIn` write path
@@ -19,7 +19,7 @@
 // no tsx/ts-node and this script adds no dependency. Two deliberate shims, both
 // outside the measured code:
 //   - `import.meta.url` -> `require('node:url').pathToFileURL(__filename).href`
-//     (src/main/pipeline/sqlite.ts). TypeScript emits `import.meta` verbatim
+//     (src/infrastructure/ingestion/sqlite.ts). TypeScript emits `import.meta` verbatim
 //     into CommonJS, which Node then misreads as ES-module syntax; the
 //     substitution is the exact CJS equivalent of the ESM one.
 //   - compiler options mirror tsconfig.node.json (ES2022 target, esModuleInterop,
@@ -165,7 +165,7 @@ const DEFAULTS = {
   maxOldSpaceMb: 12288,
 }
 
-// Provider identifiers follow src/main/pipeline/providers/index.ts.
+// Provider identifiers follow src/infrastructure/provider-adapters/index.ts.
 const PROVIDERS = [
   {
     name: 'claude',
@@ -436,11 +436,12 @@ function installTypeScriptHook() {
 
   const originalResolve = Module._resolveFilename
   Module._resolveFilename = function resolveWithTsFallback(request, parent, ...rest) {
+    const sourceRequest = request.startsWith('@/') ? path.join(REPO_ROOT, 'src', request.slice(2)) : request
     try {
-      return originalResolve.call(this, request, parent, ...rest)
+      return originalResolve.call(this, sourceRequest, parent, ...rest)
     } catch (error) {
-      if (request.startsWith('.') && /\.jsx?$/.test(request)) {
-        const base = request.replace(/\.jsx?$/, '')
+      if ((sourceRequest.startsWith('.') || path.isAbsolute(sourceRequest)) && /\.jsx?$/.test(sourceRequest)) {
+        const base = sourceRequest.replace(/\.jsx?$/, '')
         for (const ext of SOURCE_EXTENSIONS) {
           try {
             return originalResolve.call(this, base + ext, parent, ...rest)
@@ -486,24 +487,24 @@ function loadEffectModules() {
   cachedEffectModules = {
     Effect: require('effect/Effect'),
     Layer: require('effect/Layer'),
-    worker: load('src/main/worker-runtime.ts'),
-    ledger: load('src/main/store/ledger-repository.ts'),
-    sessionReads: load('src/main/store/ledger-session-reads.ts'),
-    models: load('src/main/pipeline/models.ts'),
-    fetch: load('src/main/pipeline/fetch-utils.ts'),
-    fx: load('src/main/fx.ts'),
-    rowQueries: load('src/main/application/store-row-queries.ts'),
-    sessionDetail: load('src/main/application/session-detail-query.ts'),
-    sessionSearch: load('src/main/application/session-search-query.ts'),
-    overview: load('src/main/application/overview-query.ts'),
-    scopedSessions: load('src/main/application/sessions-query.ts'),
-    scopedModels: load('src/main/application/models-query.ts'),
-    views: load('src/main/application/view-queries.ts'),
-    viewReads: load('src/main/store/ledger-view-reads.ts'),
-    viewCalculation: load('src/main/view-aggregate-calculation.ts'),
-    exportQuery: load('src/main/application/export-query.ts'),
-    exportFiles: load('src/main/application/export-files.ts'),
-    pricingDiagnostics: load('src/main/application/pricing-diagnostics.ts'),
+    worker: load('src/infrastructure/runtime/engine-runtime.ts'),
+    ledger: load('src/infrastructure/sqlite/ledger-repository.ts'),
+    sessionReads: load('src/core/ports/ledger-session-reads.ts'),
+    models: load('src/infrastructure/pricing/models.ts'),
+    fetch: load('src/infrastructure/ingestion/fetch-utils.ts'),
+    fx: load('src/infrastructure/pricing/fx.ts'),
+    rowQueries: load('src/core/application/queries/store-row-queries.ts'),
+    sessionDetail: load('src/core/application/queries/session-detail-query.ts'),
+    sessionSearch: load('src/core/application/queries/session-search-query.ts'),
+    overview: load('src/core/application/queries/overview-query.ts'),
+    scopedSessions: load('src/core/application/queries/sessions-query.ts'),
+    scopedModels: load('src/core/application/queries/models-query.ts'),
+    views: load('src/core/application/queries/view-queries.ts'),
+    viewReads: load('src/core/ports/ledger-view-reads.ts'),
+    viewCalculation: load('src/core/analytics/metrics/view-aggregate-calculation.ts'),
+    exportQuery: load('src/core/application/queries/export-query.ts'),
+    exportFiles: load('src/core/ports/export-files.ts'),
+    pricingDiagnostics: load('src/core/ports/pricing-diagnostics.ts'),
   }
   return cachedEffectModules
 }
@@ -537,7 +538,7 @@ function assertSchemaMatchesSource(dbPath) {
       const expected = EXPECTED_COLUMNS[table]
       if (live.join(',') !== expected.join(',')) {
         throw new Error(
-          `schema drift in '${table}'.\n  expected (src/main/store/ledger-initialization.ts): ${expected.join(',')}\n  live (PRAGMA table_xinfo): ${live.join(',')}`,
+          `schema drift in '${table}'.\n  expected (src/infrastructure/sqlite/ledger-initialization.ts): ${expected.join(',')}\n  live (PRAGMA table_xinfo): ${live.join(',')}`,
         )
       }
     }
@@ -566,7 +567,7 @@ function resolveMeasurementPath(context, dbPath) {
 function openEffectRuntime(context, dbPath, overrides) {
   const resolved = resolveMeasurementPath(context, dbPath)
   const modules = loadEffectModules()
-  const runtime = modules.worker.openWorkerRuntime(resolved, undefined, overrides)
+  const runtime = modules.worker.openEngineRuntime(resolved, undefined, overrides)
   try {
     assertSchemaMatchesSource(resolved)
     return runtime
@@ -1766,61 +1767,61 @@ async function runAsParent(options, log) {
 // measures something else and the previous table is stale.
 const MEASURED_SOURCES = [
   'scripts/measure-query-path.cjs',
-  'src/main/store/ledger-initialization.ts',
-  'src/main/store/ledger-ports.ts',
-  'src/main/store/ledger-repository.ts',
-  'src/main/store/ledger-queries-live.ts',
-  'src/main/store/scoped-snapshot-sql.ts',
-  'src/main/store/read-projections.ts',
-  'src/main/store/ledger-session-reads.ts',
-  'src/main/store/ledger-session-reads-live.ts',
-  'src/main/store/session-read-projections.ts',
-  'src/main/store/ledger-view-reads.ts',
-  'src/main/store/ledger-view-reads-live.ts',
-  'src/main/store/overview-read-projections.ts',
-  'src/main/store/view-read-projections.ts',
-  'src/main/store/export-read-projections.ts',
-  'src/main/store/ledger-export-reads.ts',
-  'src/main/export-rows-calculation.ts',
-  'src/main/store/aggregate-calculation.ts',
-  'src/main/store/ledger-query-snapshot.ts',
-  'src/main/store/port.ts',
-  'src/main/store-rows-calculation.ts',
-  'src/main/canonical-session-project.ts',
-  'src/main/session-detail-calculation.ts',
-  'src/main/session-search-calculation.ts',
-  'src/main/export-calculation.ts',
-  'src/main/fx-calculation.ts',
-  'src/main/worker-runtime.ts',
-  'src/main/application/store-row-queries.ts',
-  'src/main/application/session-detail-query.ts',
-  'src/main/application/session-search-query.ts',
-  'src/main/application/overview-query.ts',
-  'src/main/overview-calculation.ts',
-  'src/main/application/sessions-query.ts',
-  'src/main/sessions-calculation.ts',
-  'src/main/application/models-query.ts',
-  'src/main/models-calculation.ts',
-  'src/main/views-calculation.ts',
-  'src/main/view-aggregate-calculation.ts',
-  'src/main/application/view-queries.ts',
-  'src/main/application/export-query.ts',
-  'src/main/application/export-files.ts',
-  'src/main/application/pricing-diagnostics.ts',
-  'src/main/fx.ts',
-  'src/main/pipeline/fetch-utils.ts',
-  'src/main/export-files-live.ts',
-  'src/main/db-worker/context.ts',
-  'src/main/pipeline/models.ts',
-  'src/main/pipeline/types.ts',
-  'src/main/pipeline/scan-pricing.ts',
-  'src/main/pipeline/pricing-calculation.ts',
-  'src/main/pipeline/pricing-diagnostics.ts',
-  'src/main/pipeline/model-names.ts',
-  'src/main/pipeline/proxy-paths.ts',
-  'src/main/pipeline/parser-calculations.ts',
-  'src/main/pipeline/session-row.ts',
-  'src/main/pipeline/parser.ts',
+  'src/infrastructure/sqlite/ledger-initialization.ts',
+  'src/core/ports/repository.ts',
+  'src/infrastructure/sqlite/ledger-repository.ts',
+  'src/infrastructure/sqlite/ledger-queries-live.ts',
+  'src/infrastructure/sqlite/scoped-snapshot-sql.ts',
+  'src/core/analytics/projections/read-projections.ts',
+  'src/core/ports/ledger-session-reads.ts',
+  'src/infrastructure/sqlite/ledger-session-reads-live.ts',
+  'src/core/analytics/projections/session-read-projections.ts',
+  'src/core/ports/ledger-view-reads.ts',
+  'src/infrastructure/sqlite/ledger-view-reads-live.ts',
+  'src/core/analytics/projections/overview-read-projections.ts',
+  'src/core/analytics/projections/view-read-projections.ts',
+  'src/core/analytics/projections/export-read-projections.ts',
+  'src/core/ports/ledger-export-reads.ts',
+  'src/core/analytics/projections/export-rows-calculation.ts',
+  'src/core/analytics/projections/aggregate-calculation.ts',
+  'src/core/application/queries/ledger-query-snapshot.ts',
+  'src/infrastructure/sqlite/port.ts',
+  'src/core/analytics/projections/store-rows-calculation.ts',
+  'src/core/domain/sessions/canonical-session-project.ts',
+  'src/core/analytics/projections/session-detail-calculation.ts',
+  'src/core/analytics/projections/session-search-calculation.ts',
+  'src/core/analytics/projections/export-calculation.ts',
+  'src/core/analytics/projections/fx-calculation.ts',
+  'src/infrastructure/runtime/engine-runtime.ts',
+  'src/core/application/queries/store-row-queries.ts',
+  'src/core/application/queries/session-detail-query.ts',
+  'src/core/application/queries/session-search-query.ts',
+  'src/core/application/queries/overview-query.ts',
+  'src/core/analytics/projections/overview-calculation.ts',
+  'src/core/application/queries/sessions-query.ts',
+  'src/core/analytics/projections/sessions-calculation.ts',
+  'src/core/application/queries/models-query.ts',
+  'src/core/analytics/projections/models-calculation.ts',
+  'src/core/analytics/projections/views-calculation.ts',
+  'src/core/analytics/metrics/view-aggregate-calculation.ts',
+  'src/core/application/queries/view-queries.ts',
+  'src/core/application/queries/export-query.ts',
+  'src/core/ports/export-files.ts',
+  'src/core/ports/pricing-diagnostics.ts',
+  'src/infrastructure/pricing/fx.ts',
+  'src/infrastructure/ingestion/fetch-utils.ts',
+  'src/infrastructure/services/export-files-live.ts',
+  'src/platform/electron/workers/context.ts',
+  'src/infrastructure/pricing/models.ts',
+  'src/core/domain/observations/types.ts',
+  'src/core/domain/pricing/scan-pricing.ts',
+  'src/core/domain/pricing/pricing-calculation.ts',
+  'src/infrastructure/pricing/pricing-diagnostics.ts',
+  'src/core/domain/pricing/model-names.ts',
+  'src/core/domain/sessions/proxy-paths.ts',
+  'src/core/ingestion/normalization/parser-calculations.ts',
+  'src/core/domain/sessions/session-row.ts',
+  'src/infrastructure/ingestion/parser.ts',
   'src/shared/schemas/session-cache.ts',
   'src/shared/schemas/export.ts',
   'src/shared/schemas/fx.ts',

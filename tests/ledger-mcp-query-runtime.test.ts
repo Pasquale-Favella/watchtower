@@ -7,19 +7,19 @@ import * as Effect from 'effect/Effect'
 import * as SqlClient from 'effect/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createLedgerMcpQueryRuntime } from '../src/main/agents/ledger-mcp/query-runtime.js'
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { createLedgerMcpQueryRuntime } from '../src/platform/mcp/query-runtime.js'
+import { LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 const directories: string[] = []
 const runtimes: Array<{ dispose: () => Promise<void> }> = []
 
-function makeLedger(): { writerRuntime: WorkerRuntime; dbPath: string } {
+function makeLedger(): { writerRuntime: EngineRuntime; dbPath: string } {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-ledger-mcp-runtime-'))
   directories.push(directory)
   const dbPath = join(directory, 'ledger.db')
-  const writerRuntime = openWorkerRuntime(dbPath)
+  const writerRuntime = openEngineRuntime(dbPath)
   runtimes.push(writerRuntime)
   const call = {
     ...buildFixtureCachedCall(0),

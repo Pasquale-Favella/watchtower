@@ -32,8 +32,8 @@ import {
   CommandRunner,
   type CommandStartOptions,
   makeRecordingCommandRunner,
-} from '../src/main/agents/command-runner.js'
-import { CommandRunnerLiveLayer } from '../src/main/agents/command-runner-live.js'
+} from '../src/core/ports/process.js'
+import { CommandRunnerLiveLayer } from '../src/infrastructure/agent-harnesses/command-runner-live.js'
 
 /** One `start` through `CommandRunnerLiveLayer` — a real child process, no
  *  installed CLI required. Left UNRUN so a case can `Effect.scoped`/

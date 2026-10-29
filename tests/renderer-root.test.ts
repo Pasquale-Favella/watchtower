@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
-import { periodAtom } from '../src/renderer/src/app/atoms/scope.js'
-import { initializeRendererWindow } from '../src/renderer/src/app/renderer-root.js'
-import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
-import { preferencesAtom } from '../src/renderer/src/features/settings/preferences-atoms.js'
+import { periodAtom } from '../src/renderer/stores/atoms/scope.js'
+import { initializeRendererWindow } from '../src/renderer/app/renderer-root.js'
+import { createRendererRuntimeOwner } from '../src/renderer/app/renderer-runtime.js'
+import { preferencesAtom } from '../src/renderer/features/settings/preferences-atoms.js'
 
 class BrowserFacade {
   readonly darkClasses: boolean[] = []

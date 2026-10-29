@@ -9,30 +9,30 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { CommandRunner, makeRecordingCommandRunner } from '../src/main/agents/command-runner.js'
+import { CommandRunner, makeRecordingCommandRunner } from '../src/core/ports/process.js'
 
 const hooks = vi.hoisted(() => ({
   parseEffect: vi.fn(),
 }))
 
-vi.mock('../src/main/pipeline/parser.js', async importOriginal => ({
-  ...(await importOriginal<typeof import('../src/main/pipeline/parser.js')>()),
+vi.mock('../src/infrastructure/ingestion/parser.js', async importOriginal => ({
+  ...(await importOriginal<typeof import('../src/infrastructure/ingestion/parser.js')>()),
   parseAllSessionsEffect: (...args: unknown[]) => hooks.parseEffect(...args),
 }))
 
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
 import {
   captureScanPricing,
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import type { DeltaHandler } from '../src/main/pipeline/parser.js'
-import type { ProviderScanServices } from '../src/main/pipeline/providers/types.js'
-import { runOwnedScanPromise } from '../src/main/pipeline/scan.js'
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+} from '../src/infrastructure/pricing/models.js'
+import type { DeltaHandler } from '../src/infrastructure/ingestion/parser.js'
+import type { ProviderScanServices } from '../src/infrastructure/provider-adapters/types.js'
+import { runOwnedScanPromise } from '../src/infrastructure/ingestion/scan.js'
+import { LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import type { ScanDelta } from '../src/shared/schemas/scan.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
@@ -69,13 +69,13 @@ function removeFixture(directory: string): void {
 describe('scan lifetime ownership', () => {
   let dir = ''
   let context: DbWorkerContext | null = null
-  let runtime: WorkerRuntime | null = null
+  let runtime: EngineRuntime | null = null
   const events: DbWorkerEvent[] = []
 
   function open(commandLayer: Layer.Layer<CommandRunner> = defaultCommandLayer()) {
     dir = mkdtempSync(join(tmpdir(), 'watchtower-scan-lifetime-'))
     const dbPath = join(dir, 'ledger.db')
-    runtime = openWorkerRuntime(dbPath, undefined, commandLayer)
+    runtime = openEngineRuntime(dbPath, undefined, commandLayer)
     context = new DbWorkerContext({ dbPath, dataDir: dir, cacheDir: join(dir, 'cache') }, event => events.push(event), {
       runtime,
     })

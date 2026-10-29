@@ -1,12 +1,12 @@
 import * as SqlClient from 'effect/sql/SqlClient'
 import { describe, expect, it } from 'vitest'
 
-import { initializeLedger } from '../src/main/store/ledger-initialization.js'
-import { makeWorkerRuntime } from '../src/main/worker-runtime.js'
+import { initializeLedger } from '../src/infrastructure/sqlite/ledger-initialization.js'
+import { makeEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 describe('ledger session detail indexes', () => {
   it('uses session indexes for detail rows and source lookup after upgrading version 1', async () => {
-    const runtime = makeWorkerRuntime(':memory:')
+    const runtime = makeEngineRuntime(':memory:')
     try {
       runtime.runSync(initializeLedger)
       const sql = runtime.runSync(SqlClient.SqlClient)

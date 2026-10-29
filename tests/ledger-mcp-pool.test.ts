@@ -6,16 +6,11 @@ import { Deferred, Effect, Fiber, Layer } from 'effect'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import type { AcpMcpServer } from '../src/main/agents/harnesses/types.js'
-import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
-import {
-  createSidecarPool,
-  LedgerMcpPool,
-  ledgerMcpPoolLayer,
-  type SidecarPool,
-} from '../src/main/agents/ledger-mcp/pool.js'
-import { LedgerMcpSidecar, type StartedLedgerMcpHttp } from '../src/main/agents/ledger-mcp/sidecar.js'
-import { parseReadyPort, readReadyPort, readReadyPortEffect } from '../src/main/agents/ledger-mcp/sidecar.js'
+import type { AcpMcpServer } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
+import type { LedgerMcpSpawnContext } from '../src/platform/mcp/config.js'
+import { createSidecarPool, LedgerMcpPool, ledgerMcpPoolLayer, type SidecarPool } from '../src/platform/mcp/pool.js'
+import { LedgerMcpSidecar, type StartedLedgerMcpHttp } from '../src/platform/mcp/sidecar.js'
+import { parseReadyPort, readReadyPort, readReadyPortEffect } from '../src/platform/mcp/sidecar.js'
 
 const CTX: LedgerMcpSpawnContext = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
 

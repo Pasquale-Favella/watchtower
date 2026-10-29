@@ -7,14 +7,14 @@ import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import { onTestFinished } from 'vitest'
 
-import type { ScopedViewQueryInputs } from '../../src/main/application/view-queries.js'
-import { captureModelPricingCatalogue, captureProxyPaths } from '../../src/main/pipeline/models.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../../src/main/worker-runtime.js'
+import type { ScopedViewQueryInputs } from '../../src/core/application/queries/view-queries.js'
+import { captureModelPricingCatalogue, captureProxyPaths } from '../../src/infrastructure/pricing/models.js'
+import { openEngineRuntime, type EngineRuntime } from '../../src/infrastructure/runtime/engine-runtime.js'
 
 export interface LedgerFixture {
   readonly directory: string
   readonly dbPath: string
-  readonly runtime: WorkerRuntime
+  readonly runtime: EngineRuntime
 }
 
 function removeFixture(directory: string): void {
@@ -28,7 +28,7 @@ export function openLedgerFixture(): LedgerFixture {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-ledger-fixture-'))
   const dbPath = join(directory, 'ledger.db')
   try {
-    const runtime = openWorkerRuntime(dbPath)
+    const runtime = openEngineRuntime(dbPath)
     onTestFinished(async () => {
       try {
         await runtime.dispose()

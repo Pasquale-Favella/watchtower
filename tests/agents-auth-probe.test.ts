@@ -6,10 +6,10 @@ import {
   CLAUDE_AUTH_PROBE_TIMEOUT_MS,
   probeClaudeAuthStatus,
   runClaudeAuthProbe,
-} from '../src/main/agents/auth-probe.js'
-import { CommandError, makeRecordingCommandRunner } from '../src/main/agents/command-runner.js'
-import type { HarnessAuthStatus } from '../src/main/agents/detect.js'
-import type { ProbeAuthStatus, ProbeDeps } from '../src/main/agents/probe.js'
+} from '../src/infrastructure/agent-harnesses/auth-probe.js'
+import { CommandError, makeRecordingCommandRunner } from '../src/core/ports/process.js'
+import type { HarnessAuthStatus } from '../src/infrastructure/agent-harnesses/detect.js'
+import type { ProbeAuthStatus, ProbeDeps } from '../src/infrastructure/agent-harnesses/probe.js'
 
 /**
  * Claude Code sign-in probe: maps `claude auth status --json` onto the
@@ -17,7 +17,7 @@ import type { ProbeAuthStatus, ProbeDeps } from '../src/main/agents/probe.js'
  * mode resolves to 'unknown' — the probe must never throw into detection.
  *
  * Wave 9 (issue #148) re-skinned the spawn onto the `CommandRunner` port
- * (`src/main/agents/command-runner.ts`). Two contracts are pinned here:
+ * (`src/infrastructure/process/command-runner.ts`). Two contracts are pinned here:
  * the legacy Promise boundary (`AuthProbeExec`, so `probe.ts:118` compiles
  * with zero edits) and the port wiring (the argv, the single-source
  * deadline, and the never-throw mapping). No harness CLI is spawned: the

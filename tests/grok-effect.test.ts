@@ -41,11 +41,11 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { createGrokProvider } from '../src/main/pipeline/providers/grok.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createGrokProvider } from '../src/infrastructure/provider-adapters/grok.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 const directories: string[] = []
 

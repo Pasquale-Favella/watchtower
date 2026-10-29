@@ -12,9 +12,9 @@ import {
   overviewQueryRanges,
   periodWindowStart,
   scopeDateRange,
-} from '../src/main/overview-scope.js'
-import type { SessionSummary } from '../src/main/pipeline/types.js'
-import { candidateTimestampBounds } from '../src/main/store/scoped-snapshot-sql.js'
+} from '../src/core/domain/sessions/overview-scope.js'
+import type { SessionSummary } from '../src/core/domain/observations/types.js'
+import { candidateTimestampBounds } from '../src/infrastructure/sqlite/scoped-snapshot-sql.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 
 function session(firstTimestamp: string, providers: string[] = []): SessionSummary {
@@ -26,10 +26,10 @@ function session(firstTimestamp: string, providers: string[] = []): SessionSumma
 
 describe('overview scope module boundary', () => {
   it('depends only on pure calendar helpers and domain types', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/main/overview-scope.ts'), 'utf8')
+    const source = readFileSync(resolve(process.cwd(), 'src/core/domain/sessions/overview-scope.ts'), 'utf8')
     const imports = [...source.matchAll(/from '([^']+)'/g)].map(match => match[1])
 
-    expect(imports).toEqual(['date-fns', '../shared/schemas/overview.js', './pipeline/types.js'])
+    expect(imports).toEqual(['date-fns', '@/shared/schemas/overview.js', '@/core/domain/observations/types.js'])
   })
 })
 

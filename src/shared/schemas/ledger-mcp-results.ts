@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { overviewScopeSchema } from './overview.js'
+import { overviewScopeSchema } from '@/shared/schemas/overview.js'
 
 const finiteNumber = Schema.Finite
 const textList = Schema.mutable(Schema.Array(Schema.String))

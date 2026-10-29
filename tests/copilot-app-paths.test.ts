@@ -4,14 +4,19 @@ import { dirname, join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-import { type AppPaths, appPaths, type PlatformPaths, type ProviderOverrides } from '../src/main/env.js'
+import {
+  type AppPaths,
+  appPaths,
+  type PlatformPaths,
+  type ProviderOverrides,
+} from '../src/infrastructure/config/environment.js'
 import {
   copilot,
   createCopilotProvider,
   getAgentTracesDbPath,
   getCopilotSessionStateDir,
   getJetBrainsCopilotRoot,
-} from '../src/main/pipeline/providers/copilot.js'
+} from '../src/infrastructure/provider-adapters/copilot.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 // `copilot.ts` seam composition, not the resolver: `overrideFor` /

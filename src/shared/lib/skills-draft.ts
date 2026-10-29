@@ -1,4 +1,4 @@
-import type { SkillCandidate } from '../schemas/skills.js'
+import type { SkillCandidate } from '@/shared/schemas/skills.js'
 
 /**
  * Template draft assembly (ticket 25): builds a SKILL.md-skeleton draft from a

@@ -28,7 +28,7 @@ async function main() {
       packages: 'external',
       platform: 'node',
       format: 'esm',
-      alias: { '@': path.join(root, 'src/renderer/src') },
+      alias: { '@': path.join(root, 'src') },
       logLevel: 'silent',
     })
     execFileSync(process.execPath, [entry, outputFile], { cwd: root, stdio: 'inherit' })

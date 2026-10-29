@@ -5,16 +5,16 @@ import { delimiter, dirname, join } from 'node:path'
 import { Cause, Effect, Exit, Option, Stream } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { Env } from '../src/main/env.js'
-import { createLingTaiTuiProvider } from '../src/main/pipeline/providers/lingtai-tui.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createLingTaiTuiProvider } from '../src/infrastructure/provider-adapters/lingtai-tui.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 const tempDirs: string[] = []
 

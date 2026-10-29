@@ -22,8 +22,8 @@ vi.mock('os', async importOriginal => {
   return { ...actual, homedir: () => hooks.root }
 })
 
-import { readCachedResultsEffect, writeCachedResultsEffect } from '../src/main/pipeline/cursor-cache.js'
-import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
+import { readCachedResultsEffect, writeCachedResultsEffect } from '../src/infrastructure/ingestion/cursor-cache.js'
+import type { ParsedProviderCall } from '../src/infrastructure/provider-adapters/types.js'
 
 let root = ''
 let dbPath = ''

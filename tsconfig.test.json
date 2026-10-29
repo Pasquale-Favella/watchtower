@@ -2,12 +2,8 @@
   "extends": "./tsconfig.node.json",
   "compilerOptions": {
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/renderer/src/*"]
-    }
+    "jsx": "react-jsx"
   },
-  "include": ["tests/**/*.ts", "src/preload/index.d.ts", "src/renderer/src/env.d.ts"],
+  "include": ["tests/**/*.ts", "src/platform/electron/preload/index.d.ts", "src/renderer/env.d.ts"],
   "exclude": ["tests/lint/effect-fixtures/**/*.ts"]
 }

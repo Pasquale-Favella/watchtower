@@ -36,26 +36,29 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { queryOverview } from '../src/main/application/overview-query.js'
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { querySessionDetail } from '../src/main/application/session-detail-query.js'
-import { queryDashboardViews } from '../src/main/application/view-queries.js'
+import { queryOverview } from '../src/core/application/queries/overview-query.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { querySessionDetail } from '../src/core/application/queries/session-detail-query.js'
+import { queryDashboardViews } from '../src/core/application/queries/view-queries.js'
 import {
   captureLocalModelSavings,
   captureModelPricingCatalogue,
   captureProxyPaths,
-} from '../src/main/pipeline/models.js'
-import { sessionRowFromSummary } from '../src/main/pipeline/sessions-report.js'
-import { CATEGORY_LABELS, type SessionSummary } from '../src/main/pipeline/types.js'
+} from '../src/infrastructure/pricing/models.js'
+import { sessionRowFromSummary } from '../src/infrastructure/ingestion/sessions-report.js'
+import { CATEGORY_LABELS, type SessionSummary } from '../src/core/domain/observations/types.js'
 import {
   buildSessionSummariesFromSnapshot,
   buildSessionSummariesFromSnapshotResult,
   queryScopeFromSnapshotResult,
-} from '../src/main/store/aggregate-calculation.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { loadLedgerQuerySnapshotEffect, makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
-import type { LedgerCallFactsRow } from '../src/main/store/read-projections.js'
-import type { WorkerRuntime, WorkerServices } from '../src/main/worker-runtime.js'
+} from '../src/core/analytics/projections/aggregate-calculation.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import {
+  loadLedgerQuerySnapshotEffect,
+  makeLedgerQuerySnapshot,
+} from '../src/core/application/queries/ledger-query-snapshot.js'
+import type { LedgerCallFactsRow } from '../src/core/analytics/projections/read-projections.js'
+import type { EngineRuntime, EngineServices } from '../src/infrastructure/runtime/engine-runtime.js'
 import { sessionDetailSchema } from '../src/shared/schemas/views.js'
 import { buildFixtureCachedFile, buildFixtureCachedTurn, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import { openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
@@ -112,29 +115,29 @@ const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
  *  them read would make the narrow read wrong, so the whole consumer set is
  *  scanned rather than the handful this slice edited. */
 const CONSUMER_FILES = [
-  'src/main/store/aggregate-calculation.ts',
-  'src/main/views-calculation.ts',
-  'src/main/canonical-session-project.ts',
-  'src/main/session-detail-calculation.ts',
-  'src/main/session-search-calculation.ts',
-  'src/main/store-rows-calculation.ts',
-  'src/main/ledger-mcp-calculation.ts',
-  'src/main/overview-calculation.ts',
-  'src/main/overview-scope.ts',
-  'src/main/models-calculation.ts',
-  'src/main/spend-calculation.ts',
-  'src/main/compare-calculation.ts',
-  'src/main/yield-calculation.ts',
-  'src/main/optimize-calculation.ts',
-  'src/main/skills-calculation.ts',
-  'src/main/sessions-calculation.ts',
-  'src/main/pull-requests-calculation.ts',
-  'src/main/export-calculation.ts',
-  'src/main/pipeline/sessions-report.ts',
-  'src/main/pipeline/pr-attribution.ts',
-  'src/main/pipeline/session-row.ts',
-  'src/main/pipeline/parser-calculations.ts',
-  'src/main/agents/ledger-mcp/tools.ts',
+  'src/core/analytics/projections/aggregate-calculation.ts',
+  'src/core/analytics/projections/views-calculation.ts',
+  'src/core/domain/sessions/canonical-session-project.ts',
+  'src/core/analytics/projections/session-detail-calculation.ts',
+  'src/core/analytics/projections/session-search-calculation.ts',
+  'src/core/analytics/projections/store-rows-calculation.ts',
+  'src/core/analytics/projections/ledger-mcp-calculation.ts',
+  'src/core/analytics/projections/overview-calculation.ts',
+  'src/core/domain/sessions/overview-scope.ts',
+  'src/core/analytics/projections/models-calculation.ts',
+  'src/core/analytics/projections/spend-calculation.ts',
+  'src/core/analytics/projections/compare-calculation.ts',
+  'src/core/analytics/attribution/yield-calculation.ts',
+  'src/core/analytics/detectors/optimize-calculation.ts',
+  'src/core/analytics/detectors/skills-calculation.ts',
+  'src/core/analytics/projections/sessions-calculation.ts',
+  'src/core/analytics/projections/pull-requests-calculation.ts',
+  'src/core/analytics/projections/export-calculation.ts',
+  'src/infrastructure/ingestion/sessions-report.ts',
+  'src/core/analytics/attribution/pr-attribution.ts',
+  'src/core/domain/sessions/session-row.ts',
+  'src/core/ingestion/normalization/parser-calculations.ts',
+  'src/platform/mcp/tools.ts',
 ]
 
 const RANGE = {
@@ -166,7 +169,7 @@ function richFixture() {
   return file
 }
 
-function portRich(runtime: WorkerRuntime): void {
+function portRich(runtime: EngineRuntime): void {
   runtime.runSync(
     Effect.flatMap(LedgerIngest, ingest =>
       ingest.portIn({
@@ -184,19 +187,19 @@ function portRich(runtime: WorkerRuntime): void {
  *  and the row schema — over the fixture runtime's writer connection, not
  *  through a hand-made array (the same native runtime used by
  *  `tests/ledger-repository-ports.test.ts`). */
-function readCallFacts(runtime: WorkerRuntime): Promise<LedgerCallFactsRow[]> {
+function readCallFacts(runtime: EngineRuntime): Promise<LedgerCallFactsRow[]> {
   return runtime.runPromise(Effect.flatMap(LedgerQueries, queries => queries.getCallFacts()))
 }
 
-function snapshotFor(runtime: WorkerRuntime) {
+function snapshotFor(runtime: EngineRuntime) {
   return runtime.runSync(loadLedgerQuerySnapshotEffect(viewInputs({ period: 'lifetime' })))
 }
 
-function readCalls(runtime: WorkerRuntime) {
+function readCalls(runtime: EngineRuntime) {
   return runtime.runSync(Effect.flatMap(LedgerQueries, queries => queries.getCalls()))
 }
 
-function sessionDetail(runtime: WorkerRuntime, sessionId: string) {
+function sessionDetail(runtime: EngineRuntime, sessionId: string) {
   return runtime.runPromise(
     querySessionDetail({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths(), sessionId }).pipe(
       Effect.provideService(PricingDiagnostics, PricingDiagnostics.of({ reportUnpricedModels: () => Effect.void })),
@@ -205,7 +208,7 @@ function sessionDetail(runtime: WorkerRuntime, sessionId: string) {
 }
 
 /** Independent pre-slice detail oracle, rebuilt from the native decoded ports. */
-function legacySessionDetail(runtime: WorkerRuntime, sessionId: string) {
+function legacySessionDetail(runtime: EngineRuntime, sessionId: string) {
   const { catalogue, proxyPaths } = viewInputs({ period: 'lifetime' })
   const snapshot = runtime.runSync(
     Effect.gen(function* () {
@@ -295,8 +298,8 @@ function legacyDetailFromSummary(session: SessionSummary) {
   }
 }
 
-function runWorkerQuery<A, E, R>(runtime: WorkerRuntime, effect: Effect.Effect<A, E, R>): Promise<A> {
-  return runtime.runPromise(effect as Effect.Effect<A, E, WorkerServices>)
+function runWorkerQuery<A, E, R>(runtime: EngineRuntime, effect: Effect.Effect<A, E, R>): Promise<A> {
+  return runtime.runPromise(effect as Effect.Effect<A, E, EngineServices>)
 }
 
 describe("the purpose-shaped call read selects exactly the aggregation seam's columns", () => {
@@ -381,35 +384,41 @@ describe('dropped columns require explicit focused consumers', () => {
     expect(droppedFieldReceivers()).toEqual({
       callKey: [],
       projectPath: [
-        'src/main/canonical-session-project.ts:session',
-        'src/main/optimize-calculation.ts:a',
-        'src/main/optimize-calculation.ts:b',
-        'src/main/optimize-calculation.ts:p',
-        'src/main/optimize-calculation.ts:project',
-        'src/main/store-rows-calculation.ts:canonical',
-        'src/main/store-rows-calculation.ts:item',
-        'src/main/store-rows-calculation.ts:session',
-        'src/main/store/aggregate-calculation.ts:s',
-        'src/main/views-calculation.ts:session',
+        'src/core/analytics/detectors/optimize-calculation.ts:a',
+        'src/core/analytics/detectors/optimize-calculation.ts:b',
+        'src/core/analytics/detectors/optimize-calculation.ts:p',
+        'src/core/analytics/detectors/optimize-calculation.ts:project',
+        'src/core/analytics/projections/aggregate-calculation.ts:s',
+        'src/core/analytics/projections/store-rows-calculation.ts:canonical',
+        'src/core/analytics/projections/store-rows-calculation.ts:item',
+        'src/core/analytics/projections/store-rows-calculation.ts:session',
+        'src/core/analytics/projections/views-calculation.ts:session',
+        'src/core/domain/sessions/canonical-session-project.ts:session',
       ],
-      agentType: ['src/main/store/aggregate-calculation.ts:session', 'src/main/store/aggregate-calculation.ts:summary'],
+      agentType: [
+        'src/core/analytics/projections/aggregate-calculation.ts:session',
+        'src/core/analytics/projections/aggregate-calculation.ts:summary',
+      ],
       locAdded: [],
       locRemoved: [],
       interrupted: [
-        'src/main/optimize-calculation.ts:c',
-        'src/main/store/aggregate-calculation.ts:call',
-        'src/main/store/aggregate-calculation.ts:row',
+        'src/core/analytics/detectors/optimize-calculation.ts:c',
+        'src/core/analytics/projections/aggregate-calculation.ts:call',
+        'src/core/analytics/projections/aggregate-calculation.ts:row',
       ],
-      userModified: ['src/main/store/aggregate-calculation.ts:call', 'src/main/store/aggregate-calculation.ts:row'],
+      userModified: [
+        'src/core/analytics/projections/aggregate-calculation.ts:call',
+        'src/core/analytics/projections/aggregate-calculation.ts:row',
+      ],
       toolErrors: [
-        'src/main/optimize-calculation.ts:c',
-        'src/main/store/aggregate-calculation.ts:call',
-        'src/main/store/aggregate-calculation.ts:row',
+        'src/core/analytics/detectors/optimize-calculation.ts:c',
+        'src/core/analytics/projections/aggregate-calculation.ts:call',
+        'src/core/analytics/projections/aggregate-calculation.ts:row',
       ],
       editFailed: [
-        'src/main/optimize-calculation.ts:c',
-        'src/main/store/aggregate-calculation.ts:call',
-        'src/main/store/aggregate-calculation.ts:row',
+        'src/core/analytics/detectors/optimize-calculation.ts:c',
+        'src/core/analytics/projections/aggregate-calculation.ts:call',
+        'src/core/analytics/projections/aggregate-calculation.ts:row',
       ],
     })
   })

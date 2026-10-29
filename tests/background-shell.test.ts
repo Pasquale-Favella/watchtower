@@ -7,7 +7,7 @@ import * as TestClock from 'effect/testing/TestClock'
 import { app, BrowserWindow, globalShortcut, ipcMain, screen, Tray } from 'electron'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { BackgroundShell, backgroundShellLayer } from '../src/main/background-shell.js'
+import { BackgroundShell, backgroundShellLayer } from '../src/platform/electron/main/background-shell.js'
 import { type ShellEvent, ShellRpcError } from '../src/shared/rpc/shell.js'
 
 const surfaces = vi.hoisted(() => ({ windows: [] as BrowserWindow[], loading: false }))
@@ -109,9 +109,9 @@ vi.mock('electron', async () => {
   }
 })
 
-vi.mock('../src/main/shell-preferences.js', async () => {
-  const actual = await vi.importActual<typeof import('../src/main/shell-preferences.js')>(
-    '../src/main/shell-preferences.js',
+vi.mock('../src/platform/electron/main/shell-preferences.js', async () => {
+  const actual = await vi.importActual<typeof import('../src/platform/electron/main/shell-preferences.js')>(
+    '../src/platform/electron/main/shell-preferences.js',
   )
   return {
     ...actual,
@@ -143,7 +143,7 @@ async function startShell() {
 
 function captureShellEvents(
   runtime: ManagedRuntime.ManagedRuntime<BackgroundShell | TestClock.TestClock, never>,
-  shell: import('../src/main/background-shell.js').BackgroundShellHandle,
+  shell: import('../src/platform/electron/main/background-shell.js').BackgroundShellHandle,
   sender: Electron.WebContents,
 ): { events: ShellEvent[]; stop: () => Promise<void> } {
   const events: ShellEvent[] = []

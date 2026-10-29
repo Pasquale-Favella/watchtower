@@ -104,7 +104,7 @@ Watchtower auto-detects which AI tools you use by probing their on-disk data loc
 - Gemini CLI, Antigravity, Grok, Qwen, Kimi, Kimi Code CLI, Kiro, Mistral Vibe, Hermes, LingTai TUI, Pi / OMP, OpenClaw, OpenDesign, QuickDesk, Mux, Zerostack
 - Cline / Roo Code / KiloCode (VS Code family), CodeWhale, Codebuff, Devin, Droid, IBM Bob, Forge, Goose, Warp, Zed, Crush, ZCode, Vercel AI Gateway
 
-That is **38 providers** in total. Each lives in a single file under `src/main/pipeline/providers/` and follows a common `Provider` contract: discovery, a session parser, and per-provider quirks. A provider that throws during discovery is skipped with a one-line warning; it can never take down the rest of the scan.
+That is **38 providers** in total. Each lives in a single file under `src/platform/electron/main/pipeline/providers/` and follows a common `Provider` contract: discovery, a session parser, and per-provider quirks. A provider that throws during discovery is skipped with a one-line warning; it can never take down the rest of the scan.
 
 ## Pricing & currency
 

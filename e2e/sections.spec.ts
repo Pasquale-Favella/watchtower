@@ -9,7 +9,7 @@ import { dismissOnboarding, expectSingleMainWindow, waitForAnyVisible, withApp }
  * (content OR empty), never values, counts, or URLs (memory-history router).
  *
  * The list mirrors the app's section order (NAV_SECTIONS in
- * src/renderer/src/app/shortcuts.ts) by label on purpose: e2e stays out of
+ * src/renderer/app/shortcuts.ts) by label on purpose: e2e stays out of
  * the renderer module graph (node context, no `@` alias), so a new Section
  * updates this map plus the registry — the Record type keeps the map
  * exhaustive.

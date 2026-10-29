@@ -11,7 +11,7 @@
  *     a counting fake layer, not asserted. This is `ManagedRuntime`'s memoised
  *     build, so the property is worth proving rather than assuming.
  *  2. `context.ts` builds no service layers at its call sites. Its one service
- *     provision is limited to the `WorkerRuntime` graph captured for the
+ *     provision is limited to the `EngineRuntime` graph captured for the
  *     worker lifetime — proven by reading the module source.
  *  3. A SUBSTITUTED layer reaches a dispatch arm. Before the root this was
  *     structurally impossible: the layer was welded at the arm, so no test could
@@ -39,23 +39,23 @@ import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import type { SqlError } from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { CommandRunner } from '../src/main/agents/command-runner.js'
-import { ExportFiles } from '../src/main/application/export-files.js'
-import { GatewayReports } from '../src/main/application/gateway-reports.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import { Env } from '../src/main/env.js'
-import { FxRates } from '../src/main/fx.js'
-import { OperationalLog, type OperationalLogSink } from '../src/main/operational-log.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import { NodePlatformLive } from '../src/main/platform-live.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
+import { CommandRunner } from '../src/core/ports/process.js'
+import { ExportFiles } from '../src/core/ports/export-files.js'
+import { GatewayReports } from '../src/core/ports/gateway-reports.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { FxRates } from '../src/infrastructure/pricing/fx.js'
+import { OperationalLog, type OperationalLogSink } from '../src/infrastructure/logging/operational-log.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
+import { NodePlatformLive } from '../src/infrastructure/platform/platform-live.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/infrastructure/sqlite/ledger-repository.js'
 import {
-  makeWorkerLive,
-  openWorkerRuntime,
-  type WorkerOverrides,
-  type WorkerRuntime,
-  type WorkerServices,
-} from '../src/main/worker-runtime.js'
+  makeEngineLive,
+  openEngineRuntime,
+  type EngineOverrides,
+  type EngineRuntime,
+  type EngineServices,
+} from '../src/infrastructure/runtime/engine-runtime.js'
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -71,13 +71,13 @@ function removeTempDir(directory: string): void {
   rmSync(target, { recursive: true, force: true })
 }
 
-function openRuntimeFixture<Overrides extends WorkerOverrides = never>(
+function openRuntimeFixture<Overrides extends EngineOverrides = never>(
   directory: string,
   dbPath: string,
   overrides?: Layer.Layer<Overrides>,
-): WorkerRuntime {
+): EngineRuntime {
   try {
-    return openWorkerRuntime(dbPath, undefined, overrides)
+    return openEngineRuntime(dbPath, undefined, overrides)
   } catch (error) {
     removeTempDir(directory)
     throw error
@@ -115,7 +115,7 @@ afterEach(async () => {
 })
 
 /** Boots the worker root and context with optional service overrides. */
-function worker<Overrides extends WorkerOverrides = never>(layerFor?: () => Layer.Layer<Overrides>) {
+function worker<Overrides extends EngineOverrides = never>(layerFor?: () => Layer.Layer<Overrides>) {
   const dir = tempDir()
   const dbPath = join(dir, 'ledger.db')
   const runtime = openRuntimeFixture(dir, dbPath, layerFor?.())
@@ -225,10 +225,10 @@ describe('WorkerLive: Env is constructed once per worker lifetime', () => {
 
   it('the live graph exposes its application capabilities and ledger ports with no R', async () => {
     const dir = tempDir()
-    const live = makeWorkerLive(join(dir, 'ledger.db'))
-    // `Layer.Layer<WorkerServices>` has `never` in the R slot, so this only
+    const live = makeEngineLive(join(dir, 'ledger.db'))
+    // `Layer.Layer<EngineServices>` has `never` in the R slot, so this only
     // compiles if the flat merge needs nothing from the outside.
-    const services: Layer.Layer<WorkerServices, SqlError, never> = live
+    const services: Layer.Layer<EngineServices, SqlError, never> = live
     const resolved = await Effect.runPromise(
       Effect.gen(function* () {
         const env = yield* Env
@@ -601,11 +601,11 @@ describe('F14: the operational Effect logger is installed in a production root',
     const dir = tempDir()
     // The operational logger layer adds NO service to `R` (it sets the
     // `CurrentLoggers` / `MinimumLogLevel` references), so the check is
-    // structural: the live graph is still exactly `WorkerServices`, and the
+    // structural: the live graph is still exactly `EngineServices`, and the
     // layer is in the merge. A comment cannot prove that; the exported symbol
     // list and the `R` type can.
-    const live: Layer.Layer<WorkerServices, SqlError, never> = makeWorkerLive(join(dir, 'ledger.db'))
-    const source = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
+    const live: Layer.Layer<EngineServices, SqlError, never> = makeEngineLive(join(dir, 'ledger.db'))
+    const source = readFileSync(join(repoRoot, 'src', 'infrastructure', 'runtime', 'engine-runtime.ts'), 'utf8')
     removeTempDir(dir)
 
     // The bridge is composed, not merely re-exported: it is inside `mergeAll`.
@@ -620,8 +620,8 @@ describe('F14: the operational Effect logger is installed in a production root',
     // The `Tracer` half of the same bridge. A worker-only install would leave
     // every main-isolate span dangling and merely relocate the problem, so
     // BOTH roots are asserted — each names its own `LogContext`.
-    const workerSource = readFileSync(join(repoRoot, 'src', 'main', 'worker-runtime.ts'), 'utf8')
-    const mainSource = readFileSync(join(repoRoot, 'src', 'main', 'main-runtime.ts'), 'utf8')
+    const workerSource = readFileSync(join(repoRoot, 'src', 'infrastructure', 'runtime', 'engine-runtime.ts'), 'utf8')
+    const mainSource = readFileSync(join(repoRoot, 'src', 'platform', 'electron', 'main', 'main-runtime.ts'), 'utf8')
     expect(workerSource.slice(workerSource.indexOf('Layer.mergeAll('))).toContain(
       "OperationalLogTracerLayer('worker', sink)",
     )
@@ -631,7 +631,7 @@ describe('F14: the operational Effect logger is installed in a production root',
 
 describe('F10/P2: context dispatch uses the worker-owned service graph', () => {
   it('provisions only services captured by the runtime and constructs no layers', () => {
-    const source = readFileSync(join(repoRoot, 'src', 'main', 'db-worker', 'context.ts'), 'utf8')
+    const source = readFileSync(join(repoRoot, 'src', 'platform', 'electron', 'workers', 'context.ts'), 'utf8')
     // Comments and string bodies are blanked so the guard only checks code.
     const code = stripCommentsAndStrings(source)
 
@@ -649,7 +649,7 @@ describe('F10/P2: context dispatch uses the worker-owned service graph', () => {
   })
 
   it('run* remains only at the composition boundaries the ADR names', () => {
-    const source = readFileSync(join(repoRoot, 'src', 'main', 'db-worker', 'context.ts'), 'utf8')
+    const source = readFileSync(join(repoRoot, 'src', 'platform', 'electron', 'workers', 'context.ts'), 'utf8')
     const code = stripCommentsAndStrings(source)
     // `Effect.runSync` / `Effect.runPromise` / `Effect.runFork` survive ONLY
     // where a fiber or a Promise boundary genuinely needs one: the scan fork,

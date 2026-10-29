@@ -16,9 +16,9 @@ import {
   type SqliteProviderConfig,
   type V2MessageRow,
   v2RowsToLegacyShape,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
-import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
-import { openDatabase, type SqliteDatabase } from '../src/main/pipeline/sqlite.js'
+} from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
+import type { ParsedProviderCall, SessionParser } from '../src/infrastructure/provider-adapters/types.js'
+import { openDatabase, type SqliteDatabase } from '../src/infrastructure/ingestion/sqlite.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // OpenCode 2.x wrote sessions to `session_v2` and messages to `session_message`,

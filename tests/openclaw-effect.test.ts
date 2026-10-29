@@ -40,12 +40,12 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { captureScanPricing, setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createOpenClawProvider } from '../src/main/pipeline/providers/openclaw.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { captureScanPricing, setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createOpenClawProvider } from '../src/infrastructure/provider-adapters/openclaw.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''

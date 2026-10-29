@@ -1,0 +1,16 @@
+import { useOrbBeaconBootstrap } from '@/renderer/orb/beacon-hooks'
+import { OrbBeacon } from '@/renderer/orb/OrbBeacon'
+
+/**
+ * The orb window's composition root (see main/background-shell.ts): just the
+ * 64px orb. Its window never resizes, and it holds no ledger data — the spend
+ * panel is its own window (`OrbPanelApp`). (ADR 0011)
+ */
+export function OrbApp() {
+  useOrbBeaconBootstrap()
+  return (
+    <div className="text-foreground h-full w-full font-sans">
+      <OrbBeacon />
+    </div>
+  )
+}

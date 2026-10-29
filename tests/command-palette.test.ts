@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
-import { shortcutForAction } from '../src/renderer/src/app/shortcuts.js'
+import { shortcutForAction } from '../src/renderer/app/shortcuts.js'
 import {
   PALETTE_ACTIONS,
   PALETTE_SECTIONS,
   PALETTE_ROWS,
   rowFilterValue,
-} from '../src/renderer/src/app/components/CommandPalette.js'
+} from '../src/renderer/components/shell/CommandPalette.js'
 
 describe('command palette rows (ADR 0028)', () => {
   it('lists every section plus refresh/toggleSidebar — and never itself', () => {

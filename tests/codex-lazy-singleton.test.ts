@@ -3,9 +3,9 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { appPaths, initAppPaths } from '../src/main/env.js'
-import { codex } from '../src/main/pipeline/providers/codex.js'
-import type { Provider } from '../src/main/pipeline/providers/types.js'
+import { appPaths, initAppPaths } from '../src/infrastructure/config/environment.js'
+import { codex } from '../src/infrastructure/provider-adapters/codex.js'
+import type { Provider } from '../src/infrastructure/provider-adapters/types.js'
 
 async function probeRoots(provider: Pick<Provider, 'name' | 'probeRoots'>) {
   if (!provider.probeRoots) throw new Error(`${provider.name} does not expose probe roots`)

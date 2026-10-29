@@ -3,17 +3,20 @@ import { DatabaseSync } from 'node:sqlite'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { captureModelPricingCatalogue, captureProxyPaths } from '../src/main/pipeline/models.js'
-import { capturePricingCatalogue, type PricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
-import { makeLedgerQuerySnapshot } from '../src/main/store/ledger-query-snapshot.js'
-import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
-import type { LedgerViewData } from '../src/main/store/view-read-projections.js'
-import { calculateAnalyticalViews, calculateDashboardViews } from '../src/main/view-aggregate-calculation.js'
+import { captureModelPricingCatalogue, captureProxyPaths } from '../src/infrastructure/pricing/models.js'
+import { capturePricingCatalogue, type PricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
+import { makeLedgerQuerySnapshot } from '../src/core/application/queries/ledger-query-snapshot.js'
+import { LedgerViewReads } from '../src/core/ports/ledger-view-reads.js'
+import type { LedgerViewData } from '../src/core/analytics/projections/view-read-projections.js'
+import {
+  calculateAnalyticalViews,
+  calculateDashboardViews,
+} from '../src/core/analytics/metrics/view-aggregate-calculation.js'
 import {
   buildAnalyticalViewsFromSnapshotResult,
   buildDashboardViewsFromSnapshotResult,
-} from '../src/main/views-calculation.js'
+} from '../src/core/analytics/projections/views-calculation.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 

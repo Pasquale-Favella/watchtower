@@ -7,9 +7,9 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { NativeCoachRunnerCapabilities } from '../src/main/agents/ipc.js'
-import { makeMainRuntime } from '../src/main/main-runtime.js'
-import { coachHandlers } from '../src/main/rpc/coach-handlers.js'
+import type { NativeCoachRunnerCapabilities } from '../src/platform/electron/main/coach/ipc.js'
+import { makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
+import { coachHandlers } from '../src/platform/electron/main/rpc/coach-handlers.js'
 import { CoachRpcError, CoachRpcGroup, type CoachRunFrame } from '../src/shared/rpc/coach.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
@@ -36,7 +36,7 @@ const event = (runId: string, coachEvent: CoachEvent): CoachRunFrame => ({
 })
 
 async function runWithMainServices<A, E>(
-  effect: Effect.Effect<A, E, import('../src/main/main-runtime.js').MainServices>,
+  effect: Effect.Effect<A, E, import('../src/platform/electron/main/main-runtime.js').MainServices>,
 ): Promise<A> {
   const runtime = makeMainRuntime(
     { clientVersion: 'test', appPath: '/app', onHarnessChange: () => {} },

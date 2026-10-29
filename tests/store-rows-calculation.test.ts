@@ -6,17 +6,20 @@ import { basename, dirname, join, resolve } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { querySessionSearch } from '../src/main/application/session-search-query.js'
-import { queryProjectRows, querySessionRows } from '../src/main/application/store-row-queries.js'
-import { captureModelPricingCatalogue } from '../src/main/pipeline/models.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { searchSessionsFromData } from '../src/main/session-search-calculation.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/main/store/ledger-repository.js'
-import { LedgerSessionReads } from '../src/main/store/ledger-session-reads.js'
-import type { SessionSummaryData } from '../src/main/store/session-read-projections.js'
-import { buildProjectRowsFromSessionData, querySessionRowsFromSessionData } from '../src/main/store-rows-calculation.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { querySessionSearch } from '../src/core/application/queries/session-search-query.js'
+import { queryProjectRows, querySessionRows } from '../src/core/application/queries/store-row-queries.js'
+import { captureModelPricingCatalogue } from '../src/infrastructure/pricing/models.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import { searchSessionsFromData } from '../src/core/analytics/projections/session-search-calculation.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '../src/infrastructure/sqlite/ledger-repository.js'
+import { LedgerSessionReads } from '../src/core/ports/ledger-session-reads.js'
+import type { SessionSummaryData } from '../src/core/analytics/projections/session-read-projections.js'
+import {
+  buildProjectRowsFromSessionData,
+  querySessionRowsFromSessionData,
+} from '../src/core/analytics/projections/store-rows-calculation.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 import type { LegacyLedgerReader } from './fixtures/pre-wave17-query-snapshot.js'
 import {
@@ -251,9 +254,9 @@ describe('store row calculations', () => {
   it('matches the legacy view builders on a real ledger session-read projection', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-row-calculation-'))
     const dbPath = join(directory, 'ledger.db')
-    let runtime: WorkerRuntime
+    let runtime: EngineRuntime
     try {
-      runtime = openWorkerRuntime(dbPath)
+      runtime = openEngineRuntime(dbPath)
     } catch (error) {
       removeFixture(directory)
       throw error

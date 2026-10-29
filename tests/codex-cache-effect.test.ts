@@ -7,7 +7,7 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import { Effect, FileSystem } from 'effect'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
+import type { ParsedProviderCall } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let root = ''
@@ -20,13 +20,13 @@ function run<A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem>) {
 beforeEach(async () => {
   vi.resetModules()
   root = mkdtempSync(join(tmpdir(), 'watchtower-codex-cache-effect-'))
-  const { appPaths, initAppPaths } = await import('../src/main/env.js')
+  const { appPaths, initAppPaths } = await import('../src/infrastructure/config/environment.js')
   priorCacheDir = appPaths().cacheDir
   initAppPaths({ cacheDir: join(root, 'cache') })
 })
 
 afterEach(async () => {
-  const { initAppPaths } = await import('../src/main/env.js')
+  const { initAppPaths } = await import('../src/infrastructure/config/environment.js')
   initAppPaths({ cacheDir: priorCacheDir })
   rmSync(root, { recursive: true, force: true })
 })
@@ -56,7 +56,7 @@ function call(path: string): ParsedProviderCall {
 describe('Codex result cache Effects', () => {
   it('uses Effect lookup and write APIs with one reusable source fingerprint', async () => {
     const { flushCodexCacheEffect, lookupCachedCodexResultsEffect, writeCachedCodexResultsEffect } =
-      await import('../src/main/pipeline/codex-cache.js')
+      await import('../src/infrastructure/ingestion/codex-cache.js')
     const path = join(root, 'session.jsonl')
     await writeFile(path, 'session')
     const lookup = lookupCachedCodexResultsEffect(path)
@@ -82,9 +82,9 @@ describe('Codex result cache Effects', () => {
     // Reload a fresh module so this assertion exercises the persisted Schema,
     // rather than the in-memory entry populated above.
     vi.resetModules()
-    const { initAppPaths } = await import('../src/main/env.js')
+    const { initAppPaths } = await import('../src/infrastructure/config/environment.js')
     initAppPaths({ cacheDir: join(root, 'cache') })
-    const reloaded = await import('../src/main/pipeline/codex-cache.js')
+    const reloaded = await import('../src/infrastructure/ingestion/codex-cache.js')
     expect(await run(reloaded.lookupCachedCodexResultsEffect(path))).toEqual({
       calls: expected,
       fingerprint: cold.fingerprint,
@@ -92,7 +92,7 @@ describe('Codex result cache Effects', () => {
   })
 
   it('treats malformed cache entries as a cache miss and reparses the session', async () => {
-    const { createCodexProvider } = await import('../src/main/pipeline/providers/codex.js')
+    const { createCodexProvider } = await import('../src/infrastructure/provider-adapters/codex.js')
     const path = join(root, 'session-malformed-cache.jsonl')
     await writeFile(
       path,

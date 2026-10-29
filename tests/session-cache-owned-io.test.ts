@@ -5,9 +5,9 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { writeCacheTempFileEffect } from '../src/main/pipeline/cache-file-write.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import { emptyCache, loadCacheEffect, saveCacheEffect } from '../src/main/pipeline/session-cache.js'
+import { writeCacheTempFileEffect } from '../src/infrastructure/ingestion/cache-file-write.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import { emptyCache, loadCacheEffect, saveCacheEffect } from '../src/infrastructure/ingestion/session-cache.js'
 
 type Hook = (fs: FileSystem.FileSystem) => FileSystem.FileSystem
 

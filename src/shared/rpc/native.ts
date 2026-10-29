@@ -7,18 +7,18 @@ import {
   coachInspectResultSchema,
   coachLoginTerminalResultSchema,
   coachOpenLoginTerminalRequestSchema,
-} from '../schemas/agents.js'
-import { exportResultSchema } from '../schemas/export.js'
-import { scanResultSchema } from '../schemas/ipc.js'
-import { ledgerMcpStartupModeSchema } from '../schemas/ledger-mcp.js'
-import { ledgerMcpConnectionSchema, ledgerMcpStatusSchema } from '../schemas/ledger-mcp.js'
+} from '@/shared/schemas/agents.js'
+import { exportResultSchema } from '@/shared/schemas/export.js'
+import { scanResultSchema } from '@/shared/schemas/ipc.js'
+import { ledgerMcpStartupModeSchema } from '@/shared/schemas/ledger-mcp.js'
+import { ledgerMcpConnectionSchema, ledgerMcpStatusSchema } from '@/shared/schemas/ledger-mcp.js'
 import {
   skillsDismissalRequestSchema,
   skillsDismissalResultSchema,
   skillsSaveRequestSchema,
   skillsSaveResultSchema,
-} from '../schemas/skills.js'
-import { appVersionSchema, updateStatusSchema } from '../schemas/updates.js'
+} from '@/shared/schemas/skills.js'
+import { appVersionSchema, updateStatusSchema } from '@/shared/schemas/updates.js'
 
 /** A native main-process operation failed. This wire error intentionally has
  * no cause, message interpolation, or operation details that could disclose

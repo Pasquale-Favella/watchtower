@@ -3,8 +3,8 @@ import { EventEmitter } from 'node:events'
 import { Effect } from 'effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { registerElectronRpc, type RpcWindowRole } from '../src/main/rpc/electron.js'
-import { createRpcBridge } from '../src/preload/rpc.js'
+import { registerElectronRpc, type RpcWindowRole } from '../src/platform/electron/main/rpc/electron.js'
+import { createRpcBridge } from '../src/platform/electron/preload/rpc.js'
 import type { RpcMessagePort } from '../src/shared/rpc/port-protocol.js'
 
 const CONNECT = 'rpc:v1:connect'

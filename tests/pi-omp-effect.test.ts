@@ -10,8 +10,8 @@ const hooks = vi.hoisted(() => ({
   finalized: false,
 }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   return {
     ...actual,
     readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) => {
@@ -24,10 +24,10 @@ vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { createOmpProvider, createPiProvider } from '../src/main/pipeline/providers/pi.js'
-import type { ProviderScanContext, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createOmpProvider, createPiProvider } from '../src/infrastructure/provider-adapters/pi.js'
+import type { ProviderScanContext, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 let root = ''

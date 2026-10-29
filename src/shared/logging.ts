@@ -44,16 +44,16 @@ const SPAN_ID_PATTERN = /^[0-9a-f]{1,64}$/
  * (the runtime enforcement point remains this sanitizer — every counter seam
  * takes a `Record<string, unknown>` field bag, so types cannot enforce it at
  * the boundary):
- * - `outcome` — `ScanDurationOutcome` in `src/main/pipeline/scan.ts`;
+ * - `outcome` — `ScanDurationOutcome` in `src/infrastructure/ingestion/scan.ts`;
  *   `outcomeForScanExit` returns exactly `success | aborted | failed`.
- * - `status` — `ProbeResult['status']` in `src/main/agents/probe.ts`, i.e.
+ * - `status` — `ProbeResult['status']` in `src/infrastructure/agent-harnesses/probe.ts`, i.e.
  *   `Exclude<ProbeStatus, 'pending'>`. `pending` is a not-yet-probed row state
  *   and never a settled probe, so it is deliberately NOT a member.
  * - `reason` — the `FETCH_TIMEOUT_COUNTER` field in
- *   `src/main/pipeline/fetch-utils.ts`, timeout-only (the `HttpFetchError`
+ *   `src/infrastructure/ingestion/fetch-utils.ts`, timeout-only (the `HttpFetchError`
  *   `abort`/`network` reasons are error values, never filed). That keeps every
  *   other `reason` in the app droppable, e.g. the free-text skills-dismiss
- *   reason in `src/main/store/ledger-repository.ts`.
+ *   reason in `src/infrastructure/sqlite/ledger-repository.ts`.
  *
  * `kind` deliberately stays in `ALLOWED_STRING_FIELDS` (free-form, 200-capped)
  * instead of joining this map: it is allowlisted by name today, so moving it

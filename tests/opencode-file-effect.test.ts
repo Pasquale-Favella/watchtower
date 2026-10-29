@@ -46,11 +46,11 @@ vi.mock('fs/promises', async importOriginal => {
 import {
   createOpenCodeFileSessionParser,
   discoverOpenCodeFileSessionsEffect,
-} from '../src/main/pipeline/providers/opencode-file-parser.js'
-import { decodeMessageJson } from '../src/main/pipeline/providers/session-message.js'
-import type { SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/opencode-file-parser.js'
+import { decodeMessageJson } from '../src/infrastructure/provider-adapters/session-message.js'
+import type { SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let dataDir = ''
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectSessionOutliers } from '../src/main/optimize-calculation.js'
-import { groupSummariesIntoProjects } from '../src/main/store/aggregate-calculation.js'
+import { detectSessionOutliers } from '../src/core/analytics/detectors/optimize-calculation.js'
+import { groupSummariesIntoProjects } from '../src/core/analytics/projections/aggregate-calculation.js'
 import { buildFixtureReport } from './fixtures/report.js'
 
 describe('Optimize cost comparison provenance', () => {

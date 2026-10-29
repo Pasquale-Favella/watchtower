@@ -2,9 +2,9 @@ import { Cause, Effect, Layer, Stream } from 'effect'
 import { RpcClient, RpcServer } from 'effect/rpc'
 import { describe, expect, it, vi } from 'vitest'
 
-import { BackgroundShell } from '../src/main/background-shell.js'
-import { safeLogOperationalEvent } from '../src/main/operational-log.js'
-import { shellHandlers } from '../src/main/rpc/shell-handlers.js'
+import { BackgroundShell } from '../src/platform/electron/main/background-shell.js'
+import { safeLogOperationalEvent } from '../src/infrastructure/logging/operational-log.js'
+import { shellHandlers } from '../src/platform/electron/main/rpc/shell-handlers.js'
 import { clientProtocolLayer, serverProtocolLayer } from '../src/shared/rpc/port-protocol.js'
 import { OrbRpcGroup, ShellRpcGroup, type OrbCommand } from '../src/shared/rpc/shell.js'
 import { makeMemoryRpcPorts } from './memory-rpc-ports.js'
@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
   Tray: vi.fn(),
 }))
 
-vi.mock('../src/main/operational-log.js', () => ({
+vi.mock('../src/infrastructure/logging/operational-log.js', () => ({
   logCodeFor: () => 'failed',
   safeLogOperationalEvent: vi.fn(),
 }))

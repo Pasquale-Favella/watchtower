@@ -18,10 +18,10 @@ import {
   type SessionTotals,
   type SqliteGeneration,
   type SqliteProviderConfig,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
-import type { PartData } from '../src/main/pipeline/providers/session-message.js'
-import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
-import { blobToText, openDatabase, type SqliteDatabase } from '../src/main/pipeline/sqlite.js'
+} from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
+import type { PartData } from '../src/infrastructure/provider-adapters/session-message.js'
+import type { ParsedProviderCall, SessionParser } from '../src/infrastructure/provider-adapters/types.js'
+import { blobToText, openDatabase, type SqliteDatabase } from '../src/infrastructure/ingestion/sqlite.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // `SqliteGeneration` is a COMPLETE STRATEGY: every statement that names a table
@@ -72,7 +72,7 @@ function sessionIdOf(path: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
-const MODULE_RELATIVE = join('src', 'main', 'pipeline', 'providers', 'opencode-family-sqlite.ts')
+const MODULE_RELATIVE = join('src', 'infrastructure', 'provider-adapters', 'opencode-family-sqlite.ts')
 
 const moduleSource = readFileSync(join(repoRoot, MODULE_RELATIVE), 'utf8')
 

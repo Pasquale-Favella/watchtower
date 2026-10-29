@@ -6,7 +6,7 @@ import * as Layer from 'effect/Layer'
 import * as RpcTest from 'effect/rpc/RpcTest'
 import { describe, expect, it, vi } from 'vitest'
 
-import { analyticsHandlers, configHandlers } from '../src/main/rpc/handlers.js'
+import { analyticsHandlers, configHandlers } from '../src/platform/electron/main/rpc/handlers.js'
 import { AnalyticsRpcGroup } from '../src/shared/rpc/analytics.js'
 import { PanelRpcGroup } from '../src/shared/rpc/application.js'
 import { ConfigRpcGroup } from '../src/shared/rpc/config.js'

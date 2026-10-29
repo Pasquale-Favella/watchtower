@@ -4,18 +4,18 @@ import { createElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
-import { QuickAddModal } from '../src/renderer/src/features/models/quick-add-modal.js'
+import { QuickAddModal } from '../src/renderer/features/models/quick-add-modal.js'
 
 const hookQueries = vi.hoisted(() => ({
   values: [] as Array<{ data: unknown | null; error: string | null; status: 'loading' | 'ready' }>,
 }))
 
-vi.mock('../src/renderer/src/app/hooks/use-remote-query.js', () => ({
+vi.mock('../src/renderer/stores/hooks/use-remote-query.js', () => ({
   pinWindowAtom: () => {},
   useRemoteQuery: () => hookQueries.values.shift()!,
 }))
 
-vi.mock('../src/renderer/src/shared/components/ui/dialog.js', () => {
+vi.mock('../src/renderer/components/ui/dialog.js', () => {
   const element =
     (name: string) =>
     ({ children, ...props }: { children?: ReactNode }) =>
@@ -30,7 +30,7 @@ vi.mock('../src/renderer/src/shared/components/ui/dialog.js', () => {
   }
 })
 
-vi.mock('../src/renderer/src/features/models/model-picker.js', () => ({
+vi.mock('../src/renderer/features/models/model-picker.js', () => ({
   ModelPickerCombobox: ({ groups }: { groups: Array<{ label: string; items: Array<{ label: string }> }> }) =>
     createElement(
       'div',

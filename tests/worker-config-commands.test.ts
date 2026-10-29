@@ -14,17 +14,17 @@ import * as SqlError from 'effect/sql/SqlError'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { dismissSkill, setModelPrice } from '../src/main/application/ledger-config-commands.js'
-import { ledgerConfigRequest } from '../src/main/db-worker/config-dispatch.js'
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import { workerRpcError } from '../src/main/db-worker/rpc-errors.js'
-import { LedgerConfig } from '../src/main/store/ledger-ports.js'
-import { openWorkerRuntime, type WorkerRuntime } from '../src/main/worker-runtime.js'
+import { dismissSkill, setModelPrice } from '../src/core/application/commands/ledger-config-commands.js'
+import { ledgerConfigRequest } from '../src/platform/electron/workers/config-dispatch.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
+import { workerRpcError } from '../src/platform/electron/workers/rpc-errors.js'
+import { LedgerConfig } from '../src/core/ports/repository.js'
+import { openEngineRuntime, type EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 interface WorkerOwner {
   dbPath: string
-  runtime: WorkerRuntime
+  runtime: EngineRuntime
 }
 
 function removeTemporaryDirectory(directory: string): void {
@@ -71,10 +71,10 @@ async function withWorker(
 ): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-config-commands-'))
   const dbPath = join(directory, 'ledger.db')
-  let runtime: WorkerRuntime | undefined
+  let runtime: EngineRuntime | undefined
   let context: DbWorkerContext | undefined
   try {
-    runtime = openWorkerRuntime(dbPath, undefined, config ? Layer.succeed(LedgerConfig, config) : undefined)
+    runtime = openEngineRuntime(dbPath, undefined, config ? Layer.succeed(LedgerConfig, config) : undefined)
     const owner = { dbPath, runtime }
     const events: DbWorkerEvent[] = []
     context = new DbWorkerContext(

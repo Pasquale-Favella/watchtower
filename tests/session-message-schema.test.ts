@@ -1,14 +1,14 @@
 import { Result } from 'effect'
 import { describe, expect, it } from 'vitest'
 
-import { v2RowsToLegacyShape } from '../src/main/pipeline/providers/opencode-family-sqlite.js'
+import { v2RowsToLegacyShape } from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
 import {
   buildAssistantCallResult,
   decodeMessageJson,
   decodeMessageValue,
   decodePartJson,
   decodeV2ModelReferenceValue,
-} from '../src/main/pipeline/providers/session-message.js'
+} from '../src/infrastructure/provider-adapters/session-message.js'
 
 describe('OpenCode consumed message schemas', () => {
   it('retains the v2 nonnumeric cost omission before empty-call admission', () => {

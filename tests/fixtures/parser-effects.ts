@@ -1,12 +1,12 @@
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 
-import { Env } from '../../src/main/env.js'
-import { HttpFetch } from '../../src/main/pipeline/fetch-utils.js'
-import { type DeltaHandler, parseAllSessionsEffect } from '../../src/main/pipeline/parser.js'
-import type { ProviderScanServices } from '../../src/main/pipeline/providers/types.js'
-import { scanAbortError } from '../../src/main/pipeline/scan-control.js'
-import type { DateRange, ProjectSummary } from '../../src/main/pipeline/types.js'
+import { Env } from '../../src/infrastructure/config/environment.js'
+import { HttpFetch } from '../../src/infrastructure/ingestion/fetch-utils.js'
+import { type DeltaHandler, parseAllSessionsEffect } from '../../src/infrastructure/ingestion/parser.js'
+import type { ProviderScanServices } from '../../src/infrastructure/provider-adapters/types.js'
+import { scanAbortError } from '../../src/core/ingestion/reconciliation/scan-control.js'
+import type { DateRange, ProjectSummary } from '../../src/core/domain/observations/types.js'
 import type { ScanDelta } from '../../src/shared/schemas/scan.js'
 
 type PromiseDeltaHandler = (delta: ScanDelta, pricing?: Parameters<DeltaHandler>[1]) => void | Promise<void>

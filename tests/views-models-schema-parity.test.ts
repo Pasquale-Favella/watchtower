@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { decodeSchema } from '../src/renderer/src/shared/lib/schema-decoder.js'
+import { decodeSchema } from '../src/renderer/shared/lib/schema-decoder.js'
 import * as models from '../src/shared/schemas/models.js'
 import * as views from '../src/shared/schemas/views.js'
 

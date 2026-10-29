@@ -1,4 +1,5 @@
 {
+  "extends": "./tsconfig.json",
   "compilerOptions": {
     "target": "ES2022",
     "module": "ESNext",
@@ -21,15 +22,11 @@
           "missingEffectContext": "error"
         }
       }
-    ],
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/renderer/src/*"]
-    }
+    ]
   },
   "include": [
-    "src/renderer/src/**/*",
-    "src/preload/index.d.ts",
+    "src/renderer/**/*",
+    "src/platform/electron/preload/index.d.ts",
     "src/shared/**/*"
   ]
 }

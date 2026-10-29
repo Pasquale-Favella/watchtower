@@ -5,7 +5,7 @@ import {
   buildLedgerBriefing,
   buildScopeUpdate,
   scopeWindowLabel,
-} from '../src/main/agents/prompts.js'
+} from '../src/infrastructure/agent-harnesses/prompts.js'
 
 const scope30 = { period: '30days' as const, provider: 'claude' }
 const scopeAll = { period: 'lifetime' as const }

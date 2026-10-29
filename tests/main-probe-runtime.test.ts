@@ -12,17 +12,17 @@ import * as Layer from 'effect/Layer'
 import * as Metric from 'effect/Metric'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import { type ProbeChild, probeHarness } from '../src/main/agents/probe.js'
-import { HarnessSnapshot } from '../src/main/agents/snapshot.js'
-import { Env } from '../src/main/env.js'
-import { type MainRuntime, makeMainRuntime } from '../src/main/main-runtime.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import { type ProbeChild, probeHarness } from '../src/infrastructure/agent-harnesses/probe.js'
+import { HarnessSnapshot } from '../src/infrastructure/agent-harnesses/snapshot.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { type MainRuntime, makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
 import {
   closeOperationalLog,
   initOperationalLog,
   OPERATIONAL_LOG_FILE,
   PROBE_OUTCOME_COUNTER,
-} from '../src/main/operational-log.js'
+} from '../src/infrastructure/logging/operational-log.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
 
 const info: HarnessInfo = {

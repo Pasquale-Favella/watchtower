@@ -7,7 +7,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { queryPullRequestsView } from '../src/main/application/pull-requests-query.js'
+import { queryPullRequestsView } from '../src/core/application/queries/pull-requests-query.js'
 import {
   cachedTurnToClassified,
   collectPrUrlsFromEntry,
@@ -15,16 +15,19 @@ import {
   compactEntry,
   emptySessionMeta,
   groupIntoTurns,
-} from '../src/main/pipeline/parser.js'
-import { extractPrUrlsFromProviderCall, extractPrUrlsFromText } from '../src/main/pipeline/parser-calculations.js'
-import { codex } from '../src/main/pipeline/providers/codex.js'
-import { buildAssistantCallResult } from '../src/main/pipeline/providers/session-message.js'
-import type { CachedFile } from '../src/main/pipeline/session-cache.js'
-import { sectionNeedsPrEvidenceReparse } from '../src/main/pipeline/session-cache.js'
-import { shortenPrUrl } from '../src/main/pipeline/sessions-report.js'
-import type { JournalEntry } from '../src/main/pipeline/types.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
-import type { WorkerRuntime } from '../src/main/worker-runtime.js'
+} from '../src/infrastructure/ingestion/parser.js'
+import {
+  extractPrUrlsFromProviderCall,
+  extractPrUrlsFromText,
+} from '../src/core/ingestion/normalization/parser-calculations.js'
+import { codex } from '../src/infrastructure/provider-adapters/codex.js'
+import { buildAssistantCallResult } from '../src/infrastructure/provider-adapters/session-message.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import { sectionNeedsPrEvidenceReparse } from '../src/infrastructure/ingestion/session-cache.js'
+import { shortenPrUrl } from '../src/infrastructure/ingestion/sessions-report.js'
+import type { JournalEntry } from '../src/core/domain/observations/types.js'
+import { LedgerIngest } from '../src/core/ports/repository.js'
+import type { EngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import type { PortInput } from '../src/shared/schemas/port.js'
 import { providerSectionSchema } from '../src/shared/schemas/session-cache.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
@@ -194,7 +197,7 @@ describe('cachedTurnToClassified fallback (pre-capture cache entries)', () => {
 })
 
 describe('end-to-end: pre-capture shaped sessions reach the PR section', () => {
-  function ledgerWithTurns(turns: CachedFile['turns'], prLinks?: string[]): WorkerRuntime {
+  function ledgerWithTurns(turns: CachedFile['turns'], prLinks?: string[]): EngineRuntime {
     const { runtime } = openLedgerFixture()
     const file = buildFixtureCachedFile({ turns, ...(prLinks ? { prLinks } : {}) })
     runtime.runSync(

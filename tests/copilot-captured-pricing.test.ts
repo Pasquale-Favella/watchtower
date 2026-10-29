@@ -11,8 +11,8 @@ const hooks = vi.hoisted(() => ({
   releaseRead: undefined as (() => void) | undefined,
 }))
 
-vi.mock('../src/main/pipeline/fs-utils.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/fs-utils.js')>()
+vi.mock('../src/infrastructure/ingestion/fs-utils.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/fs-utils.js')>()
   return {
     ...actual,
     readSessionLinesStream: (...args: Parameters<typeof actual.readSessionLinesStream>) =>
@@ -38,9 +38,9 @@ import {
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/pricing/models.js'
+import { createCopilotProvider } from '../src/infrastructure/provider-adapters/copilot.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'copilot-captured-pricing-model'

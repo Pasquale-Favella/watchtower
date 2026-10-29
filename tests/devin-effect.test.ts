@@ -52,8 +52,8 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase(path: string) {
@@ -73,16 +73,16 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { MAX_SESSION_FILE_BYTES } from '../src/main/pipeline/fs-utils.js'
-import { createDevinProvider } from '../src/main/pipeline/providers/devin.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { MAX_SESSION_FILE_BYTES } from '../src/infrastructure/ingestion/fs-utils.js'
+import { createDevinProvider } from '../src/infrastructure/provider-adapters/devin.js'
 import type {
   ParsedProviderCall,
   Provider,
   SessionParser,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 let root = ''
 let cliDir = ''

@@ -4,7 +4,7 @@ import { ESLint } from 'eslint'
 import { describe, expect, it } from 'vitest'
 
 const eslint = new ESLint()
-const nonRootProbe = 'src/main/application/__effect-lint-probe.ts'
+const nonRootProbe = 'src/platform/electron/main/application/__effect-lint-probe.ts'
 
 async function ruleIds(code: string, file = nonRootProbe): Promise<string[]> {
   const [result] = await eslint.lintText(code, { filePath: resolve(file) })

@@ -33,8 +33,8 @@ vi.mock('node:fs/promises', async importOriginal => {
   }
 })
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase: (...args: Parameters<typeof actual.openDatabase>) => {
@@ -56,8 +56,8 @@ import {
   createQuickdeskScanData,
   type QuickdeskScanData,
   QuickdeskScanReads,
-} from '../src/main/pipeline/providers/quickdesk.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/provider-adapters/quickdesk.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 
 let root = ''
 

@@ -1,4 +1,4 @@
-import type { CachedCall, CachedFile, CachedTurn } from '../../src/main/pipeline/session-cache.js'
+import type { CachedCall, CachedFile, CachedTurn } from '../../src/infrastructure/ingestion/session-cache.js'
 
 export const FIXTURE_SOURCE_PATH = '/Users/demo/.local/share/opencode/demo-project/sess-0.jsonl'
 

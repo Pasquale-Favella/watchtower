@@ -1,5 +1,5 @@
 // Offline guard for the bundled LiteLLM snapshot
-// (`src/main/pipeline/data/litellm-snapshot.json`, ADR 0010).
+// (`src/infrastructure/pricing/data/litellm-snapshot.json`, ADR 0010).
 //
 // The file is a build artifact: `scripts/bundle-litellm.mjs` regenerates it
 // from upstream. A 3000-line generated diff is exactly the kind of thing a
@@ -13,10 +13,10 @@
 
 import { describe, expect, it } from 'vitest'
 
-import snapshotData from '../src/main/pipeline/data/litellm-snapshot.json'
-import { getModelCosts } from '../src/main/pipeline/models.js'
+import snapshotData from '../src/infrastructure/pricing/data/litellm-snapshot.json'
+import { getModelCosts } from '../src/infrastructure/pricing/models.js'
 
-// Mirrors the private `SnapshotEntry` in `src/main/pipeline/models.ts`, the type
+// Mirrors the private `SnapshotEntry` in `src/infrastructure/pricing/models.ts`, the type
 // the engine casts this file to on load. Duplicated rather than imported: that
 // type is not exported, and the guard should not depend on the code it polices.
 type SnapshotEntry = [number, number, number | null, number | null, (number | null)?]

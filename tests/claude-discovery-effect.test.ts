@@ -14,8 +14,8 @@ vi.mock('fs/promises', async importOriginal => {
 
 import { readdir as nativeReaddir } from 'fs/promises'
 
-import { Env } from '../src/main/env.js'
-import { claude } from '../src/main/pipeline/providers/claude.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { claude } from '../src/infrastructure/provider-adapters/claude.js'
 
 let root = ''
 

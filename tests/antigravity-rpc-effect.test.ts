@@ -149,11 +149,11 @@ vi.mock('https', async importOriginal => {
   return { ...actual, request, Agent, default: { ...actual, request, Agent } } as unknown as typeof actual
 })
 
-import type { SessionSource } from '../src/main/pipeline/providers/types.js'
+import type { SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
-let createAntigravityProvider: typeof import('../src/main/pipeline/providers/antigravity.js').createAntigravityProvider
-let extractAntigravityModelMap: typeof import('../src/main/pipeline/providers/antigravity.js').extractAntigravityModelMap
+let createAntigravityProvider: typeof import('../src/infrastructure/provider-adapters/antigravity.js').createAntigravityProvider
+let extractAntigravityModelMap: typeof import('../src/infrastructure/provider-adapters/antigravity.js').extractAntigravityModelMap
 
 let root = ''
 const source = (): SessionSource => ({
@@ -165,10 +165,10 @@ const source = (): SessionSource => ({
 beforeEach(async () => {
   vi.resetModules()
   root = mkdtempSync(join(tmpdir(), 'watchtower-antigravity-rpc-effect-'))
-  const { initAppPaths } = await import('../src/main/env.js')
+  const { initAppPaths } = await import('../src/infrastructure/config/environment.js')
   initAppPaths({ cacheDir: join(root, 'cache') })
   ;({ createAntigravityProvider, extractAntigravityModelMap } =
-    await import('../src/main/pipeline/providers/antigravity.js'))
+    await import('../src/infrastructure/provider-adapters/antigravity.js'))
   const file = source().path
   mkdirSync(join(root, '.gemini', 'antigravity-cli', 'conversations'), { recursive: true })
   writeFileSync(file, new Uint8Array())

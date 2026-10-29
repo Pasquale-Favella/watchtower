@@ -10,7 +10,7 @@ import * as Exit from 'effect/Exit'
 import * as Option from 'effect/Option'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { saveSkill, SaveSkillError } from '../src/main/application/save-skill.js'
+import { saveSkill, SaveSkillError } from '../src/core/application/commands/save-skill.js'
 
 let tempDir = ''
 

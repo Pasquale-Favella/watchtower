@@ -4,7 +4,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
+import { LedgerIngest, LedgerQueries } from '../src/core/ports/repository.js'
 import { ledgerCallRowSchema } from '../src/shared/schemas/ledger.js'
 import { mappedFileSchema } from '../src/shared/schemas/port.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
@@ -142,7 +142,7 @@ describe('store seam under Effect Schema (ADR 0003: read-back parsing)', () => {
 describe('port-in seam under Effect Schema (ADR 0002: mapping validation)', () => {
   it('a valid mapping validates against mappedFileSchema', async () => {
     const input = { ...baseInput, verdict: 'new' as const, cachedFile: buildFixtureCachedFile() }
-    const { mapFileToLedgerRows } = await import('../src/main/store/port.js')
+    const { mapFileToLedgerRows } = await import('../src/infrastructure/sqlite/port.js')
     const mapped = mapFileToLedgerRows(input)
     expect(Schema.decodeUnknownResult(mappedFileSchema)(mapped)._tag).toBe('Success')
   })

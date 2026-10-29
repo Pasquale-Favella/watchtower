@@ -1,7 +1,7 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { coachEventSchema, coachRunRequestSchema } from '../schemas/agents.js'
+import { coachEventSchema, coachRunRequestSchema } from '@/shared/schemas/agents.js'
 
 const writable = Schema.mutableKey
 

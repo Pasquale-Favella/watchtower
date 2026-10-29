@@ -5,7 +5,7 @@ import {
   resolveThemeMode,
   themeIsDark,
   CADENCE_UI_OPTIONS,
-} from '../src/renderer/src/shared/lib/shell.js'
+} from '../src/renderer/shared/lib/shell.js'
 
 describe('providerOptionsFromDetected', () => {
   it('always includes "All providers" first', () => {
@@ -64,7 +64,7 @@ describe('themeIsDark', () => {
 
 describe('CADENCE_UI_OPTIONS (kept in sync with main/cadence.ts by hand)', () => {
   it("matches the main process cadence module's values exactly, so the Settings dropdown never drifts from what cadence:set accepts", async () => {
-    const { CADENCE_OPTIONS } = await import('../src/main/cadence.js')
+    const { CADENCE_OPTIONS } = await import('../src/core/domain/sessions/cadence.js')
     expect(CADENCE_UI_OPTIONS.map(o => o.value)).toEqual(CADENCE_OPTIONS.map(o => o.value))
   })
 })

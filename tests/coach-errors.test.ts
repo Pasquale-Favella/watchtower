@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { CoachSdkFailure, coachSdkFailureMessage } from '../src/main/agents/coach-errors.js'
+import { CoachSdkFailure, coachSdkFailureMessage } from '../src/infrastructure/agent-harnesses/coach-errors.js'
 
 describe('CoachSdkFailure', () => {
   it('keeps SDK failure metadata finite and excludes provider details', () => {

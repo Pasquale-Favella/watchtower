@@ -5,7 +5,7 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Stream from 'effect/Stream'
 
-import { createCoachAtoms, mountCoachAtoms } from '../../src/renderer/src/features/coach-skills/atoms.js'
+import { createCoachAtoms, mountCoachAtoms } from '../../src/renderer/features/coach-skills/atoms.js'
 import type { CoachRunFrame } from '../../src/shared/rpc/coach.js'
 import type { CoachHarnessRow } from '../../src/shared/schemas/agents.js'
 import { makeCoachRpcTestClient } from '../../tests/coach-rpc-test-helper.js'

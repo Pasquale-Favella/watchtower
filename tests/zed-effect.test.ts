@@ -9,14 +9,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const logState = vi.hoisted(() => ({ entries: [] as unknown[], issues: [] as unknown[] }))
 const databaseState = vi.hoisted(() => ({ closeError: undefined as Error | undefined, closeCount: 0 }))
 
-vi.mock('../src/main/pipeline/file-errors.js', () => ({
+vi.mock('../src/infrastructure/ingestion/file-errors.js', () => ({
   fileErrorCode: (_cause: unknown, fallback: string) => fallback,
   queueLogRecord: (entry: unknown) => logState.entries.push(entry),
   reportProviderIssue: (...issue: unknown[]) => logState.issues.push(issue),
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase(path: string) {
@@ -33,10 +33,10 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import type { Provider, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { createZedProvider } from '../src/main/pipeline/providers/zed.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import type { Provider, SessionParser, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { createZedProvider } from '../src/infrastructure/provider-adapters/zed.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 
 let root = ''
 

@@ -12,7 +12,7 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { createRpcQuerySlot, restartRpcQuery } from '../src/renderer/src/app/atoms/rpc-query.js'
+import { createRpcQuerySlot, restartRpcQuery } from '../src/renderer/stores/atoms/rpc-query.js'
 
 const Query = Rpc.make('fixture:query', {
   payload: { request: Schema.String },

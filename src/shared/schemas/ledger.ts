@@ -1,8 +1,8 @@
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
-import { toolCallSchema } from './pipeline.js'
-import { fileVerdictSchema } from './port.js'
+import { toolCallSchema } from '@/shared/schemas/pipeline.js'
+import { fileVerdictSchema } from '@/shared/schemas/port.js'
 
 // ── Scalar helpers ──────────────────────────────────────────────────────
 

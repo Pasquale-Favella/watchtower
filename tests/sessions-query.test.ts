@@ -8,12 +8,12 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { describe, expect, it } from 'vitest'
 
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { querySessionsView } from '../src/main/application/sessions-query.js'
-import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import type { LedgerQueriesPort } from '../src/main/store/ledger-ports.js'
-import { LedgerIngest, LedgerQueries, type LedgerRequestSnapshotData } from '../src/main/store/ledger-ports.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { querySessionsView } from '../src/core/application/queries/sessions-query.js'
+import type { ScopedViewQueryInputs } from '../src/core/application/queries/view-queries.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import type { LedgerQueriesPort } from '../src/core/ports/repository.js'
+import { LedgerIngest, LedgerQueries, type LedgerRequestSnapshotData } from '../src/core/ports/repository.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
@@ -165,15 +165,18 @@ function runQuery(
 
 describe('Sessions query dependency boundary', () => {
   it('keeps the calculation module free of runtime, IO and compatibility-facade imports', () => {
-    const source = readFileSync(resolve(process.cwd(), 'src/main/sessions-calculation.ts'), 'utf8')
+    const source = readFileSync(
+      resolve(process.cwd(), 'src/core/analytics/projections/sessions-calculation.ts'),
+      'utf8',
+    )
     const imports = source.match(/^import\s+.*$/gm) ?? []
 
     expect(imports).toEqual([
-      "import type { OverviewScope } from '../shared/schemas/overview.js'",
-      "import { overviewDateRange } from './overview-scope.js'",
-      "import { type SessionRow, sessionRowFromSummary } from './pipeline/session-row.js'",
-      "import { buildSessionSummariesFromSnapshotResult } from './store/aggregate-calculation.js'",
-      "import type { LedgerQuerySnapshot } from './store/ledger-query-snapshot.js'",
+      "import type { OverviewScope } from '@/shared/schemas/overview.js'",
+      "import { overviewDateRange } from '@/core/domain/sessions/overview-scope.js'",
+      "import { type SessionRow, sessionRowFromSummary } from '@/core/domain/sessions/session-row.js'",
+      "import { buildSessionSummariesFromSnapshotResult } from '@/core/analytics/projections/aggregate-calculation.js'",
+      "import type { LedgerQuerySnapshot } from '@/core/application/queries/ledger-query-snapshot.js'",
     ])
   })
 })

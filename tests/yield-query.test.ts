@@ -3,19 +3,23 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { PricingDiagnostics } from '../src/main/application/pricing-diagnostics.js'
-import { RepositoryInspection, RepositoryInspectionError } from '../src/main/application/repository-inspection.js'
-import type { ScopedViewQueryInputs } from '../src/main/application/view-queries.js'
-import { queryYieldView } from '../src/main/application/yield-query.js'
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import type { SessionSummary } from '../src/main/pipeline/types.js'
+import { PricingDiagnostics } from '../src/core/ports/pricing-diagnostics.js'
+import { RepositoryInspection, RepositoryInspectionError } from '../src/core/ports/repository-inspection.js'
+import type { ScopedViewQueryInputs } from '../src/core/application/queries/view-queries.js'
+import { queryYieldView } from '../src/core/application/queries/yield-query.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import type { SessionSummary } from '../src/core/domain/observations/types.js'
 import {
   LedgerIngest,
   LedgerQueries,
   type LedgerQueriesPort,
   type LedgerRequestSnapshotData,
-} from '../src/main/store/ledger-ports.js'
-import { attributeYieldCommits, calculateYieldPayload, categorizeYieldSession } from '../src/main/yield-calculation.js'
+} from '../src/core/ports/repository.js'
+import {
+  attributeYieldCommits,
+  calculateYieldPayload,
+  categorizeYieldSession,
+} from '../src/core/analytics/attribution/yield-calculation.js'
 import { buildFixtureCachedFile } from './fixtures/cached-file.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 

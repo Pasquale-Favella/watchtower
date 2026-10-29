@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { CADENCE_OPTIONS, DEFAULT_CADENCE, resolveCadenceMs, isValidCadence } from '../src/main/cadence.js'
+import {
+  CADENCE_OPTIONS,
+  DEFAULT_CADENCE,
+  resolveCadenceMs,
+  isValidCadence,
+} from '../src/core/domain/sessions/cadence.js'
 
 describe('CADENCE_OPTIONS', () => {
   it('offers manual plus the fixed intervals (30s/1m/3m/5m/10m)', () => {

@@ -10,16 +10,16 @@ import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { DbWorkerContext } from '../src/main/db-worker/context.js'
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import type { ScanMetadata } from '../src/main/pipeline/scan.js'
-import { LedgerConfig, LedgerQueries } from '../src/main/store/ledger-repository.js'
+import { DbWorkerContext } from '../src/platform/electron/workers/context.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
+import type { ScanMetadata } from '../src/infrastructure/ingestion/scan.js'
+import { LedgerConfig, LedgerQueries } from '../src/infrastructure/sqlite/ledger-repository.js'
 import {
-  makeWorkerRuntime,
-  openWorkerRuntime,
-  type WorkerRuntime,
-  type WorkerSqlLayer,
-} from '../src/main/worker-runtime.js'
+  makeEngineRuntime,
+  openEngineRuntime,
+  type EngineRuntime,
+  type EngineSqlLayer,
+} from '../src/infrastructure/runtime/engine-runtime.js'
 import { withNativeSqliteRuntime } from './fixtures/native-sqlite-runtime.js'
 
 function observedDriver(
@@ -27,7 +27,7 @@ function observedDriver(
   failure?: Error,
   onFinalize?: () => void,
 ): {
-  layer: WorkerSqlLayer
+  layer: EngineSqlLayer
   counts: { acquisitions: number; finalizers: number }
 } {
   const counts = { acquisitions: 0, finalizers: 0 }
@@ -52,9 +52,9 @@ function observedDriver(
   return { layer, counts }
 }
 
-function recordRuntime(runtimes: WorkerRuntime[]): typeof makeWorkerRuntime {
+function recordRuntime(runtimes: EngineRuntime[]): typeof makeEngineRuntime {
   return (dbPath, layer) => {
-    const runtime = makeWorkerRuntime(dbPath, layer)
+    const runtime = makeEngineRuntime(dbPath, layer)
     runtimes.push(runtime)
     return runtime
   }
@@ -87,10 +87,10 @@ describe('db-worker SQL ownership', () => {
   it('constructs one runtime and closes the real driver once after the worker lifetime', async () => {
     const path = join(dirname(databasePath()), 'nested', 'db', 'ledger.db')
     const driver = observedDriver(path)
-    const runtimes: WorkerRuntime[] = []
+    const runtimes: EngineRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     const prepare = vi.spyOn(DatabaseSync.prototype, 'prepare')
-    const runtime = openWorkerRuntime(path, undefined, undefined, {
+    const runtime = openEngineRuntime(path, undefined, undefined, {
       sqliteLayer: driver.layer,
       makeRuntime: recordRuntime(runtimes),
     })
@@ -124,8 +124,8 @@ describe('db-worker SQL ownership', () => {
       expect(activeOwner.read()).toBeNull()
       order.push('sql-release')
     })
-    const runtimes: WorkerRuntime[] = []
-    const runtime = openWorkerRuntime(path, undefined, undefined, {
+    const runtimes: EngineRuntime[] = []
+    const runtime = openEngineRuntime(path, undefined, undefined, {
       sqliteLayer: driver.layer,
       makeRuntime: recordRuntime(runtimes),
     })
@@ -202,10 +202,10 @@ describe('db-worker SQL ownership', () => {
       )
     })
     const driver = observedDriver(path)
-    const runtimes: WorkerRuntime[] = []
+    const runtimes: EngineRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     expect(() =>
-      openWorkerRuntime(path, undefined, undefined, {
+      openEngineRuntime(path, undefined, undefined, {
         sqliteLayer: driver.layer,
         makeRuntime: recordRuntime(runtimes),
       }),
@@ -228,10 +228,10 @@ describe('db-worker SQL ownership', () => {
   it('closes the real driver and runtime when graph construction fails after acquisition', () => {
     const path = databasePath()
     const driver = observedDriver(path, new Error('controlled layer-build failure'))
-    const runtimes: WorkerRuntime[] = []
+    const runtimes: EngineRuntime[] = []
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     expect(() =>
-      openWorkerRuntime(path, undefined, undefined, {
+      openEngineRuntime(path, undefined, undefined, {
         sqliteLayer: driver.layer,
         makeRuntime: recordRuntime(runtimes),
       }),

@@ -7,7 +7,7 @@ import {
   displayShortcut,
   displayShortcutForAction,
   sectionsRangeLabel,
-} from '../src/renderer/src/app/shortcuts.js'
+} from '../src/renderer/app/shortcuts.js'
 import { acceleratorFor } from '../src/shared/lib/shortcuts.js'
 
 describe('shortcut registry', () => {

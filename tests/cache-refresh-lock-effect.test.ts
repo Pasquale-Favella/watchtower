@@ -7,7 +7,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { acquireCacheRefreshLockEffect } from '../src/main/pipeline/cache-refresh-lock.js'
+import { acquireCacheRefreshLockEffect } from '../src/infrastructure/ingestion/cache-refresh-lock.js'
 
 let cacheDir: string
 

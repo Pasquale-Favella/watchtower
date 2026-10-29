@@ -5,32 +5,31 @@ import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 
 const roots = [
-  'src/main/view-aggregate-calculation.ts',
-  'src/main/views-calculation.ts',
-  'src/main/canonical-session-project.ts',
-  'src/main/store-rows-calculation.ts',
-  'src/main/session-search-calculation.ts',
-  'src/main/session-detail-calculation.ts',
-  'src/main/ledger-mcp-calculation.ts',
-  'src/main/sessions-calculation.ts',
-  'src/main/models-calculation.ts',
-  'src/main/overview-calculation.ts',
-  'src/main/spend-calculation.ts',
-  'src/main/compare-calculation.ts',
-  'src/main/pull-requests-calculation.ts',
-  'src/main/skills-calculation.ts',
-  'src/main/yield-calculation.ts',
-  'src/main/optimize-calculation.ts',
-  'src/main/export-calculation.ts',
-  'src/main/export-rows-calculation.ts',
-  'src/main/fx-calculation.ts',
-  'src/main/pipeline/pr-attribution.ts',
-  'src/main/overview-scope.ts',
-  'src/main/store/aggregate-calculation.ts',
-  'src/main/pipeline/parser-calculations.ts',
+  'src/core/analytics/metrics/view-aggregate-calculation.ts',
+  'src/core/analytics/projections/views-calculation.ts',
+  'src/core/domain/sessions/canonical-session-project.ts',
+  'src/core/analytics/projections/store-rows-calculation.ts',
+  'src/core/analytics/projections/session-search-calculation.ts',
+  'src/core/analytics/projections/session-detail-calculation.ts',
+  'src/core/analytics/projections/ledger-mcp-calculation.ts',
+  'src/core/analytics/projections/sessions-calculation.ts',
+  'src/core/analytics/projections/models-calculation.ts',
+  'src/core/analytics/projections/overview-calculation.ts',
+  'src/core/analytics/projections/spend-calculation.ts',
+  'src/core/analytics/projections/compare-calculation.ts',
+  'src/core/analytics/projections/pull-requests-calculation.ts',
+  'src/core/analytics/detectors/skills-calculation.ts',
+  'src/core/analytics/attribution/yield-calculation.ts',
+  'src/core/analytics/detectors/optimize-calculation.ts',
+  'src/core/analytics/projections/export-calculation.ts',
+  'src/core/analytics/projections/export-rows-calculation.ts',
+  'src/core/analytics/projections/fx-calculation.ts',
+  'src/core/analytics/attribution/pr-attribution.ts',
+  'src/core/domain/sessions/overview-scope.ts',
+  'src/core/analytics/projections/aggregate-calculation.ts',
+  'src/core/ingestion/normalization/parser-calculations.ts',
 ]
-const forbiddenModule =
-  /\/main\/(?:pipeline\/(?:models|parser|sessions-report)|store\/(?:query-snapshot|ledger|ledger-repository|port)|(?:skills|yield|optimize)-view)\.ts$/
+const forbiddenModule = /\/src\/(?:infrastructure|platform|renderer)\//
 const forbiddenPackage = /^(?:electron|node:|fs(?:\/|$)|path$)/
 
 function runtimeImports(filePath: string, source = readFileSync(filePath, 'utf8')): string[] {
@@ -70,8 +69,10 @@ function runtimeImports(filePath: string, source = readFileSync(filePath, 'utf8'
 }
 
 function resolveLocalImport(fromFile: string, specifier: string): string | undefined {
-  if (!specifier.startsWith('.')) return undefined
-  const resolved = resolve(dirname(fromFile), specifier)
+  if (!specifier.startsWith('.') && !specifier.startsWith('@/')) return undefined
+  const resolved = specifier.startsWith('@/')
+    ? resolve('src', specifier.slice(2))
+    : resolve(dirname(fromFile), specifier)
   const basePath = extname(resolved) === '.js' ? resolved.slice(0, -3) : resolved
   const candidates = extname(basePath)
     ? [basePath]
@@ -94,21 +95,21 @@ describe('pure view calculation boundary', () => {
   it('keeps the canonical application query graph on ports instead of repository implementations', () => {
     expect(
       graphViolations([
-        'src/main/application/view-queries.ts',
-        'src/main/application/sessions-query.ts',
-        'src/main/application/models-query.ts',
-        'src/main/application/overview-query.ts',
-        'src/main/application/spend-query.ts',
-        'src/main/application/compare-query.ts',
-        'src/main/application/pull-requests-query.ts',
-        'src/main/application/skills-query.ts',
-        'src/main/application/yield-query.ts',
-        'src/main/application/optimize-query.ts',
-        'src/main/application/export-query.ts',
-        'src/main/application/store-row-queries.ts',
-        'src/main/application/session-search-query.ts',
-        'src/main/application/session-detail-query.ts',
-        'src/main/application/ledger-mcp-query.ts',
+        'src/core/application/queries/view-queries.ts',
+        'src/core/application/queries/sessions-query.ts',
+        'src/core/application/queries/models-query.ts',
+        'src/core/application/queries/overview-query.ts',
+        'src/core/application/queries/spend-query.ts',
+        'src/core/application/queries/compare-query.ts',
+        'src/core/application/queries/pull-requests-query.ts',
+        'src/core/application/queries/skills-query.ts',
+        'src/core/application/queries/yield-query.ts',
+        'src/core/application/queries/optimize-query.ts',
+        'src/core/application/queries/export-query.ts',
+        'src/core/application/queries/store-row-queries.ts',
+        'src/core/application/queries/session-search-query.ts',
+        'src/core/application/queries/session-detail-query.ts',
+        'src/core/application/queries/ledger-mcp-query.ts',
       ]),
     ).toEqual([])
   })
@@ -137,7 +138,8 @@ function graphViolations(rootPaths: string[], pure = false): string[] {
       if (forbiddenPackage.test(specifier) || (pure && /^effect(?:\/|$)/.test(specifier)))
         forbidden.push(`${current}: ${specifier}`)
       const dependency = resolveLocalImport(current, specifier)
-      if (specifier.startsWith('.') && !dependency) forbidden.push(`${current}: unresolved ${specifier}`)
+      if ((specifier.startsWith('.') || specifier.startsWith('@/')) && !dependency)
+        forbidden.push(`${current}: unresolved ${specifier}`)
       if (dependency) {
         if (forbiddenModule.test(dependency.replace(/\\/g, '/'))) forbidden.push(`${current}: ${specifier}`)
         pending.push(dependency)

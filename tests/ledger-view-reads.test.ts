@@ -7,11 +7,11 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createPricingConfigLookup } from '../src/main/pipeline/pricing-calculation.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
-import { LedgerViewReads } from '../src/main/store/ledger-view-reads.js'
-import type { OverviewReadData } from '../src/main/store/overview-read-projections.js'
-import type { LedgerViewData } from '../src/main/store/view-read-projections.js'
+import { createPricingConfigLookup } from '../src/core/domain/pricing/pricing-calculation.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
+import { LedgerViewReads } from '../src/core/ports/ledger-view-reads.js'
+import type { OverviewReadData } from '../src/core/analytics/projections/overview-read-projections.js'
+import type { LedgerViewData } from '../src/core/analytics/projections/view-read-projections.js'
 import {
   buildFixtureCachedCall,
   buildFixtureCachedFile,

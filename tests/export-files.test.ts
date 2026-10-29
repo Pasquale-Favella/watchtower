@@ -25,8 +25,8 @@ const fsControls = {
   missingStatPath: null as string | null,
 }
 
-import { ExportFiles } from '../src/main/application/export-files.js'
-import { ExportFilesLive } from '../src/main/export-files-live.js'
+import { ExportFiles } from '../src/core/ports/export-files.js'
+import { ExportFilesLive } from '../src/infrastructure/services/export-files-live.js'
 
 const testFileSystem = Layer.effect(
   FileSystem.FileSystem,

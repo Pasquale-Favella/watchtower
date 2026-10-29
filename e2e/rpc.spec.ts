@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-import type { Api } from '../src/preload/index.js'
+import type { Api } from '../src/platform/electron/preload/index.js'
 import { dismissOnboarding, withApp } from './app'
 import { invokeRpc } from './rpc-probe'
 

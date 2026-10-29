@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
-import { fileVerdictSchema } from './port.js'
-import { cachedFileSchema } from './session-cache.js'
+import { fileVerdictSchema } from '@/shared/schemas/port.js'
+import { cachedFileSchema } from '@/shared/schemas/session-cache.js'
 
 const writable = Schema.mutableKey
 const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))

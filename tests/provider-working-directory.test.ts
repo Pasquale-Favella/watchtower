@@ -10,18 +10,18 @@ import {
   clearCursorWorkspaceMapCache,
   createCursorProvider,
   workspaceFsPath,
-} from '../src/main/pipeline/providers/cursor.js'
-import { attachWorkspacePaths } from '../src/main/pipeline/providers/cursor.js'
+} from '../src/infrastructure/provider-adapters/cursor.js'
+import { attachWorkspacePaths } from '../src/infrastructure/provider-adapters/cursor.js'
 import {
   createSqliteSessionParser,
   discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
+} from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
 import {
   createOpenCodeFileSessionParser,
   discoverOpenCodeFileSessionsEffect,
-} from '../src/main/pipeline/providers/opencode-file-parser.js'
-import type { ParsedProviderCall } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/provider-adapters/opencode-file-parser.js'
+import type { ParsedProviderCall } from '../src/infrastructure/provider-adapters/types.js'
 import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
 
 // Provider working-directory emission (#104): sessions from providers that

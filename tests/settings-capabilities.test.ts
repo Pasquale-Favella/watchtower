@@ -4,21 +4,21 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { RpcDataWorker } from '../src/main/rpc/handlers.js'
-import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
-import { appliedLedgerGenerationAtom } from '../src/renderer/src/app/atoms/config-change.js'
+import type { RpcDataWorker } from '../src/platform/electron/main/rpc/handlers.js'
+import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
+import { appliedLedgerGenerationAtom } from '../src/renderer/stores/atoms/config-change.js'
 import {
   type AppLifecycleReadiness,
   applyLifecycleFrame,
   type LifecycleCursor,
-} from '../src/renderer/src/app/atoms/rpc-lifecycle.js'
+} from '../src/renderer/stores/atoms/rpc-lifecycle.js'
 import {
   createSettingsCapabilityAtoms,
   MCP_STATUS_REQUEST,
   PROVIDERS_REQUEST,
   SETTINGS_INFO_REQUEST,
-} from '../src/renderer/src/features/settings/capability-atoms.js'
-import { mountSettingsCapabilityWorkflow } from '../src/renderer/src/features/settings/capability-atoms.js'
+} from '../src/renderer/features/settings/capability-atoms.js'
+import { mountSettingsCapabilityWorkflow } from '../src/renderer/features/settings/capability-atoms.js'
 import type { AppLifecycleFrame } from '../src/shared/rpc/lifecycle.js'
 import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 

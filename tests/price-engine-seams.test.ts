@@ -38,20 +38,20 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { queryModelsView } from '../src/main/application/models-query.js'
-import { Env } from '../src/main/env.js'
-import { HttpFetch } from '../src/main/pipeline/fetch-utils.js'
-import * as Models from '../src/main/pipeline/models.js'
-import { calculateCost, type ModelCosts } from '../src/main/pipeline/models.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
-import { isAuditEstimated } from '../src/renderer/src/shared/lib/models.js'
+import { queryModelsView } from '../src/core/application/queries/models-query.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
+import * as Models from '../src/infrastructure/pricing/models.js'
+import { calculateCost, type ModelCosts } from '../src/infrastructure/pricing/models.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
+import { isAuditEstimated } from '../src/renderer/shared/lib/models.js'
 import type { ModelsConfig, ModelsPayload } from '../src/shared/schemas/models.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const BUNDLER = fileURLToPath(new URL('../scripts/bundle-litellm.mjs', import.meta.url))
-const SNAPSHOT_MODULE = '../src/main/pipeline/data/litellm-snapshot.json'
+const SNAPSHOT_MODULE = '../src/infrastructure/pricing/data/litellm-snapshot.json'
 const VIEW_NOW = new Date(2026, 6, 15)
 
 type TestRuntime = ReturnType<typeof openLedgerFixture>['runtime']
@@ -127,7 +127,7 @@ afterEach(() => {
  */
 async function pricedBy(upstream: Record<string, unknown>): Promise<typeof Models> {
   freshCacheDir()
-  const fresh = await import('../src/main/pipeline/models.js')
+  const fresh = await import('../src/infrastructure/pricing/models.js')
   await Effect.runPromise(
     fresh
       .refreshPricingNowEffect()
@@ -985,7 +985,7 @@ describe('a user price override beats a tier in every form getModelCosts honours
   async function engineWithoutSnapshot(): Promise<typeof Models> {
     vi.resetModules()
     vi.doMock(SNAPSHOT_MODULE, () => ({ default: {} }))
-    const fresh = await import('../src/main/pipeline/models.js')
+    const fresh = await import('../src/infrastructure/pricing/models.js')
     freshCacheDir()
     await Effect.runPromise(
       fresh

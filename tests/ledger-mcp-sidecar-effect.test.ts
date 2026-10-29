@@ -7,12 +7,8 @@ import * as Effect from 'effect/Effect'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { LedgerMcpSpawnContext } from '../src/main/agents/ledger-mcp/config.js'
-import {
-  LedgerMcpSidecar,
-  ledgerMcpSidecarLayer,
-  type LedgerMcpSidecarOptions,
-} from '../src/main/agents/ledger-mcp/sidecar.js'
+import type { LedgerMcpSpawnContext } from '../src/platform/mcp/config.js'
+import { LedgerMcpSidecar, ledgerMcpSidecarLayer, type LedgerMcpSidecarOptions } from '../src/platform/mcp/sidecar.js'
 
 const CTX: LedgerMcpSpawnContext = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
 

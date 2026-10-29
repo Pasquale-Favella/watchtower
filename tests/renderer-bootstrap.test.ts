@@ -3,8 +3,8 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createScanAtoms } from '../src/renderer/src/app/atoms/scan.js'
-import { bootstrapInitialScan, shouldStartInitialScan } from '../src/renderer/src/app/hooks/use-app-bootstrap.js'
+import { createScanAtoms } from '../src/renderer/stores/atoms/scan.js'
+import { bootstrapInitialScan, shouldStartInitialScan } from '../src/renderer/stores/hooks/use-app-bootstrap.js'
 import { makeScanRpcTestClient } from './scan-rpc-test-helper.js'
 
 const metadata = {

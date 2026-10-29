@@ -12,8 +12,8 @@ const hooks = vi.hoisted(() => ({
   closeCount: 0,
 }))
 
-vi.mock('../src/main/agents/ledger-mcp/server.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/agents/ledger-mcp/server.js')>()
+vi.mock('../src/platform/mcp/server.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/platform/mcp/server.js')>()
   return {
     ...actual,
     createLedgerMcpServer: (queries: Parameters<typeof actual.createLedgerMcpServer>[0]) => {
@@ -49,9 +49,9 @@ vi.mock('../src/main/agents/ledger-mcp/server.js', async importOriginal => {
   }
 })
 
-import { bearerHeaderValue } from '../src/main/agents/ledger-mcp/auth.js'
-import { handleLedgerMcpHttpRequest } from '../src/main/agents/ledger-mcp/http-server.js'
-import type { LedgerMcpQueries } from '../src/main/agents/ledger-mcp/query-api.js'
+import { bearerHeaderValue } from '../src/platform/mcp/auth.js'
+import { handleLedgerMcpHttpRequest } from '../src/platform/mcp/http-server.js'
+import type { LedgerMcpQueries } from '../src/platform/mcp/query-api.js'
 
 const TOKEN = 'cancel-test-token'
 

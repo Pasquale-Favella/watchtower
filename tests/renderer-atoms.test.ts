@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '../src/renderer/src/app/atoms/palette.js'
+import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '../src/renderer/stores/atoms/palette.js'
 import {
   customRangeAtom,
   overviewScopeAtom,
@@ -8,8 +8,8 @@ import {
   setCustomRangeAtom,
   setPeriodAtom,
   setProviderAtom,
-} from '../src/renderer/src/app/atoms/scope.js'
-import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
+} from '../src/renderer/stores/atoms/scope.js'
+import { createRendererRuntimeOwner } from '../src/renderer/app/renderer-runtime.js'
 
 describe('renderer Scope atoms', () => {
   it('derives the analytics Scope and preserves the all-provider sentinel semantics', () => {

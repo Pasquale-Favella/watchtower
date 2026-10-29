@@ -37,11 +37,15 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { createDevinProvider, createDevinScanReads, DevinScanReads } from '../src/main/pipeline/providers/devin.js'
-import { createKiroProvider, createKiroScanReads, KiroScanReads } from '../src/main/pipeline/providers/kiro.js'
-import type { Provider, SessionParser } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import {
+  createDevinProvider,
+  createDevinScanReads,
+  DevinScanReads,
+} from '../src/infrastructure/provider-adapters/devin.js'
+import { createKiroProvider, createKiroScanReads, KiroScanReads } from '../src/infrastructure/provider-adapters/kiro.js'
+import type { Provider, SessionParser } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 let root = ''
 

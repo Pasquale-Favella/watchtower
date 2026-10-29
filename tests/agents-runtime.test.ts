@@ -4,18 +4,18 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { CoachSdkFailure } from '../src/main/agents/coach-errors.js'
-import type { HarnessInfo } from '../src/main/agents/detect.js'
-import type { CoachStreamPart } from '../src/main/agents/events.js'
-import { harnessSpecs } from '../src/main/agents/harnesses/index.js'
-import { decodeResumeCursor } from '../src/main/agents/resume-cursor.js'
+import { CoachSdkFailure } from '../src/infrastructure/agent-harnesses/coach-errors.js'
+import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
+import type { CoachStreamPart } from '../src/infrastructure/agent-harnesses/events.js'
+import { harnessSpecs } from '../src/infrastructure/agent-harnesses/harnesses/index.js'
+import { decodeResumeCursor } from '../src/infrastructure/agent-harnesses/resume-cursor.js'
 import {
   acpSpawnCommand,
   createHarnessRuntime,
   type HarnessSdk,
   isAuthFailureMessage,
   killTreeBeforeForceCleanup,
-} from '../src/main/agents/runtime.js'
+} from '../src/infrastructure/agent-harnesses/runtime.js'
 
 const claudeHarness: HarnessInfo = {
   name: 'claude',

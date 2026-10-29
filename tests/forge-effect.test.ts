@@ -13,8 +13,8 @@ const nativeDb = vi.hoisted(() => ({
   queries: [] as Array<{ sql: string; rows: number }>,
 }))
 
-vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
-  const actual = await importOriginal<typeof import('../src/main/pipeline/sqlite.js')>()
+vi.mock('../src/infrastructure/ingestion/sqlite.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../src/infrastructure/ingestion/sqlite.js')>()
   return {
     ...actual,
     openDatabase(path: string) {
@@ -40,11 +40,15 @@ vi.mock('../src/main/pipeline/sqlite.js', async importOriginal => {
   }
 })
 
-import { Env } from '../src/main/env.js'
-import { createForgeProvider } from '../src/main/pipeline/providers/forge.js'
-import type { ProviderScanContext, SessionParser, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+import { Env } from '../src/infrastructure/config/environment.js'
+import { createForgeProvider } from '../src/infrastructure/provider-adapters/forge.js'
+import type {
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 let directory = ''

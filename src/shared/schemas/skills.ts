@@ -1,9 +1,9 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import { DEFAULT_SKILLS_THRESHOLDS } from '../skills-defaults.js'
+import { DEFAULT_SKILLS_THRESHOLDS } from '@/shared/skills-defaults.js'
 
-export { DEFAULT_SKILLS_THRESHOLDS } from '../skills-defaults.js'
+export { DEFAULT_SKILLS_THRESHOLDS } from '@/shared/skills-defaults.js'
 
 const finiteNumber = Schema.Finite
 const writable = Schema.mutableKey

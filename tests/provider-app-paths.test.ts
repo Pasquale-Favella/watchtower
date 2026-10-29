@@ -5,11 +5,16 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { type AppPaths, appPaths, type PlatformPaths, type ProviderOverrides } from '../src/main/env.js'
-import { createCrushProvider, crush, getRegistryPath } from '../src/main/pipeline/providers/crush.js'
-import { createOpenDesignProvider, getOpenDesignDir } from '../src/main/pipeline/providers/open-design.js'
-import { createOpenCodeProvider, opencode } from '../src/main/pipeline/providers/opencode.js'
-import type { Provider } from '../src/main/pipeline/providers/types.js'
+import {
+  type AppPaths,
+  appPaths,
+  type PlatformPaths,
+  type ProviderOverrides,
+} from '../src/infrastructure/config/environment.js'
+import { createCrushProvider, crush, getRegistryPath } from '../src/infrastructure/provider-adapters/crush.js'
+import { createOpenDesignProvider, getOpenDesignDir } from '../src/infrastructure/provider-adapters/open-design.js'
+import { createOpenCodeProvider, opencode } from '../src/infrastructure/provider-adapters/opencode.js'
+import type { Provider } from '../src/infrastructure/provider-adapters/types.js'
 import { discoverProviderSessions } from './fixtures/provider-effects.js'
 
 // Provider-home seams (Wave 9 rollout, step 2): `OPENCODE_DATA_DIR` /

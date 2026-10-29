@@ -8,7 +8,7 @@ import {
   routeFor,
   sectionForPath,
   setRouter,
-} from '../src/renderer/src/app/navigation.js'
+} from '../src/renderer/app/navigation.js'
 import { ROUTES, SECTIONS } from '../src/shared/schemas/navigation.js'
 import { sessionDetailSearchSchema } from '../src/shared/schemas/views.js'
 

@@ -7,11 +7,16 @@ import {
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import { cachedTurnToClassified, groupIntoTurns, parseAdvisorCalls, parseApiCall } from '../src/main/pipeline/parser.js'
-import { createScanPricing } from '../src/main/pipeline/scan-pricing.js'
-import type { JournalEntry } from '../src/main/pipeline/types.js'
-import { mapFileToLedgerRows } from '../src/main/store/port.js'
+} from '../src/infrastructure/pricing/models.js'
+import {
+  cachedTurnToClassified,
+  groupIntoTurns,
+  parseAdvisorCalls,
+  parseApiCall,
+} from '../src/infrastructure/ingestion/parser.js'
+import { createScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
+import type { JournalEntry } from '../src/core/domain/observations/types.js'
+import { mapFileToLedgerRows } from '../src/infrastructure/sqlite/port.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
 
 const model = 'captured-claude-alias'

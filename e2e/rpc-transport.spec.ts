@@ -80,6 +80,7 @@ test('real sandboxed MessagePort transport passes the production RPC port bounda
     await build({
       configFile: false,
       root: fixtureRoot,
+      resolve: { alias: { '@': resolve('src') } },
       logLevel: 'error',
       ssr: { noExternal: ['effect'] },
       build: {
@@ -92,6 +93,7 @@ test('real sandboxed MessagePort transport passes the production RPC port bounda
     await build({
       configFile: false,
       root: fixtureRoot,
+      resolve: { alias: { '@': resolve('src') } },
       base: './',
       logLevel: 'error',
       build: {

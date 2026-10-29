@@ -8,8 +8,8 @@ import {
   setCustomRangeAtom,
   setPeriodAtom,
   setProviderAtom,
-} from '../src/renderer/src/app/atoms/scope.js'
-import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
+} from '../src/renderer/stores/atoms/scope.js'
+import { createRendererRuntimeOwner } from '../src/renderer/app/renderer-runtime.js'
 let owner: ReturnType<typeof createRendererRuntimeOwner>
 beforeEach(() => {
   owner = createRendererRuntimeOwner({ initialPeriod: 'week' })

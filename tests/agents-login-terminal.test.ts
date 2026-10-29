@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events'
 import type { ChildProcess } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
 
-import { openLoginTerminal } from '../src/main/agents/login-terminal.js'
+import { openLoginTerminal } from '../src/infrastructure/agent-harnesses/login-terminal.js'
 
 function child(): ChildProcess {
   const process = new EventEmitter() as ChildProcess

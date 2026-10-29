@@ -4,10 +4,13 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { billableOutputTokens, OUTPUT_INCLUSIVE_REASONING_PROVIDERS } from '../src/main/pipeline/billable-output.js'
-import { calculateCost } from '../src/main/pipeline/models.js'
-import { cachedTurnToClassified } from '../src/main/pipeline/parser.js'
-import { codex } from '../src/main/pipeline/providers/codex.js'
+import {
+  billableOutputTokens,
+  OUTPUT_INCLUSIVE_REASONING_PROVIDERS,
+} from '../src/core/ingestion/normalization/billable-output.js'
+import { calculateCost } from '../src/infrastructure/pricing/models.js'
+import { cachedTurnToClassified } from '../src/infrastructure/ingestion/parser.js'
+import { codex } from '../src/infrastructure/provider-adapters/codex.js'
 import { buildFixtureCachedCall } from './fixtures/cached-file.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 

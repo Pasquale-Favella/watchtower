@@ -4,10 +4,14 @@ import * as Result from 'effect/Result'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import type { DbWorkerEvent } from '../src/main/db-worker/protocol.js'
-import type { LifecyclePublishEvent } from '../src/main/rpc/lifecycle.js'
-import { LifecycleHub, lifecycleLayer, type LifecycleSnapshotReader } from '../src/main/rpc/lifecycle.js'
-import { lifecycleEventFromWorker } from '../src/main/rpc/worker-events.js'
+import type { DbWorkerEvent } from '../src/platform/electron/workers/protocol.js'
+import type { LifecyclePublishEvent } from '../src/platform/electron/main/rpc/lifecycle.js'
+import {
+  LifecycleHub,
+  lifecycleLayer,
+  type LifecycleSnapshotReader,
+} from '../src/platform/electron/main/rpc/lifecycle.js'
+import { lifecycleEventFromWorker } from '../src/platform/electron/main/rpc/worker-events.js'
 import type { ScanStatus } from '../src/shared/schemas/ipc.js'
 
 const reader: LifecycleSnapshotReader = {

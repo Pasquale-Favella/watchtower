@@ -6,12 +6,12 @@ import { DatabaseSync } from 'node:sqlite'
 import * as SqlClient from 'effect/sql/SqlClient'
 import { describe, expect, it, vi } from 'vitest'
 
-import { initializeLedger } from '../src/main/store/ledger-initialization.js'
-import { makeWorkerRuntime, openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { initializeLedger } from '../src/infrastructure/sqlite/ledger-initialization.js'
+import { makeEngineRuntime, openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 describe('ledger initialization', () => {
   it('applies the shared schema migrations once and accepts a repeated initialization', async () => {
-    const runtime = makeWorkerRuntime(':memory:')
+    const runtime = makeEngineRuntime(':memory:')
     try {
       runtime.runSync(initializeLedger)
       runtime.runSync(initializeLedger)
@@ -35,7 +35,7 @@ describe('ledger initialization', () => {
   })
 
   it('upgrades a version 1 ledger without changing its facts or configuration', async () => {
-    const runtime = makeWorkerRuntime(':memory:')
+    const runtime = makeEngineRuntime(':memory:')
     try {
       runtime.runSync(initializeLedger)
       const sql = runtime.runSync(SqlClient.SqlClient)
@@ -90,7 +90,7 @@ describe('ledger initialization', () => {
   })
 
   it('rejects a future schema after the migrator leaves its history intact', async () => {
-    const runtime = makeWorkerRuntime(':memory:')
+    const runtime = makeEngineRuntime(':memory:')
     try {
       const sql = runtime.runSync(SqlClient.SqlClient)
       runtime.runSync(
@@ -125,7 +125,7 @@ describe('ledger initialization', () => {
 
     const close = vi.spyOn(DatabaseSync.prototype, 'close')
     try {
-      expect(() => openWorkerRuntime(dbPath)).toThrow(/newer than this application supports/)
+      expect(() => openEngineRuntime(dbPath)).toThrow(/newer than this application supports/)
       expect(close).toHaveBeenCalledTimes(1)
     } finally {
       vi.restoreAllMocks()

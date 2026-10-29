@@ -6,18 +6,18 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { AssistantSetup } from '../src/main/application/assistant-setup.js'
-import { querySkillsView } from '../src/main/application/skills-query.js'
-import { AssistantSetupLive } from '../src/main/assistant-setup-live.js'
-import type { CachedCall, CachedFile } from '../src/main/pipeline/session-cache.js'
-import type { ClassifiedTurn, ParsedApiCall, SessionSummary } from '../src/main/pipeline/types.js'
+import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
+import { querySkillsView } from '../src/core/application/queries/skills-query.js'
+import { AssistantSetupLive } from '../src/infrastructure/services/assistant-setup-live.js'
+import type { CachedCall, CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import type { ClassifiedTurn, ParsedApiCall, SessionSummary } from '../src/core/domain/observations/types.js'
 import {
   collectSkillCandidates,
   findGhostSkills,
   normalizeBashCommand,
   partitionSkillCandidates,
-} from '../src/main/skills-calculation.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
+} from '../src/core/analytics/detectors/skills-calculation.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { DEFAULT_SKILLS_THRESHOLDS, type SkillsPayload, skillsThresholdsSchema } from '../src/shared/schemas/skills.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'

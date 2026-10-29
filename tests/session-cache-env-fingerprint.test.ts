@@ -12,12 +12,12 @@ import {
   PROVIDER_ENV_KEYS,
   type ProviderOverrides,
   type SnapshotEnvVar,
-} from '../src/main/env.js'
+} from '../src/infrastructure/config/environment.js'
 import {
   computeEnvFingerprint,
   PROVIDER_ENV_VARS,
   PROVIDER_PARSE_VERSIONS,
-} from '../src/main/pipeline/session-cache.js'
+} from '../src/infrastructure/ingestion/session-cache.js'
 
 // `session-cache.computeEnvFingerprint` is the hard precondition for threading
 // `AppPaths` records into the provider seams: while it read `process.env`
@@ -124,7 +124,7 @@ describe('the two inventories cannot drift (PROVIDER_ENV_VARS vs ENV_VAR_SOURCES
     // pattern matches both accessor forms a read can take (`process.env[x]` and
     // `process.env.x`) while ignoring a prose mention of the identifier, which
     // this file's own comment legitimately contains.
-    const text = readFileSync(join(repoRoot, 'src', 'main', 'pipeline', 'session-cache.ts'), 'utf8')
+    const text = readFileSync(join(repoRoot, 'src', 'infrastructure', 'ingestion', 'session-cache.ts'), 'utf8')
     expect(text).not.toMatch(/\bprocess\.env\s*(\.|\[)/)
   })
 })

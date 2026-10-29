@@ -5,21 +5,21 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { setPriceOverrides } from '../src/main/pipeline/models.js'
-import { createDroidProvider } from '../src/main/pipeline/providers/droid.js'
-import { createForgeProvider } from '../src/main/pipeline/providers/forge.js'
-import { createGeminiProvider } from '../src/main/pipeline/providers/gemini.js'
-import { createGooseProvider } from '../src/main/pipeline/providers/goose.js'
-import { createGrokProvider } from '../src/main/pipeline/providers/grok.js'
-import { createKimiProvider } from '../src/main/pipeline/providers/kimi.js'
-import { createKimicodeProvider } from '../src/main/pipeline/providers/kimicode.js'
+import { setPriceOverrides } from '../src/infrastructure/pricing/models.js'
+import { createDroidProvider } from '../src/infrastructure/provider-adapters/droid.js'
+import { createForgeProvider } from '../src/infrastructure/provider-adapters/forge.js'
+import { createGeminiProvider } from '../src/infrastructure/provider-adapters/gemini.js'
+import { createGooseProvider } from '../src/infrastructure/provider-adapters/goose.js'
+import { createGrokProvider } from '../src/infrastructure/provider-adapters/grok.js'
+import { createKimiProvider } from '../src/infrastructure/provider-adapters/kimi.js'
+import { createKimicodeProvider } from '../src/infrastructure/provider-adapters/kimicode.js'
 import type {
   ParsedProviderCall,
   Provider,
   ProviderScanContext,
   SessionSource,
-} from '../src/main/pipeline/providers/types.js'
-import type { ScanCostCalculation, ScanPricing } from '../src/main/pipeline/scan-pricing.js'
+} from '../src/infrastructure/provider-adapters/types.js'
+import type { ScanCostCalculation, ScanPricing } from '../src/core/domain/pricing/scan-pricing.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const directories: string[] = []

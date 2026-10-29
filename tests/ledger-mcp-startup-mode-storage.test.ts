@@ -6,9 +6,9 @@ import { DatabaseSync } from 'node:sqlite'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { setLedgerMcpStartupMode } from '../src/main/application/ledger-config-commands.js'
-import { LedgerConfig } from '../src/main/store/ledger-repository.js'
-import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { setLedgerMcpStartupMode } from '../src/core/application/commands/ledger-config-commands.js'
+import { LedgerConfig } from '../src/infrastructure/sqlite/ledger-repository.js'
+import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 
 const tempDirs: string[] = []
 
@@ -21,7 +21,7 @@ describe('ledger MCP startup mode storage', () => {
     const dir = mkdtempSync(join(tmpdir(), 'tr-ledger-mcp-mode-'))
     tempDirs.push(dir)
     const dbPath = join(dir, 'data.db')
-    const runtime = openWorkerRuntime(dbPath)
+    const runtime = openEngineRuntime(dbPath)
     try {
       const config = runtime.runSync(LedgerConfig)
       expect(runtime.runSync(setLedgerMcpStartupMode('invalid'))).toBe('on-demand')
@@ -39,7 +39,7 @@ describe('ledger MCP startup mode storage', () => {
       db.close()
     }
 
-    const reopened = openWorkerRuntime(dbPath)
+    const reopened = openEngineRuntime(dbPath)
     try {
       expect(reopened.runSync(Effect.flatMap(LedgerConfig, config => config.getLedgerMcpStartupMode()))).toBe(
         'on-demand',

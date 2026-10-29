@@ -1,11 +1,11 @@
 import * as RpcGroup from 'effect/rpc/RpcGroup'
 
-import { AnalyticsRpcGroup, GetOverview } from './analytics.js'
-import { CoachRpcGroup } from './coach.js'
-import { ConfigRpcGroup } from './config.js'
-import { LifecycleRpcGroup } from './lifecycle.js'
-import { OrbShellRpcGroup, ShellRpcGroup } from './shell.js'
-import { NativeRpcGroup, StartScan } from './native.js'
+import { AnalyticsRpcGroup, GetOverview } from '@/shared/rpc/analytics.js'
+import { CoachRpcGroup } from '@/shared/rpc/coach.js'
+import { ConfigRpcGroup } from '@/shared/rpc/config.js'
+import { LifecycleRpcGroup } from '@/shared/rpc/lifecycle.js'
+import { OrbShellRpcGroup, ShellRpcGroup } from '@/shared/rpc/shell.js'
+import { NativeRpcGroup, StartScan } from '@/shared/rpc/native.js'
 
 export const ApplicationRpcGroup = AnalyticsRpcGroup.merge(ConfigRpcGroup)
   .merge(CoachRpcGroup)

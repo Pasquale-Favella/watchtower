@@ -5,10 +5,10 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { describe, expect, it } from 'vitest'
 
-import { billableOutputTokens } from '../src/main/pipeline/billable-output.js'
-import { calculateCost } from '../src/main/pipeline/models.js'
-import { createCopilotProvider, getCopilotSessionStoreDbPath } from '../src/main/pipeline/providers/copilot.js'
-import type { ParsedProviderCall, Provider, SessionSource } from '../src/main/pipeline/providers/types.js'
+import { billableOutputTokens } from '../src/core/ingestion/normalization/billable-output.js'
+import { calculateCost } from '../src/infrastructure/pricing/models.js'
+import { createCopilotProvider, getCopilotSessionStoreDbPath } from '../src/infrastructure/provider-adapters/copilot.js'
+import type { ParsedProviderCall, Provider, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { discoverProviderSessions, providerParserIterator } from './fixtures/provider-effects.js'
 
 // The Copilot CLI session-store.db source: per-request token rows from

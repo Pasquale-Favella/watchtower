@@ -1,6 +1,6 @@
 import type { Hotkey } from '@tanstack/react-hotkeys'
 
-import type { ShortcutDef } from '../schemas/renderer.js'
+import type { ShortcutDef } from '@/shared/schemas/renderer.js'
 
 /**
  * The shortcut table (ADR 0001) — every shortcut, declared once. The renderer's

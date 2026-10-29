@@ -25,10 +25,10 @@ vi.mock('fs/promises', async importOriginal => {
   }
 })
 
-import { appPaths, Env } from '../src/main/env.js'
-import { createCopilotProvider } from '../src/main/pipeline/providers/copilot.js'
-import type { Provider, SessionSource } from '../src/main/pipeline/providers/types.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
+import { appPaths, Env } from '../src/infrastructure/config/environment.js'
+import { createCopilotProvider } from '../src/infrastructure/provider-adapters/copilot.js'
+import type { Provider, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
 
 let root = ''
 

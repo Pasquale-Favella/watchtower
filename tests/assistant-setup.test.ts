@@ -5,8 +5,8 @@ import { join } from 'node:path'
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { AssistantSetup } from '../src/main/application/assistant-setup.js'
-import { AssistantSetupLive } from '../src/main/assistant-setup-live.js'
+import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
+import { AssistantSetupLive } from '../src/infrastructure/services/assistant-setup-live.js'
 
 const readTracker = vi.hoisted(() => ({ paths: [] as string[] }))
 vi.mock('node:fs/promises', async importOriginal => {

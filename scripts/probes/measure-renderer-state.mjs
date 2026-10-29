@@ -58,7 +58,7 @@ function stateProbePlugin() {
     enforce: 'post',
     transform(code, id) {
       const normalizedId = id.replaceAll('\\', '/')
-      if (!normalizedId.endsWith('/src/renderer/src/app/renderer-runtime.ts')) return null
+      if (!normalizedId.endsWith('/src/renderer/app/renderer-runtime.ts')) return null
 
       return `${code}
 
@@ -131,12 +131,12 @@ async function buildArtifact(artifactDir) {
   await build({
     configFile: false,
     customLogger: viteLogger,
-    root: path.join(root, 'src/renderer'),
+    root: path.join(root, 'src'),
     base: './',
     envDir: root,
     envPrefix: ['RENDERER_VITE_', 'VITE_'],
     plugins: [react(), tailwindcss(), stateProbePlugin()],
-    resolve: { alias: { '@': path.join(root, 'src/renderer/src') } },
+    resolve: { alias: { '@': path.join(root, 'src') } },
     build: {
       outDir: rendererDir,
       target: 'chrome142',

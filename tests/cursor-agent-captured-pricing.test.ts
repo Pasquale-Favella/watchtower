@@ -48,9 +48,9 @@ import {
   setLocalModelSavings,
   setModelAliases,
   setPriceOverrides,
-} from '../src/main/pipeline/models.js'
-import { createCursorAgentProvider } from '../src/main/pipeline/providers/cursor-agent.js'
-import type { ParsedProviderCall, SessionSource } from '../src/main/pipeline/providers/types.js'
+} from '../src/infrastructure/pricing/models.js'
+import { createCursorAgentProvider } from '../src/infrastructure/provider-adapters/cursor-agent.js'
+import type { ParsedProviderCall, SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 const MODEL = 'cursor-agent-captured-pricing-model'

@@ -32,7 +32,7 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
       base: './',
       esbuild: { jsx: 'automatic' },
       define: { 'process.env.NODE_ENV': JSON.stringify('development') },
-      resolve: { alias: { '@': resolve('src/renderer/src') } },
+      resolve: { alias: { '@': resolve('src') } },
       logLevel: 'error',
       build: {
         outDir: join(directory, 'renderer'),

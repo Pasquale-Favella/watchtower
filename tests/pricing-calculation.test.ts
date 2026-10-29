@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
+import { takeQueuedLogRecords } from '../src/infrastructure/ingestion/file-errors.js'
 import {
   calculateRepricedCost,
   captureModelPricingCatalogue,
@@ -9,7 +9,7 @@ import {
   setModelAliases,
   setPriceOverrides,
   setProxyPaths,
-} from '../src/main/pipeline/models.js'
+} from '../src/infrastructure/pricing/models.js'
 import {
   calculateCost,
   calculateRepricedCostResult,
@@ -17,7 +17,7 @@ import {
   getModelCosts,
   getTieredModelCosts,
   type ModelCosts,
-} from '../src/main/pipeline/pricing-calculation.js'
+} from '../src/core/domain/pricing/pricing-calculation.js'
 
 afterEach(() => {
   takeQueuedLogRecords()

@@ -9,7 +9,7 @@ const { mkdirSync, readFileSync, writeFileSync } = require('fs')
 const { dirname, join } = require('path')
 
 const SIZE = 1024
-// Dark-theme primary cyan (src/renderer/src/assets/main.css): pops on light
+// Dark-theme primary cyan (src/renderer/assets/main.css): pops on light
 // and dark system chrome alike.
 const BRAND = '#06b6d4'
 // The logo's native viewBox is a portrait crop (320.1 191.9 354 572) — the

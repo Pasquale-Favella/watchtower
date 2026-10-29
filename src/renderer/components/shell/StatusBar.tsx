@@ -1,0 +1,47 @@
+import { useScanning, useUnparsedTotal } from '@/renderer/stores/hooks/use-scan-store'
+import { displayShortcutForAction, sectionsRangeLabel, shortcutForAction } from '@/renderer/app/shortcuts'
+
+/** The footer — reads scanning/unparsed from the scan store and the shortcut
+ * hints from the registry (ADR 0011). */
+export function StatusBar() {
+  const scanning = useScanning()
+  const unparsedTotal = useUnparsedTotal()
+  const sectionsRange = sectionsRangeLabel()
+
+  return (
+    <div className="border-border text-muted-foreground flex items-center gap-3.5 border-t px-4 py-2 text-[10.5px]">
+      {sectionsRange && (
+        <span>
+          <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">{sectionsRange}</kbd>
+          Navigate
+        </span>
+      )}
+      <span>
+        <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">
+          {displayShortcutForAction('settings')}
+        </kbd>
+        Settings
+      </span>
+      <span title={shortcutForAction('commandPalette')?.label}>
+        <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">
+          {displayShortcutForAction('commandPalette')}
+        </kbd>
+        Command Palette
+      </span>
+      <span>
+        <kbd className="border-border text-muted-foreground mr-1 rounded border px-1 font-mono">
+          {displayShortcutForAction('refresh')}
+        </kbd>
+        {scanning ? 'Refreshing…' : 'Refresh'}
+      </span>
+      {unparsedTotal > 0 && (
+        <span
+          className="text-amber-600 dark:text-amber-400"
+          title="Rows skipped because a field failed the extraction schema (provider schema drift) — surfaced so drift is visible, not silent"
+        >
+          {unparsedTotal} unparsed {unparsedTotal === 1 ? 'row' : 'rows'} skipped
+        </span>
+      )}
+    </div>
+  )
+}

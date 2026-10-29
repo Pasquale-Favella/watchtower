@@ -1,12 +1,15 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { buildCsvExportFilesFromRows, buildJsonExportFromRows } from '../src/main/export-calculation.js'
-import { buildExportRows, calculateExportData } from '../src/main/export-rows-calculation.js'
-import { capturePricingCatalogue, type PricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import type { LedgerExportData } from '../src/main/store/export-read-projections.js'
-import { LedgerExportReads } from '../src/main/store/ledger-export-reads.js'
-import { LedgerIngest } from '../src/main/store/ledger-ports.js'
+import {
+  buildCsvExportFilesFromRows,
+  buildJsonExportFromRows,
+} from '../src/core/analytics/projections/export-calculation.js'
+import { buildExportRows, calculateExportData } from '../src/core/analytics/projections/export-rows-calculation.js'
+import { capturePricingCatalogue, type PricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import type { LedgerExportData } from '../src/core/analytics/projections/export-read-projections.js'
+import { LedgerExportReads } from '../src/core/ports/ledger-export-reads.js'
+import { LedgerIngest } from '../src/core/ports/repository.js'
 import type { ActiveCurrency } from '../src/shared/schemas/fx.js'
 import {
   buildFixtureCachedCall,

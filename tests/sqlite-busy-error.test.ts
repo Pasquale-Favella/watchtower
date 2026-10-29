@@ -1,7 +1,7 @@
 import { Effect, Schema } from 'effect'
 import { describe, expect, it } from 'vitest'
 
-import { isSqliteBusyError } from '../src/main/pipeline/sqlite.js'
+import { isSqliteBusyError } from '../src/infrastructure/ingestion/sqlite.js'
 
 class ProviderReadError extends Schema.TaggedError<ProviderReadError>()('ProviderReadError', {
   cause: Schema.Defect(),

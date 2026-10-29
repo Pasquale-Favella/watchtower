@@ -4,17 +4,17 @@ import * as Stream from 'effect/Stream'
 import * as TestClock from 'effect/testing/TestClock'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { Env, resolveGatewayKey } from '../src/main/env.js'
-import { HttpFetch, worstCaseRetryWindowMs } from '../src/main/pipeline/fetch-utils.js'
-import { takeQueuedLogRecords } from '../src/main/pipeline/file-errors.js'
-import type { SessionParser } from '../src/main/pipeline/providers/types.js'
+import { Env, resolveGatewayKey } from '../src/infrastructure/config/environment.js'
+import { HttpFetch, worstCaseRetryWindowMs } from '../src/infrastructure/ingestion/fetch-utils.js'
+import { takeQueuedLogRecords } from '../src/infrastructure/ingestion/file-errors.js'
+import type { SessionParser } from '../src/infrastructure/provider-adapters/types.js'
 import {
   fetchVercelGatewayReportEffect,
   type ReportRow,
   vercelGateway,
-} from '../src/main/pipeline/providers/vercel-gateway.js'
-import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
-import type { DateRange } from '../src/main/pipeline/types.js'
+} from '../src/infrastructure/provider-adapters/vercel-gateway.js'
+import { ScanAbortedError } from '../src/core/ingestion/reconciliation/scan-control.js'
+import type { DateRange } from '../src/core/domain/observations/types.js'
 import { deferred } from './helpers/deferred.js'
 import { runEffectTest, runWithTestClockWindow } from './helpers/run-effect-test.js'
 

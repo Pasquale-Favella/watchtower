@@ -7,9 +7,9 @@ import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { LedgerExportData } from '../src/main/store/export-read-projections.js'
-import { LedgerExportReads } from '../src/main/store/ledger-export-reads.js'
-import { LedgerConfig, LedgerIngest } from '../src/main/store/ledger-ports.js'
+import type { LedgerExportData } from '../src/core/analytics/projections/export-read-projections.js'
+import { LedgerExportReads } from '../src/core/ports/ledger-export-reads.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
 import {
   buildFixtureCachedCall,
   buildFixtureCachedFile,

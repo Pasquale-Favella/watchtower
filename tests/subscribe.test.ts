@@ -1,9 +1,9 @@
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { initialScanState, scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
-import { appLifecycleReadinessAtom } from '../src/renderer/src/app/atoms/rpc-lifecycle.js'
-import { setRouter } from '../src/renderer/src/app/navigation.js'
-import { navigationReadinessAtom, subscribeToNavigation } from '../src/renderer/src/app/stores/subscribe.js'
+import { initialScanState, scanStateAtom } from '../src/renderer/stores/atoms/scan.js'
+import { appLifecycleReadinessAtom } from '../src/renderer/stores/atoms/rpc-lifecycle.js'
+import { setRouter } from '../src/renderer/app/navigation.js'
+import { navigationReadinessAtom, subscribeToNavigation } from '../src/renderer/stores/subscribe.js'
 import { makeShellBridge } from './shell-bridge.js'
 
 let registry: AtomRegistry.AtomRegistry

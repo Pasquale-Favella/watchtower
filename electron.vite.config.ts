@@ -3,8 +3,11 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const sourceAlias = { '@': resolve('src') }
+
 export default defineConfig({
   main: {
+    resolve: { alias: sourceAlias },
     // Bundle the aligned Effect packages together. Loading their module graph
     // from node_modules delays renderer boot, especially while the worker starts.
     plugins: [externalizeDepsPlugin({ exclude: ['effect', '@effect/platform-node', '@effect/sql-sqlite-node'] })],
@@ -16,18 +19,20 @@ export default defineConfig({
         // the db-worker thread that owns the ledger, the scan pipeline, and
         // every query-time view builder (ADR 0023) — out/main/db-worker.js.
         entry: {
-          index: resolve('src/main/index.ts'),
-          'ledger-mcp': resolve('src/main/agents/ledger-mcp/entry.ts'),
-          'db-worker': resolve('src/main/db-worker/entry.ts')
+          index: resolve('src/platform/electron/main/index.ts'),
+          'ledger-mcp': resolve('src/platform/mcp/entry.ts'),
+          'db-worker': resolve('src/platform/electron/workers/entry.ts')
         }
       }
     }
   },
   preload: {
+    resolve: { alias: sourceAlias },
     // Sandboxed preloads can require Electron, but cannot load Effect from node_modules.
     plugins: [externalizeDepsPlugin({ exclude: ['effect'] })],
     build: {
       rollupOptions: {
+        input: { index: resolve('src/platform/electron/preload/index.ts') },
         // Keep bundled dependency bindings out of Electron's preload wrapper scope.
         output: { banner: '(() => {', footer: '})();' }
       }
@@ -35,9 +40,7 @@ export default defineConfig({
   },
   renderer: {
     resolve: {
-      alias: {
-        '@': resolve('src/renderer/src')
-      }
+      alias: sourceAlias
     },
     plugins: [react(), tailwindcss()],
     build: {

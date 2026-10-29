@@ -4,8 +4,8 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { copilot } from '../src/main/pipeline/providers/copilot.js'
-import type { SessionSource } from '../src/main/pipeline/providers/types.js'
+import { copilot } from '../src/infrastructure/provider-adapters/copilot.js'
+import type { SessionSource } from '../src/infrastructure/provider-adapters/types.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 /**

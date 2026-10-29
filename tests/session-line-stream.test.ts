@@ -52,7 +52,7 @@ vi.mock('fs/promises', async importOriginal => {
 
 import { writeFile } from 'node:fs/promises'
 
-import { readSessionLinesStream, SessionLineReadError } from '../src/main/pipeline/fs-utils.js'
+import { readSessionLinesStream, SessionLineReadError } from '../src/infrastructure/ingestion/fs-utils.js'
 
 let root = ''
 

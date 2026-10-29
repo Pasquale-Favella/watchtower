@@ -6,8 +6,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { Effect } from 'effect'
 import { afterAll, describe, expect, it } from 'vitest'
 
-import { getSqliteConfig as kiloSqliteConfig } from '../src/main/pipeline/providers/kilo-code.js'
-import { getSqliteConfig as opencodeSqliteConfig } from '../src/main/pipeline/providers/opencode.js'
+import { getSqliteConfig as kiloSqliteConfig } from '../src/infrastructure/provider-adapters/kilo-code.js'
+import { getSqliteConfig as opencodeSqliteConfig } from '../src/infrastructure/provider-adapters/opencode.js'
 import {
   createSqliteSessionParser,
   detectGeneration,
@@ -16,9 +16,9 @@ import {
   OPENCODE_FAMILY_2X,
   type SqliteGeneration,
   type SqliteProviderConfig,
-} from '../src/main/pipeline/providers/opencode-family-sqlite.js'
-import type { ParsedProviderCall, SessionParser } from '../src/main/pipeline/providers/types.js'
-import { openDatabase } from '../src/main/pipeline/sqlite.js'
+} from '../src/infrastructure/provider-adapters/opencode-family-sqlite.js'
+import type { ParsedProviderCall, SessionParser } from '../src/infrastructure/provider-adapters/types.js'
+import { openDatabase } from '../src/infrastructure/ingestion/sqlite.js'
 import { providerParserIterator } from './fixtures/provider-effects.js'
 
 // ADR 0006: a provider is an isolated, replaceable unit. That only holds if the

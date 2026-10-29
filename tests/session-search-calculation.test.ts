@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { capturePricingCatalogue } from '../src/main/pipeline/pricing-calculation.js'
-import { searchSessionsFromData } from '../src/main/session-search-calculation.js'
-import type { SessionSearchData } from '../src/main/store/session-read-projections.js'
+import { capturePricingCatalogue } from '../src/core/domain/pricing/pricing-calculation.js'
+import { searchSessionsFromData } from '../src/core/analytics/projections/session-search-calculation.js'
+import type { SessionSearchData } from '../src/core/analytics/projections/session-read-projections.js'
 
 const catalogue = capturePricingCatalogue({
   prices: new Map(),

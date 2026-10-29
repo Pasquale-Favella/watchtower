@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
-import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '../src/renderer/src/app/atoms/palette.js'
-import { createRendererRuntimeOwner } from '../src/renderer/src/app/renderer-runtime.js'
+import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '../src/renderer/stores/atoms/palette.js'
+import { createRendererRuntimeOwner } from '../src/renderer/app/renderer-runtime.js'
 let owner: ReturnType<typeof createRendererRuntimeOwner>
 beforeEach(() => {
   owner = createRendererRuntimeOwner()

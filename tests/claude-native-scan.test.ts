@@ -4,7 +4,7 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 
-import { parseClaudeEntriesEffect, readAgentTypeEffect } from '../src/main/pipeline/parser.js'
+import { parseClaudeEntriesEffect, readAgentTypeEffect } from '../src/infrastructure/ingestion/parser.js'
 
 describe('native Claude session reader', () => {
   let directory: string | undefined

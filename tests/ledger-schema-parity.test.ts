@@ -3,7 +3,7 @@ import * as Schema from 'effect/Schema'
 import * as SchemaAST from 'effect/SchemaAST'
 import { describe, expect, it } from 'vitest'
 
-import { ledgerCallFactsRowSchema } from '../src/main/store/read-projections.js'
+import { ledgerCallFactsRowSchema } from '../src/core/analytics/projections/read-projections.js'
 import {
   currencyRateRowSchema,
   currencyRateSchema,
@@ -318,7 +318,7 @@ const expectedCurrencyRate = {
 }
 
 /** The nine columns `getCallFacts` drops — see the consumption map on
- *  `ledgerCallFactsRowSchema` in `src/main/store/read-projections.ts`. */
+ *  `ledgerCallFactsRowSchema` in `src/core/analytics/projections/read-projections.ts`. */
 const DROPPED_FACTS_COLUMNS = [
   'call_key',
   'project_path',
