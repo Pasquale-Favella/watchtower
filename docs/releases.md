@@ -10,11 +10,11 @@ On Windows, Restart to install requests a silent NSIS update and relaunch,
 including for assisted initial installations. Windows may still request
 elevation when required. Initial installation keeps its existing setup wizard.
 
-The About view reads a transient Zustand store. That store owns its explicit
-hydration/request state machine and command guards; app-level IPC wiring feeds
-it for the lifetime of the app window, including while Settings is closed.
-Main-process snapshots carry increasing revisions so late replies and progress
-events cannot replace newer state. The main process still owns installation.
+The About view reads a transient Effect Atom state machine. Its app-window root
+loads update status and receives main-owned lifecycle events over the versioned
+RPC connection, including while Settings is closed. Request IDs and main-process
+status revisions prevent late replies or progress events from replacing newer
+state. The main process still owns installation.
 
 Windows NSIS installations and Linux AppImage support in-app updates. Linux
 deb installations use a package manager or manual replacement. Development

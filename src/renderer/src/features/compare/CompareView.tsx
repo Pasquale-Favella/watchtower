@@ -1,21 +1,20 @@
-import { useEffect, useMemo } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useMemo } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { Panel } from '@/shared/components/Panel'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { seriesColorForModel } from '@/shared/lib/modelSeries'
-import { categoryLabel } from '@/shared/lib/models'
 import { compareValue } from '@/features/compare/lib'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
+import { useCompareStore } from '@/features/compare/use-compare-store'
+import { Panel } from '@/shared/components/Panel'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
+import { SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
-import { useCompareStore } from '@/features/compare/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { categoryLabel } from '@/shared/lib/models'
+import { seriesColorForModel } from '@/shared/lib/modelSeries'
+import { motionClass } from '@/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+import { cn } from '@/shared/lib/utils'
+
 import type {
   CategoryComparison,
   CompareModelStat,
@@ -50,6 +49,7 @@ function CompareRows({
   modelB: string
   showWinners: boolean
 }) {
+  const { currency } = useCurrencyFormatter()
   return (
     <div className="flex flex-col">
       <div className={cn(ROW_GRID, 'border-border border-b pb-1.5')}>
@@ -71,12 +71,12 @@ function CompareRows({
             <span
               className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'a') : 'text-foreground')}
             >
-              {compareValue(row.valueA, row.formatFn)}
+              {compareValue(row.valueA, row.formatFn, currency)}
             </span>
             <span
               className={cn(VALUE_CELL, 'text-[11.5px]', showWinners ? winnerClass(winner, 'b') : 'text-foreground')}
             >
-              {compareValue(row.valueB, row.formatFn)}
+              {compareValue(row.valueB, row.formatFn, currency)}
             </span>
           </div>
         )
@@ -152,13 +152,14 @@ function BarRow({
   winner: boolean
   color: string
 }) {
+  const { currency } = useCurrencyFormatter()
   return (
     <div className="flex items-center gap-2">
       <span className="bg-muted h-[6px] flex-1 overflow-hidden rounded-full">
         <span className="block h-full rounded-full" style={{ width: `${rate ?? 0}%`, background: color }} />
       </span>
       <span className={cn(VALUE_CELL, 'w-[72px] text-[10.5px]', winner ? 'text-success' : 'text-muted-foreground')}>
-        {compareValue(rate, 'percent')} <span className="text-muted-foreground">({turns})</span>
+        {compareValue(rate, 'percent', currency)} <span className="text-muted-foreground">({turns})</span>
       </span>
     </div>
   )
@@ -210,36 +211,7 @@ function ModelPicker({
 }
 
 export function CompareView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = useCompareStore(s => s.data)
-  const error = useCompareStore(s => s.error)
-  const pair = useCompareStore(s => s.pair)
-  const load = useCompareStore(s => s.load)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
-
-  // Load on mount and on shell scope changes; the store keeps the committed
-  // pair across refresh ticks (recorded deviation), so a scope change while a
-  // pair is picked refetches that same pair.
-  useEffect(() => {
-    void load(scope, pair)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, load])
-
-  // On each payload, keep the current pair if it is still detectable, otherwise
-  // fall back to the top two by cost (the builder's own default).
-  useEffect(() => {
-    const models = payload?.models
-    if (!models) return
-    const available = new Set(models.map(model => model.model))
-    const nextA = pair?.modelA && available.has(pair.modelA) ? pair.modelA : (models[0]?.model ?? null)
-    const nextB = pair?.modelB && available.has(pair.modelB) ? pair.modelB : (models[1]?.model ?? null)
-    if (nextA && nextB && (nextA !== pair?.modelA || nextB !== pair?.modelB)) {
-      void load(scope, { modelA: nextA, modelB: nextB } satisfies ComparePair)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [payload])
+  const { payload, error, pair, selectPair, provider, setProvider, detectedProviders } = useCompareStore()
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
 
@@ -251,7 +223,7 @@ export function CompareView(): React.JSX.Element {
     const modelA = side === 'a' ? next : nudge
     const modelB = side === 'b' ? next : nudge
     if (modelA && modelB && modelA !== modelB) {
-      void load(scope, { modelA, modelB } satisfies ComparePair)
+      selectPair({ modelA, modelB } satisfies ComparePair)
     }
   }
 
@@ -267,7 +239,7 @@ export function CompareView(): React.JSX.Element {
 
       {payload === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading comparison…" className="flex flex-col gap-4">
             <div className="flex items-center justify-center gap-2.5">
@@ -289,11 +261,15 @@ export function CompareView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : models.length < 2 ? (
-        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-center text-[12px]">
-          Need at least two models with usage in this range to compare.
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-center text-[12px]">
+            Need at least two models with usage in this range to compare.
+          </div>
+        </>
       ) : (
         <>
+          <QueryErrorNotice error={error} hasData />
           <div className="flex items-center justify-center gap-2.5" aria-label="Models being compared">
             <ModelPicker
               models={models}

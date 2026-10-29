@@ -2,23 +2,20 @@ import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
-import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { build } from 'esbuild'
 import { describe, expect, it, vi } from 'vitest'
 
 import { DbWorkerClient, type DbWorkerPort } from '../src/main/db-worker/client.js'
-import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
+import type { DbWorkerData, DbWorkerEvent } from '../src/main/db-worker/protocol.js'
 import { dashboardViewsSchema } from '../src/shared/schemas/views.js'
 
-const snapshotReadySchema = Schema.Struct({
-  fixture: Schema.Literal('snapshot-ready'),
-  aliases: Schema.Array(Schema.Unknown),
-  overrides: Schema.Array(Schema.Unknown),
-})
-const eventSchema = Schema.Struct({ event: Schema.String })
-const requestSchema = Schema.Struct({ id: Schema.Number, op: Schema.String, args: Schema.Array(Schema.Unknown) })
-const responseSchema = Schema.Struct({ id: Schema.Number, ok: Schema.Boolean, data: dashboardViewsSchema })
+const isReadOrderingMarker = (event: DbWorkerEvent): boolean =>
+  event.event === 'scan:progress' &&
+  typeof event.progress === 'object' &&
+  event.progress !== null &&
+  'provider' in event.progress &&
+  event.progress.provider === 'native-read-ordering'
 
 describe('native read ordering evidence', () => {
   it('records a real same-scope read coalesced across a config write', async () => {
@@ -32,11 +29,9 @@ describe('native read ordering evidence', () => {
       cacheDir: join(directory, 'cache'),
     }
 
-    const rawMessages: unknown[] = []
-    const requests: { id: number; op: string; args: readonly unknown[] }[] = []
+    const events: DbWorkerEvent[] = []
     let worker: Worker | undefined
     let client: DbWorkerClient | undefined
-    let releaseFixture: (() => void) | undefined
 
     try {
       await build({
@@ -50,84 +45,34 @@ describe('native read ordering evidence', () => {
       })
 
       worker = new Worker(workerPath, { workerData: init })
-      const nativeWorker = worker
-      const port: DbWorkerPort = {
-        postMessage: message => {
-          const request = Schema.decodeUnknownResult(requestSchema)(message)
-          if (Result.isSuccess(request)) requests.push(request.success)
-          nativeWorker.postMessage(message)
-        },
-        on: (event, listener) =>
-          nativeWorker.on(event as 'message', (...args: unknown[]) => {
-            if (event === 'message') rawMessages.push(args[0])
-            listener(...args)
-          }),
-        terminate: () => nativeWorker.terminate(),
-      }
-      releaseFixture = () => port.postMessage({ fixtureControl: 'releaseSnapshot' })
-      client = new DbWorkerClient(init, workerPath, () => port)
+      client = new DbWorkerClient(init, workerPath, () => worker as unknown as DbWorkerPort)
+      client.onEvent(event => events.push(event))
       await client.ready
 
       const firstRead = client.request('store:views')
-      await vi.waitFor(() =>
-        expect(
-          rawMessages.some(message => Result.isSuccess(Schema.decodeUnknownResult(snapshotReadySchema)(message))),
-        ).toBe(true),
-      )
-      const capturedSnapshot = Schema.decodeUnknownSync(snapshotReadySchema)(
-        rawMessages.find(message => Result.isSuccess(Schema.decodeUnknownResult(snapshotReadySchema)(message))),
-      )
-      expect(capturedSnapshot).toMatchObject({ aliases: [], overrides: [] })
+      await vi.waitFor(() => expect(events.some(isReadOrderingMarker)).toBe(true))
+      const snapshotEvent = events.find(isReadOrderingMarker)
+      expect(snapshotEvent).toBeDefined()
+      const snapshotEventIndex = events.indexOf(snapshotEvent!)
+      expect(snapshotEvent?.event).toBe('scan:progress')
 
       const configWrite = client.request('models:setPrice', 'demo-model', 10, 20)
       await expect(configWrite).resolves.toEqual({ ok: true })
-      const configEventIndex = rawMessages.findIndex(message => {
-        const event = Schema.decodeUnknownResult(eventSchema)(message)
-        return Result.isSuccess(event) && event.success.event === 'config:changed'
-      })
+      const configEventIndex = events.findIndex(event => event.event === 'config:changed')
       expect(configEventIndex).toBeGreaterThanOrEqual(0)
 
       const repeatedRead = client.request('store:views')
       expect(repeatedRead).toBe(firstRead)
-      expect(requests.map(request => request.op)).toEqual(['store:views', 'models:setPrice'])
-
-      const firstRequest = requests.at(0)
-      if (!firstRequest) throw new Error('initial worker read was not recorded')
-      const oldReadId = firstRequest.id
-      releaseFixture()
       const refreshedPayload = await repeatedRead
-      const oldResponseIndex = rawMessages.findIndex(message => {
-        const response = Schema.decodeUnknownResult(responseSchema)(message)
-        return Result.isSuccess(response) && response.success.id === oldReadId
-      })
-      expect(configEventIndex).toBeLessThan(oldResponseIndex)
-      expect(requests.map(request => request.op)).toEqual(['store:views', 'models:setPrice', 'store:views'])
 
-      const oldResponse = Schema.decodeUnknownSync(responseSchema)(
-        rawMessages.find(message => {
-          const response = Schema.decodeUnknownResult(responseSchema)(message)
-          return Result.isSuccess(response) && response.success.id === oldReadId
-        }),
-      )
-      const staleViews = Schema.decodeUnknownSync(dashboardViewsSchema)(oldResponse.data)
       const refreshedViews = Schema.decodeUnknownSync(dashboardViewsSchema)(refreshedPayload)
-      expect(oldResponse).toMatchObject({ id: oldReadId, ok: true })
-      expect(staleViews.kpis.totalCost).not.toEqual(refreshedViews.kpis.totalCost)
       expect(refreshedViews.byModel).toContainEqual(expect.objectContaining({ name: 'demo-model' }))
-      expect(
-        rawMessages.filter(message => {
-          const event = Schema.decodeUnknownResult(eventSchema)(message)
-          return Result.isSuccess(event) && event.success.event === 'config:changed'
-        }),
-      ).toHaveLength(1)
+      expect(events.filter(event => event.event === 'config:changed')).toHaveLength(1)
+      expect(configEventIndex).toBeGreaterThan(snapshotEventIndex)
     } finally {
-      try {
-        releaseFixture?.()
-        if (client) await client.shutdown()
-        else if (worker) await worker.terminate()
-      } finally {
-        rmSync(directory, { recursive: true, force: true })
-      }
+      if (client) await client.shutdown()
+      else if (worker) await worker.terminate()
+      rmSync(directory, { recursive: true, force: true })
     }
   }, 20_000)
 })

@@ -1,15 +1,16 @@
-import { useState } from 'react'
 import { Check, Clipboard, ExternalLink, RefreshCw } from 'lucide-react'
+import { useState } from 'react'
+
 import { Button } from '@/shared/components/ui/button'
 import { cn } from '@/shared/lib/utils'
-import { openCoachLoginTerminal } from '@/shared/lib/api'
-import { useCoachSkillsStore } from './store'
-import { HarnessStatusDot } from './harness-status'
-import { statusLabel } from './lib'
+
 import type { CoachHarnessRow } from '../../../../shared/schemas/agents.js'
+import { HarnessStatusDot } from './harness-status'
+import { useCoachHarnessSetupStore } from './hooks'
+import { statusLabel } from './lib'
 
 export function HarnessSetup({ row, compact = false }: { row: CoachHarnessRow; compact?: boolean }) {
-  const refreshHarnesses = useCoachSkillsStore(s => s.refreshHarnesses)
+  const { refreshHarnesses, openLoginTerminal } = useCoachHarnessSetupStore()
   const [copied, setCopied] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -28,16 +29,25 @@ export function HarnessSetup({ row, compact = false }: { row: CoachHarnessRow; c
   const openTerminal = async (): Promise<void> => {
     setBusy(true)
     setError(null)
-    const result = await openCoachLoginTerminal(row.instanceId)
-    setBusy(false)
-    if (!result.ok) setError(result.error)
+    try {
+      await openLoginTerminal(row.instanceId)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not open a login terminal.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   const recheck = async (): Promise<void> => {
     setBusy(true)
     setError(null)
-    await refreshHarnesses()
-    setBusy(false)
+    try {
+      await refreshHarnesses(undefined)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not refresh harnesses.')
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (

@@ -1,20 +1,30 @@
+import type { ChildProcess } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { _electron as electron, type ElectronApplication, expect, type Locator, type Page } from '@playwright/test'
+import {
+  _electron as electron,
+  type ElectronApplication,
+  expect,
+  type Locator,
+  type Page,
+  test,
+} from '@playwright/test'
+
+import { prepareProviderFixture } from '../scripts/fixtures/provider.cjs'
 
 /**
  * Shared Electron launch + first-run helpers for `e2e/*.spec.ts` (tracks
  * #133). Every spec boots the BUILT app (`npm run build` first — wired into
  * `npm run test:e2e`) against a fresh `--user-data-dir` under the OS temp
  * root, so the suite never touches the developer's real Watchtower data and
- * always exercises the first-launch path (Splash → onboarding).
+ * always exercises the first-launch path (Splash → onboarding). A controlled
+ * Codex history lives in that profile; provider discovery does not read the
+ * developer's real assistant history.
  *
- * Rules for new specs (keeps the suite host-independent — the boot scan reads
- * the machine's real sources READ-ONLY into the isolated ledger, so content
- * varies):
- * - never assert on data values, row counts, or URLs (memory-history router);
+ * Rules for new specs:
+ * - use fixture data for content checks; routing uses memory history;
  * - key readiness off `dismissOnboarding`, not the splash (pre-mount DOM also
  *   matches "hidden" checks);
  * - assert each view via `waitForAnyVisible` with content-OR-empty markers;
@@ -27,6 +37,135 @@ export interface LaunchedApp {
   close: () => Promise<void>
 }
 
+const CLOSE_TIMEOUT_MS = 15_000
+const FORCED_EXIT_TIMEOUT_MS = 5_000
+
+interface ElectronProcessState {
+  readonly child: ChildProcess | null
+  closeCompleted: boolean
+}
+
+const childHasExited = (child: ChildProcess): boolean => child.exitCode !== null || child.signalCode !== null
+
+const childState = (child: ChildProcess | null): string => {
+  if (!child) return 'pid unavailable'
+  return `pid=${child.pid ?? 'unknown'}, exitCode=${child.exitCode ?? 'null'}, signalCode=${child.signalCode ?? 'null'}`
+}
+
+function raceTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<{ readonly _tag: 'Finished'; readonly value: T } | { readonly _tag: 'TimedOut' }> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return Promise.race([
+    promise.then(value => ({ _tag: 'Finished' as const, value })),
+    new Promise<{ readonly _tag: 'TimedOut' }>(resolve => {
+      timer = setTimeout(() => resolve({ _tag: 'TimedOut' }), timeoutMs)
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
+}
+
+function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true)
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (exited: boolean): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      child.removeListener('exit', onExit)
+      resolve(exited)
+    }
+    const onExit = (): void => finish(true)
+    const timer = setTimeout(() => finish(false), timeoutMs)
+    child.once('exit', onExit)
+    if (childHasExited(child)) finish(true)
+  })
+}
+
+function closeExitedProcessStreams(child: ChildProcess): void {
+  child.stdin?.destroy()
+  child.stdout?.destroy()
+  child.stderr?.destroy()
+}
+
+async function closeElectronApp(app: ElectronApplication, state: ElectronProcessState): Promise<void> {
+  const { child } = state
+  if (!child) throw new Error('Cannot confirm Electron shutdown: owned child process handle is unavailable')
+
+  const onProcessExit = (): void => closeExitedProcessStreams(child)
+  child.once('exit', onProcessExit)
+  if (childHasExited(child)) closeExitedProcessStreams(child)
+
+  let closeFailed = false
+  let closeFailure: unknown
+  const closeRequest = app.close().then(
+    () => {
+      state.closeCompleted = true
+    },
+    error => {
+      closeFailed = true
+      closeFailure = error
+    },
+  )
+  const gracefulClose = Promise.all([closeRequest, waitForProcessExit(child, CLOSE_TIMEOUT_MS)])
+  const result = await raceTimeout(gracefulClose, CLOSE_TIMEOUT_MS)
+  if (result._tag === 'Finished' && !closeFailed && child.exitCode === 0 && child.signalCode === null) return
+
+  let reason = `Playwright graceful close did not complete within ${CLOSE_TIMEOUT_MS} ms`
+  if (closeFailed) reason = `Playwright graceful close failed: ${String(closeFailure)}`
+  else if (result._tag === 'Finished') reason = 'Electron exited unsuccessfully or Playwright close did not complete'
+
+  const initialState = childState(child)
+  let killRequested = false
+  if (!childHasExited(child)) {
+    try {
+      killRequested = child.kill()
+    } catch {
+      killRequested = false
+    }
+  }
+  if (childHasExited(child)) closeExitedProcessStreams(child)
+  const exitedAfterFallback = await waitForProcessExit(child, FORCED_EXIT_TIMEOUT_MS)
+  await raceTimeout(closeRequest, FORCED_EXIT_TIMEOUT_MS)
+  const finalState = childState(child)
+  throw new Error(
+    `${reason}; owned Electron child before fallback: ${initialState}; killRequested=${killRequested}; ` +
+      `playwrightCloseCompletedAfterFallback=${state.closeCompleted}; ` +
+      `exitedAfterFallback=${exitedAfterFallback}; child after fallback: ${finalState}`,
+  )
+}
+
+async function closeAndRemoveProfile(
+  app: ElectronApplication,
+  state: ElectronProcessState,
+  userDataDir: string,
+): Promise<void> {
+  let closeError: unknown
+  try {
+    await closeElectronApp(app, state)
+  } catch (error) {
+    closeError = error
+  }
+
+  const { child } = state
+  const safeToRemoveProfile = child ? childHasExited(child) && state.closeCompleted : closeError === undefined
+  if (safeToRemoveProfile) {
+    try {
+      rmSync(userDataDir, { recursive: true, force: true })
+    } catch (profileError) {
+      if (closeError !== undefined) throw new AggregateError([closeError, profileError], 'Electron cleanup failed')
+      throw profileError
+    }
+  }
+  if (closeError !== undefined) throw closeError
+  if (child && !childHasExited(child)) {
+    throw new Error(`Electron child is still alive; profile retained: ${childState(child)}`)
+  }
+}
+
 export async function launchApp(): Promise<LaunchedApp> {
   const userDataDir = mkdtempSync(join(tmpdir(), 'watchtower-e2e-'))
   const args = [
@@ -37,20 +176,36 @@ export async function launchApp(): Promise<LaunchedApp> {
     `--user-data-dir=${userDataDir}`,
   ]
 
-  const app = await electron.launch({ args, timeout: 60_000 })
-  const window = await app.firstWindow({ timeout: 60_000 })
-  const pageErrors: Error[] = []
-  window.on('pageerror', error => {
-    pageErrors.push(error)
-  })
-  return {
-    app,
-    window,
-    pageErrors,
-    close: async () => {
-      await app.close().catch(() => {})
+  let app: ElectronApplication | undefined
+  let state: ElectronProcessState | undefined
+  try {
+    const fixture = prepareProviderFixture(userDataDir)
+    const launchedApp = await electron.launch({ args, env: fixture.env, timeout: 60_000 })
+    app = launchedApp
+    state = { child: launchedApp.process(), closeCompleted: false }
+    const window = await launchedApp.firstWindow({ timeout: 60_000 })
+    const pageErrors: Error[] = []
+    window.on('pageerror', error => {
+      pageErrors.push(error)
+    })
+    return {
+      app,
+      window,
+      pageErrors,
+      close: () => closeAndRemoveProfile(launchedApp, state as ElectronProcessState, userDataDir),
+    }
+  } catch (error) {
+    if (!app) {
+      // Playwright owns launch rollback when electron.launch itself rejects.
       rmSync(userDataDir, { recursive: true, force: true })
-    },
+      throw error
+    }
+    try {
+      await closeAndRemoveProfile(app, state ?? { child: null, closeCompleted: false }, userDataDir)
+    } catch (cleanupError) {
+      throw new AggregateError([error, cleanupError], 'Electron launch failed and cleanup was incomplete')
+    }
+    throw error
   }
 }
 
@@ -129,11 +284,32 @@ export async function expectSingleMainWindow(app: ElectronApplication): Promise<
  * specs stay focused on behavior instead of repeating the lifecycle triple.
  */
 export async function withApp(body: (ctx: { app: ElectronApplication; window: Page }) => Promise<void>): Promise<void> {
-  const { app, window, pageErrors, close } = await launchApp()
+  let launched: LaunchedApp | undefined
+  let bodyFailed = false
+  let bodyError: unknown
   try {
-    await body({ app, window })
-    expect(pageErrors).toEqual([])
-  } finally {
-    await close()
+    const appContext = await test.step('launch Electron app', launchApp)
+    launched = appContext
+    await test.step('run scenario', async () => {
+      await body({ app: appContext.app, window: appContext.window })
+      expect(appContext.pageErrors).toEqual([])
+    })
+  } catch (error) {
+    bodyFailed = true
+    bodyError = error
   }
+
+  if (!launched) {
+    if (bodyFailed) throw bodyError
+    return
+  }
+  const completedLaunch = launched
+
+  try {
+    await test.step('close Electron app', completedLaunch.close)
+  } catch (closeError) {
+    if (bodyFailed) throw new AggregateError([bodyError, closeError], 'Scenario and Electron cleanup both failed')
+    throw closeError
+  }
+  if (bodyFailed) throw bodyError
 }

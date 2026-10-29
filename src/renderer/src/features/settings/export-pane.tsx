@@ -6,15 +6,10 @@ import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
 
-import { selectExportFormat, selectExporting, selectExportMessage, useExportStore } from './export-store'
+import { useSettingsExportStore } from './use-settings-store'
 
 export function ExportPane() {
-  const machine = useExportStore(state => state.machine)
-  const format = selectExportFormat(machine)
-  const exporting = selectExporting(machine)
-  const result = selectExportMessage(machine)
-  const selectFormat = useExportStore(state => state.selectFormat)
-  const exportNow = useExportStore(state => state.exportNow)
+  const { format, exporting, result, selectFormat, exportNow } = useSettingsExportStore()
 
   return (
     <div className="flex max-w-md flex-col gap-3">
@@ -34,7 +29,7 @@ export function ExportPane() {
         <Separator className="my-3" />
         <div className="flex items-center justify-between gap-3">
           <span className="text-muted-foreground text-[11px]">Files are written in the selected display currency.</span>
-          <Button type="button" size="sm" disabled={exporting} onClick={() => void exportNow()}>
+          <Button type="button" size="sm" disabled={exporting} onClick={() => exportNow(undefined)}>
             <Download className="size-3.5" />
             {exporting ? 'Exporting…' : 'Export'}
           </Button>

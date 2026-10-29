@@ -1,35 +1,34 @@
 import { Outlet } from '@tanstack/react-router'
 
-import { TooltipProvider } from '@/shared/components/ui/tooltip'
 import { SidebarInset, SidebarProvider } from '@/shared/components/ui/sidebar'
-import { useAppBootstrap } from './hooks/use-app-bootstrap'
-import { useThemeEffect } from './hooks/use-theme-effect'
-import { useAppHotkeys } from './hooks/use-app-hotkeys'
-import { Splash } from './components/splash/Splash'
-import { Onboarding } from './components/Onboarding'
+import { TooltipProvider } from '@/shared/components/ui/tooltip'
+
 import { AppSidebar } from './components/app-sidebar'
+import { CommandPalette } from './components/CommandPalette'
+import { Onboarding } from './components/Onboarding'
 import { ScanIndicator } from './components/ScanIndicator'
 import { SidebarToggleShortcut } from './components/SidebarToggleShortcut'
-import { CommandPalette } from './components/CommandPalette'
-import { useScanStore } from './stores/scan-store'
-import { useSettingsStore } from '@/features/settings/store'
+import { Splash } from './components/splash/Splash'
+import { useAppBootstrap } from './hooks/use-app-bootstrap'
+import { useAppHotkeys } from './hooks/use-app-hotkeys'
+import { useShellStore } from './hooks/use-shell-store'
 
-/** The root route component — the app frame (ADR 0014). Runs the bootstrap,
- * theme, and hotkey hooks; shows the Splash until the store hydrates; then
- * renders the persistent shell chrome (tooltip/sidebar providers, the
- * sidebar, the scan bar) around the router's `Outlet` — the dashboard strip
- * and settings — plus the onboarding tour. Every piece of data reads from a
- * store. */
+/** Owns window bootstrap and renders Splash until ledger hydration completes. */
 export function AppRoot() {
   useAppBootstrap()
-  useThemeEffect()
   useAppHotkeys()
 
-  const hydrated = useScanStore(s => s.hydrated)
-  const onboarded = useSettingsStore(s => s.onboarded)
+  const { hydrated, onboarded } = useShellStore()
 
   if (!hydrated) {
-    return <Splash />
+    return (
+      <>
+        <div className="fixed inset-x-0 top-0 z-50">
+          <ApplicationConnectionNotice />
+        </div>
+        <Splash />
+      </>
+    )
   }
 
   return (
@@ -40,6 +39,7 @@ export function AppRoot() {
           <CommandPalette />
           <AppSidebar />
           <SidebarInset className="min-h-0">
+            <ApplicationConnectionNotice />
             <ScanIndicator />
             <Outlet />
           </SidebarInset>
@@ -47,5 +47,15 @@ export function AppRoot() {
       </TooltipProvider>
       {!onboarded && <Onboarding />}
     </>
+  )
+}
+
+function ApplicationConnectionNotice() {
+  const { connectionMessage: message } = useShellStore()
+  if (!message) return null
+  return (
+    <p role="status" className="bg-background text-destructive border-b px-4 py-2 text-xs">
+      {message}
+    </p>
   )
 }

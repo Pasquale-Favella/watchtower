@@ -1,10 +1,10 @@
 import { useState } from 'react'
 
-import { Button } from '@/shared/components/ui/button'
-import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/shared/components/ui/dialog'
 import { ONBOARDING_STEPS } from '@/app/components/onboarding-steps'
-import { useSettingsStore } from '@/features/settings/store'
+import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
+import { useSettingsPreferencesStore } from '@/features/settings/use-settings-store'
+import { Button } from '@/shared/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/shared/components/ui/dialog'
 
 /**
  * First-launch onboarding (ADR 0012): a welcome screen plus one step per app
@@ -16,7 +16,7 @@ import { useSettingsStore } from '@/features/settings/store'
  * Store-driven (ADR 0011): finishing marks the settings store onboarded.
  */
 export function Onboarding() {
-  const markOnboarded = useSettingsStore(s => s.markOnboarded)
+  const { setPreferences } = useSettingsPreferencesStore()
   const [step, setStep] = useState(0)
   const last = ONBOARDING_STEPS.length - 1
   const current = ONBOARDING_STEPS[step]!
@@ -25,7 +25,7 @@ export function Onboarding() {
     <Dialog
       open
       onOpenChange={open => {
-        if (!open) markOnboarded()
+        if (!open) setPreferences({ onboarded: true })
       }}
     >
       <DialogContent
@@ -71,7 +71,13 @@ export function Onboarding() {
             ))}
           </div>
           {step === last ? (
-            <Button type="button" variant="default" size="sm" className="min-w-[96px]" onClick={markOnboarded}>
+            <Button
+              type="button"
+              variant="default"
+              size="sm"
+              className="min-w-[96px]"
+              onClick={() => setPreferences({ onboarded: true })}
+            >
               Get started
             </Button>
           ) : (
@@ -92,7 +98,7 @@ export function Onboarding() {
           variant="link"
           size="xs"
           className="text-muted-foreground hover:text-foreground mt-0.5 text-[10.5px]"
-          onClick={markOnboarded}
+          onClick={() => setPreferences({ onboarded: true })}
         >
           Skip
         </Button>

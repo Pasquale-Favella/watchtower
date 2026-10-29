@@ -5,7 +5,9 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    // Bundle the aligned Effect packages together. Loading their module graph
+    // from node_modules delays renderer boot, especially while the worker starts.
+    plugins: [externalizeDepsPlugin({ exclude: ['effect', '@effect/platform-node', '@effect/sql-sqlite-node'] })],
     build: {
       lib: {
         // Three main entries: the app (`index`), the electron-free
@@ -22,7 +24,14 @@ export default defineConfig({
     }
   },
   preload: {
-    plugins: [externalizeDepsPlugin()]
+    // Sandboxed preloads can require Electron, but cannot load Effect from node_modules.
+    plugins: [externalizeDepsPlugin({ exclude: ['effect'] })],
+    build: {
+      rollupOptions: {
+        // Keep bundled dependency bindings out of Electron's preload wrapper scope.
+        output: { banner: '(() => {', footer: '})();' }
+      }
+    }
   },
   renderer: {
     resolve: {

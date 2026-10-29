@@ -10,8 +10,9 @@
  *  1. `Env.layer` is constructed EXACTLY ONCE per worker lifetime — proven with
  *     a counting fake layer, not asserted. This is `ManagedRuntime`'s memoised
  *     build, so the property is worth proving rather than assuming.
- *  2. Every `Effect.provide` is gone from `context.ts` — proven by reading the
- *     module source, because a claim in a commit message is not a guard.
+ *  2. `context.ts` builds no service layers at its call sites. Its one service
+ *     provision is limited to the `WorkerRuntime` graph captured for the
+ *     worker lifetime — proven by reading the module source.
  *  3. A SUBSTITUTED layer reaches a dispatch arm. Before the root this was
  *     structurally impossible: the layer was welded at the arm, so no test could
  *     drive `currency:set` or `pricing:refresh` against a fake. This is the
@@ -628,20 +629,23 @@ describe('F14: the operational Effect logger is installed in a production root',
   })
 })
 
-describe('F10/P2: no Effect.provide survives in context.ts', () => {
-  it('the worker context composes no layer at any call site', () => {
+describe('F10/P2: context dispatch uses the worker-owned service graph', () => {
+  it('provisions only services captured by the runtime and constructs no layers', () => {
     const source = readFileSync(join(repoRoot, 'src', 'main', 'db-worker', 'context.ts'), 'utf8')
-    // Comments legitimately name `Effect.provide` and the removed
-    // `liveFetchLayer`/`liveFxLayer` seams when recording WHY they went, so
-    // the guard reads CODE ONLY — comments and string bodies blanked.
+    // Comments and string bodies are blanked so the guard only checks code.
     const code = stripCommentsAndStrings(source)
-    // Providing an already captured service does not construct a layer.
-    expect(code).not.toMatch(/\bEffect\.provide\b/)
-    // The two former seams are gone as functions, not just as call sites.
+
+    // The context may provide captured services to the caller's Effect, but
+    // that provision must stay inside the runtime bridge.
+    expect(code.match(/\bEffect\.provide\s*\(/g) ?? []).toHaveLength(1)
+    expect(code).toMatch(/this\.runtime\.contextEffect,\s*services\s*=>\s*Effect\.provide\(effect,\s*services\)/)
+
+    // Former live layer seams are gone as functions and the module has no
+    // Layer import or layer construction.
     expect(code).not.toContain('liveFetchLayer')
     expect(code).not.toContain('liveFxLayer')
-    // And the layer module is no longer imported at all.
-    expect(code).not.toMatch(/from 'effect\/Layer'/)
+    expect(source).not.toMatch(/from\s+['"]effect\/Layer['"]/)
+    expect(code).not.toMatch(/\bLayer\.(?:provide|mergeAll|effect|succeed|scoped|unwrap)\s*\(/)
   })
 
   it('run* remains only at the composition boundaries the ADR names', () => {

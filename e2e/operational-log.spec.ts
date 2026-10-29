@@ -1,17 +1,19 @@
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { test, expect } from '@playwright/test'
+
+import { expect, test } from '@playwright/test'
+
 import { dismissOnboarding, launchApp } from './app'
+import { invokeRpc } from './rpc-probe'
 
 /**
  * Operational log e2e (spec #126 slice 1): the built app writes parseable
- * JSON lines to `<userData>/logs`, and a forced IPC failure is recorded with
- * the operation name and a short code only — never arguments or messages.
+ * JSON lines to `<userData>/logs`; shell notices arrive through typed RPC.
  *
  * Uses `launchApp` directly (not `withApp`): the log directory must be read
  * before `close()` removes the isolated profile.
  */
-test('operational log records boot and IPC failures as JSON lines', async () => {
+test('operational log records boot and typed renderer notices as JSON lines', async () => {
   const { app, window, pageErrors, close } = await launchApp()
   try {
     const userDataDir = await app.evaluate(({ app: electronApp }) => electronApp.getPath('userData'))
@@ -40,25 +42,24 @@ test('operational log records boot and IPC failures as JSON lines', async () => 
     // Check boot before the initial scan can rotate the bounded log.
     await dismissOnboarding(window)
 
-    // Force one IPC failure with an invalid startup mode. The rejection is
-    // expected — the record must carry op + code only, never the message.
-    const outcome = await window.evaluate(() =>
-      (globalThis as unknown as { api: { setLedgerMcpStartupMode: (mode: string) => Promise<unknown> } }).api
-        .setLedgerMcpStartupMode('bogus-mode')
-        .then(
-          () => 'unexpected-ok',
-          (err: unknown) => `rejected:${err instanceof Error ? err.message : String(err)}`,
-        ),
-    )
-    expect(outcome).toContain('rejected:')
+    // An invalid payload is rejected by the RPC contract and never reaches
+    // the renderer-notice log handler or a legacy IPC operation record.
+    const invalidNotice = await invokeRpc(window, 'shell:notice', { label: '', location: '' })
+    expect(invalidNotice).toEqual({ ok: false })
+    expect(readRecords().filter(record => record['event'] === 'renderer.notice')).toHaveLength(0)
+    expect(
+      readRecords().filter(record => record['event'] === 'ipc.error' && record['op'] === 'log:notice'),
+    ).toHaveLength(0)
+    expect(JSON.stringify(readRecords())).not.toContain('invalid renderer notice')
 
-    await expect
-      .poll(() => readRecords().filter(record => record['event'] === 'ipc.error').length, { timeout: 30_000 })
-      .toBe(1)
-    const ipcError = readRecords().find(record => record['event'] === 'ipc.error')
-    expect(ipcError?.['op']).toBe('ledger-mcp:startup:set')
-    expect(ipcError?.['code']).toBe('failed')
-    expect(JSON.stringify(ipcError)).not.toContain('invalid ledger MCP startup mode')
+    const validNotice = await invokeRpc(window, 'shell:notice', { label: 'orb placement', location: 'horizontal' })
+    expect(validNotice.ok).toBe(true)
+    await expect.poll(() => readRecords().filter(record => record['event'] === 'renderer.notice').length).toBe(1)
+    expect(readRecords().find(record => record['event'] === 'renderer.notice')).toMatchObject({
+      context: 'renderer',
+      label: 'orb placement',
+      location: 'horizontal',
+    })
 
     // Single-writer file: every line parses and carries level + event.
     for (const record of readRecords()) {

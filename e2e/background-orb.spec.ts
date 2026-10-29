@@ -3,8 +3,10 @@ import { join } from 'node:path'
 
 import { expect, type Page, test } from '@playwright/test'
 
+import type { Api } from '../src/preload/index.js'
 import { acceleratorFor, SHORTCUTS } from '../src/shared/lib/shortcuts'
 import { dismissOnboarding, withApp } from './app'
+import { invokeRpc } from './rpc-probe'
 
 /**
  * Background shell: closing the main window keeps the app alive in the tray
@@ -41,6 +43,12 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
 
     const orbOpened = opened('orb')
     const panelOpened = opened('panel')
+    // Playwright's synthetic pointer does not move the host's native cursor.
+    // Keep this auto-fold assertion independent of someone using the computer.
+    const cursorReader = await app.evaluateHandle(({ screen }) => screen.getCursorScreenPoint)
+    await app.evaluate(({ screen }) => {
+      screen.getCursorScreenPoint = () => ({ x: -100_000, y: -100_000 })
+    })
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close())
     const [orb, panel] = await Promise.all([orbOpened, panelOpened])
     const surfaceErrors: Error[] = []
@@ -56,6 +64,18 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect.poll(() => visible('panel'), { timeout: 60_000 }).toBe(true)
     await expect(panel.getByText(/^Still watching in the background/)).toBeVisible()
     await expect.poll(() => visible('panel'), { timeout: 15_000 }).toBe(false)
+    // Orb presses must also report an Orb-native cursor position. Otherwise
+    // the panel's blur handler treats a synthetic press as an outside click
+    // and races the renderer's own toggle.
+    await app.evaluate(({ BrowserWindow, screen }, page) => {
+      screen.getCursorScreenPoint = () => {
+        const bounds = BrowserWindow.getAllWindows()
+          .find(win => win.webContents.getURL().endsWith(page))
+          ?.getBounds()
+        if (!bounds) throw new Error('Orb window unavailable')
+        return { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 }
+      }
+    }, PAGE.orb)
 
     // A click opens the panel beside the orb — and the orb does not move: its
     // window never resizes (a moving resize repaints at the old origin).
@@ -64,6 +84,31 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     await expect.poll(() => visible('panel')).toBe(true)
     await expect(panel.getByText('Spend over time', { exact: true })).toBeVisible()
     expect((await surface('orb'))?.bounds).toEqual(before)
+
+    // Main admits drag commands only from the beacon and panel paint
+    // acknowledgements only from the panel. An admitted drag updates native
+    // window bounds through the RPC owner.
+    expect((await invokeRpc(panel, 'orb:command', { _tag: 'DragStart' })).ok).toBe(false)
+    expect((await invokeRpc(orb, 'orb:command', { _tag: 'PanelPainted' })).ok).toBe(false)
+    const drag = await app.evaluate(({ BrowserWindow, screen }, page) => {
+      const win = BrowserWindow.getAllWindows().find(candidate => candidate.webContents.getURL().endsWith(page))
+      if (!win) return null
+      const bounds = win.getBounds()
+      const area = screen.getDisplayMatching(bounds).workArea
+      return {
+        bounds,
+        dx: bounds.x + bounds.width / 2 < area.x + area.width / 2 ? 16 : -16,
+        dy: bounds.y + bounds.height / 2 < area.y + area.height / 2 ? 16 : -16,
+      }
+    }, PAGE.orb)
+    expect(drag).not.toBeNull()
+    if (drag) {
+      expect((await invokeRpc(panel, 'orb:command', { _tag: 'PanelPainted' })).ok).toBe(true)
+      expect((await invokeRpc(orb, 'orb:command', { _tag: 'DragStart' })).ok).toBe(true)
+      expect((await invokeRpc(orb, 'orb:command', { _tag: 'DragMove', dx: drag.dx, dy: drag.dy })).ok).toBe(true)
+      expect((await invokeRpc(orb, 'orb:command', { _tag: 'DragEnd' })).ok).toBe(true)
+      expect((await surface('orb'))?.bounds).not.toEqual(drag.bounds)
+    }
     // It is shown transparent and revealed once its page painted a fresh
     // frame (no stale-frame flicker) — and always ends up fully opaque.
     await expect.poll(async () => (await surface('panel'))?.opacity).toBe(1)
@@ -82,9 +127,11 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
       const cy = box.y + box.height / 2
       await orb.mouse.click(cx, cy)
       await expect.poll(() => visible('panel')).toBe(true)
+      await expect(orbButton).toHaveAccessibleName('Fold Watchtower panel')
       await orb.mouse.down({ clickCount: 2 })
       await orb.mouse.up({ clickCount: 2 })
       await expect.poll(() => visible('panel')).toBe(false)
+      await expect(orbButton).toHaveAccessibleName('Show Watchtower panel')
 
       await orb.mouse.move(cx, cy)
       await orb.mouse.down()
@@ -98,25 +145,59 @@ test('closing the window backgrounds the app into the orb, which reopens it', as
     }
     if (!(await visible('panel'))) await orbButton.click()
     await expect.poll(() => visible('panel')).toBe(true)
+    await app.evaluate(({ screen }, reader) => {
+      screen.getCursorScreenPoint = reader
+    }, cursorReader)
+    await cursorReader.dispose()
 
     // One scan, every window: a scan started from the panel streams its
     // progress to the (hidden) main window too, not only to the requester.
-    await window.evaluate(() => {
+    await window.evaluate(async () => {
       const probe = globalThis as unknown as {
-        api: { onProgress: (cb: () => void) => () => void }
+        api: Api
         __orbScanProgress?: number
+        __orbStopScanProbe?: () => void
       }
+      const bridge = probe.api.rpcV1
+      const connection = await bridge.connect()
+      if (connection._tag !== 'Connected') throw new Error('Main RPC connection unavailable')
+      const requestId = `orb-progress-${crypto.randomUUID()}`
       probe.__orbScanProgress = 0
-      probe.api.onProgress(() => {
-        probe.__orbScanProgress = (probe.__orbScanProgress ?? 0) + 1
-      })
+      const unsubscribe = bridge.onMessage(raw => {
+        if (typeof raw !== 'string') return
+        const frame = JSON.parse(raw)
+        if (frame._tag !== 'Chunk' || frame.requestId !== requestId) return
+        for (const value of frame.values)
+          if (value._tag === 'Event' && value.envelope.event._tag === 'ScanProgress')
+            probe.__orbScanProgress = (probe.__orbScanProgress ?? 0) + 1
+        void bridge.send(JSON.stringify({ _tag: 'Ack', requestId }), connection.generation).catch(() => {})
+      }, connection.generation)
+      probe.__orbStopScanProbe = () => {
+        unsubscribe()
+        void bridge.send(JSON.stringify({ _tag: 'Interrupt', requestId }), connection.generation).catch(() => {})
+        delete probe.__orbStopScanProbe
+      }
+      await bridge.send(
+        JSON.stringify({
+          _tag: 'Request',
+          id: requestId,
+          tag: 'app:events',
+          headers: [],
+          payload: { categories: ['scan'], snapshot: 'versions' },
+        }),
+        connection.generation,
+      )
     })
-    await panel.getByRole('button', { name: 'Scan now' }).click()
-    await expect
-      .poll(() => window.evaluate(() => (globalThis as { __orbScanProgress?: number }).__orbScanProgress ?? 0), {
-        timeout: 60_000,
-      })
-      .toBeGreaterThan(0)
+    try {
+      await panel.getByRole('button', { name: 'Scan now' }).click()
+      await expect
+        .poll(() => window.evaluate(() => (globalThis as { __orbScanProgress?: number }).__orbScanProgress ?? 0), {
+          timeout: 60_000,
+        })
+        .toBeGreaterThan(0)
+    } finally {
+      await window.evaluate(() => (globalThis as { __orbStopScanProbe?: () => void }).__orbStopScanProbe?.())
+    }
 
     // Every page shares one origin even in a build (file://): a theme the
     // main window persists reaches both orb windows live.

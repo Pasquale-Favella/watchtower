@@ -9,25 +9,21 @@ import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
+import { WORKER_REQUEST_CAPACITY } from '../../shared/rpc/worker.js'
 import { logCodeFor } from '../operational-log.js'
-import {
-  type DbWorkerData,
-  type DbWorkerEvent,
-  DEDUPABLE_OPS,
-  isDbWorkerEvent,
-  isDbWorkerResponse,
-} from './protocol.js'
+import { type DbWorkerData, type DbWorkerEvent, DEDUPABLE_OPS } from './protocol.js'
+import { workerOperation } from './rpc-operations.js'
+import { openWorkerRpcTransport } from './rpc-transport.js'
 
 /**
  * Main-side handle to the db-worker thread (ADR 0023). `request(op, ...args)`
- * resolves with the op's data or rejects with the worker-thrown error — the
- * same contract an `ipcMain.handle` had for the renderer, so every forwarder
- * in `registerIpc` is a mechanical `return client.request(channel, ...)`.
- * Worker broadcasts arrive on `onEvent` and are relayed to windows.
+ * remains a local main-process compatibility boundary. Explicit schema-backed
+ * RPC operations cross the worker transport; typed failures retain their safe
+ * codes. Ordered worker events arrive on `onEvent` before related replies settle.
  *
  * Robustness policy:
  * - Boot handshake: `ready` resolves once the worker owns the ledger. A boot
- *   failure (`init-error`, e.g. an unopenable DB) rejects it and is NEVER
+ *   failure (e.g. an unopenable DB) rejects it and is NEVER
  *   respawned — respawning a worker that cannot init is a hot loop.
  * - Crash policy: a worker that exits AFTER becoming ready is recreated
  *   (fresh ledger connection — WAL-safe) while in-flight requests reject,
@@ -46,6 +42,22 @@ export interface DbWorkerPort {
 
 export type DbWorkerFactory = (scriptPath: string, workerData: DbWorkerData) => DbWorkerPort
 
+export interface DbWorkerTransport {
+  readonly ready: Promise<void>
+  request(operation: string, args: unknown[]): Promise<unknown>
+  close(): Promise<void>
+}
+
+export interface DbWorkerTransportCallbacks {
+  readonly onEvent: (event: DbWorkerEvent) => void
+  readonly onFailure: (error: Error) => void
+}
+
+export type DbWorkerTransportFactory = (
+  worker: DbWorkerPort,
+  callbacks: DbWorkerTransportCallbacks,
+) => DbWorkerTransport
+
 type ReadyHandshake = {
   promise: Promise<void>
   resolve: () => void
@@ -63,8 +75,40 @@ function createReadyHandshake(): ReadyHandshake {
   return { promise, resolve, reject }
 }
 
-const defaultFactory: DbWorkerFactory = (scriptPath, workerData) =>
-  new Worker(scriptPath, { workerData }) as unknown as DbWorkerPort
+const defaultFactory: DbWorkerFactory = (scriptPath, workerData) => {
+  const worker = new Worker(scriptPath, { workerData })
+  const terminate = worker.terminate.bind(worker)
+  let termination: Promise<number> | undefined
+  // Both the supervisor deadline and the official adapter finalizer reach this
+  // same native termination, including after a protocol failure.
+  worker.terminate = () => (termination ??= terminate())
+  return worker
+}
+
+const defaultTransportFactory: DbWorkerTransportFactory = (worker, callbacks) => {
+  if (!(worker instanceof Worker)) throw new Error('The worker RPC transport requires a native Worker.')
+  const transport = openWorkerRpcTransport(worker, {
+    onEvent: event => {
+      if (event.event !== 'worker:events-ready') callbacks.onEvent(event)
+    },
+    onFailure: callbacks.onFailure,
+  })
+  const ready = transport.then(handle => handle.ready)
+  ready.catch(() => {})
+  return {
+    ready,
+    request: async (operation, args) => {
+      const handle = await transport
+      await handle.ready
+      return Effect.runPromise(workerOperation(handle.client, operation, args))
+    },
+    close: () =>
+      transport.then(
+        handle => handle.close(),
+        () => undefined,
+      ),
+  }
+}
 
 /**
  * Bounded graceful-close send — the drain-barrier shape from
@@ -107,6 +151,8 @@ export const RESPAWN_BACKOFF_RESET_AFTER_MS = 60_000
  * If that never arrives, kill the owning thread under the same bound as
  * graceful shutdown; only then may its replacement receive requests. */
 export const SCAN_ABORT_DRAIN_TIMEOUT_MS = 2_000
+/** Bounds distinct ordinary logical requests, including requests awaiting recovery. */
+export const DB_WORKER_REQUEST_CAPACITY = WORKER_REQUEST_CAPACITY
 
 /** Capped exponential respawn backoff with jitter: attempt N (1-based) waits
  * `min(base * 2^(N-1), cap)`, scaled by `jittered` (±20%, mean-preserving) so
@@ -145,12 +191,17 @@ export const respawnBackoffDelayForAttempt = (attempt: number): Effect.Effect<Du
 
 export class DbWorkerClient {
   private worker: DbWorkerPort | null = null
-  private nextId = 1
-  private pending = new Map<number, { resolve: (data: unknown) => void; reject: (err: Error) => void }>()
+  private pending = new Set<{ resolve: (data: unknown) => void; reject: (err: Error) => void }>()
+  private transports = new Map<DbWorkerPort, DbWorkerTransport>()
+  private lastGenerationClosed: Promise<void> = Promise.resolve()
   private inflightReads = new Map<string, Promise<unknown>>()
+  private admittedRequests = 0
+  private abortFlight: Promise<unknown> | null = null
   /** Advances when a broadcast means an in-flight read may have gone stale. */
   private dataRevision = 0
   private eventListeners = new Set<(event: DbWorkerEvent) => void>()
+  private replacementListeners = new Set<() => void>()
+  private hasOwnedLedger = false
   private intentionalTeardown = false
   /** Non-null while a stuck abort is terminating the old worker and booting
    * its replacement. Requests queue behind this exact ownership transition. */
@@ -162,7 +213,7 @@ export class DbWorkerClient {
    * joined before this client's shutdown completes. */
   private respawnFiber: Fiber.Fiber<void, never> | null = null
   private currentReady: ReadyHandshake
-  /** True once the CURRENT worker incarnation posted `ready`. Gates respawn:
+  /** True once the CURRENT worker incarnation acknowledged ledger readiness. Gates respawn:
    * only a worker that once lived is recreated. */
   private becameReady = false
   /** Consecutive post-ready crashes (backoff streak for `respawnAfterCrashEffect`).
@@ -179,6 +230,7 @@ export class DbWorkerClient {
     private init: DbWorkerData,
     private scriptPath: string,
     private spawnWorker: DbWorkerFactory = defaultFactory,
+    private makeTransport: DbWorkerTransportFactory = defaultTransportFactory,
   ) {
     this.currentReady = createReadyHandshake()
     this.ready = this.currentReady.promise
@@ -194,13 +246,18 @@ export class DbWorkerClient {
     const handshake = this.currentReady
     const worker = this.spawnWorker(this.scriptPath, this.init)
     this.worker = worker
-    worker.on('message', (raw: unknown) => this.onMessage(raw, worker, handshake))
+    const fail = (error: Error): void => {
+      if (this.worker !== worker || this.retiringWorker === worker) return
+      this.rejectPending(error)
+      if (!this.becameReady) {
+        this.initError ??= error.message
+        handshake.reject(error)
+      }
+    }
     worker.on('error', (raw: unknown) => {
       if (this.worker !== worker || this.retiringWorker === worker) return
       const err = raw instanceof Error ? raw : new Error('The database worker failed.')
-      for (const { reject } of this.pending.values()) reject(err)
-      this.pending.clear()
-      this.inflightReads.clear()
+      fail(err)
       // A thread error before `ready` is itself a boot failure (uncaught
       // throw during init): settle the handshake now instead of leaving it
       // to a later `exit`, which may never come for a wedged thread. The
@@ -216,6 +273,7 @@ export class DbWorkerClient {
       const wasReady = this.becameReady
       this.becameReady = false
       this.worker = null
+      this.lastGenerationClosed = this.closeTransport(worker)
       if (this.intentionalTeardown) return
       if (!wasReady) {
         // Never lived (bad DB path, corrupt store, …): respawning would spin
@@ -243,36 +301,50 @@ export class DbWorkerClient {
       // error states for the rejected in-flight calls.
       this.respawnFiber = Effect.runFork(this.respawnAfterExitEffect(code))
     })
-  }
-
-  private onMessage(raw: unknown, worker: DbWorkerPort, handshake: ReadyHandshake): void {
-    if (this.worker !== worker || this.retiringWorker === worker) return
-    if (isDbWorkerResponse(raw)) {
-      const slot = this.pending.get(raw.id)
-      if (!slot) return
-      this.pending.delete(raw.id)
-      if (raw.ok) slot.resolve(raw.data)
-      else slot.reject(new Error(raw.error))
-      return
-    }
-    if (isDbWorkerEvent(raw)) {
-      // Boot handshake — consumed here, never relayed to windows.
-      if (raw.event === 'ready') {
+    const transport = this.makeTransport(worker, {
+      onEvent: event => this.onWorkerEvent(event, worker),
+      onFailure: error => {
+        fail(error)
+        // A failed event/serialization boundary invalidates the generation.
+        // Its native exit still drives the existing fatal-init/crash policy.
+        void worker.terminate().catch(() => {})
+      },
+    })
+    this.transports.set(worker, transport)
+    transport.ready.then(
+      () => {
+        if (this.worker !== worker || this.retiringWorker === worker) return
+        const replaced = this.hasOwnedLedger
         this.becameReady = true
+        this.hasOwnedLedger = true
+        if (replaced && !this.intentionalTeardown) {
+          this.dataRevision++
+          for (const listener of this.replacementListeners) listener()
+        }
         handshake.resolve()
-        return
-      }
-      if (raw.event === 'init-error') {
-        this.initError = raw.error
-        handshake.reject(new Error(raw.error))
-        return
-      }
-      if (raw.event === 'store:changed' || raw.event === 'config:changed') this.dataRevision++
-      for (const listener of this.eventListeners) listener(raw)
-    }
+      },
+      error => fail(error instanceof Error ? error : new Error('The database worker failed to initialize.')),
+    )
   }
 
-  private send(op: string, args: unknown[] = []): Promise<unknown> {
+  private onWorkerEvent(event: DbWorkerEvent, worker: DbWorkerPort): void {
+    if (this.worker !== worker || this.retiringWorker === worker) return
+    if (event.event === 'store:changed' || event.event === 'config:changed' || event.event === 'ledger:reset')
+      this.dataRevision++
+    for (const listener of this.eventListeners) listener(event)
+  }
+
+  private closeTransport(worker: DbWorkerPort): Promise<void> {
+    const transport = this.transports.get(worker)
+    if (!transport) return Promise.resolve()
+    const closed = transport.close().finally(() => this.transports.delete(worker))
+    // Crash backoff joins this promise later; keep a failed close handled in
+    // the meantime without admitting a replacement after that failure.
+    closed.catch(() => {})
+    return closed
+  }
+
+  private send(op: string, args: unknown[] = [], beforeDispatch?: () => void): Promise<unknown> {
     const isShutdown = op === 'shutdown'
     if (this.intentionalTeardown && !isShutdown && this.worker)
       return Promise.reject(new Error('data worker shut down'))
@@ -281,20 +353,50 @@ export class DbWorkerClient {
       return recovery.then(() => {
         if (this.intentionalTeardown && !isShutdown && this.worker)
           return Promise.reject(new Error('data worker shut down'))
+        beforeDispatch?.()
         return this.sendTo(this.worker, op, args)
       })
+    beforeDispatch?.()
     return this.sendTo(this.worker, op, args)
+  }
+
+  private admitOrdinaryRequest(start: () => Promise<unknown>): Promise<unknown> {
+    if (this.admittedRequests >= DB_WORKER_REQUEST_CAPACITY)
+      return Promise.reject(new Error('too many outstanding database worker requests'))
+
+    this.admittedRequests++
+    let released = false
+    const release = (): void => {
+      if (released) return
+      released = true
+      this.admittedRequests--
+    }
+
+    let request: Promise<unknown>
+    try {
+      request = start()
+    } catch (cause) {
+      release()
+      return Promise.reject(cause instanceof Error ? cause : new Error(String(cause)))
+    }
+    request.then(release, release)
+    return request
   }
 
   /** Repeat a read if a mutation broadcast overtook its worker response. */
   private stableReadEffect(op: string, args: unknown[]): Effect.Effect<unknown, unknown> {
     const isShuttingDown = (): boolean => this.intentionalTeardown
     const revision = (): number => this.dataRevision
-    const send = (): Promise<unknown> => this.send(op, args)
+    let requestedRevision = 0
+    const send = (): Promise<unknown> =>
+      this.send(op, args, () => {
+        // Recovery may replace the ledger owner before this read is dispatched.
+        // Only changes after dispatch can make its response stale.
+        requestedRevision = revision()
+      })
     return Effect.gen(function* () {
       while (true) {
         if (isShuttingDown()) return yield* Effect.fail(new Error('data worker shut down'))
-        const requestedRevision = revision()
         const value = yield* Effect.tryPromise({
           try: send,
           catch: cause => cause,
@@ -306,10 +408,22 @@ export class DbWorkerClient {
 
   private sendTo(worker: DbWorkerPort | null, op: string, args: unknown[] = []): Promise<unknown> {
     if (!worker) return Promise.reject(new Error('data worker unavailable'))
-    const id = this.nextId++
+    const transport = this.transports.get(worker)
+    if (!transport) return Promise.reject(new Error('data worker transport unavailable'))
     return new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve: resolve as (data: unknown) => void, reject })
-      worker.postMessage({ id, op, args })
+      const pending = { resolve, reject }
+      this.pending.add(pending)
+      const finish = (settle: () => void): void => {
+        if (this.pending.delete(pending)) settle()
+      }
+      try {
+        transport.request(op, args).then(
+          value => finish(() => resolve(value)),
+          error => finish(() => reject(error)),
+        )
+      } catch (cause) {
+        finish(() => reject(cause instanceof Error ? cause : new Error(String(cause))))
+      }
     })
   }
 
@@ -317,18 +431,19 @@ export class DbWorkerClient {
    * mutation overtakes its response, that flight re-reads before resolving. */
   request(op: string, ...args: unknown[]): Promise<unknown> {
     if (op === 'scan:abort') return this.abortScan(args)
-    if (!DEDUPABLE_OPS.has(op)) return this.send(op, args)
+    if (op === 'shutdown') return this.send(op, args)
+    if (!DEDUPABLE_OPS.has(op)) return this.admitOrdinaryRequest(() => this.send(op, args))
     let flightArgs: unknown[]
     let key: string
     try {
       flightArgs = structuredClone(args)
       key = `${op}\n${JSON.stringify(flightArgs)}`
     } catch {
-      return this.send(op, args)
+      return this.admitOrdinaryRequest(() => this.send(op, args))
     }
     const hit = this.inflightReads.get(key)
     if (hit) return hit
-    const flight = Effect.runPromise(this.stableReadEffect(op, flightArgs))
+    const flight = this.admitOrdinaryRequest(() => Effect.runPromise(this.stableReadEffect(op, flightArgs)))
     this.inflightReads.set(key, flight)
     const forget = (): void => {
       if (this.inflightReads.get(key) === flight) this.inflightReads.delete(key)
@@ -357,7 +472,17 @@ export class DbWorkerClient {
         return Effect.tryPromise({ try: () => ongoingRecovery, catch: cause => cause }).pipe(Effect.as(null))
 
       const worker = this.worker
-      const sendAbort = (): Promise<unknown> => this.sendTo(worker, 'scan:abort', args)
+      const sendAbort = (): Promise<unknown> => {
+        const hit = this.abortFlight
+        if (hit) return hit
+        const flight = this.sendTo(worker, 'scan:abort', args)
+        this.abortFlight = flight
+        const clear = (): void => {
+          if (this.abortFlight === flight) this.abortFlight = null
+        }
+        flight.then(clear, clear)
+        return flight
+      }
       const recover = (target: DbWorkerPort | null): Effect.Effect<void, unknown> =>
         this.recoverStuckWorker(target, replacementTimeoutMs)
       return Effect.gen(function* () {
@@ -473,6 +598,7 @@ export class DbWorkerClient {
     this.retiringWorker = worker
     const promise = Promise.resolve()
       .then(() => worker.terminate())
+      .then(() => this.closeTransport(worker))
       .then(() => undefined)
     this.termination = { worker, promise }
     return promise
@@ -495,6 +621,14 @@ export class DbWorkerClient {
     }
   }
 
+  /** Fires once a replacement owns the ledger, including recovery after a lost write acknowledgement. */
+  onReplaced(listener: () => void): () => void {
+    this.replacementListeners.add(listener)
+    return () => {
+      this.replacementListeners.delete(listener)
+    }
+  }
+
   /**
    * Effect orchestration behind `shutdown()` (ADR 0032): the graceful-close
    * send rides `awaitGracefulShutdown` (Effect Clock deadline) and thread
@@ -505,12 +639,21 @@ export class DbWorkerClient {
    * this deadline — no second runtime, no shared SQLite state.
    */
   shutdownEffect(timeoutMs = 2000): Effect.Effect<void> {
-    const teardown = this.interruptRespawnEffect().pipe(Effect.andThen(this.terminateWorkerEffect()))
+    const teardown = this.interruptRespawnEffect().pipe(
+      Effect.andThen(this.terminateWorkerEffect()),
+      Effect.andThen(Effect.promise(() => this.lastGenerationClosed)),
+    )
     return Effect.sync(() => {
       this.intentionalTeardown = true
     }).pipe(
       Effect.andThen(this.interruptRespawnEffect()),
-      Effect.andThen(awaitGracefulShutdown(() => this.send('shutdown'), timeoutMs)),
+      Effect.andThen(
+        awaitGracefulShutdown(async () => {
+          await this.send('shutdown')
+          const worker = this.worker
+          if (worker) await this.closeTransport(worker)
+        }, timeoutMs),
+      ),
       Effect.ensuring(teardown),
     )
   }
@@ -547,7 +690,8 @@ export class DbWorkerClient {
       // `try`/`catch` this replaced — and the record is unchanged:
       // `code` stays an explicit `logCodeFor(spawnErr, 'restart-failed')`
       // rather than a `Cause` the Logger would have to squash.
-      return Effect.sync(() => this.spawn()).pipe(
+      return Effect.promise(() => this.lastGenerationClosed).pipe(
+        Effect.andThen(Effect.sync(() => this.spawn())),
         Effect.catchDefect(spawnErr =>
           Effect.logError('worker.error').pipe(
             Effect.annotateLogs({

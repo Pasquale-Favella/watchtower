@@ -1,0 +1,232 @@
+# Renderer adoption measurements
+
+## M3 repeat measurements, 2026-10-27 and 2026-10-28
+
+Five uninstrumented runs repeated the original fixture and timing definition
+on the same Windows x64 host with Electron 43.2.0. The baseline uses the
+existing `5187054` artifact built on October 23, with dependencies resolved
+from the same root installation. The adopted artifact contains the product
+source at `d390d0b`; `2ad1262` changes only the packaged verifier. These are
+fixture measurements with a new isolated profile per run, not production
+history or OS compositor paint measurements.
+
+| Measure                         | Baseline median (ms) | Adopted median (ms) |
+| ------------------------------- | -------------------: | ------------------: |
+| Launch to first React frame     |               3492.5 |              5341.5 |
+| Overview to Sessions ready      |                134.6 |               151.7 |
+| Sessions back to Overview ready |                168.5 |               163.8 |
+
+Baseline first-frame samples were 3553.4, 3492.5, 3379.6, 3511.6 and
+3421.0 ms. Adopted samples were 5371.5, 5186.8, 7157.3, 5101.4 and
+5341.5 ms. The adopted median is 1849.0 ms slower, a 52.9% regression in
+this sample. Aggregate renderer JavaScript is 4258874 bytes versus the
+baseline's 3899756 bytes; CSS remains 319890 bytes. No page errors were
+captured after attaching the first-window listener. Three baseline runs and
+two adopted runs needed the close fallback outside the measured intervals.
+
+A controlled experiment on October 28 bundled `effect`,
+`@effect/platform-node` and `@effect/sql-sqlite-node` together in the main,
+worker and MCP entries. Renderer assets were unchanged. Three first-frame
+samples were 4300.5, 3480.0 and 3801.7 ms. A phase-instrumented externalized
+sample measured 6843.0 ms, with launch resolved at 1529.8 ms and the first
+window at 3105.2 ms. This supports investigating dependency loading during
+startup. The small experiment does not establish a final performance budget;
+the bundled configuration still requires final repeated and packaged checks.
+
+The headless Coach retention probe uses the real Coach atoms and an in-memory
+`RpcTest` client. It consumes synthetic text, tool and terminal frames without
+launching a harness or recording response contents. With 32 and 1024 text
+frames, controlled transcript bytes are 2081 and 65569. Both runs reach a
+peak of 38 registry nodes, measured through the public node-add hook. Both
+consume two tool frames, retain one completed tool notice, and finish the
+send command successfully. Reset leaves zero transcript messages and bytes;
+registry disposal leaves zero nodes. The transcript is expected to grow with
+conversation length. This probe measures neither renderer RSS nor transport
+buffers. Production Coach separately bounds its queue to 128 events and
+2 MiB pending JSON bytes, with a 1 MiB per-frame limit.
+
+Reproduce Coach retention with
+`node scripts/probes/run-coach-retention.cjs`. The startup harness now also
+records launch and first-window resolution phases. Opt-in main instrumentation
+is separate from ordinary timing runs.
+
+The subsequent five-run bundled build measured a 5235.7 ms median. Three
+alternating baseline/bundled pairs then measured baseline first frames of
+3462.7, 3425.0 and 3398.2 ms versus bundled frames of 4706.0, 4664.2 and
+4667.1 ms. The paired medians still differ by 1242.1 ms. The faster isolated
+experiment therefore does not establish that bundling resolves the regression.
+The isolated result did not identify the remaining cause.
+
+Main-process CPU profiling then found two synchronous child-process spawn
+calls consuming about 1.23 and 1.51 seconds before the first React frame.
+They came from ACP harness inspection and harness version probing. Renderer
+profiles showed time waiting in synchronous storage IPC or idle, depending
+on scheduling. These traces identify native harness startup on this host;
+they do not establish that Effect evaluation itself costs those durations.
+The provider fixture isolates session histories but still detects installed
+host harnesses, so the measurements include that host-specific work.
+
+The correction at `9600f14` makes lifecycle hydration read the cached harness
+snapshot without starting discovery. Automatic discovery keeps its existing
+1500 ms delay, anchored to the main window being shown instead of application
+wiring. The app-owned startup fiber remains alive through detection and
+probing, and disposal interrupts and joins both child handles. Tests cover a
+late detection result and disposal while a probe is active. Starting discovery
+immediately at `ready-to-show` was insufficient in an earlier experiment:
+that event can precede the first rendered React frame.
+
+Three subsequent quiet alternating baseline/candidate pairs measured the
+candidate containing this correction. No other local verification process ran
+during these six launches. A preceding set overlapped a TypeScript check and
+is excluded from this comparison.
+
+| Measure                         | Baseline median (ms) | Startup candidate median (ms) |
+| ------------------------------- | -------------------: | ----------------------------: |
+| Launch to first React frame     |               3691.1 |                        3404.8 |
+| Overview to Sessions ready      |                114.5 |                         134.0 |
+| Sessions back to Overview ready |                167.1 |                         146.6 |
+
+Baseline first-frame samples were 3615.5, 3757.0 and 3691.1 ms; candidate
+samples were 3669.8, 3325.0 and 3404.8 ms. The earlier 1242.1 ms paired
+startup regression is absent in this sample. Three pairs on one host do not
+establish a general speed improvement or a release performance budget. There
+were no captured page errors. One baseline close needed the eight-second
+fallback outside the measured interval; all three candidate closes completed
+normally. The final display-only Settings/Quick Add error corrections followed
+this startup artifact and receive separate functional verification.
+
+The ordinary renderer build at final product source `a7aeee3` contains
+4260262 JavaScript bytes and 319890 CSS bytes across all entry assets.
+JavaScript is 360506 bytes larger than the baseline, about 9.2%. This is
+aggregate asset size, not bytes loaded by one window or renderer memory.
+
+## Registry, request and listener capture, 2026-10-28
+
+`node scripts/probes/measure-renderer-state.mjs` creates a disposable renderer
+artifact with a test-only Vite transform and the existing main/preload build.
+It exposes public registry inspection only in that artifact. The capture visits
+all seven analytics Sections, changes Scope twenty times, then performs three
+actual native main-window close and panel "See overview" cycles. Its minified
+test renderer is distinct from the ordinary startup artifact; these measurements
+do not supply startup timings or renderer RSS.
+
+The capture was repeated against final product source `a7aeee3`. It reproduces
+every settled count in the table, the 164-node/nine-query peak, and the same
+boot request counts. All three ports close, the worker exits, and normal app
+close completes. There are no page errors before the intentional direct owner
+disposal described below.
+
+| Measurement                                                |  Result |
+| ---------------------------------------------------------- | ------: |
+| Main registry node peak, observed on node addition/removal |     164 |
+| Main query-member peak                                     |       9 |
+| Main settled nodes / query members                         | 158 / 8 |
+| Last five Scope samples, node / query spread               |   0 / 0 |
+| Beacon settled nodes / query members in every cycle        |  23 / 0 |
+| Panel settled nodes / query members in every cycle         |  47 / 2 |
+| Main registry nodes after explicit owner disposal          |       0 |
+| Native workers observed / exited                           |   1 / 1 |
+| Native RPC ports observed / closed                         |   3 / 3 |
+| Maximum active native RPC ports                            |       3 |
+
+All three windows retain the same settled registry counts when returning from
+each panel cycle. The temporary ninth main query member occurs during selection
+replacement; it does not accumulate across the twenty Scope changes. The
+capture has no page errors before disposal. Directly disposing the owner while
+React remains mounted produces one expected "registry is disposed" access;
+that artificial inspection step is recorded separately.
+
+The main wrapper records operation tags and counts, never arguments or response
+payloads. Boot observes one each of `worker:events`, `worker:ready`,
+`ledger-mcp:startup:get`, `currency:get`, `store:status`, `scan:active`,
+`scan:start`, `overview:query`, `cadence:get` and `currency:list`, plus two
+`store:analytics` calls. Each newly visited analytics Section issues one matching
+worker view request. The twenty Scope changes occur in Compare and issue one
+`compare:view` each. This fixture does not establish call counts for every
+application workflow.
+
+The wrapper samples `ipcMain` listeners every 100 ms and on report writes.
+It observes ten channels with at most one listener each; this is a sampled
+high-water count, not a guaranteed transient peak. The five invoke handlers
+are counted synchronously and remain at one per channel. Main-side RPC port
+listener additions are also observed synchronously: at most one message and
+two close listeners per port, excluding the measurement's own close observer.
+No new connection or worker is needed for the three open/close cycles. All
+three ports close and the worker exits during application shutdown.
+
+## Initial M1 measurements
+
+Measured on 2026-10-23 on Windows x64 with Electron 43.2.0. The baseline is
+source commit `5187054df75a5bbd98ccbb81e82469b762d5ad7b`; the M1 candidate is
+the existing renderer build produced at 09:53 Europe/Rome during the adoption work.
+That build passed the full local Electron E2E suite. The Windows packaged
+acceptance run used an earlier build and is separate evidence. The
+branch advanced after it was built, so the bundle names below identify the
+measured artifact and are not a claim about the final commit's exact output.
+
+Both revisions used the same installed root `node_modules`; no dependency
+installation was run. The baseline was built in the detached worktree at
+`.git/effect-baseline-5187054`. Each of the three sequential runs used a new
+temporary profile populated by `scripts/fixtures/provider.cjs`, then removed
+that profile after closing Electron. The fixture supplies one Codex session
+and a unique search term, avoiding reads from host assistant histories.
+
+The first-render measure starts immediately before Electron launch and ends
+after the first window's `#root` has a rendered child and two animation frames
+have elapsed. It is a first React frame proxy, not an OS compositor paint
+measurement. Overview-to-Sessions is measured after onboarding is dismissed,
+from clicking Sessions until the loaded Sessions search box is visible.
+Sessions-to-Overview runs from clicking Overview until “Total spend” appears.
+These timings include route and query work in the fixture app.
+
+| Measure                         | Baseline runs (ms)     | Baseline median | M1 candidate runs (ms) | M1 median |
+| ------------------------------- | ---------------------- | --------------: | ---------------------- | --------: |
+| Launch to first React frame     | 3574.9, 3549.9, 3512.7 |          3549.9 | 6527.2, 5511.9, 5535.0 |    5535.0 |
+| Overview to Sessions ready      | 159.0, 159.2, 150.4    |           159.0 | 143.1, 181.3, 183.5    |     181.3 |
+| Sessions back to Overview ready | 185.3, 169.1, 196.5    |           185.3 | 149.5, 191.6, 221.7    |     191.6 |
+
+The M1 candidate's median launch-to-first-frame proxy was 1,985.1 ms slower.
+Its first-render sample spread is wide, and each set has only three runs.
+This is a regression in the measured sample that needs investigation and a
+larger repeat measurement before the final performance acceptance decision.
+No page errors were observed after the listener attached to the first window;
+errors before that point were not captured. The baseline process did not finish
+the normal Playwright close handshake within eight seconds, so the harness
+terminated its Electron process before removing each temporary profile; no
+Electron or measurement processes and no fixture profiles remained after the
+run. The fallback did not overlap any measured interval.
+
+## Renderer asset bytes
+
+The total includes every `.js` and `.css` file under `out/renderer`, including
+shared and orb entry assets. It excludes HTML, fonts, images, source maps,
+compression, and installer/runtime bytes.
+
+| Revision           | JavaScript bytes | CSS bytes | Combined bytes |
+| ------------------ | ---------------: | --------: | -------------: |
+| Baseline `5187054` |        3,899,756 |   319,890 |      4,219,646 |
+| M1 candidate build |        4,093,429 |   319,890 |      4,413,319 |
+
+The M1 candidate contains 193,673 more JavaScript bytes in this aggregate.
+Chunk layout changed, including the addition of the `shared-wiring` chunk;
+the aggregate does not indicate how many bytes a particular window loads.
+
+For artifact identification, the baseline assets were `index-C7uKInCi.js`,
+`lib-UMyv6kiH.js`, `orb-CtFzgSVU.js`, `orb-panel-DlJovsFW.js`,
+`placement-store-CMoF6rcA.js`, `shortcuts-DmPn-0wF.js`,
+`WatchtowerIcon-DOckN49B.js`, `index-C7-b7Uhi.css`, and
+`placement-store-C4wST75v.css`. The M1 candidate assets were
+`index-C_dvpPEn.js`, `lib-Dw-oGJvj.js`, `orb-DSqZ2cZJ.js`,
+`orb-panel-BX17raBI.js`, `placement-atoms-DH66XzKJ.js`,
+`shared-wiring-_mSL1PH-.js`, `WatchtowerIcon-BBwyok-8.js`,
+`index-C7-b7Uhi.css`, and `placement-atoms-C4wST75v.css`.
+
+Boot bridge-call counts and total Atom registry nodes are unmeasured: neither
+is exposed by the production renderer without adding instrumentation. Existing
+remote-query slot tests do verify that switching A/B/A does not retain an
+unbounded sequence of query members, but they do not provide a whole-window
+node count.
+
+The repeatable harness is `node scripts/probes/measure-renderer.cjs --runs 3`.
+To measure another completed build, pass its project directory with
+`--app-dir <path>`; that directory must already contain `out/renderer`.

@@ -18,9 +18,10 @@ behavior and the macOS Full Disk Access requirement.
 
 ## Effect conventions
 
-The backend uses Effect 4 for application workflows, service composition,
+Watchtower uses Effect 4 for application workflows, service composition,
 typed operational failures, and scoped resources. `effect`,
-`@effect/platform-node`, and `@effect/sql-sqlite-node` are pinned to `4.0.5`.
+`@effect/platform-node`, `@effect/sql-sqlite-node`, and `@effect/atom-react`
+are pinned to `4.0.5`.
 Before writing Effect code, read the installed `node_modules/effect/AGENTS.md`
 completely and follow its required links, as specified in [the agent
 guide](./agents/effect.md). Use the installed source for APIs on this release.
@@ -37,9 +38,32 @@ guide](./agents/effect.md). Use the installed source for APIs on this release.
   payloads. Preserve unknown-key stripping and extraction skip-and-tally
   behavior. Watchtower has no owned Zod contracts or direct Zod dependency;
   SDK-internal protocol schemas remain the dependency's responsibility.
-- Keep calculations and transformations as plain functions. The renderer
-  keeps React, Zustand, and the Promise IPC facade; its synchronous Schema
-  decoder needs no application runtime, Layer, fiber, or backend IO.
+- Keep calculations and transformations as plain functions. React reads
+  shared state through Effect Atom. Each renderer window owns one registry
+  and one `Atom.context()` factory; workflow atoms and query atoms share its
+  Layer memo map. Keep browser and Electron adaptation at the window root or
+  service boundary. Components retain local interaction state.
+- Use bounded feature query slots with complete request identity. Same-request
+  refresh may retain previous data; changing Scope must hide prior data.
+  Activated analytical queries remain mounted until their window closes.
+  Unopened Sections stay lazy. Authoritative events invalidate each window's
+  own Reactivity service; currency changes only repaint formatted values.
+- Application domains use `ApplicationClient` with native AtomRpc queries and
+  Effect workflows. Use mutation atoms when one in-flight operation per tag is
+  enforced. Concurrent independent commands, including harness probes, call the
+  generated client directly so they cannot share another invocation's result.
+  Reuse the root factory and protocol
+  Layer; rebuilding a client runtime on reconnect can replay mutation inputs.
+  Application fetches and subscriptions belong to scoped Effects,
+  not component-owned Promise chains. Admitted commands require a window
+  owner when they must survive Section navigation. `keepAlive` alone does not
+  mount an asynchronous Atom.
+- `get.setResult` dispatches when called. Wrap it in `Effect.suspend` when a
+  preceding readiness effect must complete before the command is dispatched.
+- Lifecycle subscriptions project only their selected categories. Config/reset
+  snapshots carry authoritative versions without reading unrelated metadata.
+  Invalidating a committed write must never depend on scan-status or harness
+  hydration. Reset events clear old ledger query members before refetching.
 - Test services with substitute Layers and fakes. Use `TestClock` for
   time-dependent behavior and real SQLite integration tests for transaction
   and migration behavior. Check expected failure, interruption, and cleanup
@@ -47,31 +71,35 @@ guide](./agents/effect.md). Use the installed source for APIs on this release.
 
 See [the architecture](./architecture.md#the-effect-first-backend),
 [ADR 0032](./adr/0032-effect-first-backend-architecture.md), and
-[ADR 0034](./adr/0034-effect-schema-contract-authority.md) for the current
+[ADR 0034](./adr/0034-effect-schema-contract-authority.md),
+[ADR 0036](./adr/0036-effect-renderer-composition.md), and
+[ADR 0037](./adr/0037-versioned-effect-rpc-boundaries.md) for the current
 boundaries. Earlier ADR adoption limits are historical where these decisions
 supersede them.
 
 ## Scripts
 
-| Command                                                 | What it does                                                                                            |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `npm run dev`                                           | Run the app in development (electron-vite)                                                              |
-| `npm run build`                                         | Compile main, preload, and renderer bundles                                                             |
-| `npm run preview`                                       | Preview a built app                                                                                     |
-| `npm run typecheck`                                     | Type-check both node and web targets (`typecheck:node` / `typecheck:web`)                               |
-| `npm run typecheck:test`                                | Type-check the Vitest project with TypeScript 5.9                                                       |
-| `npm run lint:effect`                                   | Run Effect semantic diagnostics for node, web, and test projects, then check positive/negative fixtures |
-| `npm test`                                              | Run the vitest suite (`tests/`)                                                                         |
-| `npm run test:e2e`                                      | Build the bundles, then run the Playwright Electron smoke (`e2e/`)                                      |
-| `npm run lint`                                          | ESLint v9 flat gate (`eslint.config.mjs`) — blocking in CI (`test.yml`)                                 |
-| `npm run lint:fix`                                      | Autofix what ESLint can (import order), report the rest                                                 |
-| `npm run format`                                        | Rewrite everything with Prettier (`.prettierrc.json`)                                                   |
-| `npm run format:check`                                  | Check formatting with Prettier; blocking in CI                                                          |
-| `npm run package`                                       | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux)  |
-| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS)                                      |
-| `npm run icons`                                         | Regenerate `build/icon.png` from `assets/watchtower-logo.svg`                                           |
+| Command                                                 | What it does                                                                                           |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `npm run dev`                                           | Run the app in development (electron-vite)                                                             |
+| `npm run build`                                         | Compile main, preload, and renderer bundles                                                            |
+| `npm run preview`                                       | Preview a built app                                                                                    |
+| `npm run typecheck`                                     | Type-check node, renderer and Electron tests (`typecheck:node`, `typecheck:web`, `typecheck:e2e`)      |
+| `npm run typecheck:test`                                | Type-check the Vitest project with TypeScript 5.9                                                      |
+| `npm run lint:effect`                                   | Run Effect diagnostics for node, web, Vitest and Electron tests, then check positive/negative fixtures |
+| `npm test`                                              | Run the vitest suite (`tests/`)                                                                        |
+| `npm run test:e2e`                                      | Build the bundles, then run the Playwright Electron smoke (`e2e/`)                                     |
+| `npm run lint`                                          | ESLint v9 flat gate (`eslint.config.mjs`) — blocking in CI (`test.yml`)                                |
+| `npm run lint:fix`                                      | Autofix what ESLint can (import order), report the rest                                                |
+| `npm run format`                                        | Rewrite everything with Prettier (`.prettierrc.json`)                                                  |
+| `npm run format:check`                                  | Check formatting with Prettier; blocking in CI                                                         |
+| `npm run package`                                       | Build + package for the platform you are on (NSIS on Windows, DMG/zip on macOS, AppImage/deb on Linux) |
+| `npm run package:win` / `package:mac` / `package:linux` | Build + package a specific platform (macOS must be built on macOS)                                     |
+| `npm run icons`                                         | Regenerate `build/icon.png` from `assets/watchtower-logo.svg`                                          |
 
-`typecheck:node`, `typecheck:web`, and `typecheck:test` run TypeScript 5.9.3.
+`typecheck:node`, `typecheck:web`, `typecheck:e2e`, and `typecheck:test` run TypeScript 5.9.3.
+Electron test fixtures use their own DOM-aware project; the production main
+project retains its Node-only library types.
 `lint:effect` uses `@effect/tsgo` 0.53.2, whose embedded TypeScript-Go compiler
 is 7.0.2 through the `@typescript/native` alias. These are separate checks with
 different compiler versions.
@@ -101,13 +129,14 @@ What it does: builds the current bundles (`out/`, git-ignored), launches
 `electron .` with a fresh `--user-data-dir` under the OS temp root, and
 asserts boot (window title), first-run onboarding dismissal, and
 Overview ↔ Sessions navigation with no renderer `pageerror`. The temp profile
-is deleted afterwards. Note the isolation boundary: the ledger destination is
-isolated, but the boot scan still READS the host's real assistant sources
-(read-only) — your files are never modified, but the run sees your data.
+is deleted afterwards. The development and packaged suites share a controlled
+Codex provider history and isolated provider directories under that profile.
+They exercise real discovery, parsing, SQLite and queries without reading the
+host's assistant history.
 
-First launch hydrates through a full scan of the host's real assistant sources
-(read-only — only the ledger destination is isolated), so the first run can
-take minutes; the ceiling in `playwright.config.ts` reflects that.
+First launch scans the fixture before dismissing onboarding. The startup
+ceiling also accommodates slower CI hosts; tests fail on the visible scan
+error state instead of treating it as readiness.
 
 Notes:
 
@@ -187,11 +216,14 @@ src/
 │  ├─ env.ts                # Effect Config, Env service, captured AppPaths
 │  ├─ operational-log.ts    # shared Logger/Metric/Tracer integration
 │  ├─ db-worker/
-│  │  ├─ entry.ts           # worker startup, scan fibers, cadence, shutdown
-│  │  ├─ client.ts          # main-to-worker Promise and event adapter
+│  │  ├─ entry.ts           # official worker RPC process root
+│  │  ├─ bootstrap.ts       # one SQL runtime/context, ledger-ready initialization
+│  │  ├─ client.ts          # main-owned admission, consistency and worker supervisor
+│  │  ├─ rpc-transport.ts   # one official protocol scope and event consumer per worker
+│  │  ├─ rpc-server.ts      # validated application handlers and sequenced events
 │  │  ├─ query-dispatch.ts  # query routes into application workflows
 │  │  ├─ config-dispatch.ts # settings command routes
-│  │  └─ protocol.ts        # typed worker request/response/event contract
+│  │  └─ protocol.ts        # local boot inputs, producer events and read policy
 │  ├─ application/          # Effect queries, commands, capability definitions
 │  ├─ *-calculation.ts      # pure section, export, and pricing calculations
 │  ├─ cadence.ts            # background scan / FX cadence policy
@@ -204,7 +236,7 @@ src/
 │  │  ├─ ledger-mcp/        # official SDK server, Schema tool inputs, read-only runtime
 │  │  ├─ prompts.ts         # the one briefing: coaching + skill authoring scopes
 │  │  ├─ events.ts          # ACP stream → CoachEvent derivation
-│  │  └─ ipc.ts             # coach:harnesses/run/inspect/cancel/reset wire
+│  │  └─ ipc.ts             # existing Coach coordinator capability composition
 │  ├─ pipeline/             # discovery -> extraction -> parse -> classify -> price
 │  │  ├─ scan.ts            # Effect scan orchestration, metadata out
 │  │  ├─ parser.ts          # native parser streams and per-file delta seam
@@ -221,10 +253,11 @@ src/
 │     └─ aggregate-calculation.ts # pure query-time aggregation helpers
 ├─ preload/                 # typed contextBridge API (the renderer's only door)
 ├─ shared/schemas/          # Effect Schema contracts and derived types; UI-only types
+├─ shared/rpc/              # application, role and internal worker RPC contracts
 └─ renderer/src/            # React 19 + Tailwind + shadcn/ui (sandboxed)
-   ├─ app/                  # AppShell, sidebar/topbar, onboarding, stores, shortcuts
+   ├─ app/                  # window registry, workflows, AppShell and shortcuts
    ├─ features/             # one folder per section (overview, sessions, spend, coach-skills, ...)
-   └─ shared/               # UI kit, hooks, Promise IPC API, synchronous Schema decoder
+   └─ shared/               # UI kit, native RPC clients, shell adapters and Schema decoder
 ```
 
 Architecture decisions are recorded as ADRs in [`docs/adr`](./adr) and

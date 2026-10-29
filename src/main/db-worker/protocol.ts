@@ -1,14 +1,11 @@
 /**
- * The main ↔ db-worker wire protocol (ADR 0023). The db-worker owns the
+ * Local worker bootstrap and supervisor policy (ADRs 0023 and 0037). The db-worker owns the
  * ledger, the scan pipeline, and every query-time view builder; the main
  * process stays a thin forwarder (windows, dialogs, IPC plumbing) so a scan
  * or a heavy aggregation can never freeze the UI thread of the main process.
  *
- * `worker_threads` structured-clone every message: requests, responses, and
- * events must all be plain JSON-shaped data (no functions, no class
- * instances). Handler-thrown errors cross as `{ ok: false, error }` — the
- * same shape an `ipcMain.handle` rejection has for the renderer, so the
- * renderer's tripwire behavior is unchanged.
+ * The wire contract is shared/rpc/worker.ts. Producers submit local events to
+ * its schema-validated, sequenced stream; the supervisor retains read policy.
  */
 
 /** Boot context for the worker, passed via `workerData` (no handshake race:
@@ -22,27 +19,15 @@ export interface DbWorkerData {
   cacheDir: string
 }
 
-/** Main → worker: invoke op `op` with positional `args`. */
-export interface DbWorkerRequest {
-  id: number
-  op: string
-  args: unknown[]
-}
-
-/** Worker → main: the settled outcome of one request. */
-export type DbWorkerResponse = { id: number; ok: true; data: unknown } | { id: number; ok: false; error: string }
-
-/** Worker → main: fire-and-forget broadcasts the main relays to windows.
+/** Local producer input, validated before it enters the worker RPC event stream.
  * `manual` tags scan-lifecycle events that belong to the requesting window
  * only (a manual ⌘R scan); background-cadence events go to every window.
- * `ready` / `init-error` are consumed by the client itself (boot handshake),
- * never relayed to windows. */
+ * Application readiness is an RPC acknowledgement, not a producer event. */
 export type DbWorkerEvent =
-  | { event: 'ready' }
-  | { event: 'init-error'; error: string }
   | { event: 'scan:progress'; manual: boolean; progress: unknown }
   | { event: 'scan:error'; manual: boolean; message: string }
   | { event: 'store:changed'; metadata: unknown }
+  | { event: 'ledger:reset' }
   | { event: 'scan:idle' }
   | { event: 'config:changed' }
   | { event: 'currency:changed'; currency: unknown }
@@ -88,14 +73,3 @@ export const DEDUPABLE_OPS: ReadonlySet<string> = new Set([
   'currency:get',
   'currency:list',
 ])
-
-export function isDbWorkerResponse(raw: unknown): raw is DbWorkerResponse {
-  if (!raw || typeof raw !== 'object') return false
-  const msg = raw as Record<string, unknown>
-  return typeof msg['id'] === 'number' && typeof msg['ok'] === 'boolean'
-}
-
-export function isDbWorkerEvent(raw: unknown): raw is DbWorkerEvent {
-  if (!raw || typeof raw !== 'object') return false
-  return typeof (raw as Record<string, unknown>)['event'] === 'string'
-}

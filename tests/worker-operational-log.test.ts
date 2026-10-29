@@ -152,7 +152,11 @@ describe('worker operational log forwarding', () => {
         }),
       ).toBe(true)
       expect(
-        events.slice(sqlTraceStart).filter(event => event.event === 'oplog' && event.fields.op === 'sql.execute'),
+        events
+          .slice(sqlTraceStart)
+          .filter(
+            event => event.event === 'oplog' && (event.fields.op === 'sql.execute' || event.fields.op === 'sqlite'),
+          ),
       ).toEqual([])
     } finally {
       try {

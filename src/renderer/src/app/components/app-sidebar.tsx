@@ -1,8 +1,11 @@
+import { useRouterState } from '@tanstack/react-router'
 import type { ComponentProps, ReactNode } from 'react'
 
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
+import { useScopeStore } from '@/app/hooks/use-scope-store'
+import { navigateToSection, sectionForPath } from '@/app/navigation'
 import { SECTION_ICONS } from '@/app/section-icons'
-import { shortcutForAction, displayShortcutForAction, type Section } from '@/app/shortcuts'
+import { displayShortcutForAction, type Section, shortcutForAction } from '@/app/shortcuts'
 import {
   Sidebar,
   SidebarContent,
@@ -18,11 +21,8 @@ import {
 } from '@/shared/components/ui/sidebar'
 import { PERIOD_LABELS } from '@/shared/lib/settings-constants'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { useRouterState } from '@tanstack/react-router'
-import { navigateToSection, sectionForPath } from '@/app/navigation'
+
 import { SECTIONS } from '../../../../shared/schemas/navigation.js'
-import { useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
 
 /** Sidebar nav — ids and order come from navigation (ADR 0014, SECTIONS);
  * labels and keycap hints come from the shortcuts registry (ADR 0001). */
@@ -111,10 +111,7 @@ export function AppSidebarShell({
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const pathname = useRouterState({ select: s => s.location.pathname })
   const active = sectionForPath(pathname)
-  const period = useScopeStore(s => s.period)
-  const customRange = useScopeStore(s => s.customRange)
-  const provider = useScopeStore(s => s.provider)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const { period, customRange, provider, detectedProviders } = useScopeStore()
 
   const providerOptions = providerOptionsFromDetected(detectedProviders)
   const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider

@@ -1,4 +1,5 @@
 import * as Cause from 'effect/Cause'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -20,7 +21,7 @@ import { fileErrorCode, takeQueuedLogRecords } from '../pipeline/file-errors.js'
 import { refreshPricingNowEffect } from '../pipeline/models.js'
 import { buildScanSummaryRecords, ScanAbortedError, type ScanMetadata, type ScanProgress } from '../pipeline/scan.js'
 import { LedgerConfig, LedgerQueries } from '../store/ledger-ports.js'
-import type { WorkerRuntime } from '../worker-runtime.js'
+import type { WorkerRuntime, WorkerServices } from '../worker-runtime.js'
 import { ledgerConfigRequest } from './config-dispatch.js'
 import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
 import { ledgerQueryRequest } from './query-dispatch.js'
@@ -31,12 +32,18 @@ function abortedScanError(): ScanAbortedError {
   return new ScanAbortedError({ message: 'scan aborted' })
 }
 
+const SCAN_FAILURE_MESSAGE = 'The scan failed.'
+const SCAN_ABORTED_MESSAGE = 'scan aborted'
+const PRICING_REFRESH_FAILURE_MESSAGE = 'Pricing refresh failed.'
+
 /**
  * The composition root supplies the runtime that owns the worker's SQL client
  * and application capabilities. Tests can substitute services in that runtime.
  */
 export interface DbWorkerDeps {
   readonly runtime: WorkerRuntime
+  /** Testable boundary for the fallible post-clear response hydration. */
+  readonly readSettingsInfo?: (dataDir: string, cacheDir: string) => Effect.Effect<unknown, unknown>
 }
 
 interface ActiveScan {
@@ -44,6 +51,16 @@ interface ActiveScan {
   aborted: boolean
   workFiber: Fiber.Fiber<ScanMetadata, unknown> | null
   fiber: Fiber.Fiber<unknown, unknown> | null
+  readonly fiberReady: Deferred.Deferred<undefined>
+  readonly markFiberReady: () => void
+}
+
+function makeActiveScan(manual: boolean): ActiveScan {
+  const fiberReady = Deferred.makeUnsafe<undefined>()
+  const markFiberReady = (): void => {
+    Deferred.doneUnsafe(fiberReady, Effect.succeed(undefined))
+  }
+  return { manual, aborted: false, workFiber: null, fiber: null, fiberReady, markFiberReady }
 }
 
 type ScanRequirements = ReturnType<typeof scanLedger> extends Effect.Effect<unknown, unknown, infer R> ? R : never
@@ -61,6 +78,7 @@ export class DbWorkerContext {
   private dataDir: string
   private cacheDir: string
   private emit: DbWorkerEmit
+  private readSettingsInfo: NonNullable<DbWorkerDeps['readSettingsInfo']>
   /** The most recent completed scan's metadata — the `getScanStatus()` answer
    * and the `store:changed` payload (ADR 0004). In-memory only. */
   private lastScanMetadata: ScanMetadata | null = null
@@ -74,7 +92,7 @@ export class DbWorkerContext {
   private readonly scanScope = Scope.makeUnsafe()
   /** Idempotent shutdown: first `close()` forks the shutdown Effect into
    * `closeFiber`; concurrent/second closes join the same fiber. */
-  private closeFiber: Fiber.Fiber<void> | null = null
+  private closeFiber: Fiber.Fiber<void, unknown> | null = null
   private closed = false
 
   constructor(init: DbWorkerData, emit: DbWorkerEmit, deps: DbWorkerDeps) {
@@ -82,6 +100,7 @@ export class DbWorkerContext {
     this.cacheDir = init.cacheDir
     this.emit = emit
     this.runtime = deps.runtime
+    this.readSettingsInfo = deps.readSettingsInfo ?? settingsInfoEffect
     void this.scheduleCadence()
     // Prime the FX side-table for the persisted display currency at startup,
     // non-blocking: readers use the cached rate (or USD) meanwhile, and an
@@ -109,14 +128,14 @@ export class DbWorkerContext {
     const reportFailure = (error: unknown) => {
       const aborted = error instanceof ScanAbortedError || owner.aborted
       const normalized = aborted && !(error instanceof ScanAbortedError) ? abortedScanError() : error
-      const message = aborted ? 'scan aborted' : error instanceof Error ? error.message : String(error)
+      const message = aborted ? SCAN_ABORTED_MESSAGE : SCAN_FAILURE_MESSAGE
       return Effect.sync(() => {
         this.emit({ event: 'scan:error', manual: true, message })
         this.emitScanFailure(normalized)
         return {
           ok: false,
           aborted,
-          error: normalized instanceof Error ? normalized.message : String(normalized),
+          error: message,
         }
       })
     }
@@ -127,6 +146,10 @@ export class DbWorkerContext {
         if (owner.aborted) return yield* reportFailure(abortedScanError())
         const workFiber = yield* Effect.forkChild(restore(this.performScan(options, emit, owner)))
         owner.workFiber = workFiber
+        // close()/scan:abort may win while the work fiber is being admitted.
+        // Recheck after registration so that a null workFiber observed by the
+        // abort path cannot leave newly admitted scan work running.
+        if (owner.aborted) yield* Fiber.interrupt(workFiber).pipe(Effect.asVoid)
         const scanExit = yield* Fiber.await(workFiber)
         owner.workFiber = null
         if (Exit.isFailure(scanExit)) return yield* reportFailure(Cause.squash(scanExit.cause))
@@ -207,6 +230,20 @@ export class DbWorkerContext {
     }
   }
 
+  /** Interrupt scan work using the same ownership rule for manual and
+   * background scans. A missing manual work fiber means admission has not
+   * completed yet; manualScanEffect observes `aborted` before it starts work. */
+  private interruptActiveScanEffect(waitForRegistration = false): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
+      const owner = this.activeScan
+      if (!owner) return
+      owner.aborted = true
+      if (waitForRegistration && !owner.fiber) yield* Deferred.await(owner.fiberReady)
+      const fiber = owner.workFiber ?? (owner.manual ? null : owner.fiber)
+      if (fiber) yield* Fiber.interrupt(fiber).pipe(Effect.asVoid)
+    })
+  }
+
   /** Fires on the configured cadence (ADR 0004). The scan fiber owns both the
    * work and its completion events, so shutdown joins the whole lifecycle. */
   private triggerBackgroundScanEffect(): Effect.Effect<void, never, ScanRequirements> {
@@ -214,7 +251,7 @@ export class DbWorkerContext {
       Effect.suspend(() => {
         if (this.closed || this.activeScan !== null) return Effect.void
 
-        const owner: ActiveScan = { manual: false, aborted: false, workFiber: null, fiber: null }
+        const owner = makeActiveScan(false)
         const emit = (progress: ScanProgress): void =>
           this.emit({ event: 'scan:progress', manual: owner.manual, progress })
         const complete = Effect.uninterruptibleMask(restore =>
@@ -251,10 +288,12 @@ export class DbWorkerContext {
           this.emitScanStart()
           const fiber = yield* Effect.forkIn(complete, this.scanScope, { startImmediately: false })
           owner.fiber = fiber
+          owner.markFiberReady()
         })
         return admit.pipe(
           Effect.onExit(exit =>
             Effect.sync(() => {
+              owner.markFiberReady()
               if (Exit.isFailure(exit) && owner.fiber === null && this.activeScan === owner) {
                 this.activeScan = null
               }
@@ -351,11 +390,22 @@ export class DbWorkerContext {
 
   // ── Op dispatch (one arm per renderer IPC channel that touches data) ──
 
-  async dispatch(op: string, args: unknown[]): Promise<unknown> {
-    if (this.closed && op !== 'shutdown') throw new Error('db-worker is shutting down')
+  private provideRuntime<A, E, R extends WorkerServices>(
+    effect: Effect.Effect<A, E, R>,
+  ): Effect.Effect<A, E | SqlError> {
+    return Effect.flatMap(this.runtime.contextEffect, services => Effect.provide(effect, services)) as Effect.Effect<
+      A,
+      E | SqlError
+    >
+  }
+
+  /** Native application operation entry for the fixed worker RPC handlers. */
+  dispatchEffect(op: string, args: unknown[]): Effect.Effect<unknown, unknown> {
+    if (this.closed && op !== 'shutdown') return Effect.fail(new Error('db-worker is shutting down'))
+
     const query = ledgerQueryRequest(op, args)
-    if (query)
-      return this.runtime.runPromise(
+    if (query) {
+      return this.provideRuntime(
         query.pipe(
           Effect.tapError(error =>
             Effect.logError('ledger.query.error').pipe(
@@ -365,12 +415,15 @@ export class DbWorkerContext {
           ),
         ),
       )
+    }
+
     const command = ledgerConfigRequest(
       op,
       args,
       Effect.sync(() => this.emit({ event: 'config:changed' })),
     )
-    if (command) return this.runtime.runPromise(command)
+    if (command) return this.provideRuntime(command)
+
     switch (op) {
       case 'scan:start': {
         const options = args[0] as { provider?: string } | undefined
@@ -379,59 +432,61 @@ export class DbWorkerContext {
         // on their own, so the renderer must not surface an error box or a retry
         // button for it — hence the explicit flag instead of an error string.
         // Coalescing retains ownership through parser Promise drainage.
-        if (this.activeScan !== null) return { ok: false, alreadyRunning: true }
-        const owner: ActiveScan = { manual: true, aborted: false, workFiber: null, fiber: null }
-        this.activeScan = owner
-        try {
-          this.emitScanStart(options?.provider)
-        } catch (error) {
-          if (this.activeScan === owner) this.activeScan = null
-          throw error
-        }
-        let fiber: Fiber.Fiber<unknown, unknown>
-        try {
-          fiber = this.runtime.runSync(
-            Effect.forkIn(this.manualScanEffect(owner, options), this.scanScope, { startImmediately: false }),
-          )
-        } catch (error) {
-          // Startup admission happens synchronously before the dispatch
-          // boundary can await the owned fiber. If registration fails, roll
-          // back the owner here and leave the failure at the Promise edge.
-          if (this.activeScan === owner) this.activeScan = null
-          throw error
-        }
-        owner.fiber = fiber
-        return this.runtime.runPromise(Fiber.join(fiber))
+        return this.provideRuntime(
+          Effect.uninterruptibleMask(restore =>
+            Effect.gen({ self: this }, function* () {
+              if (this.activeScan !== null) return { ok: false, alreadyRunning: true }
+              const owner = makeActiveScan(true)
+              this.activeScan = owner
+              const started = yield* Effect.exit(Effect.sync(() => this.emitScanStart(options?.provider)))
+              if (Exit.isFailure(started)) {
+                if (this.activeScan === owner) this.activeScan = null
+                owner.markFiberReady()
+                return yield* Effect.failCause(started.cause)
+              }
+
+              const fork = Effect.forkIn(this.manualScanEffect(owner, options), this.scanScope, {
+                startImmediately: false,
+              })
+              const admitted = yield* Effect.exit(fork)
+              if (Exit.isFailure(admitted)) {
+                if (this.activeScan === owner) this.activeScan = null
+                owner.markFiberReady()
+                return yield* Effect.failCause(admitted.cause)
+              }
+
+              owner.fiber = admitted.value
+              const joinFiber = yield* Effect.forkChild(restore(Fiber.join(admitted.value)), { startImmediately: true })
+              owner.markFiberReady()
+              return yield* restore(Fiber.join(joinFiber))
+            }),
+          ),
+        )
       }
 
       /** Whether a scan (manual or background) is in flight — the worker owns
        * the scan, so it is the one authority; a window reads it once at boot
        * and follows the broadcast lifecycle from there. */
       case 'scan:active':
-        return this.activeScan !== null
+        return Effect.sync(() => this.activeScan !== null)
 
       case 'scan:abort': {
         // Set the cooperative stop state before interruption. The scan owner
         // remains active until the underlying parser Promise has drained.
-        const owner = this.activeScan
-        if (owner) owner.aborted = true
-        const fiber = owner?.workFiber ?? (owner?.manual ? null : owner?.fiber)
-        if (fiber) await Effect.runPromise(Fiber.interrupt(fiber))
-        return null
+        return this.provideRuntime(Effect.as(this.interruptActiveScanEffect(), null))
       }
 
       /** Graceful shutdown (quit path): stop background work and close the
        * ledger after its outstanding scan and FX requests have settled. */
       case 'shutdown':
-        await this.close()
-        return null
+        return Effect.as(this.closeEffect(), null)
 
       case 'cadence:get':
-        return this.runtime.runPromise(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))
+        return this.provideRuntime(Effect.flatMap(LedgerConfig, config => config.getRefreshCadence()))
 
       case 'cadence:set': {
         const reschedule = this.scheduleCadenceEffect()
-        return this.runtime.runPromise(
+        return this.provideRuntime(
           Effect.gen(function* () {
             yield* setRefreshCadence(args[0])
             yield* reschedule
@@ -445,7 +500,7 @@ export class DbWorkerContext {
        * or a "never scanned" sentinel when the ledger has no rows at all. */
       case 'store:status': {
         const metadata = this.lastScanMetadata
-        return this.runtime.runPromise(
+        return this.provideRuntime(
           Effect.flatMap(LedgerQueries, queries => queries.hasSources()).pipe(
             Effect.map(hasRows => ({ scanned: hasRows || metadata !== null, ...(metadata ? { metadata } : {}) })),
           ),
@@ -453,17 +508,19 @@ export class DbWorkerContext {
       }
 
       case 'settings:info':
-        return this.runtime.runPromise(settingsInfoEffect(this.dataDir, this.cacheDir))
+        return this.provideRuntime(settingsInfoEffect(this.dataDir, this.cacheDir))
 
       case 'settings:clear': {
+        const emit = this.emit
         const resetMetadata = Effect.sync(() => {
           this.lastScanMetadata = null
         })
-        const settingsInfo = settingsInfoEffect(this.dataDir, this.cacheDir)
-        return this.runtime.runPromise(
+        const settingsInfo = Effect.suspend(() => this.readSettingsInfo(this.dataDir, this.cacheDir))
+        return this.provideRuntime(
           Effect.gen(function* () {
             yield* clearLedger()
             yield* resetMetadata
+            yield* Effect.sync(() => emit({ event: 'ledger:reset' }))
             return yield* settingsInfo
           }),
         )
@@ -476,10 +533,10 @@ export class DbWorkerContext {
        * substitute either without touching this arm; the `{ok:true}` /
        * `{ok:false, error}` envelopes are unchanged. */
       case 'pricing:refresh': {
-        return this.runtime.runPromise(
+        return this.provideRuntime(
           refreshPricingNowEffect().pipe(
             Effect.map(() => ({ ok: true as const })),
-            Effect.catch(err => Effect.succeed({ ok: false as const, error: err.message })),
+            Effect.catch(() => Effect.succeed({ ok: false as const, error: PRICING_REFRESH_FAILURE_MESSAGE })),
           ),
         )
       }
@@ -487,7 +544,7 @@ export class DbWorkerContext {
       /** The active display currency (ADR 0009): the persisted code plus its
        * CACHED rate from the FX side-table. Never touches the network. */
       case 'currency:get':
-        return this.runtime.runPromise(queryActiveCurrency())
+        return this.provideRuntime(queryActiveCurrency())
 
       /** Select a display currency (ADR 0009): persists the choice, kicks off a
        * non-blocking Frankfurter refresh in the background when the cached rate
@@ -495,31 +552,46 @@ export class DbWorkerContext {
        * keep working on the last cached rate (or USD) while the fetch runs.
        * When the fetch lands, `currency:changed` is emitted. */
       case 'currency:set': {
-        const selected = await this.runtime.runPromise(selectDisplayCurrency(args[0]))
         const code = args[0] as string // Validated by selectDisplayCurrency.
         const emit = this.emit
         const isClosed = (): boolean => this.closed
-        this.startBackgroundFx(
-          Effect.gen(function* () {
-            const currency = yield* refreshFxRateWithRates(code)
-            if (!isClosed()) yield* Effect.sync(() => emit({ event: 'currency:changed', currency }))
+        return this.provideRuntime(
+          Effect.gen({ self: this }, function* () {
+            const selected = yield* selectDisplayCurrency(code)
+            yield* Effect.sync(() =>
+              this.startBackgroundFx(
+                Effect.gen(function* () {
+                  const currency = yield* refreshFxRateWithRates(code)
+                  if (!isClosed()) yield* Effect.sync(() => emit({ event: 'currency:changed', currency }))
+                }),
+              ),
+            )
+            return selected
           }),
         )
-        return selected
       }
 
       /** The full ISO 4217 currency list (162 codes) for the Settings selector. */
       case 'currency:list':
-        return listCurrencies() satisfies CurrencyOption[]
+        return Effect.sync(() => listCurrencies() satisfies CurrencyOption[])
 
       default:
-        throw new Error(`unknown db-worker op: ${op}`)
+        return Effect.fail(new Error(`unknown db-worker op: ${op}`))
     }
   }
 
+  /** Promise facade retained for local compatibility tests and legacy callers. */
+  dispatch(op: string, args: unknown[]): Promise<unknown> {
+    return Effect.runPromise(this.dispatchEffect(op, args))
+  }
+
   /** Stop background work and close the store after scans/FX settle. Idempotent. */
-  close(): Promise<void> {
-    if (this.closeFiber) return Effect.runPromise(Fiber.join(this.closeFiber))
+  private closeEffect(): Effect.Effect<void> {
+    if (this.closeFiber)
+      return Fiber.join(this.closeFiber).pipe(
+        Effect.asVoid,
+        Effect.catchCause(() => Effect.void),
+      )
     this.closed = true
     this.cadenceGeneration++
     this.cadenceFiber = null
@@ -529,15 +601,32 @@ export class DbWorkerContext {
     const scanScope = this.scanScope
     const currentScan = (): Fiber.Fiber<unknown, unknown> | null => activeScan?.fiber ?? null
     const disposeRuntime = this.runtime.disposeEffect
-    const shutdown = Effect.gen(function* () {
+    const shutdown = Effect.gen({ self: this }, function* () {
       yield* Scope.close(backgroundScope, Exit.void)
+      // Setting the abort flag alone does not wake an Effect awaiting scan
+      // work. Interrupt the owned work fiber and wait for its finalizers before
+      // closing the scan scope or releasing the SQL runtime.
+      yield* this.interruptActiveScanEffect(true)
       const scan = yield* Effect.sync(currentScan)
-      if (scan) yield* Fiber.join(scan).pipe(Effect.catch(() => Effect.void))
+      if (scan) yield* Fiber.await(scan).pipe(Effect.asVoid)
+      if (activeScan) {
+        yield* Effect.sync(() => {
+          if (this.activeScan === activeScan) this.activeScan = null
+        })
+      }
       yield* Scope.close(scanScope, Exit.void)
       // Release the SQL client only after background work and parser callbacks drain.
       yield* disposeRuntime
     })
-    this.closeFiber = Effect.runFork(shutdown)
-    return Effect.runPromise(Fiber.join(this.closeFiber))
+    const closeFiber = this.runtime.runFork(shutdown)
+    this.closeFiber = closeFiber
+    return Fiber.join(closeFiber).pipe(
+      Effect.asVoid,
+      Effect.catchCause(() => Effect.void),
+    )
+  }
+
+  close(): Promise<void> {
+    return Effect.runPromise(this.closeEffect())
   }
 }

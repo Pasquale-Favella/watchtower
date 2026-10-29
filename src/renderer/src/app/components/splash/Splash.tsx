@@ -1,11 +1,11 @@
-import { useRef } from 'react'
 import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
+import { useRef } from 'react'
 
+import { useScanStore } from '@/app/hooks/use-scan-store'
 import { Button } from '@/shared/components/ui/button'
 import { motionClass, motionEnabled } from '@/shared/lib/motion'
 import { cn } from '@/shared/lib/utils'
-import { useScanStore } from '@/app/stores/scan-store'
 
 import { Beacon } from './Beacon'
 import { Ellipsis } from './Ellipsis'
@@ -24,10 +24,7 @@ import { Tally } from './Tally'
  * scan store.
  */
 export function Splash() {
-  const providers = useScanStore(s => s.progress)
-  const stage = useScanStore(s => s.stage)
-  const error = useScanStore(s => s.scanError)
-  const refresh = useScanStore(s => s.refresh)
+  const { progress: providers, stage, scanError: error, refreshScan: refresh } = useScanStore()
 
   const root = useRef<HTMLDivElement>(null)
 
@@ -95,7 +92,7 @@ export function Splash() {
             )}
           >
             <span className="text-destructive text-[11.5px]">{error}</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => void refresh()}>
+            <Button type="button" variant="outline" size="sm" onClick={() => refresh(undefined)}>
               Retry
             </Button>
           </div>

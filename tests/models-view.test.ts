@@ -364,8 +364,9 @@ describe('models lib helpers', () => {
   })
 
   it('formats USD with two decimals', () => {
-    expect(formatUsd(0.42)).toBe('$0.42')
-    expect(formatUsd(1234.5)).toBe('$1,234.50')
+    const currency = { code: 'USD', symbol: '$', rate: 1 } as const
+    expect(formatUsd(0.42, currency)).toBe('$0.42')
+    expect(formatUsd(1234.5, currency)).toBe('$1,234.50')
   })
 
   it('maps task categories to labels', () => {

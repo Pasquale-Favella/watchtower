@@ -1,53 +1,51 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
+import {
+  dedupeGroups,
+  ModelPickerCombobox,
+  type ModelPickerGroup,
+  uniqueAliasTargets,
+  usagePickerItem,
+} from '@/features/models/model-picker'
+import { useOverridePricingStore } from '@/features/models/use-pricing-store'
+import { validatePricing } from '@/features/settings/lib'
+import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
+import { LoadingRegion } from '@/shared/components/skeletons'
 import { Button } from '@/shared/components/ui/button'
 import { Card } from '@/shared/components/ui/card'
 import { Input } from '@/shared/components/ui/input'
 import { Separator } from '@/shared/components/ui/separator'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion } from '@/shared/components/skeletons'
-import {
-  dedupeGroups,
-  ModelPickerCombobox,
-  uniqueAliasTargets,
-  usagePickerItem,
-  type ModelPickerGroup,
-} from '@/features/models/model-picker'
-import { usePricingStore } from '@/features/models/pricing-store'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
-import { validatePricing } from '@/features/settings/lib'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 
 /** Settings › Pricing: full CRUD against the store's price-override config
  * table — set/update an override or add a new model, and remove one to revert
  * its stored calls to the pipeline-computed cost. Rates are USD per 1M tokens.
  * The model is picked with the shared model combobox — existing overrides,
- * aliased targets, and the store-derived usage models not priced yet. */
+ * aliased targets, and usage models not priced yet. */
 export function PricingPane() {
-  const overrides = usePricingStore(s => s.overrides)
-  const aliases = usePricingStore(s => s.aliases)
-  const storeError = usePricingStore(s => s.error)
-  const loadOverrides = usePricingStore(s => s.loadOverrides)
-  const loadAliases = usePricingStore(s => s.loadAliases)
-  const loadKnownModels = usePricingStore(s => s.loadKnownModels)
-  const setOverride = usePricingStore(s => s.setOverride)
-  const removeOverride = usePricingStore(s => s.removeOverride)
-  // The usage models with no price yet — the same store-derived split the
+  const {
+    overrides: overrideQuery,
+    aliases: aliasQuery,
+    knownModels: knownModelsQuery,
+    setOverride,
+    removeOverride,
+    commandErrors,
+    unpriced,
+  } = useOverridePricingStore()
+  const { currency } = useCurrencyFormatter()
+  // The usage models with no price yet — the same query-derived split the
   // aliases pane uses, so a not-yet-priced model can be priced directly.
-  const unpriced = usePricingStore(s => s.unpriced)
+  const overrides = overrideQuery.data
+  const aliases = aliasQuery.data
   const [model, setModel] = useState('')
   const [input, setInput] = useState('')
   const [output, setOutput] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
 
-  useEffect(() => {
-    void loadOverrides()
-    void loadAliases()
-    void loadKnownModels()
-  }, [loadOverrides, loadAliases, loadKnownModels])
-
   // Picker candidates: existing overrides with their rates, every aliased
-  // target, and the store-derived usage models not priced yet — deduped so
+  // target, and the query-derived usage models not priced yet — deduped so
   // each model appears once (first group wins).
   const modelGroups = useMemo<ModelPickerGroup[]>(
     () =>
@@ -74,10 +72,10 @@ export function PricingPane() {
         },
         {
           label: 'Not priced',
-          items: unpriced.map(usagePickerItem),
+          items: unpriced.map(model => usagePickerItem(model, currency)),
         },
       ]),
-    [overrides, aliases, unpriced],
+    [overrides, aliases, unpriced, currency],
   )
 
   const add = async (): Promise<void> => {
@@ -89,8 +87,12 @@ export function PricingPane() {
     setError(null)
     setBusy(true)
     try {
-      const ok = await setOverride(pricing.model, pricing.inputPricePerMillion, pricing.outputPricePerMillion)
-      if (ok) {
+      const result = await setOverride({
+        model: pricing.model,
+        inputPricePerMillion: pricing.inputPricePerMillion,
+        outputPricePerMillion: pricing.outputPricePerMillion,
+      })
+      if (result.ok) {
         setModel('')
         setInput('')
         setOutput('')
@@ -173,7 +175,21 @@ export function PricingPane() {
             </Button>
           </div>
         </div>
-        {(error || storeError) && <p className="text-destructive mt-2 text-[11px]">{error ?? storeError}</p>}
+        {(error ??
+          overrideQuery.error ??
+          aliasQuery.error ??
+          knownModelsQuery.error ??
+          commandErrors.setOverride ??
+          commandErrors.removeOverride) && (
+          <p className="text-destructive mt-2 text-[11px]">
+            {error ??
+              overrideQuery.error ??
+              aliasQuery.error ??
+              knownModelsQuery.error ??
+              commandErrors.setOverride ??
+              commandErrors.removeOverride}
+          </p>
+        )}
       </Card>
       <p className="text-muted-foreground text-[11px]">
         A configured model is overridden; an unknown one is added. Removing an override reverts its stored calls to the

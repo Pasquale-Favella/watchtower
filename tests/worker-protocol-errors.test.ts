@@ -1,45 +1,48 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
-import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 import { build } from 'esbuild'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import type { DbWorkerData } from '../src/main/db-worker/protocol.js'
-import { workerProtocolError } from '../src/main/db-worker/protocol-errors.js'
+import { CurrencyCommandValidationError } from '../src/main/application/currency-commands.js'
+import { LedgerConfigValidationError } from '../src/main/application/ledger-config-commands.js'
+import { workerRpcError } from '../src/main/db-worker/rpc-errors.js'
+import { openWorkerRpcTransport, type WorkerRpcClient } from '../src/main/db-worker/rpc-transport.js'
+import { ScanAbortedError } from '../src/main/pipeline/scan-control.js'
 import { UnsupportedLedgerSchemaVersion } from '../src/main/store/ledger-initialization.js'
 import { LedgerIngest, LedgerQueries } from '../src/main/store/ledger-ports.js'
 import { openWorkerRuntime } from '../src/main/worker-runtime.js'
+import { type WorkerEvent, WorkerRpcError } from '../src/shared/rpc/worker.js'
 import { buildFixtureCachedFile, FIXTURE_SOURCE_PATH } from './fixtures/cached-file.js'
 
-const directories: string[] = []
-const workerReadySchema = Schema.Struct({ event: Schema.Literal('ready') })
-const workerInitErrorSchema = Schema.Struct({ event: Schema.Literal('init-error'), error: Schema.String })
-const workerBootSchema = Schema.Union([workerReadySchema, workerInitErrorSchema])
-const workerFailureResponseSchema = Schema.Struct({
-  id: Schema.Number,
-  ok: Schema.Literal(false),
-  error: Schema.String,
-})
-const workerQueryErrorSchema = Schema.Struct({
-  event: Schema.Literal('oplog'),
-  level: Schema.Literal('error'),
-  logEvent: Schema.Literal('ledger.query.error'),
-  fields: Schema.Struct({ op: Schema.Literal('ledger.query'), code: Schema.String }),
+const genericMessage = 'The database worker operation failed.'
+let tempRoot = ''
+let workerPath = ''
+
+beforeAll(async () => {
+  tempRoot = await mkdtemp(join(process.cwd(), 'node_modules', '.watchtower-worker-error-test-'))
+  workerPath = join(tempRoot, 'db-worker.mjs')
+  await build({
+    entryPoints: [fileURLToPath(new URL('../src/main/db-worker/entry.ts', import.meta.url))],
+    outfile: workerPath,
+    bundle: true,
+    packages: 'external',
+    platform: 'node',
+    format: 'esm',
+    logLevel: 'silent',
+  })
 })
 
-function tempDirectory(): string {
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-worker-protocol-'))
-  directories.push(directory)
-  return directory
-}
+afterAll(async () => {
+  if (tempRoot) await rm(tempRoot, { recursive: true, force: true })
+})
 
 async function seedLedger(directory: string): Promise<string> {
   const dbPath = join(directory, 'ledger.db')
@@ -74,182 +77,199 @@ async function rejectedSnapshot(dbPath: string): Promise<unknown> {
   }
 }
 
-function waitForWorkerMessage<A>(
-  worker: Worker,
-  decode: (raw: unknown) => Result.Result<A, unknown>,
-  accept: (value: A) => boolean,
-  timeoutMessage: string,
+async function withProductionWorker<A>(
+  dbPath: string,
+  run: (client: WorkerRpcClient, events: WorkerEvent[]) => Promise<A>,
 ): Promise<A> {
-  return new Promise((resolve, reject) => {
-    const finish = (complete: () => void) => {
-      clearTimeout(timer)
-      worker.off('message', onMessage)
-      worker.off('error', onError)
-      worker.off('exit', onExit)
-      complete()
-    }
-    const onMessage = (raw: unknown) => {
-      const result = decode(raw)
-      if (Result.isSuccess(result) && accept(result.success)) finish(() => resolve(result.success))
-    }
-    const onError = (error: Error) => finish(() => reject(error))
-    const onExit = (code: number) => finish(() => reject(new Error(`worker exited before responding (${code})`)))
-    const timer = setTimeout(() => finish(() => reject(new Error(timeoutMessage))), 10_000)
-    worker.on('message', onMessage)
-    worker.on('error', onError)
-    worker.on('exit', onExit)
+  const token = Math.random().toString(16).slice(2)
+  const worker = new Worker(workerPath, {
+    workerData: { dbPath, dataDir: join(tempRoot, `data-${token}`), cacheDir: join(tempRoot, `cache-${token}`) },
   })
-}
-
-interface RealWorkerResult {
-  readonly response: unknown
-  readonly events: readonly unknown[]
-}
-
-function workerQueryErrorEvents(
-  events: readonly unknown[],
-): readonly Schema.Schema.Type<typeof workerQueryErrorSchema>[] {
-  return events.filter(Schema.is(workerQueryErrorSchema))
-}
-
-async function runRealWorker(dbPath: string, op = 'store:views'): Promise<RealWorkerResult> {
-  const directory = join(process.cwd(), 'node_modules', '.cache')
-  mkdirSync(directory, { recursive: true })
-  const workerDirectory = mkdtempSync(join(directory, 'watchtower-worker-protocol-entry-'))
-  directories.push(workerDirectory)
-  const workerPath = join(workerDirectory, 'db-worker.mjs')
-  await build({
-    absWorkingDir: process.cwd(),
-    entryPoints: [join(process.cwd(), 'src/main/db-worker/entry.ts')],
-    outfile: workerPath,
-    bundle: true,
-    packages: 'external',
-    platform: 'node',
-    format: 'esm',
+  const events: WorkerEvent[] = []
+  const transport = await openWorkerRpcTransport(worker, {
+    onEvent: event => events.push(event),
+    onFailure: () => {},
   })
-
-  const init: DbWorkerData = {
-    dbPath,
-    dataDir: join(workerDirectory, 'data'),
-    cacheDir: join(workerDirectory, 'cache'),
-  }
-  const worker = new Worker(workerPath, { workerData: init })
-  const events: unknown[] = []
-  const captureEvent = (event: unknown): void => {
-    events.push(event)
-  }
-  worker.on('message', captureEvent)
   try {
-    const bootMessage = await waitForWorkerMessage(
-      worker,
-      Schema.decodeUnknownResult(workerBootSchema),
-      () => true,
-      'worker ready timeout',
-    )
-    if (bootMessage.event === 'init-error') throw new Error(`worker boot failed: ${bootMessage.error}`)
-
-    worker.postMessage({ id: 1, op, args: [] })
-    const response = await waitForWorkerMessage(
-      worker,
-      raw => Schema.decodeUnknownResult(workerFailureResponseSchema)(raw),
-      response => response.id === 1,
-      'worker response timeout',
-    )
-    return { response, events }
+    await transport.ready
+    return await run(transport.client, events)
   } finally {
-    worker.off('message', captureEvent)
-    await worker.terminate()
+    if (worker.threadId !== -1) await Effect.runPromise(transport.client['worker:shutdown'](undefined)).catch(() => {})
+    await transport.close()
+    if (worker.threadId !== -1) await worker.terminate()
   }
 }
 
-afterEach(() => {
-  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true })
-})
+function sqlFailure(reason: SqlError.SqlErrorReason): SqlError.SqlError {
+  return new SqlError.SqlError({ reason })
+}
 
-describe('worker protocol error mapping', () => {
-  it('maps actual Effect.runPromise SQL and Schema rejections to bounded categories', async () => {
-    const schemaDirectory = tempDirectory()
-    const schemaPath = await seedLedger(schemaDirectory)
+describe('typed worker RPC error mapping', () => {
+  it('maps actual Effect.runPromise SQL and Schema rejections from corrupted SQLite data', async () => {
+    const schemaDir = await mkdtemp(join(tempRoot, 'row-schema-'))
+    const schemaPath = await seedLedger(schemaDir)
     const schemaWriter = new DatabaseSync(schemaPath)
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
 
     const schemaFailure = await rejectedSnapshot(schemaPath)
     expect(Schema.isSchemaError(schemaFailure)).toBe(true)
-    expect(workerProtocolError(schemaFailure)).toBe('Stored ledger data is invalid.')
-    expect(workerProtocolError(schemaFailure)).not.toContain('hyperdrive')
+    expect(workerRpcError(schemaFailure, 'query-failed').code).toBe('invalid-stored-data')
+    expect(workerRpcError(schemaFailure, 'query-failed').message).toBe(genericMessage)
+    expect(JSON.stringify(workerRpcError(schemaFailure, 'query-failed'))).not.toContain('hyperdrive')
 
-    const sqlDirectory = tempDirectory()
-    const sqlPath = await seedLedger(sqlDirectory)
+    const sqlDir = await mkdtemp(join(tempRoot, 'missing-table-'))
+    const sqlPath = await seedLedger(sqlDir)
     const sqlWriter = new DatabaseSync(sqlPath)
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()
 
     const sqlFailure = await rejectedSnapshot(sqlPath)
     expect(SqlError.isSqlError(sqlFailure)).toBe(true)
-    expect(workerProtocolError(sqlFailure)).toBe('The ledger database operation failed.')
+    expect(workerRpcError(sqlFailure, 'query-failed').code).toBe('database-operation-failed')
   })
 
-  it('sends real SQLite and row-schema failures as failed worker responses', async () => {
-    const schemaDirectory = tempDirectory()
-    const schemaPath = await seedLedger(schemaDirectory)
+  it('sends real SQLite and invalid-row failures through the native RPC boundary with prior safe logs', async () => {
+    const schemaDir = await mkdtemp(join(tempRoot, 'rpc-row-schema-'))
+    const schemaPath = await seedLedger(schemaDir)
     const schemaWriter = new DatabaseSync(schemaPath)
     schemaWriter.exec("UPDATE ledger_call SET speed = 'hyperdrive' WHERE call_index = 0")
     schemaWriter.close()
 
-    const schemaResult = await runRealWorker(schemaPath)
-    expect(schemaResult.response).toEqual({ id: 1, ok: false, error: 'Stored ledger data is invalid.' })
-    const schemaLogs = workerQueryErrorEvents(schemaResult.events)
+    const schemaResult = await withProductionWorker(schemaPath, async (client, events) => {
+      const outcome = await Effect.runPromise(client['store:views'](undefined)).then(
+        value => ({ value }),
+        error => ({ error, eventsAtRejection: [...events] }),
+      )
+      return { outcome, events: [...events] }
+    })
+    expect('error' in schemaResult.outcome).toBe(true)
+    if ('error' in schemaResult.outcome) {
+      expect(schemaResult.outcome.error).toBeInstanceOf(WorkerRpcError)
+      expect(schemaResult.outcome.error).toMatchObject({
+        _tag: 'WorkerRpcError',
+        code: 'invalid-stored-data',
+        eventSequence: expect.any(Number),
+      })
+      expect(schemaResult.outcome.eventsAtRejection.filter(isQueryErrorLog)).toHaveLength(1)
+      expect(schemaResult.outcome.error.eventSequence).toBeGreaterThan(0)
+    }
+    const schemaLogs = schemaResult.events.filter(isQueryErrorLog)
     expect(schemaLogs).toHaveLength(1)
-    expect(schemaLogs[0]).toEqual({
+    expect(schemaLogs[0]).toMatchObject({
       event: 'oplog',
       level: 'error',
       logEvent: 'ledger.query.error',
       fields: { op: 'ledger.query', code: 'schema' },
     })
-    expect(schemaResult.events.findIndex(Schema.is(workerQueryErrorSchema))).toBeLessThan(
-      schemaResult.events.findIndex(Schema.is(workerFailureResponseSchema)),
-    )
-    expect(JSON.stringify(schemaLogs)).not.toContain('hyperdrive')
-    expect(JSON.stringify(schemaLogs)).not.toContain('ledger_call')
-    expect(JSON.stringify(schemaLogs)).not.toContain(schemaPath)
+    expect(JSON.stringify(schemaLogs)).not.toMatch(/hyperdrive|ledger_call|ledger\.db|C:\\|\/Users\//i)
 
-    const sqlDirectory = tempDirectory()
-    const sqlPath = await seedLedger(sqlDirectory)
+    const sqlDir = await mkdtemp(join(tempRoot, 'rpc-missing-table-'))
+    const sqlPath = await seedLedger(sqlDir)
     const sqlWriter = new DatabaseSync(sqlPath)
     sqlWriter.exec('DROP TABLE ledger_turn')
     sqlWriter.close()
 
-    const sqlResult = await runRealWorker(sqlPath)
-    expect(sqlResult.response).toEqual({ id: 1, ok: false, error: 'The ledger database operation failed.' })
-    const sqlLogs = workerQueryErrorEvents(sqlResult.events)
+    const sqlResult = await withProductionWorker(sqlPath, async (client, events) => {
+      const outcome = await Effect.runPromise(client['store:views'](undefined)).then(
+        value => ({ value }),
+        error => ({ error, eventsAtRejection: [...events] }),
+      )
+      return { outcome, events: [...events] }
+    })
+    expect('error' in sqlResult.outcome).toBe(true)
+    if ('error' in sqlResult.outcome) {
+      expect(sqlResult.outcome.error).toBeInstanceOf(WorkerRpcError)
+      expect(sqlResult.outcome.error).toMatchObject({
+        _tag: 'WorkerRpcError',
+        code: 'database-operation-failed',
+        eventSequence: expect.any(Number),
+      })
+      expect(sqlResult.outcome.eventsAtRejection.filter(isQueryErrorLog)).toHaveLength(1)
+    }
+    const sqlLogs = sqlResult.events.filter(isQueryErrorLog)
     expect(sqlLogs).toHaveLength(1)
-    expect(sqlLogs[0]).toEqual({
+    expect(sqlLogs[0]).toMatchObject({
       event: 'oplog',
       level: 'error',
       logEvent: 'ledger.query.error',
       fields: { op: 'ledger.query', code: 'effect-sql-sql' },
     })
-    expect(sqlResult.events.findIndex(Schema.is(workerQueryErrorSchema))).toBeLessThan(
-      sqlResult.events.findIndex(Schema.is(workerFailureResponseSchema)),
-    )
-    expect(JSON.stringify(sqlLogs)).not.toContain('ledger_turn')
-    expect(JSON.stringify(sqlLogs)).not.toContain(sqlPath)
+    expect(JSON.stringify(sqlLogs)).not.toMatch(/ledger_turn|ledger\.db|C:\\|\/Users\//i)
+  }, 30_000)
+
+  it('maps known SQL failure reasons to safe intent codes', () => {
+    const cases = [
+      [new SqlError.ConnectionError({ cause: new Error('C:\\private\\ledger.db') }), 'database-unavailable'],
+      [new SqlError.AuthenticationError({ cause: new Error('secret token') }), 'database-access-denied'],
+      [new SqlError.AuthorizationError({ cause: new Error('private access detail') }), 'database-access-denied'],
+      [new SqlError.SqlSyntaxError({ cause: new Error('SELECT * FROM private_table') }), 'database-query-invalid'],
+      [new SqlError.UnknownError({ cause: new Error('SQL and path') }), 'database-operation-failed'],
+    ] as const
+
+    for (const [reason, code] of cases) {
+      const result = workerRpcError(sqlFailure(reason), 'query-failed')
+      expect(result.code).toBe(code)
+      expect(result.message).toBe(genericMessage)
+      expect(JSON.stringify(result)).not.toMatch(/private|secret|SELECT|ledger\.db/i)
+    }
   })
 
-  it('preserves known validation text and maps defects and interruption causes safely', () => {
-    expect(workerProtocolError(new Error('invalid ISO 4217 currency code'))).toBe('invalid ISO 4217 currency code')
+  it('maps stored-data, schema-version, and command validation failures safely', () => {
+    const schemaFailure = Schema.decodeUnknownResult(Schema.Number)('not a number')
+    if (schemaFailure._tag !== 'Failure') throw new Error('expected schema decoding to fail')
+
+    expect(workerRpcError(schemaFailure.failure, 'query-failed').code).toBe('invalid-stored-data')
     expect(
-      workerProtocolError(
-        new UnsupportedLedgerSchemaVersion({ version: 999, latestSupported: 4, message: 'db path and version 999' }),
-      ),
-    ).toBe('The ledger database schema version is not supported.')
-    expect(workerProtocolError(new Error('private ledger row and /Users/person/path'))).toBe(
-      'The database operation failed.',
-    )
-    expect(workerProtocolError(Cause.die(new Error('private defect')))).toBe(
-      'An unexpected database worker failure occurred.',
-    )
-    expect(workerProtocolError(Cause.interrupt(7))).toBe('The database operation was interrupted.')
+      workerRpcError(
+        new UnsupportedLedgerSchemaVersion({
+          version: 99,
+          latestSupported: 4,
+          message: 'private database path C:\\users\\person\\ledger.db',
+        }),
+        'initialization-failed',
+      ).code,
+    ).toBe('unsupported-schema-version')
+    expect(
+      workerRpcError(
+        new LedgerConfigValidationError({ message: 'prices must be non-negative numbers' }),
+        'command-failed',
+      ).code,
+    ).toBe('invalid-request')
+    expect(
+      workerRpcError(
+        new CurrencyCommandValidationError({ message: 'invalid ISO 4217 currency code' }),
+        'command-failed',
+      ).code,
+    ).toBe('invalid-request')
+  })
+
+  it('maps scan cancellation, Effect interruption, and shutdown without exposing details', () => {
+    expect(workerRpcError(new ScanAbortedError({ message: 'scan aborted' }), 'query-failed').code).toBe('cancelled')
+    expect(workerRpcError(Cause.interrupt(7), 'query-failed').code).toBe('cancelled')
+    expect(workerRpcError(new Error('db-worker is shutting down'), 'command-failed').code).toBe('shutting-down')
+  })
+
+  it('uses the caller fallback for unknown failures and defects without leaking causes', () => {
+    const privateError = new Error('private ledger row C:\\users\\person\\ledger.db')
+    const mappedError = workerRpcError(privateError, 'initialization-failed')
+    const mappedDefect = workerRpcError(Cause.die(new Error('private defect and SQL')), 'query-failed')
+
+    expect(mappedError).toMatchObject({ code: 'initialization-failed', message: genericMessage })
+    expect(mappedDefect).toMatchObject({ code: 'query-failed', message: genericMessage })
+    expect(JSON.stringify([mappedError, mappedDefect])).not.toMatch(/private|ledger\.db|SQL/i)
+    expect(workerRpcError(new Error('scan aborted'), 'query-failed').code).toBe('cancelled')
+
+    const alreadyTyped = new WorkerRpcError({
+      code: 'invalid-stored-data',
+      message: genericMessage,
+      eventSequence: 12,
+    })
+    expect(workerRpcError(alreadyTyped, 'query-failed')).toBe(alreadyTyped)
+    expect(workerRpcError(Cause.fail(alreadyTyped), 'query-failed')).toBe(alreadyTyped)
   })
 })
+
+function isQueryErrorLog(event: WorkerEvent): event is Extract<WorkerEvent, { readonly event: 'oplog' }> {
+  return event.event === 'oplog' && event.level === 'error' && event.logEvent === 'ledger.query.error'
+}

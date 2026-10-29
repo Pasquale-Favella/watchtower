@@ -1,7 +1,11 @@
+import { PanelLeft, RefreshCw } from 'lucide-react'
 import type { ReactElement, ReactNode } from 'react'
 
-import { RefreshCw, PanelLeft } from 'lucide-react'
-
+import { usePaletteStore } from '@/app/hooks/use-palette-store'
+import { usePaletteSearch } from '@/app/hooks/use-search'
+import { navigateToSection, navigateToSession } from '@/app/navigation'
+import { SECTION_ICONS } from '@/app/section-icons'
+import { displayShortcutForAction, NAV_SECTIONS, type Section, shortcutForAction } from '@/app/shortcuts'
 import {
   Command,
   CommandDialog,
@@ -14,12 +18,6 @@ import {
   CommandShortcut,
 } from '@/shared/components/ui/command'
 import { useSidebar } from '@/shared/components/ui/sidebar'
-import { NAV_SECTIONS, displayShortcutForAction, shortcutForAction, type Section } from '@/app/shortcuts'
-import { navigateToSection } from '@/app/navigation'
-import { usePaletteStore } from '@/app/stores/palette-store'
-import { useScanStore } from '@/app/stores/scan-store'
-
-import { SECTION_ICONS } from '@/app/section-icons'
 
 /** The v1 palette rows (ADR 0028): every Section plus the two runnable
  * registry Actions. The palette's own trigger is never a row. */
@@ -65,15 +63,19 @@ export function rowFilterValue(row: PaletteRow): string {
  * refresh reads the scan store, toggleSidebar reads the sidebar context
  * (same source as SidebarToggleShortcut). Mount inside SidebarProvider. */
 export function CommandPalette(): ReactElement {
-  const open = usePaletteStore(s => s.open)
-  const setOpen = usePaletteStore(s => s.setOpen)
-  const refresh = useScanStore(s => s.refresh)
+  const { open, setOpen, refreshScan: refresh, searchText, setSearchText, resetSearch } = usePaletteStore()
+  const search = usePaletteSearch(open, searchText)
   const { toggleSidebar } = useSidebar()
 
+  function onOpenChange(nextOpen: boolean): void {
+    setOpen(nextOpen)
+    if (!nextOpen) resetSearch(undefined)
+  }
+
   function runCommand(action: Section | PaletteAction): void {
-    setOpen(false)
+    onOpenChange(false)
     if (action === 'refresh') {
-      void refresh()
+      refresh(undefined)
       return
     }
     if (action === 'toggleSidebar') {
@@ -81,6 +83,11 @@ export function CommandPalette(): ReactElement {
       return
     }
     navigateToSection(action)
+  }
+
+  function runSearchResult(sessionId: string): void {
+    onOpenChange(false)
+    navigateToSession(sessionId)
   }
 
   function renderRow(row: PaletteRow): ReactNode {
@@ -95,13 +102,50 @@ export function CommandPalette(): ReactElement {
   }
 
   return (
-    <CommandDialog open={open} onOpenChange={setOpen}>
+    <CommandDialog open={open} onOpenChange={onOpenChange}>
       {/* Command owns the cmdk store — every sub-component below reads it
         from context and throws without this ancestor. */}
       <Command>
-        <CommandInput placeholder="Go to a section or run an action..." />
+        <CommandInput
+          value={searchText}
+          onValueChange={setSearchText}
+          placeholder="Go to a section or run an action..."
+        />
         <CommandList>
-          <CommandEmpty>No matching section or action.</CommandEmpty>
+          <CommandEmpty>No matching section, action, or session.</CommandEmpty>
+          {search.active && search.status === 'loading' && (
+            <CommandGroup heading="Sessions">
+              <CommandItem value={`searching ${searchText}`} disabled>
+                Searching sessions…
+              </CommandItem>
+            </CommandGroup>
+          )}
+          {search.active && search.error && (
+            <CommandGroup heading="Sessions">
+              <CommandItem value={`search error ${searchText}`} disabled>
+                {search.error}
+              </CommandItem>
+            </CommandGroup>
+          )}
+          {search.active && search.data && (
+            <CommandGroup heading="Sessions">
+              {search.data.map(hit => (
+                <CommandItem
+                  key={`${hit.sessionId}:${hit.timestamp}:${hit.kind}:${hit.snippet}`}
+                  value={`${hit.sessionId} ${hit.project} ${hit.snippet}`}
+                  onSelect={() => runSearchResult(hit.sessionId)}
+                >
+                  <span className="min-w-0 flex-1 truncate">{hit.snippet}</span>
+                  <CommandShortcut>{hit.project}</CommandShortcut>
+                </CommandItem>
+              ))}
+              {search.data.length === 0 && (
+                <CommandItem value={`no sessions ${searchText}`} disabled>
+                  No matching sessions.
+                </CommandItem>
+              )}
+            </CommandGroup>
+          )}
           <CommandGroup heading="Sections">{SECTION_ROWS.map(renderRow)}</CommandGroup>
           <CommandSeparator />
           <CommandGroup heading="Actions">{ACTION_ROWS.map(renderRow)}</CommandGroup>

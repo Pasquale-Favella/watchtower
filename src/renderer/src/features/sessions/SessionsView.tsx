@@ -1,26 +1,23 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useMemo, useState } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { navigateToSession } from '@/app/navigation'
+import type { SessionRow } from '@/features/sessions/drilldown'
 import {
   filterSessions,
-  sortSessions,
   groupSessionsByProvider,
-  summarizeSessions,
   type SessionSort,
+  sortSessions,
+  summarizeSessions,
 } from '@/features/sessions/sessions-lib'
-import { formatUsd } from '@/shared/lib/models'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
+import { useSessionsStore } from '@/features/sessions/use-sessions-store'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
+import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
 import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { useSessionsStore } from '@/features/sessions/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { navigateToSession } from '@/app/navigation'
-import { useScanStore } from '@/app/stores/scan-store'
-import type { SessionRow } from '@/features/sessions/drilldown'
+import { Skeleton } from '@/shared/components/ui/skeleton'
+import { motionClass } from '@/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/shared/lib/shell'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+import { cn } from '@/shared/lib/utils'
 
 const SORT_OPTIONS: SegOption[] = [
   { value: 'cost', label: 'Cost' },
@@ -67,6 +64,7 @@ function ColumnHeaders(): React.JSX.Element {
 }
 
 function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: string) => void }): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const provenance = row.modelProvenance ?? {}
   const merged = row.models.filter(model => provenance[model]?.length)
   return (
@@ -111,20 +109,11 @@ function SessionListRow({ row, onOpen }: { row: SessionRow; onOpen: (sessionId: 
 }
 
 export function SessionsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const rows = useSessionsStore(s => s.data)
-  const error = useSessionsStore(s => s.error)
-  const load = useSessionsStore(s => s.load)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const { formatUsd } = useCurrencyFormatter()
+  const { data: rows, error, provider, setProvider, detectedProviders } = useSessionsStore()
   const [query, setQuery] = useState('')
   const [sort, setSort] = useState<SessionSort>('cost')
   const [grouped, setGrouped] = useState(true)
-
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
 
   const filtered = useMemo(() => filterSessions(rows ?? [], query), [rows, query])
   const summary = useMemo(() => summarizeSessions(filtered), [filtered])
@@ -142,7 +131,7 @@ export function SessionsView(): React.JSX.Element {
 
       {rows === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading sessions…" className="border-border bg-card overflow-hidden rounded-lg border">
             <div className="border-border flex flex-wrap items-center gap-2.5 border-b px-3.5 py-3">
@@ -154,11 +143,15 @@ export function SessionsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : rows.length === 0 ? (
-        <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
-          No sessions in this range yet.
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card text-muted-foreground rounded-lg border px-3.5 py-6 text-[12px]">
+            No sessions in this range yet.
+          </div>
+        </>
       ) : (
         <>
+          <QueryErrorNotice error={error} hasData />
           <div className="flex flex-wrap items-center gap-2.5">
             <input
               aria-label="Search sessions"

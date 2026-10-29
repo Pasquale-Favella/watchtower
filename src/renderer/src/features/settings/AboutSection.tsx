@@ -1,26 +1,27 @@
 import { Download, ExternalLink, RefreshCcw } from 'lucide-react'
 
 import { releasePageUrl, REPO_URL } from '@/features/settings/updates'
-import {
-  canRequestUpdate,
-  selectUpdateActivity,
-  selectUpdateCommandVisible,
-  selectUpdateError,
-  selectUpdateStatus,
-  useUpdatesStore,
-} from '@/features/settings/updates-store'
+import { useSettingsUpdatesStore } from '@/features/settings/use-settings-store'
 import { Button } from '@/shared/components/ui/button'
-import { openExternalUrl } from '@/shared/lib/api'
+import { useNativeStore } from '@/shared/hooks/use-native-store'
 
 export function AboutSection(): React.JSX.Element {
-  const machine = useUpdatesStore(s => s.machine)
-  const check = useUpdatesStore(s => s.check)
-  const download = useUpdatesStore(s => s.download)
-  const install = useUpdatesStore(s => s.install)
-  const load = useUpdatesStore(s => s.load)
-  const status = selectUpdateStatus(machine)
-  const activity = selectUpdateActivity(machine)
-  const error = selectUpdateError(machine)
+  const { openExternal: open } = useNativeStore()
+  const {
+    status,
+    activity,
+    error,
+    loadFailed,
+    canCheck,
+    canDownload,
+    canInstall,
+    showDownload,
+    showInstall,
+    check,
+    download,
+    install,
+    load,
+  } = useSettingsUpdatesStore()
   const releaseUrl = status?.tag ? releasePageUrl(status.tag) : `${REPO_URL}/releases/latest`
 
   return (
@@ -34,40 +35,40 @@ export function AboutSection(): React.JSX.Element {
           type="button"
           variant="outline"
           size="sm"
-          disabled={!canRequestUpdate(machine, 'check')}
-          onClick={() => void check()}
+          disabled={!canCheck}
+          onClick={() => check(undefined)}
           className="text-[11px]"
         >
           <RefreshCcw className={activity === 'check' ? 'size-3.5 animate-spin' : 'size-3.5'} />
           {activity === 'check' ? 'Checking…' : 'Check for updates'}
         </Button>
-        {selectUpdateCommandVisible(machine, 'download') && (
+        {showDownload && (
           <Button
             type="button"
             variant="outline"
             size="sm"
-            disabled={!canRequestUpdate(machine, 'download')}
-            onClick={() => void download()}
+            disabled={!canDownload}
+            onClick={() => download(undefined)}
             className="text-[11px]"
           >
             <Download className="size-3.5" />
             Download update
           </Button>
         )}
-        {selectUpdateCommandVisible(machine, 'install') && (
+        {showInstall && (
           <Button
             type="button"
             size="sm"
-            disabled={!canRequestUpdate(machine, 'install')}
-            onClick={() => void install()}
+            disabled={!canInstall}
+            onClick={() => install(undefined)}
             className="text-[11px]"
           >
             Restart to install
           </Button>
         )}
       </div>
-      {machine.state === 'load-error' && (
-        <Button type="button" variant="outline" size="sm" onClick={() => void load()} className="mt-2 text-[11px]">
+      {loadFailed && (
+        <Button type="button" variant="outline" size="sm" onClick={() => load(undefined)} className="mt-2 text-[11px]">
           Retry update status
         </Button>
       )}
@@ -89,7 +90,7 @@ export function AboutSection(): React.JSX.Element {
         <button
           type="button"
           className="decoration-brand-text/40 text-brand-text inline underline underline-offset-2"
-          onClick={() => void openExternalUrl(releaseUrl)}
+          onClick={() => open(releaseUrl)}
         >
           Open release page <ExternalLink className="inline size-3" />
         </button>
@@ -99,7 +100,7 @@ export function AboutSection(): React.JSX.Element {
         <button
           type="button"
           className="decoration-brand-text/40 text-brand-text inline underline underline-offset-2"
-          onClick={() => void openExternalUrl(REPO_URL)}
+          onClick={() => open(REPO_URL)}
         >
           GitHub repository <ExternalLink className="inline size-3" />
         </button>

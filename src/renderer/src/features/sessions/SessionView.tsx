@@ -1,18 +1,19 @@
 import { useParams, useSearch } from '@tanstack/react-router'
 import { ArrowLeft, ChevronDown, GitBranch, Link2, Tag } from 'lucide-react'
 import type { MouseEvent } from 'react'
-import { useEffect, useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { navigateToSection } from '@/app/navigation'
 import type { SessionDetail } from '@/features/sessions/drilldown'
-import { sessionRequestKey, useSessionsStore } from '@/features/sessions/store'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
+import { useSessionStore } from '@/features/sessions/use-session-store'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/shared/components/skeletons'
 import { Badge } from '@/shared/components/ui/badge'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
-import { formatUsd } from '@/shared/lib/models'
+import { useNativeStore } from '@/shared/hooks/use-native-store'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
 import { cn } from '@/shared/lib/utils'
 
 function formatDate(iso: string): string {
@@ -23,10 +24,10 @@ function formatDate(iso: string): string {
 // IPC channel (http/https only, main-process enforced) — the same pattern
 // the pull requests section uses. A bare <a href target="_blank"> would
 // navigate the Electron window away from the app / open an in-app window.
-function openPr(event: MouseEvent<HTMLAnchorElement>, url: string): void {
+function openPr(event: MouseEvent<HTMLAnchorElement>, url: string, open: (url: string) => void): void {
   event.preventDefault()
   event.stopPropagation()
-  void window.api.openExternal(url)
+  open(url)
 }
 
 function Stat({ label, value }: { label: string; value: string }): React.JSX.Element {
@@ -39,6 +40,7 @@ function Stat({ label, value }: { label: string; value: string }): React.JSX.Ele
 }
 
 function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCalls'][number] }): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const [open, setOpen] = useState(false)
   return (
     <div className="bg-muted/30 rounded-md border">
@@ -88,6 +90,7 @@ function CallCard({ call }: { call: SessionDetail['turns'][number]['assistantCal
 }
 
 function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Element {
+  const { openExternal } = useNativeStore()
   const [open, setOpen] = useState(false)
   return (
     <div className="bg-card rounded-md border">
@@ -126,7 +129,7 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
                   key={pr}
                   href={pr}
                   title={pr}
-                  onClick={event => openPr(event, pr)}
+                  onClick={event => openPr(event, pr, openExternal)}
                   className="text-brand-text inline-flex items-center gap-0.5 text-xs hover:underline"
                 >
                   <Link2 className="h-3 w-3" />
@@ -152,30 +155,20 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
 }
 
 export function SessionView(): React.JSX.Element {
+  const { formatUsd } = useCurrencyFormatter()
   const { sessionId } = useParams({ strict: false })
   const { sourceId } = useSearch({ from: '/dashboard/sessions/$sessionId' })
-  const storedSession = useSessionsStore(s => s.session)
-  const storedError = useSessionsStore(s => s.sessionError)
-  const sessionKey = useSessionsStore(s => s.sessionKey)
-  const sessionStatus = useSessionsStore(s => s.sessionStatus)
-  const matchesRequest = sessionId !== undefined && sessionKey === sessionRequestKey(sessionId, sourceId)
-  const session = matchesRequest ? storedSession : null
-  const error = matchesRequest
-    ? (storedError ?? (sessionStatus === 'ready' && storedSession === null ? 'Session not found.' : null))
-    : null
-  const loadSession = useSessionsStore(s => s.loadSession)
-
-  useEffect(() => {
-    if (sessionId) void loadSession(sessionId, sourceId)
-  }, [sessionId, sourceId, loadSession])
+  const request = useMemo(() => (sessionId ? { sessionId, sourceId } : null), [sessionId, sourceId])
+  const { data: session, error: queryError, status, openExternal } = useSessionStore(request)
+  const error = queryError ?? (status === 'ready' && session === null ? 'Session not found.' : null)
 
   // Owns its max-w-[1180px] column like every other section view (ADR 0014);
   // the router no longer wraps session detail in a width container. The
   // container always renders — error/loading/content all sit inside it.
   return (
     <div className="w-full max-w-[1180px] space-y-4">
-      {error ? (
-        <ErrorPanel message={error} />
+      {!session && error ? (
+        <QueryErrorNotice error={error} hasData={false} />
       ) : !session ? (
         <LoadingRegion label="Loading session…" className="flex flex-col gap-4">
           <div className="flex items-center gap-3">
@@ -199,6 +192,7 @@ export function SessionView(): React.JSX.Element {
         </LoadingRegion>
       ) : (
         <>
+          <QueryErrorNotice error={queryError} hasData />
           <div className="flex items-center gap-3">
             <Button variant="ghost" size="sm" onClick={() => navigateToSection('sessions')}>
               <ArrowLeft className="h-4 w-4" /> Back
@@ -218,7 +212,7 @@ export function SessionView(): React.JSX.Element {
                   key={pr}
                   href={pr}
                   title={pr}
-                  onClick={event => openPr(event, pr)}
+                  onClick={event => openPr(event, pr, openExternal)}
                   className="text-brand-text hover:bg-muted inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs"
                 >
                   <Link2 className="h-3 w-3" />

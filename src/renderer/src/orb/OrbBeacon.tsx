@@ -1,11 +1,10 @@
 import { WatchtowerIcon } from '@/app/components/WatchtowerIcon'
 import { displayShortcutForAction } from '@/app/shortcuts'
-import { useScanStore } from '@/app/stores/scan-store'
 import { cn } from '@/shared/lib/utils'
 
 import { ORB_SIZE } from '../../../shared/schemas/orb.js'
 import { useOrbDrag } from './beacon-hooks'
-import { useOrbPlacementStore } from './placement-store'
+import { useOrbBeaconStore } from './beacon-store'
 
 /** The orb itself: the brand mark in a primary-ringed disc, with a beacon
  * sweeping its rim (faster while a scan runs — whichever window started it).
@@ -18,9 +17,7 @@ import { useOrbPlacementStore } from './placement-store'
  * click" would both reopen the full app by accident. The app opens from the
  * panel's buttons, the summon shortcut pressed twice, or the tray. */
 export function OrbBeacon({ className }: { className?: string }) {
-  const expanded = useOrbPlacementStore(s => s.placement.expanded)
-  const request = useOrbPlacementStore(s => s.request)
-  const scanning = useScanStore(s => s.scanning)
+  const { expanded, scanning, requestPlacement: request } = useOrbBeaconStore()
   // A click is the user's own request: the panel opens focused.
   const toggle = (): void => void request(expanded ? 'fold' : 'open')
   const drag = useOrbDrag(toggle)

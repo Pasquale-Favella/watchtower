@@ -1,1118 +1,674 @@
+import * as Effect from 'effect/Effect'
+import * as Atom from 'effect/reactivity/Atom'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
+import * as Stream from 'effect/Stream'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { CoachEventEnvelope, CoachSessionModels, CoachSessionModes } from '../src/shared/schemas/agents.js'
+import { overviewScopeAtom, periodAtom } from '../src/renderer/src/app/atoms/scope.js'
+import { createCoachAtoms, mountCoachAtoms } from '../src/renderer/src/features/coach-skills/atoms.js'
 import { harnessBadge, statusLabel } from '../src/renderer/src/features/coach-skills/lib.js'
+import { preferencesAtom } from '../src/renderer/src/features/settings/preferences-atoms.js'
+import { CoachRpcError, type CoachRunFrame } from '../src/shared/rpc/coach.js'
+import type {
+  CoachEventEnvelope,
+  CoachHarnessRow,
+  CoachInspectRequest,
+  CoachSessionModels,
+  CoachSessionModes,
+} from '../src/shared/schemas/agents.js'
+import { type CoachRpcTestOverrides, makeCoachRpcTestClient } from './coach-rpc-test-helper.js'
 
-function createMemoryStorage(): Storage {
-  const store = new Map<string, string>()
-  return {
-    get length() {
-      return store.size
-    },
-    clear: () => {
-      store.clear()
-    },
-    getItem: (key: string) => store.get(key) ?? null,
-    key: (index: number) => Array.from(store.keys())[index] ?? null,
-    removeItem: (key: string) => {
-      store.delete(key)
-    },
-    setItem: (key: string, value: string) => {
-      store.set(key, value)
-    },
-  }
-}
-
-// The settings store persists via `createJSONStorage(() => localStorage)` at
-// module load — install the memory storage BEFORE the dynamic import.
-const memory = createMemoryStorage()
-vi.stubGlobal('localStorage', memory)
-
-const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
-const { useSettingsStore } = await import('../src/renderer/src/features/settings/store.js')
-const { selectScope, useScopeStore } = await import('../src/renderer/src/app/stores/scope-store.js')
-
-/** The UI-scope snapshot the store attaches to every run (map 53). */
-const expectedScope = (): ReturnType<typeof selectScope> => selectScope(useScopeStore.getState())
-
-/** Stub the preload surface for the fetch wrappers' IPC-call sites. */
-function mockWindow(api: unknown): void {
-  ;(globalThis as { window?: unknown }).window = { api }
-}
-
-const harnesses = [
+const harnesses: CoachHarnessRow[] = [
   { instanceId: 'claude', kind: 'claude', displayName: 'Claude Code', status: 'ready', auth: { status: 'configured' } },
   { instanceId: 'gemini', kind: 'gemini', displayName: 'Gemini CLI', status: 'warning', auth: { status: 'unknown' } },
 ]
-
-const envelope = (event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId: 'run-1', event })
-
 const models: CoachSessionModels = {
   availableModels: [{ modelId: 'opus', name: 'Claude Opus' }],
   currentModelId: 'opus',
 }
 const modes: CoachSessionModes = { availableModes: [{ id: 'plan', name: 'Plan' }], currentModeId: 'plan' }
+const envelope = (runId: string, event: CoachEventEnvelope['event']): CoachEventEnvelope => ({ runId, event })
+
+function setup(overrides: CoachRpcTestOverrides = {}) {
+  const registry = AtomRegistry.make()
+  const runtime = Atom.context()
+  const client = makeCoachRpcTestClient(runtime, {
+    harnesses: () => Effect.succeed(harnesses),
+    refreshHarnesses: () => Effect.succeed(harnesses),
+    inspect: () => Effect.succeed({ ok: true, models, modes }),
+    ...overrides,
+  })
+  const atoms = createCoachAtoms(client)
+  registry.mount(atoms.coachStateAtom)
+  const release = mountCoachAtoms(registry, atoms)
+  return { registry, atoms, client, release }
+}
+
+const runningStream = (runId: string): Stream.Stream<CoachRunFrame, CoachRpcError> =>
+  Stream.concat(Stream.make({ _tag: 'Started' as const, runId }), Stream.never)
+
+const finishedStream = (runId: string, events: CoachRunFrame[] = []): Stream.Stream<CoachRunFrame, CoachRpcError> =>
+  Stream.fromIterable([{ _tag: 'Started' as const, runId }, ...events])
+
+const eventFrame = (runId: string, event: CoachEventEnvelope['event']): CoachRunFrame => ({
+  _tag: 'Event',
+  runId,
+  event,
+})
+
+const waitFor = async (registry: AtomRegistry.AtomRegistry, predicate: () => boolean): Promise<void> => {
+  await vi.waitFor(() => expect(predicate()).toBe(true))
+}
 
 beforeEach(() => {
-  useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
+  vi.clearAllMocks()
 })
 
-describe('useCoachSkillsStore — unified Coach chat state (ADR 0017)', () => {
-  it('derives honest harness status labels and setup badges without a DOM', () => {
-    const warning = {
+describe('Coach native atom workflow', () => {
+  it('derives harness status labels and badges without a DOM', () => {
+    const warning: CoachHarnessRow = {
       instanceId: 'codex',
       kind: 'codex',
       displayName: 'Codex',
-      status: 'warning' as const,
-      auth: { status: 'unknown' as const },
+      status: 'warning',
+      auth: { status: 'unknown' },
     }
-    const error = { ...warning, status: 'error' as const }
-    const pending = { ...warning, status: 'pending' as const }
     expect(statusLabel(warning.status)).toBe('Needs attention')
     expect(harnessBadge(warning)).toBe('Sign-in?')
-    expect(harnessBadge(error)).toBe('Unavailable')
-    expect(harnessBadge(pending)).toBe('Checking…')
-  })
-  it('starts idle with no harness and an empty thread', () => {
-    const s = useCoachSkillsStore.getState()
-    expect(s.hydrated).toBe(false)
-    expect(s.harnesses).toEqual([])
-    expect(s.harnessKind).toBeNull()
-    expect(s.messages).toEqual([])
-    expect(s.running).toBe(false)
-    expect(s.activeRunId).toBeNull()
-    expect(s.resumeCursor).toBeNull()
-    expect(s.error).toBeNull()
-    expect(s.modelsByKind).toEqual({})
+    expect(harnessBadge({ ...warning, status: 'error' })).toBe('Unavailable')
+    expect(harnessBadge({ ...warning, status: 'pending' })).toBe('Checking…')
   })
 
-  it('loadHarnesses hydrates the picker rows and auto-selects the first harness', async () => {
-    mockWindow({ getCoachHarnesses: () => Promise.resolve(harnesses) })
-    await useCoachSkillsStore.getState().loadHarnesses()
-    const s = useCoachSkillsStore.getState()
-    expect(s.hydrated).toBe(true)
-    expect(s.harnesses).toEqual(harnesses)
-    expect(s.harnessKind).toBe('claude')
-  })
+  it('owns conversation state per registry and hydrates the default harness', async () => {
+    const first = setup()
+    const second = setup()
+    first.registry.set(first.atoms.loadHarnessesAtom, undefined)
+    await waitFor(first.registry, () => first.registry.get(first.atoms.coachStateAtom).hydrated)
 
-  it('loadHarnesses drops a schema-invalid payload without hydrating', async () => {
-    mockWindow({ getCoachHarnesses: () => Promise.resolve([{ kind: 123 }]) })
-    await useCoachSkillsStore.getState().loadHarnesses()
-    const s = useCoachSkillsStore.getState()
-    expect(s.hydrated).toBe(false)
-    expect(s.harnesses).toEqual([])
-    expect(s.harnessKind).toBeNull()
-  })
-
-  it('selects ready before warning/pending and never selects an error row', async () => {
-    const errorRow = {
-      instanceId: 'broken',
-      kind: 'broken',
-      displayName: 'Broken',
-      status: 'error' as const,
-      auth: { status: 'unknown' as const },
-    }
-    const warningRow = {
-      instanceId: 'needs-login',
-      kind: 'needs-login',
-      displayName: 'Needs login',
-      status: 'warning' as const,
-      auth: { status: 'unauthenticated' as const },
-    }
-    mockWindow({ getCoachHarnesses: () => Promise.resolve([errorRow, warningRow]) })
-    await useCoachSkillsStore.getState().loadHarnesses()
-    expect(useCoachSkillsStore.getState().harnessKind).toBe('needs-login')
-
-    useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
-    useCoachSkillsStore.getState().replaceHarnesses([errorRow])
-    expect(useCoachSkillsStore.getState().harnessKind).toBeNull()
-  })
-
-  it('moves an auto-pick to a ready instance as probes land, but keeps a user pick', () => {
-    const pending = (id: string) => ({
-      instanceId: id,
-      kind: id,
-      displayName: id,
-      status: 'pending' as const,
-      auth: { status: 'unknown' as const },
+    expect(first.registry.get(first.atoms.coachStateAtom)).toMatchObject({
+      harnessKind: 'claude',
+      messages: [],
+      running: false,
     })
-    const store = useCoachSkillsStore.getState()
-    store.replaceHarnesses([pending('claude'), pending('codex')])
-    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
+    expect(second.registry.get(second.atoms.coachStateAtom)).toMatchObject({ hydrated: false, harnessKind: null })
+    first.registry.dispose()
+    second.registry.dispose()
+  })
 
-    useCoachSkillsStore.getState().replaceHarnesses([
+  it('switches auto-picks to a ready harness but keeps a user choice', () => {
+    const { registry, atoms } = setup()
+    const pending = (instanceId: string): CoachHarnessRow => ({
+      instanceId,
+      kind: instanceId,
+      displayName: instanceId,
+      status: 'pending',
+      auth: { status: 'unknown' },
+    })
+    registry.set(atoms.replaceHarnessesAtom, [pending('claude'), pending('codex')])
+    expect(registry.get(atoms.coachStateAtom).harnessKind).toBe('claude')
+    registry.set(atoms.replaceHarnessesAtom, [
       { ...pending('claude'), status: 'error' },
       { ...pending('codex'), status: 'ready', auth: { status: 'configured' } },
     ])
-    expect(useCoachSkillsStore.getState().harnessKind).toBe('codex')
-
-    useCoachSkillsStore.getState().setHarness('claude')
-    useCoachSkillsStore.getState().replaceHarnesses([
+    expect(registry.get(atoms.coachStateAtom).harnessKind).toBe('codex')
+    registry.set(atoms.setHarnessAtom, 'claude')
+    registry.set(atoms.replaceHarnessesAtom, [
       { ...pending('claude'), status: 'error' },
       { ...pending('codex'), status: 'ready', auth: { status: 'configured' } },
     ])
-    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
+    expect(registry.get(atoms.coachStateAtom).harnessKind).toBe('claude')
+    registry.dispose()
   })
 
-  it('applies a harnesses-changed snapshot before initial load', () => {
-    const changed = {
-      instanceId: 'codex',
-      kind: 'codex',
-      displayName: 'Codex',
-      status: 'ready' as const,
-      auth: { status: 'configured' as const },
-    }
-    useCoachSkillsStore.getState().replaceHarnesses([changed])
-    expect(useCoachSkillsStore.getState()).toMatchObject({ hydrated: true, harnessKind: 'codex', harnesses: [changed] })
-  })
-
-  it('refreshHarnesses applies the refreshed rows through replaceHarnesses', async () => {
-    const refreshed = [
-      {
-        instanceId: 'codex',
-        kind: 'codex',
-        displayName: 'Codex',
-        status: 'ready' as const,
-        auth: { status: 'configured' as const },
-      },
-    ]
-    const refreshCoachHarnesses = vi.fn(() => Promise.resolve(refreshed))
-    mockWindow({ refreshCoachHarnesses })
-
-    await useCoachSkillsStore.getState().refreshHarnesses()
-
-    expect(refreshCoachHarnesses).toHaveBeenCalledOnce()
-    expect(useCoachSkillsStore.getState()).toMatchObject({ hydrated: true, harnesses: refreshed, harnessKind: 'codex' })
-  })
-
-  it('sendCoach pushes user + assistant turns and acks the run', async () => {
-    mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    await useCoachSkillsStore.getState().sendCoach('Summarise my spend')
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.running).toBe(true)
-    expect(s.activeRunId).toBe('run-9')
-    expect(s.messages).toHaveLength(2)
-    expect(s.messages[0]).toMatchObject({ role: 'user', content: 'Summarise my spend' })
-    expect(s.messages[1]).toMatchObject({ role: 'assistant', content: '', streaming: true })
-  })
-
-  it('sendCoach forwards the resume sessionId and the UI-scope snapshot', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', resumeCursor: 'cursor_prev' })
-
-    await useCoachSkillsStore.getState().sendCoach('p')
-
-    expect(startCoachRun).toHaveBeenCalledWith({
-      harnessKind: 'claude',
-      prompt: 'p',
-      resumeCursor: 'cursor_prev',
-      // Map 53: no workspace path — the harness data context rides the scope.
-      scope: expectedScope(),
+  it('starts empty and chooses ready ahead of earlier warning or pending rows, never errors', () => {
+    const { registry, atoms } = setup()
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({
+      hydrated: false,
+      harnessKind: null,
+      messages: [],
+      running: false,
     })
+    const row = (instanceId: string, state: CoachHarnessRow['status']): CoachHarnessRow => ({
+      instanceId,
+      kind: instanceId,
+      displayName: instanceId,
+      status: state,
+      auth: { status: 'unknown' },
+    })
+    registry.set(atoms.replaceHarnessesAtom, [row('error', 'error'), row('warning', 'warning'), row('ready', 'ready')])
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ hydrated: true, harnessKind: 'ready' })
+    registry.set(atoms.replaceHarnessesAtom, [row('error', 'error')])
+    expect(registry.get(atoms.coachStateAtom).harnessKind).toBeNull()
+    registry.dispose()
   })
 
-  it("onEvent stores the agent-declared models/modes and the user's pick is sent on the next run", async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    // A prior run's handshake declared selectable models/modes.
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      messages: [
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-      ],
-    })
-    useCoachSkillsStore.getState().onEvent({
-      runId: 'run-1',
-      event: {
-        kind: 'session',
-        resumeCursor: 'cursor_9',
-        models: {
-          availableModels: [
-            { modelId: 'opus', name: 'Claude Opus' },
-            { modelId: 'sonnet', name: 'Claude Sonnet' },
-          ],
-          currentModelId: 'opus',
-        },
-        modes: {
-          availableModes: [
-            { id: 'default', name: 'Default' },
-            { id: 'plan', name: 'Plan' },
-          ],
-          currentModeId: 'default',
-        },
-      },
-    })
-    useCoachSkillsStore.getState().setModelId('sonnet')
-    useCoachSkillsStore.getState().setModeId('plan')
-
-    await useCoachSkillsStore.getState().sendCoach('p')
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.sessionModels?.availableModels).toHaveLength(2)
-    expect(s.sessionModes?.availableModes).toHaveLength(2)
-    expect(startCoachRun).toHaveBeenCalledWith(expect.objectContaining({ modelId: 'sonnet', modeId: 'plan' }))
+  it('hydrates and refreshes harness rows through their Effect commands', async () => {
+    const refreshed = [{ ...harnesses[1]!, instanceId: 'codex', kind: 'codex' }]
+    const getCoachHarnesses = vi.fn(() => Effect.succeed(harnesses))
+    const refreshCoachHarnesses = vi.fn(() => Effect.succeed(refreshed))
+    const { registry, atoms } = setup({ harnesses: getCoachHarnesses, refreshHarnesses: refreshCoachHarnesses })
+    registry.set(atoms.loadHarnessesAtom, undefined)
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).hydrated)
+    expect(registry.get(atoms.coachStateAtom).harnessKind).toBe('claude')
+    registry.set(atoms.refreshHarnessesAtom, undefined)
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).harnesses[0]?.instanceId === 'codex')
+    expect(getCoachHarnesses).toHaveBeenCalledTimes(1)
+    expect(refreshCoachHarnesses).toHaveBeenCalledTimes(1)
+    registry.dispose()
   })
 
-  it('does not send modelId/modeId when the agent declared no selectable set', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude', resumeCursor: 'cursor_prev' })
-
-    await useCoachSkillsStore.getState().sendCoach('p')
-
-    expect(startCoachRun).toHaveBeenCalledWith(
-      expect.not.objectContaining({ modelId: expect.anything(), modeId: expect.anything() }),
+  it('caches successful probes by harness, restores picks, and leaves failed probes retryable', async () => {
+    const inspect = vi.fn((request: string | { kind: string; allowApiKeyEnv?: boolean }) =>
+      Effect.succeed(
+        (typeof request === 'string' ? request : request.kind) === 'claude'
+          ? { ok: true as const, models, modes }
+          : { ok: false as const, error: 'offline' },
+      ),
     )
+    const { registry, atoms } = setup({ inspect })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.inspectHarnessAtom, 'claude')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.claude !== undefined)
+    registry.set(atoms.setModelIdAtom, 'opus')
+    registry.set(atoms.setHarnessAtom, 'gemini')
+    registry.set(atoms.inspectHarnessAtom, 'gemini')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).inspectingKind === null)
+    registry.set(atoms.setHarnessAtom, 'claude')
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ sessionModels: models, modelId: 'opus' })
+    registry.set(atoms.setHarnessAtom, 'gemini')
+    registry.set(atoms.inspectHarnessAtom, 'gemini')
+    await waitFor(registry, () => inspect.mock.calls.length >= 3)
+    expect(registry.get(atoms.coachStateAtom).modelsByKind.gemini).toBeUndefined()
+    registry.dispose()
   })
 
-  it('sendCoach forwards the API-key passthrough opt-in only when enabled in settings', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+  it.each(['loadHarnessesAtom', 'refreshHarnessesAtom'] as const)(
+    'does not replace newer lifecycle harness rows with a late %s response',
+    async command => {
+      let resolve!: (rows: CoachHarnessRow[]) => void
+      const delayed = () =>
+        Effect.promise(
+          () =>
+            new Promise<CoachHarnessRow[]>(done => {
+              resolve = done
+            }),
+        )
+      const { registry, atoms } = setup({ harnesses: delayed, refreshHarnesses: delayed })
+      registry.set(atoms[command], undefined)
+      await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+      const newer = [{ ...harnesses[0]!, status: 'warning' as const, auth: { status: 'unauthenticated' as const } }]
+      registry.set(atoms.replaceHarnessesAtom, newer)
+      resolve(harnesses)
+      await vi.waitFor(() => expect(registry.get(atoms[command])).toMatchObject({ _tag: 'Success', waiting: false }))
+      expect(registry.get(atoms.coachStateAtom).harnesses).toEqual(newer)
+      registry.dispose()
+    },
+  )
 
-    await useCoachSkillsStore.getState().sendCoach('p')
-    expect(startCoachRun).toHaveBeenCalledWith(expect.not.objectContaining({ allowApiKeyEnv: expect.anything() }))
-
-    // The acked first run is still "in flight" (no completion events in this
-    // test) — settle it so the second send is not refused as concurrent.
-    useCoachSkillsStore.setState({ running: false, activeRunId: null })
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
-    await useCoachSkillsStore.getState().sendCoach('p2')
-    expect(startCoachRun).toHaveBeenLastCalledWith(expect.objectContaining({ allowApiKeyEnv: true }))
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(false)
-  })
-
-  it('inspectHarness carries the API-key passthrough opt-in from settings', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'nope' }))
-    mockWindow({ inspectCoachHarness })
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(true)
-
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-
-    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude', allowApiKeyEnv: true })
-    useSettingsStore.getState().setAllowHarnessApiKeyEnv(false)
-  })
-
-  it('setHarness clears the live set for an UNCACHED harness without probing it', () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'agent binary not found' }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modeId: 'plan',
-    })
-    // gemini has never been probed — the live set is cleared (a different
-    // agent) and the picker will probe it only when opened or hovered.
-    useCoachSkillsStore.getState().setHarness('gemini')
-    const s = useCoachSkillsStore.getState()
-    expect(s.harnessKind).toBe('gemini')
-    expect(s.sessionModels).toBeNull()
-    expect(s.sessionModes).toBeNull()
-    expect(s.modelId).toBeNull()
-    expect(s.modeId).toBeNull()
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-  })
-
-  it('setHarness restores a CACHED harness instantly — no probe, picks included', () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modeId: 'plan',
-      modelsByKind: {
-        claude: { models, modes, modelId: 'opus', modeId: 'plan' },
-        gemini: { models: null, modes: null, modelId: null, modeId: null },
-      },
-    })
-
-    // gemini was probed empty before — restoring it spawns nothing.
-    useCoachSkillsStore.getState().setHarness('gemini')
-    expect(useCoachSkillsStore.getState().sessionModels).toBeNull()
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-
-    // Switching back to the cached claude restores set + picks from memory.
-    useCoachSkillsStore.getState().setHarness('claude')
-    const s = useCoachSkillsStore.getState()
-    expect(s.harnessKind).toBe('claude')
-    expect(s.sessionModels).toEqual(models)
-    expect(s.sessionModes).toEqual(modes)
-    expect(s.modelId).toBe('opus')
-    expect(s.modeId).toBe('plan')
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-  })
-
-  it("setHarness remembers the outgoing harness's picks against its cached set", () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modelsByKind: {
-        claude: { models, modes, modelId: null, modeId: null },
-        gemini: { models: null, modes: null, modelId: null, modeId: null },
-      },
-    })
-
-    // The user changed claude's pick after it was cached — the switch away
-    // snapshots the LIVE pick into the cache so a switch-back restores it.
-    useCoachSkillsStore.getState().setHarness('gemini')
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']?.modelId).toBe('opus')
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']?.models).toEqual(models)
-  })
-
-  it('sendCoach without a harness fails without launching', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({ harnessKind: null })
-
-    await useCoachSkillsStore.getState().sendCoach('p')
-
-    expect(useCoachSkillsStore.getState().error).toBe('select a harness first')
-    expect(startCoachRun).not.toHaveBeenCalled()
-  })
-
-  it('a failed ack marks the assistant turn errored and stops running', async () => {
-    mockWindow({ startCoachRun: () => Promise.resolve({ ok: false, error: 'harness not detected: ghost' }) })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    await useCoachSkillsStore.getState().sendCoach('p')
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.running).toBe(false)
-    expect(s.messages[1]).toMatchObject({ streaming: false, error: 'harness not detected: ghost' })
-  })
-
-  it('events arriving before the ack land are buffered and replayed once the run acks', async () => {
-    // The main acks, then pumps — a fast failure can emit BEFORE the ack's
-    // round-trip reaches the store. Those pre-ack events must not be lost.
-    let resolveAck!: (value: { ok: true; runId: string }) => void
-    mockWindow({
-      startCoachRun: () =>
-        new Promise(resolve => {
-          resolveAck = resolve
-        }),
-    })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    const pending = useCoachSkillsStore.getState().sendCoach('p')
-    // The ack is still in flight — an error event arrives first.
-    useCoachSkillsStore
-      .getState()
-      .onEvent({ runId: 'run-9', event: { kind: 'error', message: 'spawn opencode ENOENT' } })
-    expect(useCoachSkillsStore.getState().pendingEvents['run-9']).toHaveLength(1)
-
-    resolveAck({ ok: true, runId: 'run-9' })
-    await pending
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.running).toBe(false)
-    expect(s.activeRunId).toBeNull()
-    expect(s.pendingEvents['run-9']).toBeUndefined()
-    expect(s.messages[1]).toMatchObject({ streaming: false, error: 'spawn opencode ENOENT' })
-  })
-
-  it('onEvent accumulates text deltas, thinking, and tool lifecycle into the streaming turn', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'reasoning', delta: 'Let me ' }))
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'text', delta: 'Hel' }))
-    // A started tool call with an id, then its completed result.
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started' }))
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'reasoning', delta: 'think…' }))
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'text', delta: 'lo' }))
-    useCoachSkillsStore
-      .getState()
-      .onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'completed', output: 'total 0' }))
-    let assistant = useCoachSkillsStore.getState().messages[1]
-    expect(assistant.content).toBe('Hello')
-    expect(assistant.thinking).toBe('Let me think…')
-    expect(assistant.tools).toEqual([{ id: 'call-1', tool: 'Bash', state: 'completed', output: 'total 0' }])
-
-    // A second tool call streams after the first finished.
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Edit', id: 'call-2', state: 'started' }))
-    assistant = useCoachSkillsStore.getState().messages[1]
-    expect(assistant.tools).toHaveLength(2)
-    expect(assistant.tools[1]).toEqual({ id: 'call-2', tool: 'Edit', state: 'started' })
-  })
-
-  it('onEvent merges a started tool re-announcement by id and keeps a bare notice as started', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-    // The ACP provider opens the call via tool-input-start, then re-announces
-    // it via the dynamic tool-call WITH the args preview — same id, merged.
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started' }))
-    useCoachSkillsStore
-      .getState()
-      .onEvent(envelope({ kind: 'tool', tool: 'Bash', id: 'call-1', state: 'started', input: '{"command":"ls"}' }))
-    // A legacy bare notice (no state, older seam) still opens as started.
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'Read' }))
-    const assistant = useCoachSkillsStore.getState().messages[1]
-    expect(assistant.tools).toEqual([
-      { id: 'call-1', tool: 'Bash', state: 'started', input: '{"command":"ls"}' },
-      { tool: 'Read', state: 'started' },
-    ])
-  })
-
-  it('onEvent appends an id-less tool completion because tool merging is strictly id-based', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'started' }))
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'started' }))
-    // Without an id, the completion cannot be paired to either started call.
-    useCoachSkillsStore
-      .getState()
-      .onEvent(envelope({ kind: 'tool', tool: 'WebFetch', state: 'error', error: 'timeout' }))
-    const assistant = useCoachSkillsStore.getState().messages[1]
-    expect(assistant.tools).toEqual([
-      { tool: 'WebFetch', state: 'started' },
-      { tool: 'WebFetch', state: 'started' },
-      { tool: 'WebFetch', state: 'error', error: 'timeout' },
-    ])
-  })
-
-  it('onEvent appends a notice to the run-owned assistant message', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
-    })
-
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'notice', message: 'continuing in a fresh session' }))
-
-    expect(useCoachSkillsStore.getState().messages[0]?.notices).toEqual(['continuing in a fresh session'])
-  })
-
-  it('onEvent done finalizes the streaming turn', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [
-        { id: 'm0', role: 'user', content: 'advice please', thinking: '', tools: [], notices: [], streaming: false },
-        {
-          id: 'm1',
-          role: 'assistant',
-          content: 'Here is some advice…',
-          thinking: '',
-          tools: [],
-          notices: [],
-          streaming: true,
-        },
-      ],
-    })
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'status', state: 'done' }))
-    const s = useCoachSkillsStore.getState()
-    expect(s.running).toBe(false)
-    expect(s.activeRunId).toBeNull()
-    expect(s.messages[1]).toMatchObject({ streaming: false, content: 'Here is some advice…' })
-  })
-
-  it('onEvent stores the session resume handle', () => {
-    useCoachSkillsStore.setState({ activeRunId: 'run-1', runMessageIds: { 'run-1': 'm1' } })
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'session', resumeCursor: 'cursor_9' }))
-    expect(useCoachSkillsStore.getState().resumeCursor).toBe('cursor_9')
-  })
-
-  it('onEvent surfaces an error and stops running', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-    useCoachSkillsStore.getState().onEvent(envelope({ kind: 'error', message: 'CLI not logged in' }))
-    const s = useCoachSkillsStore.getState()
-    expect(s.running).toBe(false)
-    expect(s.messages[1]).toMatchObject({ streaming: false, error: 'CLI not logged in' })
-  })
-
-  it('cancel sends the active runId and immediately clears the run state', () => {
-    const cancelCoachRun = vi.fn()
-    mockWindow({ cancelCoachRun })
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-    useCoachSkillsStore.getState().cancel()
-    // No done event follows a cancel — the store must recover on its own.
-    expect(cancelCoachRun).toHaveBeenCalledWith('run-1')
-    expect(useCoachSkillsStore.getState().running).toBe(false)
-    expect(useCoachSkillsStore.getState().activeRunId).toBeNull()
-    expect(useCoachSkillsStore.getState().messages[1]).toMatchObject({ streaming: false, error: 'cancelled' })
-
-    useCoachSkillsStore.getState().cancel()
-    expect(cancelCoachRun).toHaveBeenCalledTimes(1)
-  })
-
-  it('retryAssistant re-runs the last coach turn with the SAME prompt, replacing the old answer in place', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      resumeCursor: 'cursor_prev',
-      messages: [
-        {
-          id: 'm0',
-          role: 'user',
-          content: 'Summarise my spend',
-          thinking: '',
-          tools: [],
-          notices: [],
-          streaming: false,
-        },
-        { id: 'm1', role: 'assistant', content: 'old answer', thinking: '', tools: [], notices: [], streaming: false },
-      ],
-    })
-
-    await useCoachSkillsStore.getState().retryAssistant('m1')
-
-    const s = useCoachSkillsStore.getState()
-    // The user turn stays; the OLD assistant turn is replaced by the fresh one.
-    expect(s.messages.map(m => m.role)).toEqual(['user', 'assistant'])
-    expect(s.messages[1]).toMatchObject({ role: 'assistant', content: '', streaming: true })
-    expect(s.messages[0].id).toBe('m0')
-    expect(startCoachRun).toHaveBeenCalledWith(
-      expect.objectContaining({
-        harnessKind: 'claude',
-        prompt: 'Summarise my spend',
-        scope: expectedScope(),
-        resumeCursor: 'cursor_prev',
-      }),
+  it('caches a successful empty probe and suppresses duplicate probes for a kind in flight', async () => {
+    let resolve!: (value: { ok: true }) => void
+    const inspectCoachHarness = vi.fn((_request: CoachInspectRequest) =>
+      Effect.promise(
+        () =>
+          new Promise<{ ok: true }>(done => {
+            resolve = done
+          }),
+      ),
     )
-    expect(s.running).toBe(true)
-    expect(s.activeRunId).toBe('run-9')
-  })
-
-  it('retryAssistant refuses a still-streaming assistant turn', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      messages: [
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: 'half…', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-
-    await useCoachSkillsStore.getState().retryAssistant('m1')
-
-    expect(startCoachRun).not.toHaveBeenCalled()
-    expect(useCoachSkillsStore.getState().messages).toHaveLength(2)
-  })
-
-  it('retryAssistant refuses a NON-last assistant turn, a user turn, and while a run is in flight', async () => {
-    const startCoachRun = vi.fn(() => Promise.resolve({ ok: true, runId: 'run-9' }))
-    mockWindow({ startCoachRun })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      messages: [
-        { id: 'm0', role: 'user', content: 'a', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm1', role: 'assistant', content: 'x', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm2', role: 'user', content: 'b', thinking: '', tools: [], notices: [], streaming: false },
-        { id: 'm3', role: 'assistant', content: 'y', thinking: '', tools: [], notices: [], streaming: false },
-      ],
-    })
-
-    // m1 is not the LAST assistant turn — refused.
-    await useCoachSkillsStore.getState().retryAssistant('m1')
-    // m0 is a user turn — refused.
-    await useCoachSkillsStore.getState().retryAssistant('m0')
-    expect(startCoachRun).not.toHaveBeenCalled()
-    expect(useCoachSkillsStore.getState().messages).toHaveLength(4)
-
-    // The last turn retries fine; then a run in flight blocks a second retry.
-    await useCoachSkillsStore.getState().retryAssistant('m3')
-    expect(startCoachRun).toHaveBeenCalledTimes(1)
-    await useCoachSkillsStore.getState().retryAssistant('m3')
-    expect(startCoachRun).toHaveBeenCalledTimes(1)
-  })
-
-  it('onEvent routes each event to its run-owned assistant message', () => {
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-2',
-      runMessageIds: { 'run-1': 'm1', 'run-2': 'm2' },
-      messages: [
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-        { id: 'm2', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-      ],
-    })
-    useCoachSkillsStore.getState().onEvent({ runId: 'run-1', event: { kind: 'text', delta: 'stale' } })
-    expect(useCoachSkillsStore.getState().messages[0].content).toBe('stale')
-    useCoachSkillsStore.getState().onEvent({ runId: 'run-2', event: { kind: 'text', delta: 'fresh' } })
-    expect(useCoachSkillsStore.getState().messages[1].content).toBe('fresh')
-  })
-
-  it('late text after cancel lands on the cancelled message and preserves its error', () => {
-    mockWindow({ cancelCoachRun: vi.fn() })
-    useCoachSkillsStore.setState({
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      running: true,
-      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
-    })
-
-    useCoachSkillsStore.getState().cancel()
-    useCoachSkillsStore.getState().onEvent({ runId: 'run-1', event: { kind: 'text', delta: 'late' } })
-
-    expect(useCoachSkillsStore.getState().messages[0]).toMatchObject({
-      content: 'late',
-      streaming: false,
-      error: 'cancelled',
-    })
-  })
-
-  it('resetSession clears the thread, resume handle, and error, restores the cached set, and resets the temp workspace', () => {
-    const resetCoachWorkspace = vi.fn()
-    mockWindow({ resetCoachWorkspace })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      resumeCursor: 'cursor_9',
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modeId: 'plan',
-      modelsByKind: { claude: { models, modes, modelId: 'opus', modeId: 'plan' } },
-      error: 'boom',
-    })
-    useCoachSkillsStore.getState().resetSession()
-    const s = useCoachSkillsStore.getState()
-    expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
-    expect(s.messages).toEqual([])
-    expect(s.resumeCursor).toBeNull()
-    expect(s.error).toBeNull()
-    // The thread is conversation state; the harness's declared set is not —
-    // restored from the per-kind cache so the pickers never go blank.
-    expect(s.sessionModels).toEqual(models)
-    expect(s.sessionModes).toEqual(modes)
-    expect(s.modelId).toBe('opus')
-    expect(s.modeId).toBe('plan')
-  })
-
-  it('a harness switch after a conversation is the confirm path: new harness + cleared thread, even mid-run', () => {
-    // The switch dialog's confirm handler runs setHarness(next) FIRST (it
-    // snapshots the outgoing harness's LIVE picks against its cached set — a
-    // reset would clobber them back to cached values first), then
-    // resetSession() — the conversation is conversation state, the new
-    // harness's cached set is not. No explicit cancel() is needed: the reset
-    // stops the run main-side (coach:reset cancels all active runs and awaits
-    // their teardown) and clears any residual local run state.
-    const cancelCoachRun = vi.fn()
-    const resetCoachWorkspace = vi.fn()
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
-    mockWindow({ cancelCoachRun, resetCoachWorkspace, inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      resumeCursor: 'cursor_9',
-      running: true,
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modeId: 'plan',
-      modelsByKind: {
-        claude: { models, modes, modelId: 'opus', modeId: 'plan' },
-        gemini: { models: null, modes: null, modelId: null, modeId: null },
-      },
-      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false }],
-    })
-
-    // The composer's confirmHarnessSwitch sequence, exactly: switch + reset.
-    useCoachSkillsStore.getState().setHarness('gemini')
-    useCoachSkillsStore.getState().resetSession()
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.harnessKind).toBe('gemini')
-    expect(s.messages).toEqual([])
-    expect(s.resumeCursor).toBeNull()
-    // The mid-run switch is terminal WITHOUT a renderer-side cancel(): the
-    // reset stops the run main-side (coach:reset) and no stale run state
-    // survives locally.
-    expect(cancelCoachRun).not.toHaveBeenCalled()
-    expect(s.running).toBe(false)
-    expect(s.activeRunId).toBeNull()
-    expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
-    // The new harness's cached (empty) declaration is restored — no blanks.
-    expect(s.sessionModels).toBeNull()
-    expect(s.sessionModes).toBeNull()
-    expect(s.modelId).toBeNull()
-    expect(s.modeId).toBeNull()
-  })
-})
-
-// NOTE: these tests live AFTER the ones above because the shared global
-// `window.api` mock is last-write-wins — a probe mock here must not leak into
-// the earlier tests' expectations.
-describe('useCoachSkillsStore — per-harness model cache (map 47 ticket 50)', () => {
-  it('warm-starts the AUTO-SELECTED harness so models populate without opening the picker', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
-    mockWindow({ getCoachHarnesses: () => Promise.resolve(harnesses), inspectCoachHarness })
-
-    await useCoachSkillsStore.getState().loadHarnesses()
-    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
-    // Hybrid warm-start (pre-#145): the auto-pick probes immediately.
-    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude' })
-    await vi.waitFor(() => expect(useCoachSkillsStore.getState().sessionModels).toEqual(models))
-    const s = useCoachSkillsStore.getState()
-    expect(s.sessionModes).toEqual(modes)
-    expect(s.modelId).toBe('opus')
-  })
-
-  it('loadHarnesses re-selects a VANISHED harness through the switch contract: cached set restored, conversation reset', async () => {
-    // The user is mid-conversation on 'codex' — but codex is NOT in the fresh
-    // detection payload, so loadHarnesses auto-switches to the first detected
-    // harness. That is a SWITCH: it must go through setHarness (restore the
-    // target's cached set, never leave the old live set on the picker) and,
-    // because a conversation exists, reset it — exactly like the picker's
-    // confirmed switch, but without a dialog (the harness vanished).
-    const cancelCoachRun = vi.fn()
-    const resetCoachWorkspace = vi.fn()
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
-    mockWindow({
-      getCoachHarnesses: () => Promise.resolve(harnesses),
-      cancelCoachRun,
-      resetCoachWorkspace,
-      inspectCoachHarness,
-    })
-    useCoachSkillsStore.setState({
-      harnessKind: 'codex',
-      resumeCursor: 'cursor_old',
-      running: true,
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      messages: [
-        { id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true },
-        { id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false },
-      ],
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modeId: 'plan',
-      // claude (the switch target) was probed before — its set must restore.
-      modelsByKind: {
-        claude: { models, modes, modelId: 'opus', modeId: 'plan' },
-      },
-    })
-
-    await useCoachSkillsStore.getState().loadHarnesses()
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.harnessKind).toBe('claude')
-    // The vanished harness's conversation is conversation state — cleared,
-    // with the local run state reset and the temp workspace dropped. No
-    // renderer-side cancel(): the reset stops the run main-side (coach:reset
-    // cancels all active runs and awaits their teardown).
-    expect(s.messages).toEqual([])
-    expect(s.resumeCursor).toBeNull()
-    expect(s.running).toBe(false)
-    expect(s.activeRunId).toBeNull()
-    expect(cancelCoachRun).not.toHaveBeenCalled()
-    expect(resetCoachWorkspace).toHaveBeenCalledTimes(1)
-    // The target's CACHED set restores — no probe, no blank picker.
-    expect(s.sessionModels).toEqual(models)
-    expect(s.sessionModes).toEqual(modes)
-    expect(s.modelId).toBe('opus')
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-  })
-
-  it('setHarness clears the live set without probing an UNCACHED harness', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modeId: 'plan',
-    })
-
-    useCoachSkillsStore.getState().setHarness('gemini')
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.harnessKind).toBe('gemini')
-    expect(s.sessionModels).toBeNull()
-    expect(s.sessionModes).toBeNull()
-    expect(s.modelId).toBeNull()
-    expect(s.modeId).toBeNull()
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-    expect(useCoachSkillsStore.getState().modelsByKind['gemini']).toBeUndefined()
-    // claude was NEVER probed in this flow (it was seeded directly) — so it
-    // is not marked cached, and its next open genuinely probes it.
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']).toBeUndefined()
-  })
-
-  it('a switch-back to a probed harness restores its set WITHOUT re-probing', async () => {
-    const inspectCoachHarness = vi.fn((request: { kind: string }) =>
-      Promise.resolve({
-        ok: true,
-        ...(request.kind === 'claude' ? { models } : {}),
-        ...(request.kind === 'gemini'
-          ? { models: { availableModels: [{ modelId: 'gem-1', name: 'Gemini' }], currentModelId: 'gem-1' } }
-          : {}),
-      }),
-    )
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    // Probe claude, switch away to gemini, switch back.
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-    useCoachSkillsStore.getState().setHarness('gemini')
-    expect(useCoachSkillsStore.getState().sessionModels).toBeNull()
+    const { registry, atoms } = setup({ inspect: inspectCoachHarness })
+    registry.set(atoms.inspectHarnessAtom, 'claude')
+    await vi.waitFor(() => expect(inspectCoachHarness).toHaveBeenCalledTimes(1))
+    registry.set(atoms.inspectHarnessAtom, 'claude')
     expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
-
-    useCoachSkillsStore.getState().setHarness('claude')
-    const s = useCoachSkillsStore.getState()
-    expect(s.harnessKind).toBe('claude')
-    expect(s.sessionModels).toEqual(models)
-    // No reload for the cached claude set.
-    expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
-  })
-
-  it('opening the picker probes the harness and loads its declared set (agent default pre-selected)', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-
-    const s = useCoachSkillsStore.getState()
-    expect(inspectCoachHarness).toHaveBeenCalledWith({ kind: 'claude' })
-    expect(s.sessionModels?.availableModels).toEqual(models.availableModels)
-    expect(s.sessionModes?.availableModes).toEqual(modes.availableModes)
-    expect(s.modelId).toBe('opus')
-    expect(s.modeId).toBe('plan')
-    // A declared set is NOT cached as empty — only the cache entry marks it.
-    expect(s.modelsByKind['claude']?.models).toEqual(models)
-  })
-
-  it("a run's session event refreshes the per-harness cache for the current harness", async () => {
-    mockWindow({ startCoachRun: () => Promise.resolve({ ok: true, runId: 'run-9' }) })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      sessionModels: null,
-      // A prior probe declared nothing selectable.
-      modelsByKind: { claude: { models: null, modes: null, modelId: null, modeId: null } },
-      activeRunId: 'run-1',
-      runMessageIds: { 'run-1': 'm1' },
-      messages: [{ id: 'm1', role: 'assistant', content: '', thinking: '', tools: [], notices: [], streaming: true }],
-    })
-
-    // The run's LIVE handshake declares models the probe never did (e.g. the
-    // probe ran without the ledger MCP server) — the empty cache entry is
-    // overwritten with the real declaration.
-    useCoachSkillsStore.getState().onEvent({
-      runId: 'run-1',
-      event: { kind: 'session', resumeCursor: 'cursor_9', models },
-    })
-
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']?.models).toEqual(models)
-    expect(useCoachSkillsStore.getState().sessionModels).toEqual(models)
-  })
-
-  it('does not re-probe when the current harness set is already loaded (cached)', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      sessionModels: models,
-      sessionModes: modes,
-      modelId: 'opus',
-      modelsByKind: { claude: { models, modes, modelId: 'opus', modeId: 'plan' } },
-    })
-
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-    expect(useCoachSkillsStore.getState().sessionModels).toEqual(models)
-  })
-
-  it('a probe that answers after a harness switch caches for its kind but never clobbers the live set', async () => {
-    let resolveClaude!: (value: { ok: true; models: typeof models }) => void
-    const inspectCoachHarness = vi.fn()
-    inspectCoachHarness.mockImplementationOnce(
-      () =>
-        new Promise(resolve => {
-          resolveClaude = resolve
-        }),
-    )
-    inspectCoachHarness.mockImplementation(() =>
-      Promise.resolve({
-        ok: true,
-        models: { availableModels: [{ modelId: 'codex-1', name: 'Codex' }], currentModelId: 'codex-1' },
-      }),
-    )
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    useCoachSkillsStore.getState().inspectHarness('claude')
-    useCoachSkillsStore.getState().setHarness('codex')
-    useCoachSkillsStore.getState().inspectHarness('codex')
-    // The claude probe answers AFTER the switch — its set must not clobber
-    // the codex one that already landed, but it IS cached for the next
-    // switch-back.
-    resolveClaude({ ok: true, models })
-
-    await vi.waitFor(() =>
-      expect(useCoachSkillsStore.getState().sessionModels?.availableModels[0]?.modelId).toBe('codex-1'),
-    )
-    expect(useCoachSkillsStore.getState().sessionModels?.availableModels).toEqual([
-      { modelId: 'codex-1', name: 'Codex' },
-    ])
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']?.models).toEqual(models)
-
-    // Switching back to claude restores the cached set without a reload.
-    useCoachSkillsStore.getState().setHarness('claude')
-    expect(useCoachSkillsStore.getState().sessionModels).toEqual(models)
-  })
-
-  it('a failed probe leaves the pickers absent, the probe flag cleared, and NOTHING cached — the next open retries', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: false, error: 'agent binary not found' }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.sessionModels).toBeNull()
-    expect(s.sessionModes).toBeNull()
-    expect(s.modelId).toBeNull()
-    expect(s.modeId).toBeNull()
-    expect(s.inspectingKind).toBeNull()
-    // An unavailable agent is retried on the next open — no cache entry.
-    expect(s.modelsByKind).toEqual({})
-    expect(inspectCoachHarness).toHaveBeenCalledTimes(2)
-  })
-
-  it('caches a SUCCESSFUL empty-declared probe — re-opening never re-spawns the agent', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true })) // agent declares no models
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
-
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-    expect(useCoachSkillsStore.getState().modelsByKind['claude']).toEqual({
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'))
+    resolve({ ok: true })
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).inspectingKind === null)
+    expect(registry.get(atoms.coachStateAtom).modelsByKind.claude).toEqual({
       models: null,
       modes: null,
       modelId: null,
       modeId: null,
     })
-    expect(useCoachSkillsStore.getState().sessionModels).toBeNull()
-
-    await useCoachSkillsStore.getState().inspectHarness('claude')
+    registry.set(atoms.inspectHarnessAtom, 'claude')
     expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
+    registry.dispose()
   })
 
-  it('does not probe eagerly across harness switches', async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true }))
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({
-      harnessKind: 'claude',
-      modelsByKind: { claude: { models: null, modes: null, modelId: null, modeId: null } },
+  it('caches a late probe for its original kind without replacing the newly selected harness', async () => {
+    let resolveClaude!: (value: { ok: true; models: CoachSessionModels; modes: CoachSessionModes }) => void
+    const inspectCoachHarness = vi.fn((request: CoachInspectRequest) => {
+      const kind = typeof request === 'string' ? request : request.kind
+      if (kind === 'claude')
+        return Effect.promise(
+          () =>
+            new Promise<{ ok: true; models: CoachSessionModels; modes: CoachSessionModes }>(done => {
+              resolveClaude = done
+            }),
+        )
+      return Effect.succeed({ ok: true as const, models: { availableModels: [], currentModelId: 'default' } })
     })
-
-    useCoachSkillsStore.getState().setHarness('gemini')
-    expect(useCoachSkillsStore.getState().modelsByKind['gemini']).toBeUndefined()
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-
-    useCoachSkillsStore.getState().setHarness('claude')
-    expect(useCoachSkillsStore.getState().harnessKind).toBe('claude')
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
+    const { registry, atoms } = setup({ inspect: inspectCoachHarness })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.inspectHarnessAtom, 'claude')
+    await vi.waitFor(() => expect(resolveClaude).toBeTypeOf('function'))
+    registry.set(atoms.setHarnessAtom, 'gemini')
+    registry.set(atoms.inspectHarnessAtom, 'gemini')
+    await vi.waitFor(() => expect(inspectCoachHarness).toHaveBeenCalledTimes(2))
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.gemini !== undefined)
+    resolveClaude({ ok: true, models, modes })
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.claude !== undefined)
+    expect(registry.get(atoms.coachStateAtom).modelsByKind.claude).toMatchObject({ models, modes })
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({
+      harnessKind: 'gemini',
+      sessionModels: { availableModels: [] },
+    })
+    registry.dispose()
   })
 
-  it("resetSession clears the thread and restores the current harness's cached set WITHOUT re-probing", async () => {
-    const inspectCoachHarness = vi.fn(() => Promise.resolve({ ok: true, models, modes }))
-    mockWindow({ resetCoachWorkspace: vi.fn(), inspectCoachHarness })
-    useCoachSkillsStore.setState({
+  it('binds the Started frame before reducing the first streamed event and snapshots request state', async () => {
+    const run = vi.fn(() =>
+      finishedStream('run-1', [
+        eventFrame('run-1', { kind: 'text', delta: 'fast ' }),
+        eventFrame('run-1', { kind: 'error', message: 'fast failure' }),
+      ]),
+    )
+    const { registry, atoms, release } = setup({ run })
+    registry.set(periodAtom, 'lifetime')
+    registry.set(preferencesAtom, { ...registry.get(preferencesAtom), allowHarnessApiKeyEnv: true })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, '  hello coach  ')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).messages.at(-1)?.error === 'fast failure')
+    expect(run).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: 'hello coach',
+        scope: registry.get(overviewScopeAtom),
+        allowApiKeyEnv: true,
+      }),
+    )
+    release()
+    registry.dispose()
+  })
+
+  it('does not launch without a harness and reports a stream that ends before Started', async () => {
+    const run = vi.fn(() => Stream.empty)
+    const first = setup({ run })
+    first.registry.set(first.atoms.sendCoachAtom, 'question')
+    await waitFor(first.registry, () => first.registry.get(first.atoms.coachStateAtom).error !== null)
+    expect(run).not.toHaveBeenCalled()
+    expect(first.registry.get(first.atoms.coachStateAtom).error).toBe('Select a harness first.')
+    first.registry.set(first.atoms.replaceHarnessesAtom, harnesses)
+    first.registry.set(first.atoms.sendCoachAtom, 'question')
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+    await waitFor(first.registry, () => !first.registry.get(first.atoms.coachStateAtom).running)
+    expect(first.registry.get(first.atoms.coachStateAtom).error).toBeTruthy()
+    expect(first.registry.get(first.atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
+    expect(first.registry.get(first.atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      streaming: false,
+      error: expect.any(String),
+    })
+    first.registry.dispose()
+  })
+
+  it('surfaces a typed RPC failure that arrives before Started', async () => {
+    const failure = new CoachRpcError({ code: 'start-failed', message: 'Unable to start the Coach run.' })
+    const { registry, atoms } = setup({ run: () => Stream.fail(failure) })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+
+    await waitFor(registry, () => !registry.get(atoms.coachStateAtom).running)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({
+      activeRunId: null,
+      error: 'Unable to start the Coach run.',
+    })
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      streaming: false,
+      error: 'Unable to start the Coach run.',
+    })
+    registry.dispose()
+  })
+
+  it('keeps a partial answer visible and marks it interrupted when the RPC connection fails', async () => {
+    const disconnected = new RpcClientError({
+      reason: new RpcClientDefect({ message: 'Connection lost', cause: new Error('socket closed') }),
+    })
+    const { registry, atoms } = setup({
+      run: () =>
+        finishedStream('run-disconnected', [
+          eventFrame('run-disconnected', { kind: 'text', delta: 'partial answer' }),
+        ]).pipe(Stream.concat(Stream.fail(disconnected))),
+    })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+
+    await waitFor(registry, () => !registry.get(atoms.coachStateAtom).running)
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      content: 'partial answer',
+      streaming: false,
+      error: 'Connection lost. This partial response was interrupted; retry your message to continue.',
+    })
+    registry.dispose()
+  })
+
+  it('omits model and mode IDs until the harness declares those choices', async () => {
+    const run = vi.fn<NonNullable<CoachRpcTestOverrides['run']>>(() => runningStream('run-1'))
+    const { registry, atoms } = setup({ run })
+    registry.set(atoms.setHarnessAtom, 'claude')
+    registry.set(atoms.setModelIdAtom, 'custom-model')
+    registry.set(atoms.setModeIdAtom, 'custom-mode')
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => run.mock.calls.length === 1)
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty('modelId')
+    expect(run.mock.calls[0]?.[0]).not.toHaveProperty('modeId')
+    registry.dispose()
+  })
+
+  it('resumes from the last session cursor and snapshots the selected UI Scope on each run', async () => {
+    let sequence = 0
+    const run = vi.fn<NonNullable<CoachRpcTestOverrides['run']>>(() => runningStream(`run-${++sequence}`))
+    const { registry, atoms } = setup({ run })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'first')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'resume-1' }))
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'status', state: 'done' }))
+    registry.set(periodAtom, 'lifetime')
+    registry.set(atoms.sendCoachAtom, 'second')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
+    expect(run.mock.calls[1]?.[0]).toMatchObject({
+      prompt: 'second',
+      resumeCursor: 'resume-1',
+      scope: { period: 'lifetime' },
+    })
+    registry.dispose()
+  })
+
+  it('sends the picked model/mode only after the active harness declares them', async () => {
+    let sequence = 0
+    const run = vi.fn<NonNullable<CoachRpcTestOverrides['run']>>(() => runningStream(`run-${++sequence}`))
+    const { registry, atoms } = setup({ run })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'first')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'resume-1', models, modes }))
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'status', state: 'done' }))
+    registry.set(atoms.setModelIdAtom, 'opus')
+    registry.set(atoms.setModeIdAtom, 'plan')
+    registry.set(atoms.sendCoachAtom, 'second')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
+    expect(run.mock.calls[1]?.[0]).toMatchObject({ modelId: 'opus', modeId: 'plan' })
+    expect(run.mock.calls[1]?.[0]).not.toHaveProperty('allowApiKeyEnv')
+    registry.dispose()
+  })
+
+  it('reduces text, reasoning, paired tools, session identity and terminal errors into the owning message', async () => {
+    const { registry, atoms } = setup()
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'reasoning', delta: 'thinking' }))
+    registry.set(
+      atoms.eventAtom,
+      envelope('run-1', { kind: 'tool', tool: 'Read', id: 't1', state: 'started', input: '{"path":"a"}' }),
+    )
+    registry.set(
+      atoms.eventAtom,
+      envelope('run-1', { kind: 'tool', tool: 'Read', id: 't1', state: 'started', title: 'Read file' }),
+    )
+    registry.set(
+      atoms.eventAtom,
+      envelope('run-1', { kind: 'tool', tool: 'Read', id: 't1', state: 'completed', output: 'file' }),
+    )
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'resume-1', models, modes }))
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'error', message: 'auth required' }))
+    const state = registry.get(atoms.coachStateAtom)
+    expect(state).toMatchObject({ running: false, activeRunId: null, resumeCursor: 'resume-1' })
+    expect(state.messages.at(-1)).toMatchObject({ thinking: 'thinking', error: 'auth required', streaming: false })
+    expect(state.messages.at(-1)?.tools).toEqual([
+      { tool: 'Read', id: 't1', state: 'completed', input: '{"path":"a"}', title: 'Read file', output: 'file' },
+    ])
+    expect(state.modelsByKind.claude).toMatchObject({ models, modes })
+    registry.dispose()
+  })
+
+  it('interrupts a pending run stream when reset wins before Started', async () => {
+    let startStream!: (runId: string) => void
+    let streamInterrupted = false
+    const run = vi.fn(() =>
+      Stream.fromEffect(
+        Effect.promise(
+          () =>
+            new Promise<string>(resolve => {
+              startStream = resolve
+            }),
+        ),
+      ).pipe(
+        Stream.flatMap(runId => runningStream(runId)),
+        Stream.ensuring(Effect.sync(() => (streamInterrupted = true))),
+      ),
+    )
+    const reset = vi.fn(() => Effect.void)
+    const { registry, atoms, release } = setup({ run, reset })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(1))
+    registry.set(atoms.resetSessionAtom, undefined)
+    await waitFor(registry, () => reset.mock.calls.length === 1)
+    await waitFor(registry, () => streamInterrupted)
+    startStream('late-run')
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ messages: [], activeRunId: null, running: false })
+    release()
+    registry.dispose()
+  })
+
+  it('interrupts a pending run stream immediately when cancelled before Started', async () => {
+    let releaseStarted!: (runId: string) => void
+    let streamInterrupted = false
+    const run = vi.fn(() =>
+      Stream.fromEffect(
+        Effect.promise(
+          () =>
+            new Promise<string>(resolve => {
+              releaseStarted = resolve
+            }),
+        ),
+      ).pipe(
+        Stream.flatMap(runId => runningStream(runId)),
+        Stream.ensuring(Effect.sync(() => (streamInterrupted = true))),
+      ),
+    )
+    const { registry, atoms } = setup({ run })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => run.mock.calls.length === 1)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: true, activeRunId: null })
+
+    registry.set(atoms.cancelAtom, undefined)
+    await waitFor(registry, () => streamInterrupted)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
+
+    releaseStarted('late-run')
+    await Promise.resolve()
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      content: '',
+      streaming: false,
+      error: 'cancelled',
+    })
+    registry.dispose()
+  })
+
+  it('resets conversation and resume state while restoring the current harness capability cache', async () => {
+    const reset = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ reset })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.inspectHarnessAtom, 'claude')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).modelsByKind.claude !== undefined)
+    registry.set(atoms.setModelIdAtom, 'opus')
+    registry.set(atoms.setModeIdAtom, 'plan')
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'resume-1' }))
+    registry.set(atoms.resetSessionAtom, undefined)
+    await waitFor(registry, () => reset.mock.calls.length === 1)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({
+      messages: [],
+      resumeCursor: null,
       harnessKind: 'claude',
       sessionModels: models,
       sessionModes: modes,
       modelId: 'opus',
       modeId: 'plan',
-      modelsByKind: {
-        claude: { models, modes, modelId: 'opus', modeId: 'plan' },
-        gemini: { models: null, modes: null, modelId: null, modeId: null },
-      },
-      messages: [{ id: 'm0', role: 'user', content: 'p', thinking: '', tools: [], notices: [], streaming: false }],
     })
-
-    useCoachSkillsStore.getState().resetSession()
-
-    const s = useCoachSkillsStore.getState()
-    expect(s.messages).toEqual([])
-    expect(s.sessionModels).toEqual(models)
-    expect(s.sessionModes).toEqual(modes)
-    expect(s.modelId).toBe('opus')
-    expect(s.modeId).toBe('plan')
-    expect(inspectCoachHarness).not.toHaveBeenCalled()
-    // The per-kind cache survives the reset untouched.
-    expect(s.modelsByKind['gemini']).toEqual({ models: null, modes: null, modelId: null, modeId: null })
+    expect(registry.get(atoms.coachStateAtom).modelsByKind.claude).toMatchObject({ models, modes })
+    registry.dispose()
   })
 
-  it('skips a redundant probe while one for the same harness is already in flight', async () => {
-    let resolveProbe!: (value: { ok: true; models: typeof models }) => void
-    const inspectCoachHarness = vi.fn(
-      () =>
-        new Promise(resolve => {
-          resolveProbe = resolve
-        }),
+  it('cancel marks the turn immediately and late payloads cannot revive a different run', async () => {
+    const cancel = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ cancel })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.cancelAtom, undefined)
+    await waitFor(registry, () => cancel.mock.calls.length === 1)
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ running: false, activeRunId: null })
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({ error: 'cancelled', streaming: false })
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'error', message: 'late failure' }))
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({ error: 'cancelled' })
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'text', delta: 'late text' }))
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({
+      content: '',
+      error: 'cancelled',
+    })
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'tool', tool: 'Read', id: 't1', state: 'completed' }))
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)?.tools).toEqual([])
+    registry.dispose()
+  })
+
+  it('keeps idless tool events distinct and merges id-paired re-announcements without reopening completion', async () => {
+    const { registry, atoms } = setup()
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'tool', tool: 'Read', id: 'paired', state: 'completed' }))
+    registry.set(
+      atoms.eventAtom,
+      envelope('run-1', { kind: 'tool', tool: 'Read', id: 'paired', state: 'started', input: 'args' }),
     )
-    mockWindow({ inspectCoachHarness })
-    useCoachSkillsStore.setState({ harnessKind: 'claude' })
+    registry.set(
+      atoms.eventAtom,
+      envelope('run-1', { kind: 'tool', tool: 'Read', state: 'completed', output: 'first' }),
+    )
+    registry.set(
+      atoms.eventAtom,
+      envelope('run-1', { kind: 'tool', tool: 'Read', state: 'completed', output: 'second' }),
+    )
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)?.tools).toEqual([
+      { tool: 'Read', id: 'paired', state: 'completed', input: 'args' },
+      { tool: 'Read', state: 'completed', output: 'first' },
+      { tool: 'Read', state: 'completed', output: 'second' },
+    ])
+    registry.dispose()
+  })
 
-    const first = useCoachSkillsStore.getState().inspectHarness('claude')
-    // Same harness requested again mid-flight — the in-flight probe's result
-    // will apply when it lands, so no second IPC round-trip.
-    await useCoachSkillsStore.getState().inspectHarness('claude')
-    expect(inspectCoachHarness).toHaveBeenCalledTimes(1)
+  it('fences a run when the selected harness changes and routes later session events only by source identity', async () => {
+    const cancel = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ cancel })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.setHarnessAtom, 'gemini')
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith('run-1'))
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'session', resumeCursor: 'stale', models, modes }))
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({
+      harnessKind: 'gemini',
+      running: false,
+      activeRunId: null,
+      resumeCursor: null,
+      sessionModels: null,
+    })
+    registry.dispose()
+  })
 
-    resolveProbe({ ok: true, models })
-    await first
-    expect(useCoachSkillsStore.getState().sessionModels?.availableModels).toEqual(models.availableModels)
-    expect(useCoachSkillsStore.getState().inspectingKind).toBeNull()
+  it('cancels and closes a run when its selected harness disappears with no replacement', async () => {
+    const cancel = vi.fn(() => Effect.void)
+    const { registry, atoms } = setup({ cancel })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'question')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+
+    registry.set(atoms.replaceHarnessesAtom, [])
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalledWith('run-1'))
+    expect(registry.get(atoms.coachStateAtom)).toMatchObject({ harnessKind: null, running: false, activeRunId: null })
+    expect(registry.get(atoms.coachStateAtom).messages.at(-1)).toMatchObject({ streaming: false, error: 'cancelled' })
+    registry.dispose()
+  })
+
+  it('retry replaces only the final assistant turn while retaining its user prompt', async () => {
+    let run = 0
+    const start = vi.fn(() => runningStream(`run-${++run}`))
+    const { registry, atoms } = setup({ run: start })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'same prompt')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'status', state: 'done' }))
+    const before = registry.get(atoms.coachStateAtom).messages
+    const assistant = before.at(-1)
+    expect(assistant?.role).toBe('assistant')
+    if (!assistant) throw new Error('The first run should create an assistant turn.')
+    registry.set(atoms.retryAssistantAtom, 'not-the-last-assistant')
+    expect(start).toHaveBeenCalledTimes(1)
+    registry.set(atoms.retryAssistantAtom, assistant.id)
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
+    expect(registry.get(atoms.coachStateAtom).messages).toHaveLength(2)
+    expect(registry.get(atoms.coachStateAtom).messages[0]).toMatchObject({ role: 'user', content: 'same prompt' })
+    expect(start).toHaveBeenLastCalledWith(
+      expect.objectContaining({ prompt: 'same prompt', scope: { period: 'today' } }),
+    )
+    registry.set(atoms.retryAssistantAtom, assistant.id)
+    expect(start).toHaveBeenCalledTimes(2)
+    registry.dispose()
+  })
+
+  it('refuses retry for streaming, user, non-final, or currently running turns', async () => {
+    let sequence = 0
+    const run = vi.fn(() => runningStream(`run-${++sequence}`))
+    const { registry, atoms } = setup({ run })
+    registry.set(atoms.replaceHarnessesAtom, harnesses)
+    registry.set(atoms.sendCoachAtom, 'first prompt')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-1')
+    const firstAssistant = registry.get(atoms.coachStateAtom).messages.at(-1)!
+    const firstUser = registry.get(atoms.coachStateAtom).messages[0]!
+    registry.set(atoms.retryAssistantAtom, firstAssistant.id)
+    registry.set(atoms.retryAssistantAtom, firstUser.id)
+    expect(run).toHaveBeenCalledTimes(1)
+    registry.set(atoms.eventAtom, envelope('run-1', { kind: 'status', state: 'done' }))
+    registry.set(atoms.sendCoachAtom, 'second prompt')
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-2')
+    registry.set(atoms.retryAssistantAtom, firstAssistant.id)
+    expect(run).toHaveBeenCalledTimes(2)
+    registry.set(atoms.eventAtom, envelope('run-2', { kind: 'status', state: 'done' }))
+    const secondAssistant = registry.get(atoms.coachStateAtom).messages.at(-1)!
+    registry.set(atoms.retryAssistantAtom, secondAssistant.id)
+    await waitFor(registry, () => registry.get(atoms.coachStateAtom).activeRunId === 'run-3')
+    expect(run).toHaveBeenCalledTimes(3)
+    registry.dispose()
+  })
+
+  it('keeps detection lazy until selected, keyed by Scope and thresholds with same-key refresh semantics', async () => {
+    const getSkills = vi.fn(async () => null)
+    const { registry, atoms } = setup({ skills: getSkills })
+    registry.mount(atoms.detection.resultAtom)
+    expect(getSkills).not.toHaveBeenCalled()
+    registry.set(atoms.detection.requestAtom, { scope: { period: 'today' }, frequency: 5, spread: 2 })
+    await waitFor(registry, () => getSkills.mock.calls.length === 1)
+    registry.set(atoms.detection.requestAtom, { scope: { period: 'today' }, frequency: 5, spread: 2 })
+    expect(getSkills).toHaveBeenCalledTimes(1)
+    registry.set(atoms.detection.refreshAtom, undefined)
+    await waitFor(registry, () => getSkills.mock.calls.length === 2)
+    registry.dispose()
   })
 })

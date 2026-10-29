@@ -16,7 +16,7 @@ import {
 import { cn } from '@/shared/lib/utils'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/shared/components/ui/collapsible'
 import { Markdown } from '@/shared/components/Markdown'
-import type { ToolNotice } from './store'
+import type { ToolNotice } from './hooks'
 
 /** Phase offsets for the streaming-dot wave: each dot starts its bounce a
  *  beat later, so the three read as a left-to-right ripple. Kept as static

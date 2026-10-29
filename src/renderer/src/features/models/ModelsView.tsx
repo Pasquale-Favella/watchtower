@@ -1,17 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useShallow } from 'zustand/react/shallow'
+import { useMemo, useState } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { SegTabs, type SegOption } from '@/shared/components/SegTabs'
+import { useModelsStore } from '@/features/models/use-models-store'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
+import { type SegOption, SegTabs } from '@/shared/components/SegTabs'
+import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
+import { Skeleton } from '@/shared/components/ui/skeleton'
 import { motionClass } from '@/shared/lib/motion'
 import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { Skeleton } from '@/shared/components/ui/skeleton'
-import { LoadingRegion, SkeletonRows } from '@/shared/components/skeletons'
-import { useModelsStore } from '@/features/models/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
-import { useScanStore } from '@/app/stores/scan-store'
-import { usePricingStore } from '@/features/models/pricing-store'
+import { cn } from '@/shared/lib/utils'
+
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { AuditTable } from './audit-table'
 import { ModelsByTaskTable, ModelsTable, type PricingRowActions } from './models-table'
@@ -26,20 +23,17 @@ const LENSES: SegOption[] = [
 ]
 
 export function ModelsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const payload = useModelsStore(s => s.data)
-  const error = useModelsStore(s => s.error)
-  const load = useModelsStore(s => s.load)
-  const reload = useModelsStore(s => s.reload)
-  const provider = useScopeStore(s => s.provider)
-  const setProvider = useScopeStore(s => s.setProvider)
-  const detectedProviders = useScanStore(s => s.detectedProviders)
+  const {
+    data: payload,
+    error,
+    removeAlias,
+    removeOverride,
+    provider,
+    setProvider,
+    detectedProviders,
+  } = useModelsStore()
   const [lens, setLens] = useState<ModelsLens>('model')
   const [quickAdd, setQuickAdd] = useState<QuickAddTarget | null>(null)
-
-  useEffect(() => {
-    void load(scope)
-  }, [load, scope])
 
   const providerOptions = useMemo(() => providerOptionsFromDetected(detectedProviders), [detectedProviders])
 
@@ -56,15 +50,12 @@ export function ModelsView(): React.JSX.Element {
 
   const onSaved = (): void => {
     setQuickAdd(null)
-    void reload()
   }
 
   // Inline pricing management for aliased/repriced rows: the original name
   // stays visible with its alias target or rates, and each can be retargeted
   // (prefilled dialog — writes upsert) or removed (the row reverts to its
   // honest original treatment on the next query, no rescan).
-  const removeAlias = usePricingStore(s => s.removeAlias)
-  const removeOverride = usePricingStore(s => s.removeOverride)
   const pricingActions: PricingRowActions = {
     onEditAlias: (source, currentTarget) =>
       setQuickAdd({
@@ -75,10 +66,7 @@ export function ModelsView(): React.JSX.Element {
         initialAliasTarget: currentTarget,
       }),
     onRemoveAlias: sourceModel => {
-      void (async () => {
-        await removeAlias(sourceModel)
-        void reload()
-      })()
+      void removeAlias(sourceModel)
     },
     onEditOverride: target =>
       setQuickAdd({
@@ -90,10 +78,7 @@ export function ModelsView(): React.JSX.Element {
         initialOutputPrice: String(target.outputPricePerMillion),
       }),
     onRemoveOverride: model => {
-      void (async () => {
-        await removeOverride(model)
-        void reload()
-      })()
+      void removeOverride(model)
     },
   }
 
@@ -114,7 +99,7 @@ export function ModelsView(): React.JSX.Element {
 
       {payload === null ? (
         error ? (
-          <ErrorPanel message={error} />
+          <QueryErrorNotice error={error} hasData={false} />
         ) : (
           <LoadingRegion label="Loading models…" className="border-border bg-card overflow-hidden rounded-lg border">
             <div className="border-border flex items-center gap-3 border-b px-3.5 py-2.5">
@@ -127,29 +112,38 @@ export function ModelsView(): React.JSX.Element {
           </LoadingRegion>
         )
       ) : lens === 'audit' ? (
-        <div className="border-border bg-card overflow-hidden rounded-lg border">
-          {audit.length ? (
-            <AuditTable rows={audit} actions={pricingActions} />
-          ) : (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
-          )}
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card overflow-hidden rounded-lg border">
+            {audit.length ? (
+              <AuditTable rows={audit} actions={pricingActions} />
+            ) : (
+              <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+            )}
+          </div>
+        </>
       ) : lens === 'task' ? (
-        <div className="border-border bg-card overflow-hidden rounded-lg border">
-          {byTask.length ? (
-            <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} />
-          ) : (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
-          )}
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card overflow-hidden rounded-lg border">
+            {byTask.length ? (
+              <ModelsByTaskTable rows={byTask} onAddAlias={openQuickAdd} actions={pricingActions} />
+            ) : (
+              <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+            )}
+          </div>
+        </>
       ) : (
-        <div className="border-border bg-card overflow-hidden rounded-lg border">
-          {byModel.length ? (
-            <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} />
-          ) : (
-            <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
-          )}
-        </div>
+        <>
+          <QueryErrorNotice error={error} hasData />
+          <div className="border-border bg-card overflow-hidden rounded-lg border">
+            {byModel.length ? (
+              <ModelsTable rows={byModel} onAddAlias={openQuickAdd} actions={pricingActions} />
+            ) : (
+              <p className="text-muted-foreground px-3.5 py-6 text-center text-[11.5px]">{emptyText}</p>
+            )}
+          </div>
+        </>
       )}
 
       {quickAdd && (

@@ -2,7 +2,9 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import type { Mock } from 'vitest'
@@ -131,6 +133,7 @@ type TestRunnerOptions = {
   harnesses: HarnessSource
   ledgerMcpServer: (harnessKind: string) => Promise<LedgerMcpAttachment | null>
   getRuntime: () => Promise<HarnessRuntime>
+  startRun?: (input: HarnessRunInput) => Effect.Effect<NativeHarnessRun, Error>
 }
 
 function nativeHarnesses(source: HarnessSource): NativeHarnessSource {
@@ -166,35 +169,39 @@ function ownRunner(options: TestRunnerOptions): CoachRunner {
     ledgerMcpServer: (kind: string) =>
       Effect.tryPromise({ try: () => options.ledgerMcpServer(kind), catch: error => error }),
     effectHost: host as unknown as MainRuntime,
-    startRun: (input: HarnessRunInput) =>
-      Effect.tryPromise({
-        try: async (): Promise<NativeHarnessRun> => {
-          const runtime = await options.getRuntime()
-          const controlled = runtime.runControlled?.(input)
-          const source = controlled?.events ?? runtime.run(input)
-          const iterator = source[Symbol.asyncIterator]()
-          let stopping: Promise<void> | undefined
-          return {
-            events: {
-              [Symbol.asyncIterator]: () => ({
-                next: () => iterator.next(),
-                return: async () => ({ done: true, value: undefined }),
-              }),
-            },
-            stop: Effect.tryPromise({
-              try: () =>
-                (stopping ??= bounded(
-                  controlled ? controlled.stop() : Promise.resolve(iterator.return?.(undefined)).then(() => undefined),
-                )),
-              catch: error => error as Error,
-            }).pipe(
-              Effect.asVoid,
-              Effect.catchCause(() => Effect.void),
-            ),
-          }
-        },
-        catch: error => error as Error,
-      }),
+    startRun:
+      options.startRun ??
+      ((input: HarnessRunInput) =>
+        Effect.tryPromise({
+          try: async (): Promise<NativeHarnessRun> => {
+            const runtime = await options.getRuntime()
+            const controlled = runtime.runControlled?.(input)
+            const source = controlled?.events ?? runtime.run(input)
+            const iterator = source[Symbol.asyncIterator]()
+            let stopping: Promise<void> | undefined
+            return {
+              events: {
+                [Symbol.asyncIterator]: () => ({
+                  next: () => iterator.next(),
+                  return: async () => ({ done: true, value: undefined }),
+                }),
+              },
+              stop: Effect.tryPromise({
+                try: () =>
+                  (stopping ??= bounded(
+                    controlled
+                      ? controlled.stop()
+                      : Promise.resolve(iterator.return?.(undefined)).then(() => undefined),
+                  )),
+                catch: error => error as Error,
+              }).pipe(
+                Effect.asVoid,
+                Effect.catchCause(() => Effect.void),
+              ),
+            }
+          },
+          catch: error => error as Error,
+        })),
     startInspection: (input: HarnessProviderInput) =>
       Effect.sync(() => {
         let cancelled = false
@@ -228,6 +235,12 @@ function ownRunner(options: TestRunnerOptions): CoachRunner {
   const runner = createCoachRunner(nativeDeps)
   ownedRunners.add(runner)
   return runner
+}
+
+function latestTestMainRuntime(): MainRuntime {
+  const host = [...ownedEffectHosts].at(-1)
+  if (!host) throw new Error('expected an owned test runtime')
+  return host as unknown as MainRuntime
 }
 
 function makeRunner(runtime: HarnessRuntime): CoachRunner {
@@ -268,6 +281,25 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
         binaryPath: 'C:\\bin\\claude-agent-acp.exe',
       },
     ])
+  })
+
+  it('exposes native list and refresh effects from the same harness source as the Promise adapters', async () => {
+    const rows = await harnessSource.list()
+    const refresh = vi.fn(async () => rows)
+    const source = { ...harnessSource, refresh }
+    const runner = ownRunner({
+      getRuntime: async () => scriptedRuntime([]),
+      harnesses: source,
+      ledgerMcpServer,
+    })
+    const runtime = latestTestMainRuntime()
+
+    await expect(runtime.runPromise(runner.native.list)).resolves.toEqual(rows)
+    await expect(runner.harnesses()).resolves.toEqual(rows)
+    await expect(runtime.runPromise(runner.native.refresh)).resolves.toEqual(rows)
+    await expect(runner.refreshHarnesses()).resolves.toEqual(rows)
+    expect(refresh).toHaveBeenCalledTimes(2)
+    await runner.reset()
   })
 
   it('reports the sign-in state a run proved back to the harness source', async () => {
@@ -592,6 +624,83 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     await expect(pending).resolves.toEqual({ ok: false, error: 'conversation reset' })
     await reset
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('drains a run acquired during interrupted startup and releases its attachment', async () => {
+    let resolveRun!: (run: NativeHarnessRun) => void
+    const startRun = vi.fn(() =>
+      Effect.tryPromise({
+        try: () => new Promise<NativeHarnessRun>(resolve => (resolveRun = resolve)),
+        catch: error => error as Error,
+      }),
+    )
+    const release = vi.fn()
+    const stop = vi.fn(() => Effect.void)
+    const runner = ownRunner({
+      getRuntime: async () => scriptedRuntime([]),
+      harnesses: harnessSource,
+      startRun,
+      ledgerMcpServer: async () => ({
+        server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'], env: [] },
+        release,
+      }),
+    })
+    const host = latestTestMainRuntime()
+    const fiber = host.runFork(runner.native.start(request, () => {}))
+    await vi.waitFor(() => expect(startRun).toHaveBeenCalledOnce())
+    const interruption = Effect.runPromise(Fiber.interrupt(fiber))
+    resolveRun!({ events: { async *[Symbol.asyncIterator]() {} }, stop: Effect.sync(stop) })
+    await interruption
+    expect(stop).toHaveBeenCalledOnce()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('does not strand a parked cancel waiter when its observer is interrupted before reset', async () => {
+    let releaseEvents!: () => void
+    let workspacePath = ''
+    let markEventsStarted!: () => void
+    const eventsStarted = new Promise<void>(resolve => (markEventsStarted = resolve))
+    const stopGate = Effect.runSync(Deferred.make<undefined>())
+    const enteredStop = Effect.runSync(Deferred.make<undefined>())
+    const runner = ownRunner({
+      getRuntime: async () => scriptedRuntime([]),
+      harnesses: harnessSource,
+      ledgerMcpServer: async () => null,
+      startRun: input => {
+        workspacePath = input.workspacePath
+        return Effect.succeed({
+          events: (async function* () {
+            await new Promise<void>(resolve => {
+              releaseEvents = resolve
+              markEventsStarted()
+            })
+            yield { kind: 'status', state: 'done' }
+          })(),
+          stop: Deferred.succeed(enteredStop, undefined).pipe(
+            Effect.andThen(Deferred.await(stopGate)),
+            Effect.tap(() => Effect.sync(() => releaseEvents?.())),
+          ),
+        })
+      },
+    })
+    const host = latestTestMainRuntime()
+    try {
+      const started = await runner.start(request, () => {})
+      if (!started.ok) throw new Error('expected the test run to start')
+      await eventsStarted
+      const cancelFiber = host.runFork(runner.native.cancel(started.runId))
+      await host.runPromise(Deferred.await(enteredStop))
+      const interruptObserver = host.runFork(Fiber.interrupt(cancelFiber))
+      const resetFiber = host.runFork(runner.native.reset)
+      await new Promise<void>(resolve => setTimeout(resolve, 10))
+      expect(existsSync(workspacePath)).toBe(true)
+      Effect.runSync(Deferred.succeed(stopGate, undefined))
+      await host.runPromise(Fiber.join(interruptObserver))
+      await host.runPromise(Fiber.join(resetFiber))
+      expect(existsSync(workspacePath)).toBe(false)
+    } finally {
+      await runner.reset()
+    }
   })
 
   it('forwards the decoded resume session id AND reuses the same temp workspace', async () => {
@@ -1130,6 +1239,42 @@ describe('Coach IPC inspect (map 47 ticket 50) — pre-flight handshake probe fo
     const input = inspect.mock.calls[0]?.[0] as { workspacePath: string }
     expect(input.workspacePath).toMatch(/[\\/]watchtower-coach-[^\\/]+$/)
     expect(existsSync(input.workspacePath)).toBe(true)
+  })
+
+  it('runs native and Promise inspections through one probe actor and invalidates native work on reset', async () => {
+    let finish!: () => void
+    const blocked = new Promise<void>(resolve => {
+      finish = resolve
+    })
+    const inspect = vi.fn(async (_input: HarnessProviderInput) => {
+      if (inspect.mock.calls.length === 3) await blocked
+      return {}
+    })
+    const runner = makeRunner({
+      run: vi.fn(async function* (_input: HarnessRunInput): AsyncGenerator<CoachEvent> {
+        /* no-op */
+      }),
+      inspect,
+    })
+    const runtime = latestTestMainRuntime()
+
+    try {
+      const nativeResult = await runtime.runPromise(runner.native.inspect('claude'))
+      const legacyResult = await runner.inspect('claude')
+      expect(nativeResult).toEqual({ ok: true })
+      expect(legacyResult).toEqual({ ok: true })
+      const nativeInput = inspect.mock.calls[0]?.[0]
+      const legacyInput = inspect.mock.calls[1]?.[0]
+      if (!nativeInput || !legacyInput) throw new Error('expected both probe calls')
+      expect(nativeInput.workspacePath).toBe(legacyInput.workspacePath)
+
+      const inFlight = runtime.runPromise(runner.native.inspect('claude'))
+      await vi.waitFor(() => expect(inspect).toHaveBeenCalledTimes(3))
+      await runner.reset()
+      await expect(inFlight).resolves.toEqual({ ok: false, error: 'conversation reset' })
+    } finally {
+      finish()
+    }
   })
 
   it('returns an ok:false arm for a harness the detector did not find', async () => {

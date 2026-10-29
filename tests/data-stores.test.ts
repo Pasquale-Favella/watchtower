@@ -1,310 +1,288 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as AsyncResult from 'effect/reactivity/AsyncResult'
+import * as Atom from 'effect/reactivity/Atom'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import * as Reactivity from 'effect/reactivity/Reactivity'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createScopedDataStore } from '../src/renderer/src/app/stores/data-store.js'
-import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { useOverviewStore } from '../src/renderer/src/features/overview/store.js'
-import { useSessionsStore } from '../src/renderer/src/features/sessions/store.js'
-import { usePullRequestsStore } from '../src/renderer/src/features/pull-requests/store.js'
-import { useSpendStore } from '../src/renderer/src/features/spend/store.js'
-import { useOptimizeStore } from '../src/renderer/src/features/optimize/store.js'
-import { useModelsStore } from '../src/renderer/src/features/models/store.js'
-import { useCompareStore } from '../src/renderer/src/features/compare/store.js'
+import { restartRpcQuery } from '../src/renderer/src/app/atoms/rpc-query.js'
+import { createModelsAtoms } from '../src/renderer/src/features/models/atoms.js'
+import { createOptimizeAtoms } from '../src/renderer/src/features/optimize/atoms.js'
+import { createOverviewAtoms } from '../src/renderer/src/features/overview/atoms.js'
+import { createPullRequestsAtoms } from '../src/renderer/src/features/pull-requests/atoms.js'
+import { createSessionsAtoms } from '../src/renderer/src/features/sessions/atoms.js'
+import { createSpendAtoms } from '../src/renderer/src/features/spend/atoms.js'
+import { sessionRequestKey } from '../src/renderer/src/shared/lib/query-keys.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import type { OverviewPayload } from '../src/shared/schemas/overview.js'
+import { makeAnalyticsRpcTestClient } from './analytics-rpc-test-helper.js'
 
-/** Stub the preload surface for the fetch wrappers' IPC-call sites. */
-function mockWindow(api: unknown): void {
-  ;(globalThis as { window?: unknown }).window = { api }
+const registries: AtomRegistry.AtomRegistry[] = []
+afterEach(() => {
+  for (const registry of registries.splice(0)) registry.dispose()
+})
+
+function setup(handlers: Parameters<typeof makeAnalyticsRpcTestClient>[1] = {}) {
+  const factory = Atom.context()
+  const registry = AtomRegistry.make()
+  registries.push(registry)
+  const client = makeAnalyticsRpcTestClient(factory, handlers)
+  const queries = {
+    overview: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'overview:query',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    sessionRows: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'sessions:view',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    session: (request: { readonly sessionId: string; readonly sourceId?: number }, selectionId: string) =>
+      client.query('store:session', request, {
+        serializationKey: selectionId,
+        reactivityKeys: ['ledger', 'pricing'],
+      }),
+    pullRequests: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'pullRequests:view',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    spend: (scope: OverviewScope, selectionId: string) =>
+      client.query('spend:view', { scope }, { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] }),
+    models: (scope: OverviewScope, selectionId: string) =>
+      client.query('models:view', { scope }, { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] }),
+    optimize: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'optimize:view',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+    yield: (scope: OverviewScope, selectionId: string) =>
+      client.query(
+        'optimize:yield',
+        { scope },
+        { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
+      ),
+  }
+  return {
+    registry,
+    ...createOverviewAtoms(queries.overview),
+    ...createSessionsAtoms(queries.sessionRows, queries.session),
+    ...createPullRequestsAtoms(queries.pullRequests),
+    ...createSpendAtoms(queries.spend),
+    ...createOptimizeAtoms(queries.optimize, queries.yield),
+    ...createModelsAtoms(queries.models),
+    invalidate: factory(Layer.empty).fn(() => Reactivity.invalidate(['ledger', 'pricing'])),
+  }
 }
 
-const statusScanned = {
-  scanned: true,
-  metadata: {
-    scanId: 'scan-1',
-    startedAt: '2026-01-01T00:00:00Z',
-    completedAt: '2026-01-01T00:00:01Z',
-    portedFiles: 1,
-    unchangedFiles: 0,
-    failedFiles: 0,
-    perProvider: [{ provider: 'openai', ported: 1, unchanged: 0, failed: 0, unparsed: 0 }],
-    aborted: false,
+async function ready<A, E>(registry: AtomRegistry.AtomRegistry, atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>) {
+  await vi.waitFor(() => expect(registry.get(atom)).toMatchObject({ _tag: 'Success', waiting: false }))
+  return AsyncResult.getOrThrow(registry.get(atom))
+}
+
+const overviewPayload = {
+  kpis: {
+    cost: 1,
+    calls: 2,
+    sessions: 3,
+    inputTokens: 4,
+    outputTokens: 5,
+    cacheReadTokens: 6,
+    cacheWriteTokens: 7,
+    savingsUSD: 8,
+    estimatedCostUSD: 9,
+    oneShotRate: null,
+    cacheHitPercent: 10,
   },
-}
-
-const analytics = {
-  providers: [],
+  daily: [],
+  dataStart: null,
   models: [],
-  categories: [],
+  activities: [],
+  tools: [],
+  mcpServers: [],
   skills: [],
   subagents: [],
-}
+  efficiency: {
+    score: 80,
+    grade: 'B',
+    oneShotRate: null,
+    retryTax: { totalUSD: 0, retries: 0, editTurns: 0, byModel: [] },
+    routingWaste: { baselineModel: 'x', baselineCostPerEdit: 0, totalSavingsUSD: 0, byModel: [] },
+    pricingCoverage: 1,
+  },
+  workflow: {
+    corrections: 0,
+    userTurns: 0,
+    correctionRate: null,
+    medianTimeToFirstEditMs: null,
+    topReworkedFiles: [],
+  },
+  unpricedModels: [],
+  localModelSavings: { totalUSD: 0, calls: 0, byModel: [], byProvider: [] },
+} satisfies OverviewPayload
 
-beforeEach(() => {
-  useScanStore.setState(useScanStore.getInitialState(), true)
-  useOverviewStore.setState(useOverviewStore.getInitialState(), true)
-  useSessionsStore.setState(useSessionsStore.getInitialState(), true)
-  usePullRequestsStore.setState(usePullRequestsStore.getInitialState(), true)
-  useSpendStore.setState(useSpendStore.getInitialState(), true)
-  useOptimizeStore.setState(useOptimizeStore.getInitialState(), true)
-  useModelsStore.setState(useModelsStore.getInitialState(), true)
-  useCompareStore.setState(useCompareStore.getInitialState(), true)
-})
-
-describe('createScopedDataStore — SWR semantics (ADR 0011)', () => {
-  type Pending = { resolve: (r: { ok: true; data: { n: number } }) => void }
-  const deferred = (resolvers: Pending[]) => (): Promise<{ ok: true; data: { n: number } }> =>
-    new Promise(resolve => {
-      resolvers.push({ resolve })
-    })
-
-  it('loads a scope to ready', async () => {
-    const useStore = createScopedDataStore<{ n: number }>(scope =>
-      Promise.resolve({ ok: true, data: { n: scope.period.length } }),
-    )
-    await useStore.getState().load({ period: 'week' })
-    const s = useStore.getState()
-    expect(s.status).toBe('ready')
-    expect(s.data).toEqual({ n: 4 })
-    expect(s.dataKey).toBe(JSON.stringify({ period: 'week' }))
-  })
-
-  it('keeps last-known data while a same-scope refetch is in flight (stale-while-revalidate)', async () => {
-    const resolvers: Pending[] = []
-    const useSwr = createScopedDataStore<{ n: number }>(deferred(resolvers))
-
-    const first = useSwr.getState().load({ period: 'week' })
-    resolvers[0]!.resolve({ ok: true, data: { n: 1 } })
-    await first
-    expect(useSwr.getState().data).toEqual({ n: 1 })
-    expect(useSwr.getState().status).toBe('ready')
-
-    const second = useSwr.getState().load({ period: 'week' })
-    // Same scope: the old payload must stay visible while the fetch is in flight.
-    expect(useSwr.getState().data).toEqual({ n: 1 })
-    expect(useSwr.getState().status).toBe('ready')
-    expect(useSwr.getState().error).toBeNull()
-
-    resolvers[1]!.resolve({ ok: true, data: { n: 2 } })
-    await second
-    expect(useSwr.getState().data).toEqual({ n: 2 })
-  })
-
-  it('clears to a fresh load when the scope changes', async () => {
-    const resolvers: Pending[] = []
-    const useStore = createScopedDataStore<{ n: number }>(deferred(resolvers))
-
-    const first = useStore.getState().load({ period: 'week' })
-    resolvers[0]!.resolve({ ok: true, data: { n: 4 } })
-    await first
-
-    const second = useStore.getState().load({ period: '30days' })
-    expect(useStore.getState().data).toBeNull()
-    expect(useStore.getState().status).toBe('loading')
-
-    resolvers[1]!.resolve({ ok: true, data: { n: 6 } })
-    await second
-    expect(useStore.getState().data).toEqual({ n: 6 })
-  })
-
-  it('drops an out-of-order response for a superseded scope', async () => {
-    const resolvers: Pending[] = []
-    const useStore = createScopedDataStore<{ n: number }>(deferred(resolvers))
-
-    const loadWeek = useStore.getState().load({ period: 'week' })
-    const loadMonth = useStore.getState().load({ period: 'month' })
-    resolvers[1]!.resolve({ ok: true, data: { n: 6 } })
-    await loadMonth
-    resolvers[0]!.resolve({ ok: true, data: { n: 4 } })
-    await loadWeek
-
-    expect(useStore.getState().data).toEqual({ n: 6 })
-  })
-
-  it('surfaces a fetch error for a scope change', async () => {
-    const useStore = createScopedDataStore<{ n: number }>(() => Promise.resolve({ ok: false, error: 'nope' }))
-    await useStore.getState().load({ period: 'week' })
-    const s = useStore.getState()
-    expect(s.status).toBe('ready')
-    expect(s.error).toBe('nope')
-    expect(s.data).toBeNull()
-  })
-
-  it('reload() refetches the stored scope; clear() resets', async () => {
-    let calls = 0
-    const useStore = createScopedDataStore<{ n: number }>(() => Promise.resolve({ ok: true, data: { n: ++calls } }))
-    await useStore.getState().load({ period: 'week' })
-    await useStore.getState().reload()
-    expect(useStore.getState().data).toEqual({ n: 2 })
-
-    useStore.getState().clear()
-    const s = useStore.getState()
-    expect(s.data).toBeNull()
-    expect(s.status).toBe('idle')
-    expect(s.dataKey).toBe('')
-  })
-})
-
-describe('feature data stores wire the frozen wire contract (ADR 0005)', () => {
-  const overviewPayload = {
-    kpis: {
-      cost: 1,
-      calls: 2,
-      sessions: 3,
-      inputTokens: 4,
-      outputTokens: 5,
-      cacheReadTokens: 6,
-      cacheWriteTokens: 7,
-      savingsUSD: 8,
-      estimatedCostUSD: 9,
-      oneShotRate: null,
-      cacheHitPercent: 10,
-    },
-    daily: [],
-    dataStart: null,
-    models: [],
-    activities: [],
-    tools: [],
-    mcpServers: [],
-    skills: [],
-    subagents: [],
-    efficiency: {
-      score: 80,
-      grade: 'B',
-      oneShotRate: null,
-      retryTax: { totalUSD: 0, retries: 0, editTurns: 0, byModel: [] },
-      routingWaste: { baselineModel: 'x', baselineCostPerEdit: 0, totalSavingsUSD: 0, byModel: [] },
-      pricingCoverage: 1,
-    },
-    workflow: {
-      corrections: 0,
-      userTurns: 0,
-      correctionRate: null,
-      medianTimeToFirstEditMs: null,
-      topReworkedFiles: [],
-    },
-    unpricedModels: [],
-    localModelSavings: { totalUSD: 0, calls: 0, byModel: [], byProvider: [] },
-  }
-
-  it('overview store fetches via getOverview and keeps the payload on a same-scope reload', async () => {
+describe('native analytics queries preserve the shared wire contract', () => {
+  it('loads Overview by Scope and keeps the payload during same-key invalidation', async () => {
     const getOverview = vi.fn(() => Promise.resolve(overviewPayload))
-    mockWindow({ getOverview })
-    await useOverviewStore.getState().load({ period: 'week', provider: 'openai' })
-    expect(getOverview).toHaveBeenCalledWith({ period: 'week', provider: 'openai' })
-    expect(useOverviewStore.getState().data).toEqual(overviewPayload)
-    expect(useOverviewStore.getState().status).toBe('ready')
-
-    await useOverviewStore.getState().reload()
-    expect(useOverviewStore.getState().data).toEqual(overviewPayload)
-    expect(getOverview).toHaveBeenCalledTimes(2)
+    const { registry, overviewQuery, invalidate } = setup({ overview: getOverview })
+    const scope: OverviewScope = { period: 'week', provider: 'openai' }
+    registry.set(overviewQuery.requestAtom, scope)
+    overviewQuery.pin(registry)
+    expect(await ready(registry, overviewQuery.resultAtom)).toEqual(overviewPayload)
+    expect(getOverview).toHaveBeenCalledWith(scope)
+    registry.set(invalidate, undefined)
+    expect(AsyncResult.value(registry.get(overviewQuery.resultAtom))).toMatchObject({ value: overviewPayload })
+    await vi.waitFor(() => expect(getOverview).toHaveBeenCalledTimes(2))
+    expect(await ready(registry, overviewQuery.resultAtom)).toEqual(overviewPayload)
   })
 
-  it('sessions store loads rows by scope and detail by id', async () => {
+  it('retains Overview data with its typed RPC error when a refresh fails', async () => {
+    let calls = 0
+    const { registry, overviewQuery } = setup({
+      overview: () => {
+        calls += 1
+        return calls === 1 ? Promise.resolve(overviewPayload) : Promise.reject(new Error('overview unavailable'))
+      },
+    })
+    registry.set(overviewQuery.requestAtom, { period: 'week' })
+    overviewQuery.pin(registry)
+    expect(await ready(registry, overviewQuery.resultAtom)).toEqual(overviewPayload)
+
+    registry.set(overviewQuery.refreshAtom, undefined)
+    await vi.waitFor(() => {
+      const result = registry.get(overviewQuery.resultAtom)
+      expect(result._tag).toBe('Failure')
+      if (AsyncResult.isFailure(result)) {
+        expect(Option.getOrThrow(result.previousSuccess).value).toEqual(overviewPayload)
+        expect(String(result.cause)).toContain('AnalyticsRpcError')
+      }
+    })
+  })
+
+  it('starts at Initial and gives A/B/A plus reset fresh Overview selections', async () => {
+    const pending: Array<(value: OverviewPayload | null) => void> = []
+    const calls: string[] = []
+    const { registry, overviewQuery } = setup({
+      overview: scope => {
+        calls.push(scope.period)
+        return new Promise(resolve => pending.push(resolve))
+      },
+    })
+    overviewQuery.pin(registry)
+    expect(registry.get(overviewQuery.resultAtom)._tag).toBe('Initial')
+
+    registry.set(overviewQuery.requestAtom, { period: 'today' })
+    await vi.waitFor(() => expect(pending).toHaveLength(1))
+    pending[0](overviewPayload)
+    expect(await ready(registry, overviewQuery.resultAtom)).toEqual(overviewPayload)
+
+    registry.set(overviewQuery.requestAtom, { period: 'week' })
+    await vi.waitFor(() => expect(pending).toHaveLength(2))
+    registry.set(overviewQuery.requestAtom, { period: 'today' })
+    await vi.waitFor(() => expect(pending).toHaveLength(3))
+    pending[1]({ kpis: 'late' } as unknown as OverviewPayload)
+    expect(registry.get(overviewQuery.resultAtom)._tag).toBe('Initial')
+    pending[2](overviewPayload)
+    expect(await ready(registry, overviewQuery.resultAtom)).toEqual(overviewPayload)
+    expect(calls).toEqual(['today', 'week', 'today'])
+
+    restartRpcQuery(registry, overviewQuery)
+    await vi.waitFor(() => expect(pending).toHaveLength(4))
+    pending[3](null)
+    expect(await ready(registry, overviewQuery.resultAtom)).toBeNull()
+  })
+
+  it('forwards rows Scope and preserves optional detail source identity', async () => {
     const getSessionRows = vi.fn(() => Promise.resolve([]))
     const getSession = vi.fn(() => Promise.resolve(null))
-    mockWindow({ getSessionRows, getSession })
+    const { registry, sessionRowsQuery, sessionQuery, invalidate } = setup({
+      sessionRows: getSessionRows,
+      session: getSession,
+    })
+    registry.set(sessionRowsQuery.requestAtom, { period: 'today' })
+    sessionRowsQuery.pin(registry)
+    expect(await ready(registry, sessionRowsQuery.resultAtom)).toEqual([])
 
-    await useSessionsStore.getState().load({ period: 'today' })
-    expect(useSessionsStore.getState().data).toEqual([])
-    expect(useSessionsStore.getState().status).toBe('ready')
+    registry.set(sessionQuery.requestAtom, { sessionId: 'abc', sourceId: 2 })
+    sessionQuery.pin(registry)
+    expect(await ready(registry, sessionQuery.resultAtom)).toBeNull()
     expect(getSessionRows).toHaveBeenCalledWith({ period: 'today' })
+    expect(getSession).toHaveBeenCalledWith({ sessionId: 'abc', sourceId: 2 })
+    registry.set(invalidate, undefined)
+    await vi.waitFor(() => expect(getSession).toHaveBeenCalledTimes(2))
 
-    await useSessionsStore.getState().loadSession('abc')
-    expect(useSessionsStore.getState().sessionStatus).toBe('ready')
-    expect(useSessionsStore.getState().session).toBeNull()
-    expect(getSession).toHaveBeenCalledWith('abc')
+    registry.set(sessionQuery.requestAtom, { sessionId: 'abc' })
+    await ready(registry, sessionQuery.resultAtom)
+    expect(getSession).toHaveBeenLastCalledWith({ sessionId: 'abc' })
+    expect(sessionRequestKey({ sessionId: 'abc', sourceId: 0 })).not.toBe(sessionRequestKey({ sessionId: 'abc' }))
+    registry.set(sessionQuery.resetAtom, undefined)
+    expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Initial')
 
-    useSessionsStore.getState().clearSession()
-    expect(useSessionsStore.getState().sessionStatus).toBe('idle')
+    registry.set(sessionQuery.requestAtom, { sessionId: 'abc', sourceId: 0 })
+    await vi.waitFor(() => expect(registry.get(sessionQuery.resultAtom)._tag).toBe('Failure'))
+    expect(getSession).toHaveBeenCalledTimes(3)
   })
 
-  it('pull requests store fetches via getPullRequests', async () => {
-    mockWindow({ getPullRequests: () => Promise.resolve(null) })
-    await usePullRequestsStore.getState().load({ period: 'all' })
-    expect(usePullRequestsStore.getState().status).toBe('ready')
-    expect(usePullRequestsStore.getState().data).toBeNull()
-  })
-
-  it('spend store fetches via getSpend', async () => {
-    mockWindow({ getSpend: () => Promise.resolve(null) })
-    await useSpendStore.getState().load({ period: 'lifetime' })
-    expect(useSpendStore.getState().status).toBe('ready')
-  })
-
-  it('optimize store fetches waste and yieldData via getOptimize/getYield', async () => {
+  it('keeps unopened sections lazy and refreshes each activated Optimize query independently', async () => {
+    const getSpend = vi.fn(() => Promise.resolve(null))
     const getOptimize = vi.fn(() => Promise.resolve(null))
     const getYield = vi.fn(() => Promise.resolve(null))
-    mockWindow({ getOptimize, getYield })
-    await useOptimizeStore.getState().waste.load({ period: 'today' })
-    await useOptimizeStore.getState().yieldData.load({ period: 'today' })
-    expect(getOptimize).toHaveBeenCalledWith({ period: 'today' })
-    expect(getYield).toHaveBeenCalledWith({ period: 'today' })
-  })
-
-  it('models store fetches via getModels', async () => {
-    mockWindow({ getModels: () => Promise.resolve(null) })
-    await useModelsStore.getState().load({ period: '30days' })
-    expect(useModelsStore.getState().status).toBe('ready')
-  })
-
-  it('compare store fetches with the pair and treats a pair change as a fresh load', async () => {
-    const getCompare = vi.fn(() => Promise.resolve(null))
-    mockWindow({ getCompare })
-
-    await useCompareStore.getState().load({ period: 'today' }, { modelA: 'a', modelB: 'b' })
-    expect(getCompare).toHaveBeenCalledWith({ period: 'today' }, { modelA: 'a', modelB: 'b' })
-    expect(useCompareStore.getState().status).toBe('ready')
-
-    useCompareStore.getState().load({ period: 'today' }, { modelA: 'a', modelB: 'c' })
-    expect(useCompareStore.getState().data).toBeNull()
-    expect(useCompareStore.getState().status).toBe('loading')
-  })
-})
-
-describe('shared refresh tick (ADR 0011)', () => {
-  it('reloads every loaded data store when a change completes', async () => {
-    const getOverview = vi.fn(() => Promise.resolve(null))
-    mockWindow({
-      getScanStatus: () => Promise.resolve(statusScanned),
-      getAnalytics: () => Promise.resolve(analytics),
-      getOverview,
+    const { registry, optimizeQuery, yieldQuery, invalidate } = setup({
+      spend: getSpend,
+      optimize: getOptimize,
+      yield: getYield,
     })
+    registry.set(optimizeQuery.requestAtom, { period: 'week' })
+    optimizeQuery.pin(registry)
+    await ready(registry, optimizeQuery.resultAtom)
+    registry.set(invalidate, undefined)
+    await vi.waitFor(() => expect(getOptimize).toHaveBeenCalledTimes(2))
+    expect(getYield).not.toHaveBeenCalled()
+    expect(getSpend).not.toHaveBeenCalled()
 
-    await useOverviewStore.getState().load({ period: 'week' })
-    expect(getOverview).toHaveBeenCalledTimes(1)
-
-    await useScanStore.getState().applyChange()
-
-    expect(getOverview).toHaveBeenCalledTimes(2)
-    expect(useOverviewStore.getState().status).toBe('ready')
-  })
-
-  it('does not spuriously fetch a store that has never been loaded', async () => {
-    const getSpend = vi.fn(() => Promise.resolve(null))
-    mockWindow({
-      getScanStatus: () => Promise.resolve(statusScanned),
-      getAnalytics: () => Promise.resolve(analytics),
-      getSpend,
+    registry.set(yieldQuery.requestAtom, { period: 'week' })
+    yieldQuery.pin(registry)
+    await ready(registry, yieldQuery.resultAtom)
+    registry.set(invalidate, undefined)
+    await vi.waitFor(() => {
+      expect(getOptimize).toHaveBeenCalledTimes(3)
+      expect(getYield).toHaveBeenCalledTimes(2)
     })
-    await useScanStore.getState().applyChange()
     expect(getSpend).not.toHaveBeenCalled()
   })
 
-  it('optimize store refetches both slices (waste + yieldData) on a change', async () => {
-    const getOptimize = vi.fn(() => Promise.resolve(null))
-    const getYield = vi.fn(() => Promise.resolve(null))
-    mockWindow({
-      getScanStatus: () => Promise.resolve(statusScanned),
-      getAnalytics: () => Promise.resolve(analytics),
-      getOptimize,
-      getYield,
+  it('uses the correct operations for Pull Requests, Spend and Models', async () => {
+    const getPullRequests = vi.fn(() => Promise.resolve(null))
+    const getSpend = vi.fn(() => Promise.resolve(null))
+    const getModels = vi.fn(() => Promise.resolve(null))
+    const { registry, pullRequestsQuery, spendQuery, modelsQuery } = setup({
+      pullRequests: getPullRequests,
+      spend: getSpend,
+      models: getModels,
     })
+    for (const query of [pullRequestsQuery, spendQuery, modelsQuery]) {
+      registry.set(query.requestAtom, { period: '30days' })
+      query.pin(registry)
+      expect(await ready<unknown, unknown>(registry, query.resultAtom)).toBeNull()
+    }
+    for (const operation of [getPullRequests, getSpend, getModels])
+      expect(operation).toHaveBeenCalledWith({ period: '30days' })
+  })
 
-    await useOptimizeStore.getState().waste.load({ period: 'week' })
-    await useOptimizeStore.getState().yieldData.load({ period: 'week' })
-    expect(getOptimize).toHaveBeenCalledTimes(1)
-    expect(getYield).toHaveBeenCalledTimes(1)
-
-    await useScanStore.getState().applyChange()
-    expect(getOptimize).toHaveBeenCalledTimes(2)
-    expect(getYield).toHaveBeenCalledTimes(2)
+  it('exposes failed Overview RPC calls as typed query failures', async () => {
+    const { registry, overviewQuery } = setup({ overview: () => Promise.reject(new Error('overview unavailable')) })
+    registry.set(overviewQuery.requestAtom, { period: 'today' })
+    overviewQuery.pin(registry)
+    await vi.waitFor(() => {
+      const result = registry.get(overviewQuery.resultAtom)
+      expect(result._tag).toBe('Failure')
+      if (AsyncResult.isFailure(result)) expect(String(result.cause)).toContain('AnalyticsRpcError')
+    })
   })
 })

@@ -1,60 +1,37 @@
-import { useCallback, useEffect, useState } from 'react'
 import { Database, KeyRound, ShieldCheck } from 'lucide-react'
+import { useState } from 'react'
 
+import { formatBytes } from '@/features/settings/lib'
+import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
+import { useSettingsPrivacyStore } from '@/features/settings/use-settings-store'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { Card } from '@/shared/components/ui/card'
 import { Separator } from '@/shared/components/ui/separator'
-import { Button } from '@/shared/components/ui/button'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
-import { formatBytes } from '@/features/settings/lib'
-import { fetchClearData, fetchSettings } from '@/shared/lib/api'
-import { subscribeToRefresh, useScanStore } from '@/app/stores/scan-store'
-import type { SettingsInfo } from '@/features/settings/settings-types'
 
 /** Settings › Privacy & data: the local-only/no-API-keys claims, the SQLite
  * store's location and size, and a clear-data action. No telemetry toggle —
  * there is no telemetry. */
 export function PrivacyPane() {
-  const [info, setInfo] = useState<SettingsInfo | null>(null)
   const [clearing, setClearing] = useState(false)
   const [clearError, setClearError] = useState<string | null>(null)
-  const refresh = useScanStore(s => s.refresh)
-
-  const load = useCallback(async (): Promise<void> => {
-    const result = await fetchSettings()
-    setInfo(result.ok ? result.data : null)
-  }, [])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  // A clear triggers a rescan, so re-read the on-disk sizes whenever a scan
-  // (or config change) settles — otherwise the pane keeps showing the
-  // post-clear payload while the store refills underneath it.
-  useEffect(
-    () =>
-      subscribeToRefresh(() => {
-        void load()
-      }),
-    [load],
-  )
+  const { info: infoQuery, clearData } = useSettingsPrivacyStore()
+  const { data: info, error: settingsInfoError } = infoQuery
 
   const clear = async (): Promise<void> => {
     setClearError(null)
     setClearing(true)
-    const result = await fetchClearData()
-    if (result.ok) {
-      setInfo(result.data)
-      void refresh()
-    } else {
-      setClearError(result.error)
+    try {
+      const result = await clearData(undefined)
+      if (!result.ok) setClearError(result.message)
+    } finally {
+      setClearing(false)
     }
-    setClearing(false)
   }
 
   return (
     <div className="flex max-w-md flex-col gap-3">
       <PaneHeader title="Privacy & data" subtitle="What the app does, and does not do, with your data." />
+      <QueryErrorNotice error={settingsInfoError} hasData={info !== null} />
       <Card className="flex flex-col gap-4 px-4 py-4">
         <div className="flex items-start gap-2.5">
           <ShieldCheck className="text-brand-text mt-0.5 size-4 shrink-0" />

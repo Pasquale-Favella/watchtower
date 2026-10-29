@@ -1,38 +1,26 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Atom from 'effect/reactivity/Atom'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { describe, expect, it, vi } from 'vitest'
 
+import { createCoachAtoms } from '../src/renderer/src/features/coach-skills/atoms.js'
 import { candidateKey, craftSkillPrompt } from '../src/renderer/src/features/coach-skills/lib.js'
-import type { SkillCandidate } from '../src/shared/schemas/skills.js'
+import type { OverviewScope } from '../src/shared/schemas/overview.js'
+import type { SkillCandidate, SkillsPayload, SkillsThresholds } from '../src/shared/schemas/skills.js'
+import { makeCoachRpcTestClient } from './coach-rpc-test-helper.js'
 
-function mockWindow(api: unknown): void {
-  ;(globalThis as { window?: unknown }).window = { api }
+function setup(getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds) => Promise<SkillsPayload | null>) {
+  const registry = AtomRegistry.make()
+  const runtime = Atom.context()
+  const client = makeCoachRpcTestClient(runtime, { skills: getSkills })
+  const atoms = createCoachAtoms(client)
+  registry.mount(atoms.coachStateAtom)
+  registry.mount(atoms.detection.resultAtom)
+  return { registry, atoms }
 }
 
-function createMemoryStorage(): Storage {
-  const store = new Map<string, string>()
-  return {
-    get length() {
-      return store.size
-    },
-    clear: () => {
-      store.clear()
-    },
-    getItem: (key: string) => store.get(key) ?? null,
-    key: (index: number) => Array.from(store.keys())[index] ?? null,
-    removeItem: (key: string) => {
-      store.delete(key)
-    },
-    setItem: (key: string, value: string) => {
-      store.set(key, value)
-    },
-  }
+async function waitFor(predicate: () => boolean): Promise<void> {
+  await vi.waitFor(() => expect(predicate()).toBe(true))
 }
-
-// The settings store persists via `createJSONStorage(() => localStorage)` at
-// module load — install the memory storage BEFORE the dynamic import.
-const memory = createMemoryStorage()
-vi.stubGlobal('localStorage', memory)
-
-const { useCoachSkillsStore } = await import('../src/renderer/src/features/coach-skills/store.js')
 
 const candidate: SkillCandidate = {
   name: 'data-fetch',
@@ -64,41 +52,52 @@ const payload = {
   ghosts: [],
 }
 
-beforeEach(() => {
-  useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
-})
-
 describe('Coach & Skills detection pool (the welcome-screen suggested-skill chips)', () => {
   it('loads the detection pool for a scope', async () => {
-    mockWindow({ getSkills: () => Promise.resolve(payload) })
-    await useCoachSkillsStore.getState().detection.load({ period: 'lifetime' })
-    expect(useCoachSkillsStore.getState().detection.data?.drafts[0]?.name).toBe('data-fetch')
+    const getSkills = vi.fn(async () => payload)
+    const { registry, atoms } = setup(getSkills)
+    registry.set(atoms.detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
+    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
+    expect(registry.get(atoms.detection.resultAtom)).toMatchObject({ value: payload })
+    expect(getSkills).toHaveBeenCalledWith({ period: 'lifetime' }, { frequency: 5, spread: 2 })
+    registry.dispose()
   })
 
   it('switching scope clears to a fresh load (stale-while-revalidate)', async () => {
     const requests: string[] = []
-    mockWindow({
-      getSkills: (scope: unknown) => {
-        requests.push(JSON.stringify(scope))
-        return Promise.resolve(null)
-      },
+    const getSkills = vi.fn(async (scope: OverviewScope) => {
+      requests.push(JSON.stringify(scope))
+      return scope.period === 'lifetime' ? payload : null
     })
-    await useCoachSkillsStore.getState().detection.load({ period: 'lifetime' })
-    await useCoachSkillsStore.getState().detection.load({ period: 'today' })
+    const { registry, atoms } = setup(getSkills)
+    registry.set(atoms.detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
+    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
+    registry.set(atoms.detection.requestAtom, { scope: { period: 'today' }, frequency: 5, spread: 2 })
+    await waitFor(() => requests.length === 2 && registry.get(atoms.detection.resultAtom)._tag === 'Success')
     expect(requests).toEqual([JSON.stringify({ period: 'lifetime' }), JSON.stringify({ period: 'today' })])
-    expect(useCoachSkillsStore.getState().detection.data).toBeNull()
-    expect(useCoachSkillsStore.getState().detection.dataKey).toBe(JSON.stringify({ period: 'today' }))
+    expect(registry.get(atoms.detection.resultAtom)).toMatchObject({ value: null })
+    registry.dispose()
   })
 
   it('a failed load surfaces the error without clearing the last payload', async () => {
-    mockWindow({ getSkills: () => Promise.resolve(payload) })
-    await useCoachSkillsStore.getState().detection.load({ period: 'lifetime' })
-    // Same scope refetch fails — the last-known payload must stay visible.
-    mockWindow({ getSkills: () => Promise.reject(new Error('ipc down')) })
-    await useCoachSkillsStore.getState().detection.load({ period: 'lifetime' })
-    const s = useCoachSkillsStore.getState()
-    expect(s.detection.error).toBe('ipc down')
-    expect(s.detection.data?.drafts[0]?.name).toBe('data-fetch')
+    let shouldFail = false
+    const getSkills = vi.fn(() =>
+      shouldFail ? Promise.reject(new Error('skills unavailable')) : Promise.resolve(payload),
+    )
+    const { registry, atoms } = setup(getSkills)
+    const request = { scope: { period: 'lifetime' as const }, frequency: 5, spread: 2 }
+    registry.set(atoms.detection.requestAtom, request)
+    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
+    shouldFail = true
+    registry.set(atoms.detection.refreshAtom, undefined)
+    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Failure')
+    const result = registry.get(atoms.detection.resultAtom)
+    expect(result._tag).toBe('Failure')
+    if (result._tag === 'Failure') {
+      expect(JSON.stringify(result.cause)).toContain('AnalyticsRpcError')
+      expect(result.previousSuccess._tag).toBe('Some')
+    }
+    registry.dispose()
   })
 })
 

@@ -600,7 +600,7 @@ class OperationalLogSpan extends Tracer.NativeSpan {
   override end(endTime: bigint, exit: Exit.Exit<unknown, unknown>): void {
     // Keep repository/application spans; per-statement SQL spans are too granular
     // for the bounded operational log. Parent spans retain timing and failures.
-    if (this.name !== 'sql.execute') emitSpanEnd(this, endTime, exit)
+    if (this.name !== 'sql.execute' && !this.attributes.has('effect.sql.method')) emitSpanEnd(this, endTime, exit)
     super.end(endTime, exit)
   }
 }

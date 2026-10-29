@@ -1,6 +1,5 @@
 import { useRef } from 'react'
 
-import { useChatRowIn } from '@/shared/lib/motion'
 import { Markdown } from '@/shared/components/Markdown'
 import { Badge } from '@/shared/components/ui/badge'
 import {
@@ -11,9 +10,11 @@ import {
   MessageScrollerProvider,
   MessageScrollerViewport,
 } from '@/shared/components/ui/message-scroller'
+import { useChatRowIn } from '@/shared/lib/motion'
 
+import { type ChatMessage } from './hooks'
 import { CopyButton, RetryButton, StreamingDots, ThinkingBlock, ToolCard } from './blocks'
-import { useCoachSkillsStore, type ChatMessage } from './store'
+import { useCoachThreadStore } from './hooks'
 
 /** One thread message (ADR 0017): a user bubble, a streaming assistant turn
  *  with its run-context header, a live Thinking panel (when the harness
@@ -33,7 +34,7 @@ export function MessageBubble({
   canRetry: boolean
   onRetry: () => void
 }) {
-  const running = useCoachSkillsStore(s => s.running)
+  const { running } = useCoachThreadStore()
   // The row root differs per role; the same ref lands on either branch so the
   // entrance animation targets whichever root actually renders.
   const rowRef = useRef<HTMLDivElement>(null)
@@ -139,7 +140,7 @@ export function MessageBubble({
 export function Thread({ messages }: { messages: ChatMessage[] }) {
   // Hooks before the empty-transcript early return (rules-of-hooks): the
   // selector subscription must run in the same order on every render.
-  const retryAssistant = useCoachSkillsStore(s => s.retryAssistant)
+  const { retryAssistant } = useCoachThreadStore()
   if (messages.length === 0) {
     return null
   }
@@ -157,7 +158,7 @@ export function Thread({ messages }: { messages: ChatMessage[] }) {
                   message={message}
                   canRetry={message.role === 'assistant' && message.id === lastAssistantId}
                   onRetry={() => {
-                    void retryAssistant(message.id)
+                    retryAssistant(message.id)
                   }}
                 />
               </MessageScrollerItem>

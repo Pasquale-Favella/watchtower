@@ -2,21 +2,16 @@ import { ExternalLink, EyeOff, Power, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { displayShortcutForAction } from '@/app/shortcuts'
-import { useScanStore } from '@/app/stores/scan-store'
 import { DailySpendChart } from '@/features/overview/DailySpendChart'
 import { formatChartDate, formatChartValue, spendTrend } from '@/features/overview/lib'
-import { useSettingsStore } from '@/features/settings/store'
 import { SkeletonBars } from '@/shared/components/skeletons'
 import { Button } from '@/shared/components/ui/button'
 import { Card, CardContent, CardFooter, CardHeader } from '@/shared/components/ui/card'
 import { Skeleton } from '@/shared/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/shared/components/ui/tooltip'
-import { orbControls } from '@/shared/lib/api'
-import { formatUsd } from '@/shared/lib/models'
 import { cn } from '@/shared/lib/utils'
 
 import { useOrbPanelStore } from './panel-store'
-import { useOrbPlacementStore } from './placement-store'
 
 /** The first-close peek's note (the main process decides when it shows). */
 const BACKGROUNDED_PEEK = 'Still watching in the background'
@@ -37,21 +32,27 @@ function Slot({ className, children }: { className?: string; children: ReactNode
  * the 30-day total with its week-over-week trend, local-model savings, and
  * the same daily-spend chart — plus the way back into the full app. */
 export function OrbPanel({ className }: { className?: string }) {
-  const peek = useOrbPlacementStore(s => s.placement.peek)
-  const today = useOrbPanelStore(s => s.today.data)
-  const recent = useOrbPanelStore(s => s.recent.data)
+  const {
+    currency,
+    formatUsd,
+    peek,
+    today: todayQuery,
+    recent: recentQuery,
+    scanning,
+    scanPending,
+    scanCommandError,
+    startScan,
+    orbControls,
+  } = useOrbPanelStore()
+  const today = todayQuery.data
+  const recent = recentQuery.data
   // One failure policy: a failed load shows ONE error state in place of the
   // stats and chart. A slice that settled with nothing to show (no ledger
   // yet) shows a dash — never a skeleton that would not resolve.
-  const todaySettled = useOrbPanelStore(s => s.today.status === 'ready')
-  const recentSettled = useOrbPanelStore(s => s.recent.status === 'ready')
-  const loadError = useOrbPanelStore(s => s.recent.error ?? s.today.error)
+  const todaySettled = todayQuery.status === 'ready'
+  const recentSettled = recentQuery.status === 'ready'
+  const loadError = recentQuery.error ?? todayQuery.error
   const failed = loadError !== null && recent === null
-  const scanning = useScanStore(s => s.scanning)
-  const refresh = useScanStore(s => s.refresh)
-  // Re-render money values when the display currency changes (ADR 0009).
-  useSettingsStore(s => s.activeCurrency)
-
   const trend = recent ? spendTrend(recent.daily) : null
 
   return (
@@ -92,8 +93,8 @@ export function OrbPanel({ className }: { className?: string }) {
           </Slot>
         </div>
         <div className="flex shrink-0 items-center gap-0.5">
-          <IconAction label="Scan now" onClick={() => void refresh()} disabled={scanning}>
-            <RefreshCw className={cn(scanning && 'animate-spin')} />
+          <IconAction label="Scan now" onClick={() => startScan(undefined)} disabled={scanning || scanPending}>
+            <RefreshCw className={cn((scanning || scanPending) && 'animate-spin')} />
           </IconAction>
           <IconAction
             label={`Hide orb · ${displayShortcutForAction('summonOrb')} brings it back`}
@@ -108,6 +109,11 @@ export function OrbPanel({ className }: { className?: string }) {
       </CardHeader>
 
       <CardContent className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
+        {scanCommandError && (
+          <p role="alert" className="text-destructive text-[11px]">
+            {scanCommandError}
+          </p>
+        )}
         {failed ? (
           <p
             className="text-muted-foreground grid h-full place-items-center text-center text-[11.5px]"
@@ -192,7 +198,7 @@ export function OrbPanel({ className }: { className?: string }) {
                   <DailySpendChart
                     data={recent.daily}
                     formatDate={formatChartDate}
-                    formatValue={formatChartValue}
+                    formatValue={value => formatChartValue(value, currency)}
                     className={cn(FADE_IN, 'absolute inset-0 aspect-auto h-full')}
                   />
                 )}

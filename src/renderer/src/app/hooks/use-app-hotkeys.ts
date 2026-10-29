@@ -1,9 +1,9 @@
 import { useHotkeys } from '@tanstack/react-hotkeys'
 
-import { SHORTCUTS } from '@/app/shortcuts'
 import { navigateToSection } from '@/app/navigation'
-import { usePaletteStore } from '@/app/stores/palette-store'
-import { useScanStore } from '@/app/stores/scan-store'
+import { SHORTCUTS } from '@/app/shortcuts'
+
+import { usePaletteStore } from './use-palette-store.js'
 
 /** Shortcut registration, relocated out of AppRoot (ADR 0011). Section
  * actions navigate through the module-level app/navigation.ts (ADR 0014);
@@ -11,8 +11,7 @@ import { useScanStore } from '@/app/stores/scan-store'
  * palette store. Registered at root mount so ⌘R keeps
  * working during the first-hydrate splash. */
 export function useAppHotkeys(): void {
-  const refresh = useScanStore(s => s.refresh)
-  const togglePalette = usePaletteStore(s => s.toggle)
+  const { refreshScan: refresh, togglePalette } = usePaletteStore()
   useHotkeys(
     // `global` shortcuts are the main process's (OS-wide), not this window's.
     SHORTCUTS.filter(def => def.action !== 'toggleSidebar' && def.scope !== 'global').map(def => ({
@@ -20,10 +19,10 @@ export function useAppHotkeys(): void {
       callback: () => {
         switch (def.action) {
           case 'refresh':
-            void refresh()
+            refresh(undefined)
             break
           case 'commandPalette':
-            togglePalette()
+            togglePalette(undefined)
             break
           case 'toggleSidebar':
             break // owned by SidebarToggleShortcut, filtered above

@@ -7,7 +7,8 @@ derive their results from that ledger at query time.
 
 ## App map
 
-Each backend isolate owns its Effect runtime and resources. Solid arrows show
+Each backend isolate owns its Effect runtime and resources. Each renderer
+window owns an Atom registry and a shared Atom runtime factory. Solid arrows show
 calls, data, and events; dashed arrows show lifecycle ownership. The worker
 and MCP processes share application query code, but have separate service
 instances and SQLite connections.
@@ -15,15 +16,17 @@ instances and SQLite connections.
 ```mermaid
 flowchart TB
     subgraph renderer["Sandboxed renderer"]
-        ui["React views and Zustand stores"]
+        ui["React views and feature store hooks"]
+        workflows["Window-owned query and workflow atoms"]
         decoder["Synchronous Effect Schema decoder"]
-        ui ~~~ decoder
+        ui --> workflows
+        workflows ~~~ decoder
     end
 
-    preload["Preload contextBridge<br/>Typed Promise API and event subscriptions"]
+    preload["Preload contextBridge<br/>Versioned RPC port and immutable metadata"]
 
     subgraph main["Electron main process · MainRuntime"]
-        ipc["IPC handlers and worker client"]
+        ipc["RPC/IPC handlers and worker client"]
         shell["BackgroundShell<br/>Tray, orb, windows, subscriptions"]
         coach["Coach harness coordination"]
         pool["MCP pool and sidecar lifecycle"]
@@ -49,8 +52,8 @@ flowchart TB
     cache[("Session cache<br/>Per-file fingerprints")]
     ledger[("ledger.db<br/>Transcript facts and persisted settings")]
 
-    ui -->|"Requests"| preload
-    preload -->|"Invoke IPC"| ipc
+    workflows -->|"AtomRpc queries and Effect workflows"| preload
+    preload -->|"Effect RPC over MessagePort"| ipc
     ipc -->|"Results and events"| preload
     preload -->|"Incoming payloads"| decoder
     decoder -->|"Validated data or visible error state"| ui
@@ -97,20 +100,39 @@ and event paths are drawn explicitly.
    The first scan covers lifetime history. Later scans reuse fingerprints
    and cached calls, while each changed file commits atomically to the ledger.
 2. The worker sends progress and completion events to main for relay.
-   `store:changed` triggers the renderer's existing refresh flow. A section's
-   data request travels through the Promise IPC API to an application query
-   in the worker. That query obtains decoded facts and live settings through
+   `store:changed` invalidates active queries in each window's Reactivity
+   service. All analytical Sections use native AtomRpc queries over the versioned
+   Electron MessagePort. Main forwards each application query to the
+   worker. That query obtains decoded facts and live settings through
    a focused repository capability, runs pure calculations, and validates
    the outgoing payload with Effect Schema. Main forwards the result and the
-   renderer decodes it again before updating its store.
+   renderer decodes it again before publishing the Atom's `AsyncResult`.
+   The app window keeps one scoped RPC client across port generations. Disconnects
+   fail admitted calls; reconnection reads an authoritative snapshot and invalidates
+   queries without replaying commands. App, panel and beacon own role-specific
+   lifecycle streams. App snapshots carry versions immediately; metadata hydration
+   runs separately. Ledger generations fence cleared or replaced worker state.
+   Each RPC connection admits at most 64 active requests. The worker client also
+   admits at most 128 distinct ordinary operations across connections, including
+   recovery waits. RPC cancellation does not release an unfinished worker operation.
+   Shared reads reuse admission; scan abort and shutdown retain control access.
 3. An Alias or Price override edit follows a worker command route into
    `LedgerConfig`. Subsequent queries use the updated setting to reprice the
    existing facts. The edit requires no transcript rescan. Each repository
    operation completes its SQLite transaction without Promise yields.
+   RPC pricing writes return a confirmed config revision. The renderer waits
+   for its authoritative event revision and the active query refresh, so a
+   different window's earlier event cannot confirm the wrong write.
+   Clear commands return a ledger generation; the renderer waits until its reset
+   has been applied before rescanning, with one authoritative invalidation owner.
 4. A Coach request goes to main's harness integration. The coding-agent CLI
    can call `watchtower-ledger` tools over MCP to inspect usage. Each MCP
    query process owns a read-only connection and reuses the application query
-   code with its own service graph. The SDK owns protocol handling; Effect
+   code with its own service graph. A continuous RPC stream establishes the run
+   identity before delivering ordered text, tool and terminal events. Pending
+   output is bounded by event count and encoded bytes; overflow terminates the
+   stream visibly and drains the owning run. Disconnect and cancellation never
+   replay a prompt. The SDK owns protocol handling; Effect
    Schema owns Watchtower's tool arguments and result contracts. Tool scopes
    default to lifetime and can differ from the current dashboard scope.
 5. Cancellation and shutdown belong to the runtime that owns the work.
@@ -126,6 +148,34 @@ To trace these paths in source, start with the
 [Overview query](../src/main/application/overview-query.ts). The
 [MCP query runtime](../src/main/agents/ledger-mcp/query-runtime.ts) shows how
 the same application queries run with a separate read-only service graph.
+
+The renderer composition follows [ADR 0036](./adr/0036-effect-renderer-composition.md).
+Window roots own bootstrap, subscriptions and disposal across React remounts.
+Scope, preferences and workflow state use atoms behind feature store hooks.
+Components consume domain values and commands; ESLint prevents direct imports
+of atoms, registries and RPC clients outside the renderer composition root.
+Query slots hold one current
+request per feature, discard previous data on identity changes and retain
+same-request data during refresh. Formatting reads an explicit currency
+snapshot and never refetches ledger data merely to change the display symbol.
+
+The versioned RPC implementation follows
+[ADR 0037](./adr/0037-versioned-effect-rpc-boundaries.md). Shared schemas,
+generated clients and an authenticated MessagePort adapter serve all application
+requests and lifecycle/Coach streams, including native shell navigation, links,
+Full Disk Access, notices and Orb commands/placement. The preload exposes only
+the scoped RPC transport and immutable platform/version metadata. Role-specific
+contracts and authenticated native owners retain beacon/panel restrictions.
+Main/worker requests use the internal `WorkerRpcGroup` over the official Node
+worker adapter. Each supervisor-owned worker generation has one protocol scope
+and one event consumer. Application readiness follows event subscription and
+ledger initialization. Success and failure watermarks keep event application
+ahead of acknowledgement delivery. Worker errors carry safe typed codes rather
+than SQL details or paths; renderer handlers translate those failures into their
+application error contracts. The supervisor retains admission, read coalescing,
+revision fencing, abort drainage and replacement without command replay. See the
+[adoption plan](./plans/effect-renderer-adoption.md) for the separate renderer,
+renderer/main RPC and main/worker RPC completion gates.
 
 ## Data flow
 
@@ -175,9 +225,9 @@ Every provider's parsed call record flows through one shared Effect Schema
 ledger row. Effect Schema is the authority for provider, ledger, cache, and
 IPC contracts. The renderer decodes incoming payloads synchronously with
 Effect Schema and reports invalid payloads through its existing error state
-and tripwire. One UI-only schema module remains plain TypeScript. The renderer
-uses no Effect runtime, layers, or services, and its Promise-based IPC facade
-and local state flow remain unchanged. The installed MCP SDK still uses Zod
+and tripwire. One UI-only schema module remains plain TypeScript. Window-owned
+Atom registries, Layers and services compose renderer workflows and native RPC
+queries. React retains interaction-local state. The installed MCP SDK still uses Zod
 internally; that dependency does not define Watchtower's contracts.
 
 Scan metadata carries per-provider **unparsed** counts, so a vendor's schema
@@ -188,8 +238,9 @@ drift is visible in the UI instead of silently corrupting totals.
 The main process sends manual `⌘R`/`Ctrl+R` requests to the db-worker. The
 worker also owns background cadence and scan lifecycle. Each scan streams
 per-file deltas into SQLite and reports progress and completion to main, which
-relays events to the renderer. `store:changed` remains the renderer's only
-refetch trigger. There is no renderer polling loop. Scans coalesce, a failed
+projects events to renderer lifecycle streams. Committed ledger/config changes
+and reconnect snapshots invalidate active queries. There is no renderer polling
+loop. Scans coalesce, a failed
 background scan leaves the last-known data visible, and each scan supports
 abort and per-provider progress.
 

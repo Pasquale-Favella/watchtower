@@ -1,41 +1,28 @@
-import { useUpdatesStore } from '@/features/settings/updates-store'
-import { onAppNavigate, onCoachHarnessesChanged, onUpdateChanged, parseEvent } from '@/shared/lib/api'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as Atom from 'effect/reactivity/Atom'
+import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { coachEventEnvelopeSchema } from '../../../../shared/schemas/agents.js'
-import { useCoachSkillsStore } from '../../features/coach-skills/store'
-import { navigateToSection } from '../navigation'
-import { combine, subscribeToDataPlane } from './shared-wiring'
+import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { runRoleLifecycle, type RoleConnectionReadiness } from '@/shared/lib/rpc-events'
+import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
+import { navigateToSection } from '../navigation.js'
+import { registry, runtime } from '../renderer-runtime.js'
 
-/** The app window's IPC wiring (ADR 0011): the shared data plane plus the
- * channels only this window serves — Coach events and the orb's "open on a
- * section" requests. Every subscription feeds a store action (or, for
- * navigation, its one entry point), never component state. Call once from
- * the shell's mount; the returned teardown removes every listener. Stores
- * stay pure (no `window` at module load): only the wiring modules and
- * `lib/api.ts` touch `window`. */
-export function subscribeToIpc(): () => void {
-  const unsubs: Array<() => void> = [subscribeToDataPlane()]
-  unsubs.push(onUpdateChanged(status => useUpdatesStore.getState().onStatus(status)))
-
-  // A harness run streamed an event (ADR 0017): route it into the unified
-  // Coach & Skills store so the thread accumulates text/tools/session live.
-  unsubs.push(
-    window.api.onCoachEvent(message => {
-      const parsed = parseEvent(coachEventEnvelopeSchema, 'coach event', message)
-      if (!parsed) return
-      useCoachSkillsStore.getState().onEvent(parsed)
-    }),
-  )
-
-  unsubs.push(
-    onCoachHarnessesChanged(rows => {
-      useCoachSkillsStore.getState().replaceHarnesses(rows)
-    }),
-  )
-
-  // The background orb asked to open the app on a section: navigation's one
-  // entry point is app/navigation.ts (ADR 0014), the same the sidebar uses.
-  unsubs.push(onAppNavigate(navigateToSection))
-
-  return combine(unsubs)
+export const navigationReadinessAtom = Atom.keepAlive(Atom.make<RoleConnectionReadiness>('inactive'))
+const navigationRuntime = runtime(get => Layer.merge(get(ApplicationClient.runtime.layer), RendererProtocolLayer))
+export const navigationAtom = navigationRuntime.atom(get =>
+  runRoleLifecycle(get, {
+    readinessAtom: navigationReadinessAtom,
+    events: () => Effect.map(ApplicationClient, rpc => rpc('shell:events', undefined)),
+    apply: event =>
+      Effect.sync(() => {
+        if (event._tag === 'Ready') get.registry.set(navigationReadinessAtom, 'ready')
+        else if (event._tag === 'Navigate') navigateToSection(event.section)
+        return true
+      }),
+  }),
+)
+export function subscribeToNavigation(owner: AtomRegistry.AtomRegistry = registry): () => void {
+  return owner.mount(navigationAtom)
 }

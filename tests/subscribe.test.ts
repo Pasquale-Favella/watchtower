@@ -1,321 +1,48 @@
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
+import { initialScanState, scanStateAtom } from '../src/renderer/src/app/atoms/scan.js'
+import { appLifecycleReadinessAtom } from '../src/renderer/src/app/atoms/rpc-lifecycle.js'
 import { setRouter } from '../src/renderer/src/app/navigation.js'
-import { useScanStore } from '../src/renderer/src/app/stores/scan-store.js'
-import { subscribeToIpc } from '../src/renderer/src/app/stores/subscribe.js'
-import { useCoachSkillsStore } from '../src/renderer/src/features/coach-skills/store.js'
-import { useSettingsStore } from '../src/renderer/src/features/settings/store.js'
-import { useUpdatesStore } from '../src/renderer/src/features/settings/updates-store.js'
+import { navigationReadinessAtom, subscribeToNavigation } from '../src/renderer/src/app/stores/subscribe.js'
+import { makeShellBridge } from './shell-bridge.js'
 
-/** Stub the preload surface: capture each on* callback for manual firing,
- * merging any extra (fetch) methods onto the same `window.api`. */
-function captureApi(extra?: Record<string, unknown>): Record<string, (payload?: unknown) => void> {
-  const listeners: Record<string, (payload?: unknown) => void> = {}
-  mockWindow({
-    onProgress: (cb: (p: unknown) => void) => {
-      listeners.onProgress = cb
-      return () => {}
-    },
-    onError: (cb: (p: unknown) => void) => {
-      listeners.onError = cb
-      return () => {}
-    },
-    onChanged: (cb: (p: unknown) => void) => {
-      listeners.onChanged = cb
-      return () => {}
-    },
-    onIdle: (cb: () => void) => {
-      listeners.onIdle = cb
-      return () => {}
-    },
-    onCurrencyChanged: (cb: (p: unknown) => void) => {
-      listeners.onCurrencyChanged = cb
-      return () => {}
-    },
-    onConfigChanged: (cb: () => void) => {
-      listeners.onConfigChanged = cb
-      return () => {}
-    },
-    onCoachEvent: (cb: (p: unknown) => void) => {
-      listeners.onCoachEvent = cb
-      return () => {}
-    },
-    onCoachHarnessesChanged: (cb: (p: unknown) => void) => {
-      listeners.onCoachHarnessesChanged = cb
-      return () => {}
-    },
-    onUpdateChanged: (cb: (p: unknown) => void) => {
-      listeners.onUpdateChanged = cb
-      return () => {}
-    },
-    onNavigate: (cb: (p: unknown) => void) => {
-      listeners.onNavigate = cb
-      return () => {}
-    },
-    ...extra,
-  })
-  return listeners
-}
-
-function mockWindow(api: unknown): void {
-  vi.stubGlobal('window', { api })
-}
-
-const statusScanned = {
-  scanned: true,
-  metadata: {
-    scanId: 'scan-1',
-    startedAt: '2026-01-01T00:00:00Z',
-    completedAt: '2026-01-01T00:00:01Z',
-    portedFiles: 1,
-    unchangedFiles: 0,
-    failedFiles: 0,
-    perProvider: [{ provider: 'openai', ported: 1, unchanged: 0, failed: 0, unparsed: 3 }],
-    aborted: false,
-  },
-}
-
-const storeChanged = {
-  scanId: 'scan-1',
-  startedAt: '2026-01-01T00:00:00Z',
-  completedAt: '2026-01-01T00:00:01Z',
-  portedFiles: 1,
-  unchangedFiles: 0,
-  failedFiles: 0,
-  perProvider: [{ provider: 'openai', ported: 1, unchanged: 0, failed: 0, unparsed: 3 }],
-  aborted: false,
-}
-
-const analytics = {
-  providers: [],
-  models: [],
-  categories: [],
-  skills: [],
-  subagents: [],
-}
-
+let registry: AtomRegistry.AtomRegistry
 beforeEach(() => {
-  useUpdatesStore.setState(useUpdatesStore.getInitialState(), true)
-  useScanStore.setState(useScanStore.getInitialState(), true)
-  useSettingsStore.setState(useSettingsStore.getInitialState(), true)
-  useCoachSkillsStore.setState(useCoachSkillsStore.getInitialState(), true)
+  registry = AtomRegistry.make()
+  registry.set(scanStateAtom, initialScanState())
 })
-
 afterEach(() => {
-  vi.restoreAllMocks()
+  registry.dispose()
+  setRouter(() => {})
   vi.unstubAllGlobals()
 })
 
-describe('subscribeToIpc (ADR 0011)', () => {
-  it('routes validated update events into the app-owned store and drops malformed snapshots', () => {
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-    const status = {
-      revision: 1,
-      currentVersion: '0.2.6',
-      latestVersion: '0.3.0',
-      updateAvailable: true,
-      tag: 'v0.3.0',
-      phase: 'available',
-      installSupported: true,
-      progress: null,
-      message: null,
-    }
-    listeners.onUpdateChanged?.(status)
-    expect(useUpdatesStore.getState().machine).toEqual({ state: 'synced', status })
-    listeners.onUpdateChanged?.({ ...status, revision: -1 })
-    listeners.onUpdateChanged?.({ ...status, revision: 2, progress: 101 })
-    expect(useUpdatesStore.getState().machine).toEqual({ state: 'synced', status })
-    teardown()
-  })
-
-  it('decodes Coach events and forwards only valid, stripped envelopes', () => {
-    const listeners = captureApi()
-    const onEvent = vi.spyOn(useCoachSkillsStore.getState(), 'onEvent').mockImplementation(() => {})
-    const notifyNotice = vi.fn(() => Promise.resolve())
-    vi.stubGlobal('api', { notifyNotice })
-    const teardown = subscribeToIpc()
-
-    listeners.onCoachEvent!({
-      runId: 'run-1',
-      event: { kind: 'text', delta: 'Hello', extra: 'discarded' },
-      extra: 'discarded',
-    })
-    expect(onEvent).toHaveBeenCalledExactlyOnceWith({ runId: 'run-1', event: { kind: 'text', delta: 'Hello' } })
-
-    listeners.onCoachEvent!({ runId: 'run-1', event: { kind: 'text', delta: 42 } })
-    expect(onEvent).toHaveBeenCalledTimes(1)
-    expect(notifyNotice).toHaveBeenCalledWith('coach event', 'event.delta')
-    teardown()
-  })
-  it('feeds scan progress into the scan store, dropping malformed broadcasts', () => {
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-
-    listeners.onProgress!({ stage: 'parse', provider: 'openai', processed: 5, total: 9 })
-    expect(useScanStore.getState().scanning).toBe(true)
-    expect(useScanStore.getState().progress).toEqual([{ provider: 'openai', processed: 5, done: false }])
-
-    listeners.onProgress!({ stage: 'port-in', provider: 'openai', processed: 9, total: 9 })
-    expect(useScanStore.getState().progress[0]!.done).toBe(true)
-
-    listeners.onProgress!({ stage: 'nope' })
-    expect(useScanStore.getState().progress).toHaveLength(1)
-
-    teardown()
-  })
-
-  it('feeds scan errors and idle events into the scan store', () => {
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-
-    listeners.onError!('boom')
-    expect(useScanStore.getState().scanError).toBe('boom')
-    expect(useScanStore.getState().scanning).toBe(false)
-
-    useScanStore.getState().onProgress({ stage: 'parse', provider: 'openai', processed: 1 })
-    listeners.onIdle!()
-    expect(useScanStore.getState().scanning).toBe(false)
-    expect(useScanStore.getState().progress).toEqual([])
-
-    teardown()
-  })
-
-  it('applies a store:changed broadcast through applyChange', async () => {
-    const listeners = captureApi({
-      getScanStatus: () => Promise.resolve(statusScanned),
-      getAnalytics: () => Promise.resolve(analytics),
-    })
-    const teardown = subscribeToIpc()
-
-    listeners.onChanged!(storeChanged)
-    await vi.waitFor(() => expect(useScanStore.getState().hydrated).toBe(true))
-    expect(useScanStore.getState().unparsedTotal).toBe(3)
-    expect(useScanStore.getState().refreshVersion).toBe(1)
-
-    teardown()
-  })
-
-  it('drops a malformed store:changed broadcast', async () => {
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-    listeners.onChanged!({ bogus: 1 })
-    expect(useScanStore.getState().refreshVersion).toBe(0)
-    teardown()
-  })
-
-  it('applies a config:changed broadcast through applyChange', async () => {
-    const listeners = captureApi({
-      getScanStatus: () => Promise.resolve(statusScanned),
-      getAnalytics: () => Promise.resolve(analytics),
-    })
-    const teardown = subscribeToIpc()
-
-    listeners.onConfigChanged!()
-    await vi.waitFor(() => expect(useScanStore.getState().refreshVersion).toBe(1))
-
-    teardown()
-  })
-
-  it('feeds a currency:changed broadcast into the settings store, dropping malformed ones', () => {
-    const notifyNotice = vi.fn<(label: string, location: string) => Promise<void>>(() => Promise.resolve())
-    vi.stubGlobal('api', { notifyNotice })
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-
-    listeners.onCurrencyChanged!({ code: 'EUR', symbol: '€', rate: 0.9 })
-    expect(useSettingsStore.getState().activeCurrency).toEqual({ code: 'EUR', symbol: '€', rate: 0.9 })
-
-    listeners.onCurrencyChanged!({ code: 123 })
-    expect(useSettingsStore.getState().activeCurrency.code).toBe('EUR')
-    expect(notifyNotice).toHaveBeenCalledWith('currency changed', 'code')
-    expect(notifyNotice).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything())
-
-    teardown()
-  })
-
-  it('teardown unsubscribes every listener', () => {
-    const unsub = vi.fn(() => {})
-    const listeners: Record<string, (payload?: unknown) => void> = {}
-    mockWindow({
-      onProgress: (cb: (p: unknown) => void) => {
-        listeners.onProgress = cb
-        return unsub
-      },
-      onError: (cb: (p: unknown) => void) => {
-        listeners.onError = cb
-        return unsub
-      },
-      onChanged: (cb: (p: unknown) => void) => {
-        listeners.onChanged = cb
-        return unsub
-      },
-      onIdle: (cb: () => void) => {
-        listeners.onIdle = cb
-        return unsub
-      },
-      onCurrencyChanged: (cb: (p: unknown) => void) => {
-        listeners.onCurrencyChanged = cb
-        return unsub
-      },
-      onConfigChanged: (cb: () => void) => {
-        listeners.onConfigChanged = cb
-        return unsub
-      },
-      onCoachEvent: (cb: (p: unknown) => void) => {
-        listeners.onCoachEvent = cb
-        return unsub
-      },
-      onCoachHarnessesChanged: (cb: (p: unknown) => void) => {
-        listeners.onCoachHarnessesChanged = cb
-        return unsub
-      },
-      onUpdateChanged: (cb: (p: unknown) => void) => {
-        listeners.onUpdateChanged = cb
-        return unsub
-      },
-      onNavigate: (cb: (p: unknown) => void) => {
-        listeners.onNavigate = cb
-        return unsub
-      },
-    })
-    const teardown = subscribeToIpc()
-    teardown()
-    expect(unsub).toHaveBeenCalledTimes(10)
-  })
-
-  it('feeds a coach:harnesses-changed broadcast into the coach store, dropping malformed ones', () => {
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-    const row = {
-      instanceId: 'codex',
-      kind: 'codex',
-      displayName: 'Codex',
-      status: 'ready',
-      auth: { status: 'configured' },
-    }
-
-    listeners.onCoachHarnessesChanged!([{ bogus: 1 }])
-    expect(useCoachSkillsStore.getState().harnesses).toEqual([])
-
-    listeners.onCoachHarnessesChanged!([row])
-    expect(useCoachSkillsStore.getState().harnesses).toEqual([row])
-
-    teardown()
-  })
-
-  it('opens the section the orb asked for through navigation, dropping unknown ones', () => {
+describe('RPC shell navigation subscription', () => {
+  it('shares one stream until its last holder and applies typed Sections', async () => {
+    const remote = makeShellBridge()
+    vi.stubGlobal('window', { api: { rpcV1: remote.bridge } })
     const navigate = vi.fn()
     setRouter(navigate)
-    const listeners = captureApi()
-    const teardown = subscribeToIpc()
-
-    listeners.onNavigate!('optimize')
-    expect(navigate).toHaveBeenCalledExactlyOnceWith('/optimize')
-
-    listeners.onNavigate!('/etc/passwd')
-    expect(navigate).toHaveBeenCalledTimes(1)
-    teardown()
-    setRouter(() => {})
+    const first = subscribeToNavigation(registry)
+    const second = subscribeToNavigation(registry)
+    await vi.waitFor(() => expect(registry.get(navigationReadinessAtom)).toBe('ready'))
+    expect(remote.counts().requests).toBe(1)
+    expect(registry.get(appLifecycleReadinessAtom).state).toBe('inactive')
+    remote.emit({ _tag: 'Navigate', section: 'optimize' })
+    await vi.waitFor(() => expect(navigate).toHaveBeenCalledExactlyOnceWith('/optimize'))
+    first()
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(remote.counts().interrupts).toBe(0)
+    second()
+    await vi.waitFor(() => expect(remote.counts().listeners).toBe(0))
+  })
+  it('keeps scan readiness independent of an unavailable shell connection', async () => {
+    const remote = makeShellBridge(true)
+    vi.stubGlobal('window', { api: { rpcV1: remote.bridge } })
+    const release = subscribeToNavigation(registry)
+    await vi.waitFor(() => expect(registry.get(navigationReadinessAtom)).toBe('failed'))
+    expect(registry.get(scanStateAtom)).toEqual(initialScanState())
+    expect(registry.get(appLifecycleReadinessAtom).state).toBe('inactive')
+    release()
   })
 })

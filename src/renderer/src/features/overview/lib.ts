@@ -1,4 +1,4 @@
-import { formatConverted } from '@/shared/lib/models'
+import { formatConverted, type ActiveCurrency } from '@/shared/lib/currency'
 
 import type { OverviewPayload } from '../../../../shared/schemas/overview.js'
 
@@ -11,8 +11,8 @@ export function formatChartDate(dateKey: string): string {
 }
 
 /** Chart money label: the converted amount without its cents. */
-export function formatChartValue(n: number): string {
-  return formatConverted(n).replace(/\.\d+$/, '')
+export function formatChartValue(n: number, currency: ActiveCurrency): string {
+  return formatConverted(n, currency).replace(/\.\d+$/, '')
 }
 
 /** Week-over-week spend delta from the daily series (last 7 vs prior 7).

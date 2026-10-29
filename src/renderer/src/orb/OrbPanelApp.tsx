@@ -1,12 +1,9 @@
 import { useEffect, useRef } from 'react'
 
-import { useThemeEffect } from '@/app/hooks/use-theme-effect'
 import { TooltipProvider } from '@/shared/components/ui/tooltip'
-import { orbControls } from '@/shared/lib/api'
 
 import { OrbPanel } from './OrbPanel'
-import { useOrbPanelBootstrap } from './panel-hooks'
-import { useOrbPlacementStore } from './placement-store'
+import { useOrbPanelAppStore, useOrbPanelBootstrap } from './panel-hooks'
 
 /**
  * The panel window's composition root (see main/background-shell.ts): the
@@ -17,9 +14,7 @@ import { useOrbPlacementStore } from './placement-store'
  */
 export function OrbPanelApp() {
   useOrbPanelBootstrap()
-  useThemeEffect()
-  const expanded = useOrbPlacementStore(s => s.placement.expanded)
-  const request = useOrbPlacementStore(s => s.request)
+  const { expanded, request, panelPainted } = useOrbPanelAppStore()
   const rootRef = useRef<HTMLDivElement>(null)
 
   // Open, the root takes DOM focus, so Escape folds a panel the user opened
@@ -34,10 +29,10 @@ export function OrbPanelApp() {
     if (!expanded) return
     rootRef.current?.focus({ preventScroll: true })
     let frame = requestAnimationFrame(() => {
-      frame = requestAnimationFrame(() => orbControls.panelPainted())
+      frame = requestAnimationFrame(panelPainted)
     })
     return () => cancelAnimationFrame(frame)
-  }, [expanded])
+  }, [expanded, panelPainted])
 
   return (
     <TooltipProvider delay={300}>

@@ -1,11 +1,10 @@
 import { useEffect } from 'react'
-import { useShallow } from 'zustand/react/shallow'
 
-import { cn } from '@/shared/lib/utils'
-import { motionClass } from '@/shared/lib/motion'
+import { useCoachOverviewStore } from '@/features/coach-skills/hooks'
 import { ErrorPanel } from '@/shared/components/ErrorPanel'
-import { useCoachSkillsStore } from '@/features/coach-skills/store'
-import { selectScope, useScopeStore } from '@/app/stores/scope-store'
+import { motionClass } from '@/shared/lib/motion'
+import { cn } from '@/shared/lib/utils'
+
 import { ConversationView } from './conversation'
 
 /** The Coach section (ADR 0017, conversation prototype picked on map 58): a
@@ -21,18 +20,11 @@ import { ConversationView } from './conversation'
  *  here, the surface is the colocated conversation components
  *  (elements.ai-sdk.dev-inspired). */
 export function CoachSkillsView(): React.JSX.Element {
-  const scope = useScopeStore(useShallow(selectScope))
-  const detection = useCoachSkillsStore(s => s.detection)
-  const loadHarnesses = useCoachSkillsStore(s => s.loadHarnesses)
+  const { detection, loadHarnesses, hydrated } = useCoachOverviewStore()
 
-  // Hydrate: the detection pool (welcome-screen chips) on scope change,
-  // harnesses once.
   useEffect(() => {
-    void detection.load(scope)
-  }, [scope]) // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    void loadHarnesses()
-  }, [loadHarnesses])
+    if (!hydrated) loadHarnesses(undefined)
+  }, [hydrated, loadHarnesses])
 
   return (
     <div

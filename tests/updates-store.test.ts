@@ -1,13 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import * as Effect from 'effect/Effect'
+import * as AsyncResult from 'effect/reactivity/AsyncResult'
+import * as Atom from 'effect/reactivity/Atom'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
+import { describe, expect, it, vi } from 'vitest'
 
+import type { NativeRpcCapabilities } from '../src/main/rpc/native-handlers.js'
 import {
-  canRequestUpdate,
+  createUpdatesAtoms,
   selectUpdateActivity,
   selectUpdateCommandVisible,
   selectUpdateStatus,
-  useUpdatesStore,
-} from '../src/renderer/src/features/settings/updates-store.js'
+} from '../src/renderer/src/features/settings/updates-atoms.js'
 import type { UpdateStatus } from '../src/shared/schemas/updates.js'
+import { makeSettingsRpcTestClient } from './settings-rpc-test-helper.js'
 
 function status(phase: UpdateStatus['phase'] = 'idle', revision = 0): UpdateStatus {
   const updateAvailable = ['available', 'downloading', 'ready', 'installing'].includes(phase)
@@ -24,6 +29,41 @@ function status(phase: UpdateStatus['phase'] = 'idle', revision = 0): UpdateStat
   }
 }
 
+type Overrides = Partial<
+  Pick<NativeRpcCapabilities, 'getUpdateStatus' | 'checkForUpdates' | 'downloadUpdate' | 'installUpdate'>
+>
+
+function makeHarness(overrides: Overrides = {}) {
+  const runtime = Atom.context()
+  const client = makeSettingsRpcTestClient(
+    runtime,
+    async () => {
+      throw new Error('Unexpected worker operation in an updater test')
+    },
+    overrides,
+  )
+  const atoms = createUpdatesAtoms(client)
+  const registry = AtomRegistry.make()
+  return { atoms, registry }
+}
+
+function dispatch<Arg, A, E>(
+  registry: AtomRegistry.AtomRegistry,
+  atom: Atom.AtomResultFn<Arg, A, E>,
+  arg: Arg,
+): Promise<AsyncResult.AsyncResult<A, E>> {
+  return new Promise(resolve => {
+    let unsubscribe: () => void = () => undefined
+    unsubscribe = registry.subscribe(atom, result => {
+      if (!result.waiting && !AsyncResult.isInitial(result)) {
+        unsubscribe()
+        resolve(result)
+      }
+    })
+    registry.set(atom, arg)
+  })
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void
   const promise = new Promise<T>(done => {
@@ -32,187 +72,133 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
-function api(overrides: Record<string, unknown> = {}) {
-  const calls = {
-    getUpdateStatus: vi.fn(async () => status()),
-    checkForUpdates: vi.fn(async () => status('available', 2)),
-    downloadUpdate: vi.fn(async () => status('ready', 4)),
-    installUpdate: vi.fn(async () => status('installing', 5)),
-  }
-  vi.stubGlobal('window', { api: { ...calls, ...overrides } })
-  return calls
-}
+describe('native updater atoms', () => {
+  it('hydrates status once without checking or downloading', async () => {
+    const load = deferred<UpdateStatus>()
+    const getUpdateStatus = vi.fn(() => Effect.promise(() => load.promise))
+    const { atoms, registry } = makeHarness({ getUpdateStatus })
 
-function snapshot(): UpdateStatus | null {
-  return selectUpdateStatus(useUpdatesStore.getState().machine)
-}
-
-beforeEach(() => useUpdatesStore.setState(useUpdatesStore.getInitialState(), true))
-afterEach(() => vi.unstubAllGlobals())
-
-describe('Zustand update lifecycle', () => {
-  it('starts uninitialized, hydrates once, and never checks or downloads at startup', async () => {
-    expect(useUpdatesStore.getState().machine).toEqual({ state: 'uninitialized' })
-    const calls = api()
-    await Promise.all([useUpdatesStore.getState().load(), useUpdatesStore.getState().load()])
-    await useUpdatesStore.getState().load()
-    expect(calls.getUpdateStatus).toHaveBeenCalledTimes(1)
-    expect(calls.checkForUpdates).not.toHaveBeenCalled()
-    expect(calls.downloadUpdate).not.toHaveBeenCalled()
-    expect(snapshot()).toEqual(status())
-  })
-
-  it('has a retryable load failure for rejected or malformed IPC', async () => {
-    const load = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('offline IPC'))
-      .mockResolvedValueOnce({ phase: 'idle' })
-      .mockResolvedValue(status())
-    api({ getUpdateStatus: load })
-    await useUpdatesStore.getState().load()
-    expect(useUpdatesStore.getState().machine.state).toBe('load-error')
-    await useUpdatesStore.getState().check()
-    expect(useUpdatesStore.getState().machine.state).toBe('load-error')
-    await useUpdatesStore.getState().load()
-    expect(useUpdatesStore.getState().machine.state).toBe('load-error')
-    await useUpdatesStore.getState().load()
-    expect(useUpdatesStore.getState().machine.state).toBe('synced')
-  })
-
-  it.each(['success', 'failure'])('an event supersedes a delayed hydration %s', async outcome => {
-    const load = deferred<unknown>()
-    api({ getUpdateStatus: () => load.promise })
-    const pending = useUpdatesStore.getState().load()
-    useUpdatesStore.getState().onStatus(status('ready', 8))
-    load.resolve(outcome === 'success' ? status('idle', 0) : {})
+    const pending = dispatch(registry, atoms.loadUpdateStatusAtom, undefined)
+    await vi.waitFor(() => expect(getUpdateStatus).toHaveBeenCalledTimes(1))
+    registry.set(atoms.loadUpdateStatusAtom, undefined)
+    await Promise.resolve()
+    load.resolve(status())
     await pending
-    expect(snapshot()).toEqual(status('ready', 8))
-    expect(useUpdatesStore.getState().machine.state).toBe('synced')
+
+    expect(getUpdateStatus).toHaveBeenCalledTimes(1)
+    expect(registry.get(atoms.machineAtom)).toEqual({ state: 'synced', status: status() })
   })
 
-  it('guards duplicate and invalid commands before IPC and never chains user actions', async () => {
+  it('uses a retryable state for failed load and succeeds on retry', async () => {
+    const getUpdateStatus = vi
+      .fn()
+      .mockReturnValueOnce(Effect.fail(new Error('offline')))
+      .mockReturnValueOnce(Effect.succeed(status('current', 2)))
+    const { atoms, registry } = makeHarness({ getUpdateStatus })
+
+    await dispatch(registry, atoms.loadUpdateStatusAtom, undefined)
+    expect(registry.get(atoms.machineAtom)).toMatchObject({ state: 'load-error' })
+    await dispatch(registry, atoms.loadUpdateStatusAtom, undefined)
+    expect(getUpdateStatus).toHaveBeenCalledTimes(2)
+    expect(registry.get(atoms.machineAtom)).toEqual({ state: 'synced', status: status('current', 2) })
+  })
+
+  it('lets a newer status event supersede a delayed hydration result', async () => {
+    const load = deferred<UpdateStatus>()
+    const { atoms, registry } = makeHarness({ getUpdateStatus: () => Effect.promise(() => load.promise) })
+    const pending = dispatch(registry, atoms.loadUpdateStatusAtom, undefined)
+    await vi.waitFor(() => expect(registry.get(atoms.machineAtom).state).toBe('loading'))
+
+    registry.set(atoms.statusChangedAtom, status('ready', 8))
+    load.resolve(status('idle', 0))
+    await pending
+
+    expect(registry.get(atoms.machineAtom)).toEqual({ state: 'synced', status: status('ready', 8) })
+  })
+
+  it('admits only one updater command while allowing its Effect to finish', async () => {
     const check = deferred<UpdateStatus>()
-    const calls = api({ checkForUpdates: vi.fn(() => check.promise) })
-    await useUpdatesStore.getState().check()
-    await useUpdatesStore.getState().download()
-    await useUpdatesStore.getState().install()
-    await useUpdatesStore.getState().load()
-    await useUpdatesStore.getState().download()
-    await useUpdatesStore.getState().install()
-    const pending = useUpdatesStore.getState().check()
-    expect(useUpdatesStore.getState().machine).toMatchObject({ state: 'requesting', command: 'check' })
-    await useUpdatesStore.getState().check()
-    await useUpdatesStore.getState().download()
-    useUpdatesStore.getState().onStatus(status('available', 2))
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(true)
-    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'download')).toBe(false)
-    await useUpdatesStore.getState().download()
-    expect(calls.downloadUpdate).not.toHaveBeenCalled()
+    const checkForUpdates = vi.fn(() => Effect.promise(() => check.promise))
+    const downloadUpdate = vi.fn(() => Effect.succeed(status('ready', 4)))
+    const { atoms, registry } = makeHarness({ checkForUpdates, downloadUpdate })
+    registry.set(atoms.statusChangedAtom, status('available', 2))
+
+    const pending = dispatch(registry, atoms.checkForUpdatesAtom, undefined)
+    await vi.waitFor(() => expect(checkForUpdates).toHaveBeenCalledTimes(1))
+    registry.set(atoms.checkForUpdatesAtom, undefined)
+    registry.set(atoms.downloadUpdateAtom, undefined)
+    await Promise.resolve()
+    registry.set(atoms.statusChangedAtom, status('available', 3))
+    expect(registry.get(atoms.machineAtom)).toMatchObject({
+      state: 'requesting',
+      command: 'check',
+      status: status('available', 3),
+    })
+
     check.resolve(status('available', 2))
     await pending
-    expect(calls.installUpdate).not.toHaveBeenCalled()
-    await useUpdatesStore.getState().download()
-    expect(calls.downloadUpdate).toHaveBeenCalledTimes(1)
-    expect(calls.installUpdate).not.toHaveBeenCalled()
-    await useUpdatesStore.getState().check()
-    await useUpdatesStore.getState().download()
-    expect(calls.downloadUpdate).toHaveBeenCalledTimes(1)
-    await useUpdatesStore.getState().install()
-    await useUpdatesStore.getState().install()
-    expect(calls.installUpdate).toHaveBeenCalledTimes(1)
-    expect(snapshot()?.phase).toBe('installing')
+    expect(registry.get(atoms.machineAtom)).toEqual({ state: 'synced', status: status('available', 3) })
+    expect(downloadUpdate).not.toHaveBeenCalled()
   })
 
-  it('retains newer progress and completion events when an older command reply arrives', async () => {
+  it('keeps newer progress and completion events when a command reply arrives late', async () => {
     const download = deferred<UpdateStatus>()
-    api({ downloadUpdate: () => download.promise })
-    useUpdatesStore.getState().onStatus(status('available', 2))
-    const pending = useUpdatesStore.getState().download()
-    useUpdatesStore.getState().onStatus(status('downloading', 3))
-    useUpdatesStore.getState().onStatus({ ...status('downloading', 4), progress: 75 })
-    useUpdatesStore.getState().onStatus(status('ready', 5))
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'install')).toBe(true)
-    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'install')).toBe(false)
-    useUpdatesStore.getState().onStatus(status('downloading', 3))
+    const { atoms, registry } = makeHarness({ downloadUpdate: () => Effect.promise(() => download.promise) })
+    registry.set(atoms.statusChangedAtom, status('available', 2))
+    const pending = dispatch(registry, atoms.downloadUpdateAtom, undefined)
+    await vi.waitFor(() => expect(registry.get(atoms.machineAtom).state).toBe('requesting'))
+    registry.set(atoms.statusChangedAtom, status('downloading', 3))
+    registry.set(atoms.statusChangedAtom, { ...status('downloading', 4), progress: 75 })
+    registry.set(atoms.statusChangedAtom, status('ready', 5))
+    registry.set(atoms.statusChangedAtom, status('downloading', 3))
     download.resolve(status('downloading', 4))
     await pending
-    expect(snapshot()).toEqual(status('ready', 5))
-    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'install')).toBe(true)
+
+    expect(registry.get(atoms.machineAtom)).toEqual({ state: 'synced', status: status('ready', 5) })
+    expect(selectUpdateCommandVisible(registry.get(atoms.machineAtom), 'install')).toBe(true)
   })
 
-  it('accepts a newer command result even after a progress event', async () => {
-    const download = deferred<UpdateStatus>()
-    api({ downloadUpdate: () => download.promise })
-    useUpdatesStore.getState().onStatus(status('available', 2))
-    const pending = useUpdatesStore.getState().download()
-    useUpdatesStore.getState().onStatus(status('downloading', 3))
-    download.resolve(status('ready', 4))
-    await pending
-    expect(snapshot()?.phase).toBe('ready')
-  })
+  it('maps typed command failures to retryable error state and retains the last snapshot', async () => {
+    const downloadUpdate = vi
+      .fn()
+      .mockReturnValueOnce(Effect.fail(new Error('offline')))
+      .mockReturnValueOnce(Effect.succeed(status('ready', 4)))
+    const { atoms, registry } = makeHarness({ downloadUpdate })
+    registry.set(atoms.statusChangedAtom, status('available', 2))
 
-  it('surfaces command failure, keeps the authoritative snapshot, and allows retry', async () => {
-    const download = vi.fn().mockRejectedValueOnce(new Error('IPC failed')).mockResolvedValue(status('ready', 4))
-    api({ downloadUpdate: download })
-    useUpdatesStore.getState().onStatus(status('available', 2))
-    await useUpdatesStore.getState().download()
-    expect(useUpdatesStore.getState().machine).toMatchObject({ state: 'request-error', status: status('available', 2) })
-    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'install')).toBe(false)
-    await useUpdatesStore.getState().download()
-    expect(snapshot()?.phase).toBe('ready')
-  })
-
-  it('does not let an old event clear a request error or regress an authoritative snapshot', async () => {
-    api({ checkForUpdates: async () => ({ invalid: true }) })
-    useUpdatesStore.getState().onStatus(status('idle', 2))
-    await useUpdatesStore.getState().check()
-    const failed = useUpdatesStore.getState().machine
-    useUpdatesStore.getState().onStatus(status('idle', 2))
-    expect(useUpdatesStore.getState().machine).toBe(failed)
-    useUpdatesStore.getState().onStatus(status('available', 3))
-    expect(useUpdatesStore.getState().machine.state).toBe('synced')
-  })
-
-  it('ignores a response from a previous store lifetime', async () => {
-    const old = deferred<UpdateStatus>()
-    const load = vi.fn().mockReturnValueOnce(old.promise).mockResolvedValue(status('ready', 10))
-    api({ getUpdateStatus: load })
-    const pending = useUpdatesStore.getState().load()
-    useUpdatesStore.setState(useUpdatesStore.getInitialState(), true)
-    await useUpdatesStore.getState().load()
-    old.resolve(status())
-    await pending
-    expect(snapshot()?.phase).toBe('ready')
+    await dispatch(registry, atoms.downloadUpdateAtom, undefined)
+    expect(registry.get(atoms.machineAtom)).toMatchObject({ state: 'request-error', status: status('available', 2) })
+    await dispatch(registry, atoms.downloadUpdateAtom, undefined)
+    expect(selectUpdateStatus(registry.get(atoms.machineAtom))).toEqual(status('ready', 4))
   })
 
   it.each(['checking', 'downloading', 'installing', 'unsupported'] as const)(
-    'refuses every user command during %s',
+    'refuses every user command while updater phase is %s',
     async phase => {
-      const calls = api()
-      useUpdatesStore.getState().onStatus(status(phase, 4))
-      await useUpdatesStore.getState().check()
-      await useUpdatesStore.getState().download()
-      await useUpdatesStore.getState().install()
-      expect(calls.checkForUpdates).not.toHaveBeenCalled()
-      expect(calls.downloadUpdate).not.toHaveBeenCalled()
-      expect(calls.installUpdate).not.toHaveBeenCalled()
+      const checkForUpdates = vi.fn(() => Effect.succeed(status()))
+      const downloadUpdate = vi.fn(() => Effect.succeed(status()))
+      const installUpdate = vi.fn(() => Effect.succeed(status()))
+      const { atoms, registry } = makeHarness({ checkForUpdates, downloadUpdate, installUpdate })
+      registry.set(atoms.statusChangedAtom, status(phase, 4))
+
+      await dispatch(registry, atoms.checkForUpdatesAtom, undefined)
+      await dispatch(registry, atoms.downloadUpdateAtom, undefined)
+      await dispatch(registry, atoms.installUpdateAtom, undefined)
+
+      expect(checkForUpdates).not.toHaveBeenCalled()
+      expect(downloadUpdate).not.toHaveBeenCalled()
+      expect(installUpdate).not.toHaveBeenCalled()
     },
   )
 
-  it('uses one phase policy for command eligibility, visibility, and activity', () => {
-    useUpdatesStore.getState().onStatus(status('idle', 0))
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(false)
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'install')).toBe(false)
-    useUpdatesStore.getState().onStatus(status('downloading', 1))
-    expect(selectUpdateActivity(useUpdatesStore.getState().machine)).toBe('download')
-    useUpdatesStore.getState().onStatus(status('error', 2))
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(false)
-    useUpdatesStore.getState().onStatus({ ...status('error', 3), updateAvailable: true })
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'download')).toBe(true)
-    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'download')).toBe(true)
-    expect(selectUpdateActivity(useUpdatesStore.getState().machine)).toBeNull()
-    useUpdatesStore.getState().onStatus({ ...status('ready', 4), installSupported: false })
-    expect(selectUpdateCommandVisible(useUpdatesStore.getState().machine, 'install')).toBe(false)
-    expect(canRequestUpdate(useUpdatesStore.getState().machine, 'install')).toBe(false)
+  it('uses one phase policy for activity and command visibility', () => {
+    const { atoms, registry } = makeHarness()
+    registry.set(atoms.statusChangedAtom, status('idle', 0))
+    expect(selectUpdateCommandVisible(registry.get(atoms.machineAtom), 'download')).toBe(false)
+    registry.set(atoms.statusChangedAtom, status('downloading', 1))
+    expect(selectUpdateActivity(registry.get(atoms.machineAtom))).toBe('download')
+    registry.set(atoms.statusChangedAtom, { ...status('error', 3), updateAvailable: true })
+    expect(selectUpdateCommandVisible(registry.get(atoms.machineAtom), 'download')).toBe(true)
+    registry.dispose()
   })
 })

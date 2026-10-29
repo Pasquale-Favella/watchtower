@@ -1,15 +1,14 @@
-import { useEffect, useState } from 'react'
 import { ExternalLink, ShieldAlert, X } from 'lucide-react'
+import { useState } from 'react'
 
+import { AboutSection } from '@/features/settings/AboutSection'
+import { useSettingsGeneralStore } from '@/features/settings/use-settings-store'
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
+import { SegTabs } from '@/shared/components/SegTabs'
 import { Button } from '@/shared/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select'
-import { SegTabs } from '@/shared/components/SegTabs'
-import { AboutSection } from '@/features/settings/AboutSection'
-import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
 import { DEFAULT_PERIOD_OPTIONS } from '@/shared/lib/settings-constants'
-import { fetchSettings } from '@/shared/lib/api'
-import { useSettingsStore } from '@/features/settings/store'
-import { useScanStore } from '@/app/stores/scan-store'
+import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
 
 const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
@@ -21,38 +20,34 @@ const THEME_OPTIONS = [
  * currency dropdown (ADR 0009), and the About/version area (ADR 0012).
  * Deliberately no daily-budget row (lives in Plans) and no Scope row. */
 export function GeneralPane() {
-  const fdaNeeded = useScanStore(s => s.fdaNeeded)
+  const {
+    fdaNeeded,
+    preferences,
+    cadence,
+    currency,
+    currencyOptions,
+    setPreferences,
+    setCadence,
+    setCurrency,
+    cadencePending,
+    currencyPending,
+    cadenceError,
+    currencyError,
+    openSystemSettings,
+    settingsInfo: settingsInfoQuery,
+  } = useSettingsGeneralStore()
   const [fdaDismissed, setFdaDismissed] = useState(false)
-  const theme = useSettingsStore(s => s.theme)
-  const setTheme = useSettingsStore(s => s.setTheme)
-  const cadence = useSettingsStore(s => s.cadence)
-  const setCadence = useSettingsStore(s => s.setCadence)
-  const currency = useSettingsStore(s => s.activeCurrency)
-  const currencyOptions = useSettingsStore(s => s.currencyOptions)
-  const setCurrency = useSettingsStore(s => s.setCurrency)
-  const defaultPeriod = useSettingsStore(s => s.defaultPeriod)
-  const setDefaultPeriod = useSettingsStore(s => s.setDefaultPeriod)
-  const [claudeConfigDirs, setClaudeConfigDirs] = useState<string[] | undefined>()
-
-  useEffect(() => {
-    let cancelled = false
-    void fetchSettings().then(result => {
-      if (cancelled) return
-      setClaudeConfigDirs(result.ok ? result.data.claudeConfigDirs : undefined)
-    })
-    return () => {
-      cancelled = true
-    }
-  }, [])
+  const [fdaError, setFdaError] = useState<string | null>(null)
+  const { data: settingsInfo, error: settingsInfoError } = settingsInfoQuery
 
   const choosePeriod = (value: string): void => {
-    setDefaultPeriod(value)
+    setPreferences({ defaultPeriod: value as typeof preferences.defaultPeriod })
   }
 
   // The Claude-config row is conditional: shown when a
   // Claude config dir is available, and nullable — absent `claudeConfigDirs`
   // hides the row rather than erroring.
-  const showClaudeConfigRow = (claudeConfigDirs?.length ?? 0) > 0
+  const showClaudeConfigRow = (settingsInfo?.claudeConfigDirs?.length ?? 0) > 0
 
   return (
     <div className="flex max-w-md flex-col gap-5">
@@ -73,10 +68,16 @@ export function GeneralPane() {
             <button
               type="button"
               className="text-brand-text mt-1.5 inline-flex cursor-pointer items-center gap-1 text-[11px] font-medium"
-              onClick={() => void window.api.openSystemSettings()}
+              onClick={() => {
+                setFdaError(null)
+                void openSystemSettings(undefined).catch(error =>
+                  setFdaError(error instanceof Error ? error.message : String(error)),
+                )
+              }}
             >
               Open System Settings <ExternalLink className="size-3" />
             </button>
+            {fdaError && <p className="text-destructive mt-1 text-[10.5px]">{fdaError}</p>}
           </div>
           <button
             type="button"
@@ -88,11 +89,16 @@ export function GeneralPane() {
           </button>
         </div>
       )}
+      <QueryErrorNotice error={settingsInfoError} hasData={settingsInfo !== null} />
       <div className="flex flex-col gap-2">
         <p className="text-muted-foreground text-[10.5px] font-semibold tracking-[0.05em] uppercase">Appearance</p>
         <div className="flex items-center justify-between gap-3">
           <span className="text-foreground text-[12.5px]">Theme</span>
-          <SegTabs options={THEME_OPTIONS} value={theme} onChange={value => setTheme(value as Theme)} />
+          <SegTabs
+            options={THEME_OPTIONS}
+            value={preferences.theme}
+            onChange={value => setPreferences({ theme: value as Theme })}
+          />
         </div>
         <p className="text-muted-foreground text-[11px]">Match your system or force a mode; your choice persists.</p>
       </div>
@@ -110,8 +116,9 @@ export function GeneralPane() {
           <div className="flex items-center gap-2">
             <Select
               value={currency.code}
+              disabled={currencyPending}
               onValueChange={value => {
-                if (value) void setCurrency(value)
+                if (value) setCurrency(value)
               }}
             >
               <SelectTrigger id="settings-currency" size="sm" className="mt-1 w-full text-[12.5px]">
@@ -130,12 +137,17 @@ export function GeneralPane() {
               variant="outline"
               size="sm"
               className="mt-1 shrink-0 text-[11px]"
-              disabled={currency.code === 'USD'}
-              onClick={() => void setCurrency('USD')}
+              disabled={currency.code === 'USD' || currencyPending}
+              onClick={() => setCurrency('USD')}
             >
               Reset to USD
             </Button>
           </div>
+          {currencyError && (
+            <p role="alert" className="text-destructive text-[11px]">
+              {currencyError}
+            </p>
+          )}
           {currency.code !== 'USD' && currency.updatedAt && (
             <p className="text-muted-foreground text-[10.5px]">
               Rate fetched{' '}
@@ -155,7 +167,7 @@ export function GeneralPane() {
           </label>
           <p className="text-muted-foreground text-[11px]">Applied on next launch.</p>
           <Select
-            value={defaultPeriod}
+            value={preferences.defaultPeriod}
             onValueChange={value => {
               if (value) choosePeriod(value)
             }}
@@ -182,8 +194,9 @@ export function GeneralPane() {
           </p>
           <Select
             value={cadence}
+            disabled={cadencePending}
             onValueChange={value => {
-              if (value) void setCadence(value)
+              if (value) setCadence(value)
             }}
           >
             <SelectTrigger id="settings-cadence" size="sm" className="mt-1 w-full text-[12.5px]">
@@ -197,6 +210,11 @@ export function GeneralPane() {
               ))}
             </SelectContent>
           </Select>
+          {cadenceError && (
+            <p role="alert" className="text-destructive text-[11px]">
+              {cadenceError}
+            </p>
+          )}
         </div>
       </div>
 

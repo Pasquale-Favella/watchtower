@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 
+import { QueryErrorNotice } from '@/shared/components/QueryErrorNotice'
 import { SegTabs } from '@/shared/components/SegTabs'
-import { formatUsd, providerTitle } from '@/shared/lib/models'
 import { Button } from '@/shared/components/ui/button'
-import { Input } from '@/shared/components/ui/input'
 import {
   Dialog,
   DialogContent,
@@ -12,9 +11,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog'
+import { Input } from '@/shared/components/ui/input'
+import { providerTitle } from '@/shared/lib/models'
+import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+
 import type { ModelReportRow } from '../../../../shared/schemas/models.js'
 import { ModelPickerCombobox, type ModelPickerGroup } from './model-picker'
-import { usePricingStore } from './pricing-store'
+import { useQuickAddPricingStore } from './use-pricing-store'
 
 export type QuickAddTarget = {
   provider: string
@@ -50,19 +53,12 @@ export function QuickAddModal({
   const [outputPrice, setOutputPrice] = useState(target.initialOutputPrice ?? '')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
-  const aliases = usePricingStore(s => s.aliases)
-  const loadAliases = usePricingStore(s => s.loadAliases)
-  const loadOverrides = usePricingStore(s => s.loadOverrides)
-  const addAlias = usePricingStore(s => s.addAlias)
-  const setOverride = usePricingStore(s => s.setOverride)
+  const { formatUsd } = useCurrencyFormatter()
+  const { aliases: aliasesQuery, overrides: overridesQuery, addAlias, setOverride } = useQuickAddPricingStore()
+  const aliases = aliasesQuery.data
 
-  // Existing aliases ("already mapped") and overrides come from the shared
-  // pricing store; always refetch on open so the picker never proposes
-  // pre-open state (e.g. a mapping deleted in Settings just before).
-  useEffect(() => {
-    void loadAliases()
-    void loadOverrides()
-  }, [loadAliases, loadOverrides])
+  // Existing aliases and overrides come from shared query slots. Config
+  // changes invalidate them through the window's authoritative event path.
 
   // Recognized models the unrecognized one can be mapped to — the quick-add
   // row itself excluded, so a model is never aliased to itself. Memoized so
@@ -100,7 +96,7 @@ export function QuickAddModal({
         })),
       },
     ],
-    [mappedCandidates, candidates],
+    [mappedCandidates, candidates, formatUsd],
   )
 
   const pick = (model: string): void => {
@@ -118,12 +114,9 @@ export function QuickAddModal({
       }
       setSaving(true)
       try {
-        // Writes go through the pricing store (upsert) so its alias,
-        // override, and usage-derived picker lists refresh together — a
-        // dialog opened right after never proposes pre-save state.
-        const ok = await addAlias(target.model, targetModel)
-        if (!ok) {
-          setError(usePricingStore.getState().error ?? 'Save failed.')
+        const result = await addAlias({ model: target.model, aliasOf: targetModel })
+        if (!result.ok) {
+          setError(result.message)
           return
         }
         onSaved()
@@ -142,9 +135,13 @@ export function QuickAddModal({
     }
     setSaving(true)
     try {
-      const ok = await setOverride(target.model, input, output)
-      if (!ok) {
-        setError(usePricingStore.getState().error ?? 'Save failed.')
+      const result = await setOverride({
+        model: target.model,
+        inputPricePerMillion: input,
+        outputPricePerMillion: output,
+      })
+      if (!result.ok) {
+        setError(result.message)
         return
       }
       onSaved()
@@ -181,6 +178,9 @@ export function QuickAddModal({
             setError(null)
           }}
         />
+
+        <QueryErrorNotice error={aliasesQuery.error} hasData={aliases !== null} />
+        <QueryErrorNotice error={overridesQuery.error} hasData={overridesQuery.data !== null} />
 
         {mode === 'alias' ? (
           <div className="flex flex-col gap-1.5">

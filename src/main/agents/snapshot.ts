@@ -32,11 +32,13 @@ export interface HarnessSnapshotCounters {
 }
 
 export interface HarnessSnapshotService {
+  readonly current: () => Effect.Effect<CoachHarnessRow[]>
   readonly list: () => Effect.Effect<CoachHarnessRow[], unknown>
   readonly refresh: () => Effect.Effect<CoachHarnessRow[], unknown>
   readonly get: (instanceId: string) => Effect.Effect<HarnessInstance | undefined, unknown>
   readonly reportAuth: (instanceId: string, status: 'configured' | 'unauthenticated') => Effect.Effect<void>
   readonly start: () => Effect.Effect<void, unknown>
+  readonly shutdown: () => Effect.Effect<void>
 }
 
 export interface HarnessSnapshotOptions {
@@ -117,6 +119,7 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
           Effect.orElseSucceed(() => undefined),
         )
     let detected = false
+    let stopped = false
     let lastPath: string | undefined
     let flight: Deferred.Deferred<CoachHarnessRow[], unknown> | null = null
 
@@ -135,6 +138,7 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
 
     const settle = (info: HarnessInfo, result: ProbeResult) =>
       Effect.gen(function* () {
+        if (stopped) return
         const record = { event: 'harness.probe', context: 'main', kind: info.kind, status: result.status }
         yield* (result.status === 'error' ? Effect.logError('harness.probe') : Effect.logInfo('harness.probe')).pipe(
           Effect.annotateLogs(record),
@@ -160,6 +164,7 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
       Effect.gen(function* () {
         yield* FiberHandle.clear(probeHandle)
         const infos = yield* Effect.tryPromise({ try: () => options.detect(pathEnv), catch: error => error })
+        if (stopped) return rows()
         lastPath = pathEnv
         detected = true
         instances.clear()
@@ -172,6 +177,7 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
           })
         }
         yield* publish()
+        if (stopped) return rows()
         const probes = infos.map(info => probe.probe(info).pipe(Effect.flatMap(result => settle(info, result))))
         yield* FiberHandle.run(probeHandle, Effect.all(probes, { concurrency }).pipe(Effect.asVoid))
         return rows()
@@ -190,8 +196,10 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
 
     const requestDetection = (always: boolean): Effect.Effect<CoachHarnessRow[], unknown> =>
       Effect.gen(function* () {
+        if (stopped) return rows()
         if (flight) return yield* Deferred.await(flight)
         const pathEnv = yield* readPath
+        if (stopped) return rows()
         if (!always && detected && lastPath === pathEnv) return rows()
 
         const deferred = yield* Deferred.make<CoachHarnessRow[], unknown>()
@@ -201,6 +209,7 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
       })
 
     return HarnessSnapshot.of({
+      current: () => Effect.sync(rows),
       list: () => requestDetection(false),
       refresh: () => requestDetection(true),
       get: instanceId =>
@@ -219,6 +228,12 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
           yield* publish()
         }),
       start: () => requestDetection(false).pipe(Effect.asVoid),
+      shutdown: () =>
+        Effect.gen(function* () {
+          stopped = true
+          yield* FiberHandle.clear(detectionHandle)
+          yield* FiberHandle.clear(probeHandle)
+        }),
     })
   })
 }
