@@ -10,17 +10,27 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, extname, join } from 'path'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import { estimateTokensFromChars } from '../../core/ingestion/parsers/token-estimate.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ToolCall } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import {
+  MAX_SESSION_FILE_BYTES,
+  readSessionFileEffect,
+  readSessionLinesStream,
+} from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import { estimateTokensFromChars } from '@/core/ingestion/parsers/token-estimate.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type { ToolCall } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 // Kiro bills in credits: individual plans are $20/mo for 1,000 credits and
 // overage is billed at $0.04 per additional credit. We price credits at the

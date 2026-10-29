@@ -2,20 +2,20 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
 import {
   type AnalyticalViews,
   analyticalViewsSchema,
   type DashboardViews,
   dashboardViewsSchema,
-} from '../../../shared/schemas/views.js'
-import { LedgerViewReads } from '../../ports/ledger-view-reads.js'
+} from '@/shared/schemas/views.js'
+import { LedgerViewReads } from '@/core/ports/ledger-view-reads.js'
 import {
   calculateAnalyticalViews,
   calculateDashboardViews,
   type ViewCalculationInputs,
-} from '../../analytics/metrics/view-aggregate-calculation.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
+} from '@/core/analytics/metrics/view-aggregate-calculation.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
 
 export type ViewQueryInputs = ViewCalculationInputs
 export type ScopedViewQueryInputs = ViewQueryInputs & { readonly scope: OverviewScope }

@@ -1,7 +1,7 @@
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 
-import type { OptimizeSetup, SkillInventoryEntry } from '../domain/evidence/setup-facts.js'
+import type { OptimizeSetup, SkillInventoryEntry } from '@/core/domain/evidence/setup-facts.js'
 
 export class AssistantSetup extends Context.Service<
   AssistantSetup,

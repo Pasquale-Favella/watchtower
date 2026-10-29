@@ -1,10 +1,10 @@
 import * as Effect from 'effect/Effect'
 
-import type { OrbCommand } from '../../shared/rpc/shell.js'
-import type { Section } from '../../shared/schemas/navigation.js'
-import { registry } from '../app/renderer-runtime.js'
-import { BeaconRoleClient } from './beacon-role-client.js'
-import { PanelRoleClient } from './panel-role-client.js'
+import type { OrbCommand } from '@/shared/rpc/shell.js'
+import type { Section } from '@/shared/schemas/navigation.js'
+import { registry } from '@/renderer/app/renderer-runtime.js'
+import { BeaconRoleClient } from '@/renderer/orb/beacon-role-client.js'
+import { PanelRoleClient } from '@/renderer/orb/panel-role-client.js'
 
 const beaconCommand = BeaconRoleClient.runtime.fn<OrbCommand>()(
   command => Effect.flatMap(BeaconRoleClient, rpc => rpc('orb:command', command, { discard: true })),

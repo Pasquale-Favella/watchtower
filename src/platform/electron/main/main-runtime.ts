@@ -1,38 +1,34 @@
-import { CommandRunnerLive } from '../../../infrastructure/process/command-runner.js'
+import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
-import type { CoachHarnessRow } from '../../../shared/schemas/agents.js'
-import { CommandRunner } from '../../../core/ports/process.js'
-import { detectHarnesses, type HarnessInfo, which } from '../../../infrastructure/agent-harnesses/detect.js'
-import { resolveBundledEntry } from '../../../infrastructure/agent-harnesses/harnesses/bundled.js'
-import { LedgerMcpPool, ledgerMcpPoolLayer } from '../../mcp/pool.js'
-import { LedgerMcpSidecar, ledgerMcpSidecarLayer, type LedgerMcpSidecarOptions } from '../../mcp/sidecar.js'
-import type { ProbeResult } from '../../../infrastructure/agent-harnesses/probe.js'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
+import { CommandRunner } from '@/core/ports/process.js'
+import { detectHarnesses, type HarnessInfo, which } from '@/infrastructure/agent-harnesses/detect.js'
+import { resolveBundledEntry } from '@/infrastructure/agent-harnesses/harnesses/bundled.js'
+import { LedgerMcpPool, ledgerMcpPoolLayer } from '@/platform/mcp/pool.js'
+import { LedgerMcpSidecar, ledgerMcpSidecarLayer, type LedgerMcpSidecarOptions } from '@/platform/mcp/sidecar.js'
+import type { ProbeResult } from '@/infrastructure/agent-harnesses/probe.js'
 import {
   CoachHarnessExecution,
   coachHarnessExecutionLayer,
   type HarnessRuntimeOptions,
   type HarnessSdk,
   loadHarnessSdk,
-} from '../../../infrastructure/agent-harnesses/runtime.js'
-import {
-  HarnessProbe,
-  HarnessSnapshot,
-  harnessSnapshotLayer,
-} from '../../../infrastructure/agent-harnesses/snapshot.js'
-import { Env } from '../../../infrastructure/config/environment.js'
+} from '@/infrastructure/agent-harnesses/runtime.js'
+import { HarnessProbe, HarnessSnapshot, harnessSnapshotLayer } from '@/infrastructure/agent-harnesses/snapshot.js'
+import { Env } from '@/infrastructure/config/environment.js'
 import {
   OperationalLog,
   OperationalLogLoggerLayer,
   OperationalLogMetricLayer,
   OperationalLogTracerLayer,
-} from '../../../infrastructure/logging/operational-log.js'
-import { HttpFetch } from '../../../infrastructure/ingestion/fetch-utils.js'
-import { NodePlatformLive, type NodePlatformServices } from '../../../infrastructure/platform/platform-live.js'
+} from '@/infrastructure/logging/operational-log.js'
+import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
+import { NodePlatformLive, type NodePlatformServices } from '@/infrastructure/platform/platform-live.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
 export type MainServices =

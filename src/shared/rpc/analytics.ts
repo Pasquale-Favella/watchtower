@@ -1,13 +1,13 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { comparePairSchema, comparePayloadSchema } from '../schemas/compare.js'
-import { modelsPayloadSchema } from '../schemas/models.js'
-import { optimizePayloadSchema } from '../schemas/optimize.js'
-import { overviewPayloadSchema, overviewScopeSchema } from '../schemas/overview.js'
-import { pullRequestsPayloadSchema } from '../schemas/pull-requests.js'
-import { skillsPayloadSchema, skillsThresholdsSchema } from '../schemas/skills.js'
-import { spendPayloadSchema } from '../schemas/spend.js'
+import { comparePairSchema, comparePayloadSchema } from '@/shared/schemas/compare.js'
+import { modelsPayloadSchema } from '@/shared/schemas/models.js'
+import { optimizePayloadSchema } from '@/shared/schemas/optimize.js'
+import { overviewPayloadSchema, overviewScopeSchema } from '@/shared/schemas/overview.js'
+import { pullRequestsPayloadSchema } from '@/shared/schemas/pull-requests.js'
+import { skillsPayloadSchema, skillsThresholdsSchema } from '@/shared/schemas/skills.js'
+import { spendPayloadSchema } from '@/shared/schemas/spend.js'
 import {
   analyticalViewsSchema,
   dashboardViewsSchema,
@@ -16,9 +16,9 @@ import {
   sessionDetailRequestSchema,
   sessionDetailSchema,
   sessionRowSchema,
-} from '../schemas/views.js'
-import { yieldPayloadSchema } from '../schemas/yield.js'
-import { AnalyticsRpcError } from './errors.js'
+} from '@/shared/schemas/views.js'
+import { yieldPayloadSchema } from '@/shared/schemas/yield.js'
+import { AnalyticsRpcError } from '@/shared/rpc/errors.js'
 
 const sessionListFilterSchema = Schema.Struct({
   project: Schema.optional(Schema.String),

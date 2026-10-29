@@ -4,25 +4,25 @@ import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/sql/SqlClient'
 
-import { AssistantSetup } from '../../core/ports/assistant-setup.js'
-import { queryLedgerMcpCalls, queryLedgerMcpScope } from '../../core/application/queries/ledger-mcp-query.js'
-import { queryModelsView } from '../../core/application/queries/models-query.js'
-import { queryOverview } from '../../core/application/queries/overview-query.js'
-import { PricingDiagnostics } from '../../core/ports/pricing-diagnostics.js'
-import { querySessionsView } from '../../core/application/queries/sessions-query.js'
-import { querySkillsView } from '../../core/application/queries/skills-query.js'
-import { AssistantSetupLive } from '../../infrastructure/services/assistant-setup-live.js'
+import { AssistantSetup } from '@/core/ports/assistant-setup.js'
+import { queryLedgerMcpCalls, queryLedgerMcpScope } from '@/core/application/queries/ledger-mcp-query.js'
+import { queryModelsView } from '@/core/application/queries/models-query.js'
+import { queryOverview } from '@/core/application/queries/overview-query.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import { querySessionsView } from '@/core/application/queries/sessions-query.js'
+import { querySkillsView } from '@/core/application/queries/skills-query.js'
+import { AssistantSetupLive } from '@/infrastructure/services/assistant-setup-live.js'
 import {
   captureLocalModelSavings,
   captureModelPricingCatalogue,
   captureProxyPaths,
-} from '../../infrastructure/pricing/models.js'
-import { PricingDiagnosticsLive } from '../../infrastructure/pricing/pricing-diagnostics.js'
-import { LedgerExportReads } from '../../core/ports/ledger-export-reads.js'
-import { LedgerConfig, LedgerIngest, LedgerQueries } from '../../core/ports/repository.js'
-import { LedgerPortsLayer } from '../../infrastructure/sqlite/ledger-repository.js'
-import { LedgerViewReads } from '../../core/ports/ledger-view-reads.js'
-import type { LedgerMcpQueries } from './query-api.js'
+} from '@/infrastructure/pricing/models.js'
+import { PricingDiagnosticsLive } from '@/infrastructure/pricing/pricing-diagnostics.js'
+import { LedgerExportReads } from '@/core/ports/ledger-export-reads.js'
+import { LedgerConfig, LedgerIngest, LedgerQueries } from '@/core/ports/repository.js'
+import { LedgerPortsLayer } from '@/infrastructure/sqlite/ledger-repository.js'
+import { LedgerViewReads } from '@/core/ports/ledger-view-reads.js'
+import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
 
 type LedgerMcpQueryRuntimeServices =
   | AssistantSetup

@@ -1,6 +1,6 @@
 import { addHours, subHours } from 'date-fns'
 
-import type { DateRange } from '../../core/domain/observations/types.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
 
 const CANDIDATE_WINDOW_HOURS = 24
 

@@ -1,15 +1,15 @@
 import * as Effect from 'effect/Effect'
 
-import type { LedgerSessionRow, LedgerSourceRow, LedgerTurnRow } from '../../../shared/schemas/ledger.js'
+import type { LedgerSessionRow, LedgerSourceRow, LedgerTurnRow } from '@/shared/schemas/ledger.js'
 import {
   createPricingConfigLookup,
   type PricingCatalogue,
   type PricingConfigLookup,
-} from '../../domain/pricing/pricing-calculation.js'
-import type { ProxyPathConfig } from '../../domain/sessions/proxy-paths.js'
-import type { DateRange } from '../../domain/observations/types.js'
-import { LedgerQueries, type LedgerRequestSnapshotData } from '../../ports/repository.js'
-import type { LedgerCallDiagnosticsRow, LedgerCallFactsRow } from '../../analytics/projections/read-projections.js'
+} from '@/core/domain/pricing/pricing-calculation.js'
+import type { ProxyPathConfig } from '@/core/domain/sessions/proxy-paths.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import { LedgerQueries, type LedgerRequestSnapshotData } from '@/core/ports/repository.js'
+import type { LedgerCallDiagnosticsRow, LedgerCallFactsRow } from '@/core/analytics/projections/read-projections.js'
 
 /** The immutable inputs captured for one request-level ledger calculation. */
 export type LedgerQuerySnapshot = {

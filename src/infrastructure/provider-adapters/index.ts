@@ -1,40 +1,45 @@
 import * as Effect from 'effect/Effect'
 import type * as FileSystem from 'effect/FileSystem'
 
-import type { Env } from '../config/environment.js'
-import { fileErrorCode, reportProviderIssue } from '../ingestion/file-errors.js'
+import type { Env } from '@/infrastructure/config/environment.js'
+import { fileErrorCode, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
 import {
   isScanAbortedError,
   type ScanAbortedError,
   scanAbortError,
-} from '../../core/ingestion/reconciliation/scan-control.js'
-import { claude } from './claude.js'
-import { cline } from './cline.js'
-import { codebuff } from './codebuff.js'
-import { codewhale } from './codewhale.js'
-import { codex } from './codex.js'
-import { copilot } from './copilot.js'
-import { devin } from './devin.js'
-import { droid } from './droid.js'
-import { gemini } from './gemini.js'
-import { grok } from './grok.js'
-import { hermes } from './hermes.js'
-import { ibmBob } from './ibm-bob.js'
-import { kiloCode } from './kilo-code.js'
-import { kimi } from './kimi.js'
-import { kimicode } from './kimicode.js'
-import { kiro } from './kiro.js'
-import { lingtaiTui } from './lingtai-tui.js'
-import { mistralVibe } from './mistral-vibe.js'
-import { mux } from './mux.js'
-import { openDesign } from './open-design.js'
-import { openclaw } from './openclaw.js'
-import { omp, pi } from './pi.js'
-import { quickdesk } from './quickdesk.js'
-import { qwen } from './qwen.js'
-import { rooCode } from './roo-code.js'
-import type { DiscoverableProvider, Provider, ProviderScanContext, SessionSource } from './types.js'
-import { zerostack } from './zerostack.js'
+} from '@/core/ingestion/reconciliation/scan-control.js'
+import { claude } from '@/infrastructure/provider-adapters/claude.js'
+import { cline } from '@/infrastructure/provider-adapters/cline.js'
+import { codebuff } from '@/infrastructure/provider-adapters/codebuff.js'
+import { codewhale } from '@/infrastructure/provider-adapters/codewhale.js'
+import { codex } from '@/infrastructure/provider-adapters/codex.js'
+import { copilot } from '@/infrastructure/provider-adapters/copilot.js'
+import { devin } from '@/infrastructure/provider-adapters/devin.js'
+import { droid } from '@/infrastructure/provider-adapters/droid.js'
+import { gemini } from '@/infrastructure/provider-adapters/gemini.js'
+import { grok } from '@/infrastructure/provider-adapters/grok.js'
+import { hermes } from '@/infrastructure/provider-adapters/hermes.js'
+import { ibmBob } from '@/infrastructure/provider-adapters/ibm-bob.js'
+import { kiloCode } from '@/infrastructure/provider-adapters/kilo-code.js'
+import { kimi } from '@/infrastructure/provider-adapters/kimi.js'
+import { kimicode } from '@/infrastructure/provider-adapters/kimicode.js'
+import { kiro } from '@/infrastructure/provider-adapters/kiro.js'
+import { lingtaiTui } from '@/infrastructure/provider-adapters/lingtai-tui.js'
+import { mistralVibe } from '@/infrastructure/provider-adapters/mistral-vibe.js'
+import { mux } from '@/infrastructure/provider-adapters/mux.js'
+import { openDesign } from '@/infrastructure/provider-adapters/open-design.js'
+import { openclaw } from '@/infrastructure/provider-adapters/openclaw.js'
+import { omp, pi } from '@/infrastructure/provider-adapters/pi.js'
+import { quickdesk } from '@/infrastructure/provider-adapters/quickdesk.js'
+import { qwen } from '@/infrastructure/provider-adapters/qwen.js'
+import { rooCode } from '@/infrastructure/provider-adapters/roo-code.js'
+import type {
+  DiscoverableProvider,
+  Provider,
+  ProviderScanContext,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
+import { zerostack } from '@/infrastructure/provider-adapters/zerostack.js'
 
 type OptionalProvider = { readonly name: string; readonly load: () => Promise<Provider<FileSystem.FileSystem>> }
 
@@ -44,17 +49,26 @@ type OptionalProvider = { readonly name: string; readonly load: () => Promise<Pr
 const optionalProviders: ReadonlyArray<
   OptionalProvider & { promise?: Promise<Provider<FileSystem.FileSystem> | null> }
 > = [
-  { name: 'antigravity', load: async () => (await import('./antigravity.js')).antigravity },
-  { name: 'forge', load: async () => (await import('./forge.js')).forge },
-  { name: 'goose', load: async () => (await import('./goose.js')).goose },
-  { name: 'cursor', load: async () => (await import('./cursor.js')).cursor },
-  { name: 'opencode', load: async () => (await import('./opencode.js')).opencode },
-  { name: 'cursor-agent', load: async () => (await import('./cursor-agent.js')).cursor_agent },
-  { name: 'crush', load: async () => (await import('./crush.js')).crush },
-  { name: 'warp', load: async () => (await import('./warp.js')).warp },
-  { name: 'vercel-gateway', load: async () => (await import('./vercel-gateway.js')).vercelGateway },
-  { name: 'zcode', load: async () => (await import('./zcode.js')).zcode },
-  { name: 'zed', load: async () => (await import('./zed.js')).zed },
+  {
+    name: 'antigravity',
+    load: async () => (await import('@/infrastructure/provider-adapters/antigravity.js')).antigravity,
+  },
+  { name: 'forge', load: async () => (await import('@/infrastructure/provider-adapters/forge.js')).forge },
+  { name: 'goose', load: async () => (await import('@/infrastructure/provider-adapters/goose.js')).goose },
+  { name: 'cursor', load: async () => (await import('@/infrastructure/provider-adapters/cursor.js')).cursor },
+  { name: 'opencode', load: async () => (await import('@/infrastructure/provider-adapters/opencode.js')).opencode },
+  {
+    name: 'cursor-agent',
+    load: async () => (await import('@/infrastructure/provider-adapters/cursor-agent.js')).cursor_agent,
+  },
+  { name: 'crush', load: async () => (await import('@/infrastructure/provider-adapters/crush.js')).crush },
+  { name: 'warp', load: async () => (await import('@/infrastructure/provider-adapters/warp.js')).warp },
+  {
+    name: 'vercel-gateway',
+    load: async () => (await import('@/infrastructure/provider-adapters/vercel-gateway.js')).vercelGateway,
+  },
+  { name: 'zcode', load: async () => (await import('@/infrastructure/provider-adapters/zcode.js')).zcode },
+  { name: 'zed', load: async () => (await import('@/infrastructure/provider-adapters/zed.js')).zed },
 ]
 
 const coreProviders: DiscoverableProvider<FileSystem.FileSystem>[] = [

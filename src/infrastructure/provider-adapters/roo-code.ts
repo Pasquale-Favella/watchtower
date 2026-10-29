@@ -1,9 +1,17 @@
 import * as Effect from 'effect/Effect'
 
-import { captureScanPricing } from '../pricing/models.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
-import { createClineParser, discoverClineTaskCandidatesEffect } from './vscode-cline-parser.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
+import {
+  createClineParser,
+  discoverClineTaskCandidatesEffect,
+} from '@/infrastructure/provider-adapters/vscode-cline-parser.js'
 
 const EXTENSION_ID = 'rooveterinaryinc.roo-cline'
 

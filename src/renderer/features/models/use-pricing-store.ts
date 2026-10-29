@@ -1,7 +1,7 @@
 import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useContext, useEffect } from 'react'
 
-import { pinWindowAtom, useRemoteQuery } from '@/stores/hooks/use-remote-query'
+import { pinWindowAtom, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
 
 import {
   aliasesPricingCommands,
@@ -15,7 +15,7 @@ import {
   pricingPaneCommands,
   quickAddPricingCommands,
   unpricedModelsAtom,
-} from './pricing-atoms'
+} from '@/renderer/features/models/pricing-atoms'
 
 /** Pricing state and commands consumed by the aliases settings pane. */
 export function useAliasPricingStore() {

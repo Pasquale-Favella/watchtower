@@ -6,13 +6,23 @@ import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import {
+  MAX_SESSION_FILE_BYTES,
+  readSessionFileEffect,
+  readSessionLinesStream,
+} from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const toolNameMap: Record<string, string> = {
   read_file: 'Read',

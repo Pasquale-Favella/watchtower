@@ -1,16 +1,16 @@
-import type { AnalyticalViews, DashboardViews } from '../../../shared/schemas/views.js'
-import { canonicalSessionProject } from '../../domain/sessions/canonical-session-project.js'
-import { getShortModelName } from '../../domain/pricing/model-names.js'
+import type { AnalyticalViews, DashboardViews } from '@/shared/schemas/views.js'
+import { canonicalSessionProject } from '@/core/domain/sessions/canonical-session-project.js'
+import { getShortModelName } from '@/core/domain/pricing/model-names.js'
 import {
   calculateRepricedCostResult,
   createPricingConfigLookup,
   type PricingCatalogue,
   resolveModelNameAlias,
-} from '../../domain/pricing/pricing-calculation.js'
-import { isProxiedPath, type ProxyPathConfig } from '../../domain/sessions/proxy-paths.js'
-import { providerFromModel } from '../../domain/sessions/session-row.js'
-import { CATEGORY_LABELS, type TaskCategory } from '../../domain/observations/types.js'
-import type { LedgerViewData } from '../projections/view-read-projections.js'
+} from '@/core/domain/pricing/pricing-calculation.js'
+import { isProxiedPath, type ProxyPathConfig } from '@/core/domain/sessions/proxy-paths.js'
+import { providerFromModel } from '@/core/domain/sessions/session-row.js'
+import { CATEGORY_LABELS, type TaskCategory } from '@/core/domain/observations/types.js'
+import type { LedgerViewData } from '@/core/analytics/projections/view-read-projections.js'
 
 export type ViewCalculationInputs = {
   readonly catalogue: PricingCatalogue

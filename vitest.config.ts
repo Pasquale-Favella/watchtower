@@ -4,10 +4,9 @@ import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   resolve: {
-    // Mirror tsconfig.web.json's `@/*` → src/renderer/* so renderer modules
-    // imported from tests resolve their `@/lib/...` imports.
+    // Every process uses the same source-root alias as TypeScript and Electron Vite.
     alias: {
-      '@': fileURLToPath(new URL('./src/renderer', import.meta.url)),
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
   test: {

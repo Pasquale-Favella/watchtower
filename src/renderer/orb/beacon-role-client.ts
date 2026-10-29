@@ -3,9 +3,9 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRpc from 'effect/reactivity/AtomRpc'
 import type * as RpcClient from 'effect/rpc/RpcClient'
 
-import { BeaconRpcGroup } from '../../shared/rpc/application.js'
-import { runtime } from '../app/renderer-runtime.js'
-import { RendererProtocolLayer } from '../shared/lib/rpc-connection.js'
+import { BeaconRpcGroup } from '@/shared/rpc/application.js'
+import { runtime } from '@/renderer/app/renderer-runtime.js'
+import { RendererProtocolLayer } from '@/renderer/shared/lib/rpc-connection.js'
 
 export function createBeaconRoleClient<E>(
   factory: Atom.RegistryRuntimeFactory,

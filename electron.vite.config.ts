@@ -3,8 +3,11 @@ import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 
+const sourceAlias = { '@': resolve('src') }
+
 export default defineConfig({
   main: {
+    resolve: { alias: sourceAlias },
     // Bundle the aligned Effect packages together. Loading their module graph
     // from node_modules delays renderer boot, especially while the worker starts.
     plugins: [externalizeDepsPlugin({ exclude: ['effect', '@effect/platform-node', '@effect/sql-sqlite-node'] })],
@@ -24,6 +27,7 @@ export default defineConfig({
     }
   },
   preload: {
+    resolve: { alias: sourceAlias },
     // Sandboxed preloads can require Electron, but cannot load Effect from node_modules.
     plugins: [externalizeDepsPlugin({ exclude: ['effect'] })],
     build: {
@@ -36,9 +40,7 @@ export default defineConfig({
   },
   renderer: {
     resolve: {
-      alias: {
-        '@': resolve('src/renderer')
-      }
+      alias: sourceAlias
     },
     plugins: [react(), tailwindcss()],
     build: {

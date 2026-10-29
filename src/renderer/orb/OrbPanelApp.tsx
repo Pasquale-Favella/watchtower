@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
 
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@/renderer/components/ui/tooltip'
 
-import { OrbPanel } from './OrbPanel'
-import { useOrbPanelAppStore, useOrbPanelBootstrap } from './panel-hooks'
+import { OrbPanel } from '@/renderer/orb/OrbPanel'
+import { useOrbPanelAppStore, useOrbPanelBootstrap } from '@/renderer/orb/panel-hooks'
 
 /**
  * The panel window's composition root (see main/background-shell.ts): the

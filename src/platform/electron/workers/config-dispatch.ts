@@ -2,7 +2,7 @@ import * as Effect from 'effect/Effect'
 import type { SchemaError } from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import type { SkillsDismissalRequest } from '../../../shared/schemas/skills.js'
+import type { SkillsDismissalRequest } from '@/shared/schemas/skills.js'
 import {
   addModelAlias,
   dismissSkill,
@@ -11,8 +11,8 @@ import {
   removeModelPrice,
   setLedgerMcpStartupMode,
   setModelPrice,
-} from '../../../core/application/commands/ledger-config-commands.js'
-import { LedgerConfig } from '../../../core/ports/repository.js'
+} from '@/core/application/commands/ledger-config-commands.js'
+import { LedgerConfig } from '@/core/ports/repository.js'
 
 type ConfigRequest = Effect.Effect<unknown, SqlError | SchemaError | LedgerConfigValidationError, LedgerConfig>
 

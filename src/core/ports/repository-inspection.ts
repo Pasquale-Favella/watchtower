@@ -2,8 +2,8 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import type { ProjectSummary, SessionSummary } from '../domain/observations/types.js'
-import type { YieldRepoGroup } from '../analytics/attribution/yield-calculation.js'
+import type { ProjectSummary, SessionSummary } from '@/core/domain/observations/types.js'
+import type { YieldRepoGroup } from '@/core/analytics/attribution/yield-calculation.js'
 
 /** Canonical identity shared by subdirectories and linked worktrees. */
 export type RepoIdentity = {

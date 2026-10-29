@@ -1,4 +1,4 @@
-import { ErrorPanel } from '@/components/ErrorPanel'
+import { ErrorPanel } from '@/renderer/components/ErrorPanel'
 
 /** Shows a blocking error before the first payload and a small notice when stale data remains visible. */
 export function QueryErrorNotice({

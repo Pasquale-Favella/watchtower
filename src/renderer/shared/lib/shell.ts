@@ -1,4 +1,4 @@
-import type { ProviderOption, Theme } from '../../../shared/schemas/renderer.js'
+import type { ProviderOption, Theme } from '@/shared/schemas/renderer.js'
 export type { ProviderOption, Theme }
 
 function titleCase(id: string): string {

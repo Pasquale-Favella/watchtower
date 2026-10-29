@@ -1,4 +1,4 @@
-import { useScanning } from '@/stores/hooks/use-scan-store'
+import { useScanning } from '@/renderer/stores/hooks/use-scan-store'
 
 /** The 2px scanning bar — reads `scanning` straight from the scan store
  * (ADR 0011). */

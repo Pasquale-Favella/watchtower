@@ -8,14 +8,20 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, delimiter, dirname, join, resolve } from 'path'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing, getShortModelName } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { readSessionLinesStream } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing, getShortModelName } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const lingtaiManifestSchema = Schema.Struct({
   agent_id: Schema.optional(Schema.Unknown),

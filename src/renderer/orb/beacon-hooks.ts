@@ -2,13 +2,13 @@ import * as Effect from 'effect/Effect'
 import * as Stream from 'effect/Stream'
 import { type PointerEvent as ReactPointerEvent, useEffect, useRef } from 'react'
 
-import { pinWindowAtom } from '@/stores/hooks/use-remote-query'
-import { registry, runtime } from '@/app/renderer-runtime'
+import { pinWindowAtom } from '@/renderer/stores/hooks/use-remote-query'
+import { registry, runtime } from '@/renderer/app/renderer-runtime'
 
-import { beaconEventsReadyAtom, subscribeToOrbBeacon } from './beacon-wiring'
-import { BeaconRoleClient } from './beacon-role-client'
-import { orbControls } from './native-shell'
-import { syncPlacementAtom } from './placement-atoms'
+import { beaconEventsReadyAtom, subscribeToOrbBeacon } from '@/renderer/orb/beacon-wiring'
+import { BeaconRoleClient } from '@/renderer/orb/beacon-role-client'
+import { orbControls } from '@/renderer/orb/native-shell'
+import { syncPlacementAtom } from '@/renderer/orb/placement-atoms'
 
 const beaconBootstrapAtom = BeaconRoleClient.runtime.atom(get => {
   get.addFinalizer(subscribeToOrbBeacon(get.registry))

@@ -7,12 +7,12 @@ import * as Effect from 'effect/Effect'
 import * as FiberSet from 'effect/FiberSet'
 import type * as Scope from 'effect/Scope'
 
-import { handleLedgerMcpHttpRequest } from './http-server.js'
-import type { LedgerMcpQueries } from './query-api.js'
-import { createLedgerMcpQueryRuntime } from './query-runtime.js'
-import { createLedgerMcpServer } from './server.js'
-import { reportSidecarBootFailure, reportSidecarRequestFailure } from './sidecar-log.js'
-import { readContext, readHttpContext } from './spawn-env.js'
+import { handleLedgerMcpHttpRequest } from '@/platform/mcp/http-server.js'
+import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
+import { createLedgerMcpQueryRuntime } from '@/platform/mcp/query-runtime.js'
+import { createLedgerMcpServer } from '@/platform/mcp/server.js'
+import { reportSidecarBootFailure, reportSidecarRequestFailure } from '@/platform/mcp/sidecar-log.js'
+import { readContext, readHttpContext } from '@/platform/mcp/spawn-env.js'
 
 /** The process owns this runtime; transports only borrow its query methods. */
 interface OwnedQueryRuntime {

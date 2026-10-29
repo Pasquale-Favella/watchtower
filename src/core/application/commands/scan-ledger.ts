@@ -1,12 +1,12 @@
 import * as Effect from 'effect/Effect'
-import type { ScanMetadata, ScanProgress } from '../../../shared/schemas/scan.js'
-import * as Clock from '../../ports/clock.js'
-import { CommandRunner } from '../../ports/process.js'
-import { ScanSources, type DeltaHandler } from '../../ports/ingestion.js'
-import { getRepoUrlEffect } from '../../ingestion/discovery/git-remote.js'
-import { ScanAbortedError } from '../../ingestion/reconciliation/scan-control.js'
-import { LedgerIngest } from '../../ports/repository.js'
-import { GatewayReports } from '../../ports/gateway-reports.js'
+import type { ScanMetadata, ScanProgress } from '@/shared/schemas/scan.js'
+import * as Clock from '@/core/ports/clock.js'
+import { CommandRunner } from '@/core/ports/process.js'
+import { ScanSources, type DeltaHandler } from '@/core/ports/ingestion.js'
+import { getRepoUrlEffect } from '@/core/ingestion/discovery/git-remote.js'
+import { ScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { LedgerIngest } from '@/core/ports/repository.js'
+import { GatewayReports } from '@/core/ports/gateway-reports.js'
 
 /** Port lifetime data through the worker's existing services. The worker owns
  * the scan fiber and supplies its cooperative stop state and progress callback. */

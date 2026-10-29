@@ -3,7 +3,7 @@ import * as Layer from 'effect/Layer'
 import * as SqlClient from 'effect/sql/SqlClient'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { LedgerMaintenance } from '../../core/ports/ledger-maintenance.js'
+import { LedgerMaintenance } from '@/core/ports/ledger-maintenance.js'
 
 /** Uses the SQL client already owned by the worker runtime. */
 export const LedgerMaintenanceLive = Layer.effect(

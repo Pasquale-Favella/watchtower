@@ -1,4 +1,4 @@
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
 
 export const keyOfScope = (scope: OverviewScope): string => JSON.stringify(scope)
 

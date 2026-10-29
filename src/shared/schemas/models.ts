@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { type ModelAlias, modelAliasSchema, type PriceOverride, priceOverrideSchema } from './ledger.js'
+import { type ModelAlias, modelAliasSchema, type PriceOverride, priceOverrideSchema } from '@/shared/schemas/ledger.js'
 
 const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
 const writable = Schema.mutableKey

@@ -7,10 +7,10 @@ import * as FiberSet from 'effect/FiberSet'
 import * as Layer from 'effect/Layer'
 import * as Scope from 'effect/Scope'
 
-import type { AcpMcpServer } from '../../infrastructure/agent-harnesses/harnesses/types.js'
-import type { LedgerMcpAttachment } from '../electron/main/coach/ipc.js'
-import type { LedgerMcpSpawnContext } from './config.js'
-import { LedgerMcpSidecar, type StartedLedgerMcpHttp } from './sidecar.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import type { LedgerMcpAttachment } from '@/platform/electron/main/coach/ipc.js'
+import type { LedgerMcpSpawnContext } from '@/platform/mcp/config.js'
+import { LedgerMcpSidecar, type StartedLedgerMcpHttp } from '@/platform/mcp/sidecar.js'
 
 interface NativeStartedLedgerMcpHttp {
   readonly server: AcpMcpServer

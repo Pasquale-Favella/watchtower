@@ -1,6 +1,6 @@
-import type { CadenceOption } from '../../../shared/schemas/cadence.js'
+import type { CadenceOption } from '@/shared/schemas/cadence.js'
 
-export type { CadenceOption } from '../../../shared/schemas/cadence.js'
+export type { CadenceOption } from '@/shared/schemas/cadence.js'
 
 /**
  * The background-scan cadence (ADR 0004):

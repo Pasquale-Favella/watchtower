@@ -1,14 +1,14 @@
 import { type ReactNode, useState } from 'react'
 
-import { navigateToSession } from '@/app/navigation'
-import { useDeliveryOutcomesStore } from '@/features/optimize/use-delivery-outcomes-store'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { LoadingRegion, SkeletonRows } from '@/components/skeletons'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+import { navigateToSession } from '@/renderer/app/navigation'
+import { useDeliveryOutcomesStore } from '@/renderer/features/optimize/use-delivery-outcomes-store'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { LoadingRegion, SkeletonRows } from '@/renderer/components/skeletons'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import type { YieldCategory, YieldDetail, YieldPayload } from '../../../shared/schemas/yield.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import type { YieldCategory, YieldDetail, YieldPayload } from '@/shared/schemas/yield.js'
 
 type EvidenceRowProps = { row: YieldDetail }
 type DeliveryEvidenceProps = { payload: YieldPayload; revertsOnly?: boolean }

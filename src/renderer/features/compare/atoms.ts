@@ -4,12 +4,12 @@ import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type { RpcClientError } from 'effect/rpc/RpcClientError'
 
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import type { AnalyticsRpcError } from '../../../shared/rpc/errors.js'
-import type { ComparePair, ComparePayload } from '../../../shared/schemas/compare.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
+import type { AnalyticsRpcError } from '@/shared/rpc/errors.js'
+import type { ComparePair, ComparePayload } from '@/shared/schemas/compare.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
 
 export interface CompareRequest {
   readonly scope: OverviewScope

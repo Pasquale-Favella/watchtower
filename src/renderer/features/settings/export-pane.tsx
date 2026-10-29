@@ -1,12 +1,12 @@
 import { Download } from 'lucide-react'
 
-import { PaneHeader } from '@/features/settings/pane-parts'
-import { SegTabs } from '@/components/SegTabs'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
+import { PaneHeader } from '@/renderer/features/settings/pane-parts'
+import { SegTabs } from '@/renderer/components/SegTabs'
+import { Button } from '@/renderer/components/ui/button'
+import { Card } from '@/renderer/components/ui/card'
+import { Separator } from '@/renderer/components/ui/separator'
 
-import { useSettingsExportStore } from './use-settings-store'
+import { useSettingsExportStore } from '@/renderer/features/settings/use-settings-store'
 
 export function ExportPane() {
   const { format, exporting, result, selectFormat, exportNow } = useSettingsExportStore()

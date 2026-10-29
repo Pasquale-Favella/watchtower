@@ -6,16 +6,26 @@ import { readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { MAX_SESSION_FILE_BYTES, MAX_STREAM_SESSION_FILE_BYTES, readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing, getShortModelName } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import {
+  MAX_SESSION_FILE_BYTES,
+  MAX_STREAM_SESSION_FILE_BYTES,
+  readSessionLinesStream,
+} from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing, getShortModelName } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const toolNameMap: Record<string, string> = {
   Read: 'Read',

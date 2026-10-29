@@ -1,4 +1,4 @@
-export type { UpdateStatus } from '../../../shared/schemas/updates.js'
+export type { UpdateStatus } from '@/shared/schemas/updates.js'
 
 /** The Watchtower repository homepage — the app's canonical repo link, shown
  * in the About area. https-only, so it passes openExternal's guard. */

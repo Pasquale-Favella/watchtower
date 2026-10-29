@@ -131,12 +131,12 @@ async function buildArtifact(artifactDir) {
   await build({
     configFile: false,
     customLogger: viteLogger,
-    root: path.join(root, 'src/renderer'),
+    root: path.join(root, 'src'),
     base: './',
     envDir: root,
     envPrefix: ['RENDERER_VITE_', 'VITE_'],
     plugins: [react(), tailwindcss(), stateProbePlugin()],
-    resolve: { alias: { '@': path.join(root, 'src/renderer') } },
+    resolve: { alias: { '@': path.join(root, 'src') } },
     build: {
       outDir: rendererDir,
       target: 'chrome142',

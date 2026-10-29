@@ -2,15 +2,15 @@ import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 import { useRef } from 'react'
 
-import { useScanStore } from '@/stores/hooks/use-scan-store'
-import { Button } from '@/components/ui/button'
-import { motionClass, motionEnabled } from '@/shared/lib/motion'
-import { cn } from '@/shared/lib/utils'
+import { useScanStore } from '@/renderer/stores/hooks/use-scan-store'
+import { Button } from '@/renderer/components/ui/button'
+import { motionClass, motionEnabled } from '@/renderer/shared/lib/motion'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import { Beacon } from './Beacon'
-import { Ellipsis } from './Ellipsis'
-import { statusMessage, stepIndex } from './progress'
-import { Tally } from './Tally'
+import { Beacon } from '@/renderer/components/shell/splash/Beacon'
+import { Ellipsis } from '@/renderer/components/shell/splash/Ellipsis'
+import { statusMessage, stepIndex } from '@/renderer/components/shell/splash/progress'
+import { Tally } from '@/renderer/components/shell/splash/Tally'
 
 /**
  * First-launch/first-hydrate splash: shown until the store has a report to

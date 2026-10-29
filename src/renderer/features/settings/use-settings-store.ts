@@ -2,10 +2,16 @@ import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import * as Atom from 'effect/reactivity/Atom'
 import { useCallback, useContext, useEffect } from 'react'
 
-import { scanStateAtom } from '@/stores/atoms/scan'
-import { pinWindowAtom, querySnapshot, useRemoteQuery } from '@/stores/hooks/use-remote-query'
+import { scanStateAtom } from '@/renderer/stores/atoms/scan'
+import { pinWindowAtom, querySnapshot, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
 
-import { activeCurrencyAtom, cadenceAtom, currencyOptionsAtom, setCadenceAtom, setCurrencyAtom } from './atoms'
+import {
+  activeCurrencyAtom,
+  cadenceAtom,
+  currencyOptionsAtom,
+  setCadenceAtom,
+  setCurrencyAtom,
+} from '@/renderer/features/settings/atoms'
 import {
   clearDataAtom,
   getMcpConnectionAtom,
@@ -18,7 +24,7 @@ import {
   setMcpStartupModeAtom,
   SETTINGS_INFO_REQUEST,
   settingsInfoQuery,
-} from './capability-atoms'
+} from '@/renderer/features/settings/capability-atoms'
 import {
   exportMachineAtom,
   exportNowAtom,
@@ -26,8 +32,8 @@ import {
   selectExportFormatAtom,
   selectExporting,
   selectExportMessage,
-} from './export-atoms'
-import { preferencesAtom, setPreferencesAtom } from './preferences-atoms'
+} from '@/renderer/features/settings/export-atoms'
+import { preferencesAtom, setPreferencesAtom } from '@/renderer/features/settings/preferences-atoms'
 import {
   canRequestUpdate,
   checkForUpdatesAtom,
@@ -39,7 +45,7 @@ import {
   selectUpdateError,
   selectUpdateStatus,
   updatesMachineAtom,
-} from './updates-atoms'
+} from '@/renderer/features/settings/updates-atoms'
 
 const fdaNeededAtom = Atom.make(get => get(scanStateAtom).fdaNeeded)
 

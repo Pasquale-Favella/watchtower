@@ -3,18 +3,18 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type YieldPayload, yieldPayloadSchema } from '../../../shared/schemas/yield.js'
-import { overviewQueryRanges, scopeDateRange } from '../../domain/sessions/overview-scope.js'
+import { type YieldPayload, yieldPayloadSchema } from '@/shared/schemas/yield.js'
+import { overviewQueryRanges, scopeDateRange } from '@/core/domain/sessions/overview-scope.js'
 import {
   buildSessionSummariesFromSnapshotResult,
   groupSummariesIntoProjects,
-} from '../../analytics/projections/aggregate-calculation.js'
-import type { LedgerQueries } from '../../ports/repository.js'
-import { loadLedgerQuerySnapshotEffect } from './ledger-query-snapshot.js'
-import { calculateYieldPayload } from '../../analytics/attribution/yield-calculation.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
-import { inspectYieldProjects, type RepositoryInspection } from '../../ports/repository-inspection.js'
-import type { ScopedViewQueryInputs } from './view-queries.js'
+} from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQueries } from '@/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '@/core/application/queries/ledger-query-snapshot.js'
+import { calculateYieldPayload } from '@/core/analytics/attribution/yield-calculation.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import { inspectYieldProjects, type RepositoryInspection } from '@/core/ports/repository-inspection.js'
+import type { ScopedViewQueryInputs } from '@/core/application/queries/view-queries.js'
 
 export const queryYieldView = Effect.fn('queryYieldView')(function* (
   input: ScopedViewQueryInputs,

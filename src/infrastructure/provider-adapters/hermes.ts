@@ -6,16 +6,27 @@ import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { fileErrorCode, reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing, getShortModelName } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import { isSqliteAvailable, isSqliteBusyError, openDatabase, type SqliteDatabase } from '../ingestion/sqlite.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ToolCall } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { fileErrorCode, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing, getShortModelName } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import {
+  isSqliteAvailable,
+  isSqliteBusyError,
+  openDatabase,
+  type SqliteDatabase,
+} from '@/infrastructure/ingestion/sqlite.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type { ToolCall } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 type HermesSessionRow = {
   id: string

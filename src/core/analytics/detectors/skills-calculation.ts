@@ -6,10 +6,10 @@ import type {
   SkillsPayload,
   SkillsSource,
   SkillsThresholds,
-} from '../../../shared/schemas/skills.js'
-import { DEFAULT_SKILLS_THRESHOLDS } from '../../../shared/skills-defaults.js'
-import type { DateRange, SessionSummary } from '../../domain/observations/types.js'
-import type { SkillInventoryEntry } from '../../domain/evidence/setup-facts.js'
+} from '@/shared/schemas/skills.js'
+import { DEFAULT_SKILLS_THRESHOLDS } from '@/shared/skills-defaults.js'
+import type { DateRange, SessionSummary } from '@/core/domain/observations/types.js'
+import type { SkillInventoryEntry } from '@/core/domain/evidence/setup-facts.js'
 
 const PRIMITIVE_TOOLS = new Set([
   'Read',
@@ -39,7 +39,7 @@ const PRIMITIVE_TOOLS = new Set([
 const REPEATED_FREQUENCY = 2
 const EVIDENCE_SESSIONS_CAP = 5
 
-export type { SkillInventoryEntry } from '../../domain/evidence/setup-facts.js'
+export type { SkillInventoryEntry } from '@/core/domain/evidence/setup-facts.js'
 
 export function normalizeBashCommand(cmd: string): string {
   const trimmed = cmd.trim()

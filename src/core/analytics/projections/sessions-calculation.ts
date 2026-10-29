@@ -1,8 +1,8 @@
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import { overviewDateRange } from '../../domain/sessions/overview-scope.js'
-import { type SessionRow, sessionRowFromSummary } from '../../domain/sessions/session-row.js'
-import { buildSessionSummariesFromSnapshotResult } from './aggregate-calculation.js'
-import type { LedgerQuerySnapshot } from '../../application/queries/ledger-query-snapshot.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import { overviewDateRange } from '@/core/domain/sessions/overview-scope.js'
+import { type SessionRow, sessionRowFromSummary } from '@/core/domain/sessions/session-row.js'
+import { buildSessionSummariesFromSnapshotResult } from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQuerySnapshot } from '@/core/application/queries/ledger-query-snapshot.js'
 
 export type SessionsCalculationResult = {
   rows: SessionRow[]

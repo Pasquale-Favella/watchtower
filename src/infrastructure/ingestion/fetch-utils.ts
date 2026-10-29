@@ -11,7 +11,7 @@ import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
 
-import { FETCH_TIMEOUT_COUNTER, type OperationalLogCounter } from '../logging/operational-log.js'
+import { FETCH_TIMEOUT_COUNTER, type OperationalLogCounter } from '@/infrastructure/logging/operational-log.js'
 
 // Default ceiling for outbound HTTP. Every CLI command awaits loadPricingEffect(),
 // and the macOS menubar shells out to the CLI and blocks on its exit — so an

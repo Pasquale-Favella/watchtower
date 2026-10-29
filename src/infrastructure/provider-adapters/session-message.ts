@@ -1,11 +1,11 @@
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { captureScanPricing } from '../pricing/models.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { ParsedProviderCall } from './types.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { ParsedProviderCall } from '@/infrastructure/provider-adapters/types.js'
 
 const unknownMessageSchema = Schema.Struct({
   role: Schema.optional(Schema.Unknown),

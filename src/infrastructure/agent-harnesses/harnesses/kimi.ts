@@ -1,4 +1,4 @@
-import type { HarnessSpec } from './types.js'
+import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * Kimi CLI — Moonshot's coding agent. Speaks ACP with its own binary

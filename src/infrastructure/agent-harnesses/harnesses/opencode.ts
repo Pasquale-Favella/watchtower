@@ -1,4 +1,4 @@
-import type { HarnessSpec } from './types.js'
+import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * OpenCode — driven over ACP with its own binary (`opencode acp`); the same

@@ -7,12 +7,20 @@ import * as FiberHandle from 'effect/FiberHandle'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 
-import type { CoachHarnessRow } from '../../shared/schemas/agents.js'
-import { OperationalLog, type OperationalLogCounter, PROBE_OUTCOME_COUNTER } from '../logging/operational-log.js'
-import { CommandRunner } from '../../core/ports/process.js'
-import type { HarnessInfo } from './detect.js'
-import { harnessSpecs } from './harnesses/index.js'
-import { probeHarnessWithCommandRunner, type ProbeResult, type ProbeStatus } from './probe.js'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
+import {
+  OperationalLog,
+  type OperationalLogCounter,
+  PROBE_OUTCOME_COUNTER,
+} from '@/infrastructure/logging/operational-log.js'
+import { CommandRunner } from '@/core/ports/process.js'
+import type { HarnessInfo } from '@/infrastructure/agent-harnesses/detect.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
+import {
+  probeHarnessWithCommandRunner,
+  type ProbeResult,
+  type ProbeStatus,
+} from '@/infrastructure/agent-harnesses/probe.js'
 
 export interface HarnessInstance {
   instanceId: string

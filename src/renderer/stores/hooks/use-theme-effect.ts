@@ -1,8 +1,8 @@
 import { useAtomValue } from '@effect/atom-react'
 import { useEffect } from 'react'
 
-import { preferencesAtom } from '@/features/settings/preferences-atoms'
-import { themeIsDark } from '@/shared/lib/shell'
+import { preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
+import { themeIsDark } from '@/renderer/shared/lib/shell'
 
 /** The window root owns theme updates and the scoped system appearance listener. */
 export function useThemeEffect(): void {

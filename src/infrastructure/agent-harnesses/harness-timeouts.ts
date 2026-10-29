@@ -1,4 +1,4 @@
-import { harnessSpecs } from './harnesses/index.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
 
 /**
  * Single home for the harness handshake deadlines (issue #148 Wave 3): the ACP

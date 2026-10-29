@@ -1,4 +1,4 @@
-export { deriveCoachEvents, type CoachStreamPart } from './events.js'
+export { deriveCoachEvents, type CoachStreamPart } from '@/infrastructure/agent-harnesses/events.js'
 export {
   detectHarnesses,
   pickPreferredHarness,
@@ -6,7 +6,7 @@ export {
   type DetectOptions,
   type HarnessAuthStatus,
   type HarnessInfo,
-} from './detect.js'
+} from '@/infrastructure/agent-harnesses/detect.js'
 export {
   assertRealWorkspacePath,
   createHarnessRuntime,
@@ -16,4 +16,4 @@ export {
   type HarnessRuntime,
   type HarnessRunInput,
   type HarnessSdk,
-} from './runtime.js'
+} from '@/infrastructure/agent-harnesses/runtime.js'

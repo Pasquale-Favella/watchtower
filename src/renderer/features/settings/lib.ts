@@ -5,7 +5,7 @@
  * suite runs without jsdom).
  */
 
-import { DEFAULT_PERIOD_VALUES } from '@/shared/lib/settings-constants'
+import { DEFAULT_PERIOD_VALUES } from '@/renderer/shared/lib/settings-constants'
 
 const DEFAULT_PERIOD_KEY = 'watchtower:defaultPeriod'
 

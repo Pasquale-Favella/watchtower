@@ -9,11 +9,11 @@ import * as Fiber from 'effect/Fiber'
 import * as Option from 'effect/Option'
 import * as Schedule from 'effect/Schedule'
 
-import { WORKER_REQUEST_CAPACITY } from '../../../shared/rpc/worker.js'
-import { logCodeFor } from '../../../infrastructure/logging/operational-log.js'
-import { type DbWorkerData, type DbWorkerEvent, DEDUPABLE_OPS } from './protocol.js'
-import { workerOperation } from './rpc-operations.js'
-import { openWorkerRpcTransport } from './rpc-transport.js'
+import { WORKER_REQUEST_CAPACITY } from '@/shared/rpc/worker.js'
+import { logCodeFor } from '@/infrastructure/logging/operational-log.js'
+import { type DbWorkerData, type DbWorkerEvent, DEDUPABLE_OPS } from '@/platform/electron/workers/protocol.js'
+import { workerOperation } from '@/platform/electron/workers/rpc-operations.js'
+import { openWorkerRpcTransport } from '@/platform/electron/workers/rpc-transport.js'
 
 /**
  * Main-side handle to the db-worker thread (ADR 0023). `request(op, ...args)`

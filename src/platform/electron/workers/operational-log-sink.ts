@@ -1,6 +1,6 @@
-import { sanitizeOperationalRecord } from '../../../shared/logging.js'
-import type { OperationalLogSink } from '../../../infrastructure/logging/operational-log.js'
-import type { DbWorkerEvent } from './protocol.js'
+import { sanitizeOperationalRecord } from '@/shared/logging.js'
+import type { OperationalLogSink } from '@/infrastructure/logging/operational-log.js'
+import type { DbWorkerEvent } from '@/platform/electron/workers/protocol.js'
 
 /** Forward sanitized records to the main-owned writer over the existing channel. */
 export function makeWorkerOperationalLogSink(emit: (event: DbWorkerEvent) => void): OperationalLogSink {

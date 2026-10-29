@@ -11,10 +11,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import * as Schema from 'effect/Schema'
 
-import { buildLedgerPrompts } from './prompts.js'
-import type { LedgerMcpQueries } from './query-api.js'
-import { buildLedgerResources } from './resources.js'
-import { buildLedgerTools, LedgerToolInputError } from './tools.js'
+import { buildLedgerPrompts } from '@/platform/mcp/prompts.js'
+import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
+import { buildLedgerResources } from '@/platform/mcp/resources.js'
+import { buildLedgerTools, LedgerToolInputError } from '@/platform/mcp/tools.js'
 
 /** The `watchtower-ledger` MCP server (ADR 0020). The advanced SDK Server API
  *  owns protocol negotiation, request validation, framing, protocol errors,

@@ -7,16 +7,16 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
 
-import { coachStateAtom, replaceHarnessesAtom } from '@/features/coach-skills/atoms'
-import { activeCurrencyAtom, currencyChangedAtom } from '@/features/settings/atoms'
-import { updateStatusChangedAtom } from '@/features/settings/updates-atoms'
-import { ApplicationClient, ApplicationProtocolLayer } from '@/shared/lib/application-rpc'
+import { coachStateAtom, replaceHarnessesAtom } from '@/renderer/features/coach-skills/atoms'
+import { activeCurrencyAtom, currencyChangedAtom } from '@/renderer/features/settings/atoms'
+import { updateStatusChangedAtom } from '@/renderer/features/settings/updates-atoms'
+import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc'
 
-import type { AppLifecycleFrame, LifecycleEvent } from '../../../shared/rpc/lifecycle.js'
-import { RendererConnection } from '../../../shared/rpc/reconnecting-protocol.js'
-import { runtime as sharedRuntime } from '../../app/renderer-runtime.js'
-import { resetLedgerQueries } from '../../app/reset-ledger.js'
-import { appliedLedgerGenerationAtom, configInvalidationRevisionAtom } from './config-change.js'
+import type { AppLifecycleFrame, LifecycleEvent } from '@/shared/rpc/lifecycle.js'
+import { RendererConnection } from '@/shared/rpc/reconnecting-protocol.js'
+import { runtime as sharedRuntime } from '@/renderer/app/renderer-runtime.js'
+import { resetLedgerQueries } from '@/renderer/app/reset-ledger.js'
+import { appliedLedgerGenerationAtom, configInvalidationRevisionAtom } from '@/renderer/stores/atoms/config-change.js'
 import {
   applyStoreMetadataAtom,
   rehydrateScanAtom,
@@ -24,7 +24,7 @@ import {
   scanErrorAtom,
   scanIdleAtom,
   scanProgressAtom,
-} from './scan.js'
+} from '@/renderer/stores/atoms/scan.js'
 
 export type AppLifecycleReadiness = {
   readonly state: 'inactive' | 'pending' | 'ready' | 'failed'

@@ -1,4 +1,4 @@
-import type { HarnessSpec } from './types.js'
+import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * Pi — Inflection's coding agent. Exposed as an ACP server via the `pi-acp`

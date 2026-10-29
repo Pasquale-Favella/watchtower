@@ -2,7 +2,7 @@ import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import type { ExportFileContent } from '../analytics/projections/export-calculation.js'
+import type { ExportFileContent } from '@/core/analytics/projections/export-calculation.js'
 
 const exportFileErrorReasonSchema = Schema.Literals([
   'csv-file-target',

@@ -1,11 +1,11 @@
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 
-import type { Env } from '../config/environment.js'
-import { acquireCacheRefreshLockEffect, type RefreshLockHandle } from './cache-refresh-lock.js'
-import type { ScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import type { SessionCache } from './session-cache.js'
-import type { ProjectSummary } from '../../core/domain/observations/types.js'
+import type { Env } from '@/infrastructure/config/environment.js'
+import { acquireCacheRefreshLockEffect, type RefreshLockHandle } from '@/infrastructure/ingestion/cache-refresh-lock.js'
+import type { ScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import type { SessionCache } from '@/infrastructure/ingestion/session-cache.js'
+import type { ProjectSummary } from '@/core/domain/observations/types.js'
 
 export type CacheRefreshParseOptions = {
   readonly readOnly?: boolean

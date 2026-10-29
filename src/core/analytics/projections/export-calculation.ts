@@ -1,6 +1,6 @@
 import Papa from 'papaparse'
 
-import type { ActiveCurrency } from '../../../shared/schemas/fx.js'
+import type { ActiveCurrency } from '@/shared/schemas/fx.js'
 
 export type ExportRow = Record<string, string | number | undefined>
 export type ExportFileContent = { readonly name: string; readonly contents: string }

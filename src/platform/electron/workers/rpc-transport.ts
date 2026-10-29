@@ -17,7 +17,7 @@ import {
   WorkerRpcError,
   WorkerRpcGroup,
   type WorkerRpcSuccess,
-} from '../../../shared/rpc/worker.js'
+} from '@/shared/rpc/worker.js'
 
 type GeneratedWorkerRpcClient = RpcClient.FromGroup<typeof WorkerRpcGroup, RpcClientError>
 type UnaryTag = Exclude<keyof GeneratedWorkerRpcClient, 'worker:events' | 'worker:ready'>

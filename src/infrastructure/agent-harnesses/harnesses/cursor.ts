@@ -1,4 +1,4 @@
-import type { HarnessSpec } from './types.js'
+import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * Cursor Agent — the standalone agent CLI from Cursor (the IDE itself is an

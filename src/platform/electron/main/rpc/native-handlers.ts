@@ -1,26 +1,22 @@
 import * as Effect from 'effect/Effect'
 
-import { NativeRpcError, NativeRpcGroup } from '../../../../shared/rpc/native.js'
+import { NativeRpcError, NativeRpcGroup } from '@/shared/rpc/native.js'
 import {
   type CoachHarnessesResult,
   type CoachInspectRequest,
   type CoachInspectResult,
   type CoachLoginTerminalResult,
-} from '../../../../shared/schemas/agents.js'
-import type { ExportResult } from '../../../../shared/schemas/export.js'
-import type { ScanResult } from '../../../../shared/schemas/ipc.js'
-import type {
-  LedgerMcpConnection,
-  LedgerMcpStartupMode,
-  LedgerMcpStatus,
-} from '../../../../shared/schemas/ledger-mcp.js'
+} from '@/shared/schemas/agents.js'
+import type { ExportResult } from '@/shared/schemas/export.js'
+import type { ScanResult } from '@/shared/schemas/ipc.js'
+import type { LedgerMcpConnection, LedgerMcpStartupMode, LedgerMcpStatus } from '@/shared/schemas/ledger-mcp.js'
 import type {
   SkillsDismissalRequest,
   SkillsDismissalResult,
   SkillsSaveRequest,
   SkillsSaveResult,
-} from '../../../../shared/schemas/skills.js'
-import type { AppVersion, UpdateStatus } from '../../../../shared/schemas/updates.js'
+} from '@/shared/schemas/skills.js'
+import type { AppVersion, UpdateStatus } from '@/shared/schemas/updates.js'
 
 /** Explicit main-process capabilities. Implementations stay with the owners of
  * dialogs, updater state, credentials, the ledger, and harness processes. */

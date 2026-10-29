@@ -1,12 +1,12 @@
 import type { Effect, Stream } from 'effect'
 
-import type { ParsedProviderCall, ProbeRoot, SessionSource } from '../../shared/schemas/providers.js'
-export type { ParsedProviderCall, ProbeRoot, SessionSource } from '../../shared/schemas/providers.js'
+import type { ParsedProviderCall, ProbeRoot, SessionSource } from '@/shared/schemas/providers.js'
+export type { ParsedProviderCall, ProbeRoot, SessionSource } from '@/shared/schemas/providers.js'
 
-import type { Env } from '../config/environment.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { GatewayReportRow } from '../../core/domain/providers/gateway-report.js'
+import type { Env } from '@/infrastructure/config/environment.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type { GatewayReportRow } from '@/core/domain/providers/gateway-report.js'
 
 /** Effect capabilities captured once by the scan's composition root. */
 export interface ProviderScanServices {

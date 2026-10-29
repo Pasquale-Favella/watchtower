@@ -20,8 +20,8 @@ import {
   type CommandSpawnOptions,
   type CommandStart,
   type CommandStartOptions,
-} from '../../core/ports/process.js'
-import { platformSpawnCommand, which } from './executable.js'
+} from '@/core/ports/process.js'
+import { platformSpawnCommand, which } from '@/infrastructure/process/executable.js'
 
 /**
  * `CommandRunner` — the `Command` step of the sequenced platform adoption

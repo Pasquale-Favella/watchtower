@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
 import {
   categoryLabel,
   groupTaskRows,
@@ -9,9 +9,9 @@ import {
   providerTitle,
   sumGroup,
   type ModelTaskGroup,
-} from '@/shared/lib/models'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { ModelReportRow } from '../../../shared/schemas/models.js'
+} from '@/renderer/shared/lib/models'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/renderer/components/ui/table'
+import type { ModelReportRow } from '@/shared/schemas/models.js'
 import {
   AddAliasButton,
   AliasLines,
@@ -22,7 +22,7 @@ import {
   MUT_CELL,
   NUM_CELL,
   OverrideLine,
-} from './table-parts'
+} from '@/renderer/features/models/table-parts'
 
 /** Row-level pricing management: retarget/remove an alias per raw source,
  * edit/remove the Price override on the effective model. */

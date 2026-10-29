@@ -2,17 +2,25 @@ import * as Effect from 'effect/Effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { type AppPaths, platformFor } from '../config/environment.js'
-import { captureScanPricing } from '../pricing/models.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
+import { type AppPaths, platformFor } from '@/infrastructure/config/environment.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
 import {
   createSqliteSessionParser,
   discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
   type SqliteProviderConfig,
-} from './opencode-family-sqlite.js'
-import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
-import { createClineParser, discoverClineTaskCandidatesEffect } from './vscode-cline-parser.js'
+} from '@/infrastructure/provider-adapters/opencode-family-sqlite.js'
+import type {
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
+import {
+  createClineParser,
+  discoverClineTaskCandidatesEffect,
+} from '@/infrastructure/provider-adapters/vscode-cline-parser.js'
 
 const EXTENSION_ID = 'kilocode.kilo-code'
 const PROVIDER_NAME = 'kilo-code'

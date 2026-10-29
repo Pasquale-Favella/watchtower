@@ -1,6 +1,6 @@
-import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
-import { SCAN_STAGE_ORDER } from '../../../../shared/schemas/scan.js'
-import type { ScanStage } from '../../../../shared/schemas/scan.js'
+import type { SplashProviderProgress } from '@/shared/schemas/renderer.js'
+import { SCAN_STAGE_ORDER } from '@/shared/schemas/scan.js'
+import type { ScanStage } from '@/shared/schemas/scan.js'
 
 export function providerName(id: string): string {
   return id

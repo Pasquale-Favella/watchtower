@@ -8,10 +8,10 @@ import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { type ParsedProviderCall, parsedProviderCallSchema } from '../../shared/schemas/providers.js'
-import { resolveCursorCacheSuppressWrites } from '../config/environment.js'
-import { isRecoverableCacheFailure, writeCacheTempFileEffect } from './cache-file-write.js'
-import { isScanAbortedError, throwIfScanAborted } from '../../core/ingestion/reconciliation/scan-control.js'
+import { type ParsedProviderCall, parsedProviderCallSchema } from '@/shared/schemas/providers.js'
+import { resolveCursorCacheSuppressWrites } from '@/infrastructure/config/environment.js'
+import { isRecoverableCacheFailure, writeCacheTempFileEffect } from '@/infrastructure/ingestion/cache-file-write.js'
+import { isScanAbortedError, throwIfScanAborted } from '@/core/ingestion/reconciliation/scan-control.js'
 
 // Bumped to 3 for the workspace-aware breakdown change: the cursor parser
 // now derives `sessionId` from the bubble row key (the real composer id)

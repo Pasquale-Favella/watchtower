@@ -1,13 +1,17 @@
-import type { SearchHit } from '../../../shared/schemas/views.js'
-import { canonicalSessionProject } from '../../domain/sessions/canonical-session-project.js'
-import { getShortModelName } from '../../domain/pricing/model-names.js'
+import type { SearchHit } from '@/shared/schemas/views.js'
+import { canonicalSessionProject } from '@/core/domain/sessions/canonical-session-project.js'
+import { getShortModelName } from '@/core/domain/pricing/model-names.js'
 import {
   createPricingConfigLookup,
   type PricingCatalogue,
   resolveModelNameAlias,
-} from '../../domain/pricing/pricing-calculation.js'
-import { providerFromModel } from '../../domain/sessions/session-row.js'
-import type { SessionSearchData, SessionSearchSession, SessionSearchTurn } from './session-read-projections.js'
+} from '@/core/domain/pricing/pricing-calculation.js'
+import { providerFromModel } from '@/core/domain/sessions/session-row.js'
+import type {
+  SessionSearchData,
+  SessionSearchSession,
+  SessionSearchTurn,
+} from '@/core/analytics/projections/session-read-projections.js'
 
 type SearchCall = SessionSearchData['calls'][number]
 type SearchTurn = { row: SessionSearchTurn; calls: SearchCall[]; firstMs: number }

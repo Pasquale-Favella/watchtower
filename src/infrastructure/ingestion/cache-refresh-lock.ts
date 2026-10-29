@@ -9,7 +9,7 @@ import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import { join } from 'path'
 
-import { resolveCacheDir } from '../config/environment.js'
+import { resolveCacheDir } from '@/infrastructure/config/environment.js'
 
 const LOCK_FILE = 'session-refresh.lock'
 const TAKEOVER_FILE = `${LOCK_FILE}.takeover`

@@ -3,9 +3,9 @@ import type { SchemaError } from 'effect/Schema'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import type { ActiveCurrency } from '../../../shared/schemas/fx.js'
-import { FxRates } from '../../ports/fx-rates.js'
-import { activeFromCachedRate, isValidCurrencyCode, USD_CURRENCY } from '../../analytics/projections/fx-calculation.js'
+import type { ActiveCurrency } from '@/shared/schemas/fx.js'
+import { FxRates } from '@/core/ports/fx-rates.js'
+import { activeFromCachedRate, isValidCurrencyCode, USD_CURRENCY } from '@/core/analytics/projections/fx-calculation.js'
 
 export class CurrencyCommandValidationError extends Schema.TaggedError<CurrencyCommandValidationError>()(
   'CurrencyCommandValidationError',

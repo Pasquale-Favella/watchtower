@@ -2,14 +2,14 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type SessionDetail, sessionDetailRequestSchema, sessionDetailSchema } from '../../../shared/schemas/views.js'
-import type { PricingCatalogue } from '../../domain/pricing/pricing-calculation.js'
-import type { ProxyPathConfig } from '../../domain/sessions/proxy-paths.js'
-import { calculateSessionDetail } from '../../analytics/projections/session-detail-calculation.js'
-import { buildSessionSummariesFromSnapshotResult } from '../../analytics/projections/aggregate-calculation.js'
-import { makeLedgerQuerySnapshot } from './ledger-query-snapshot.js'
-import { LedgerSessionReads } from '../../ports/ledger-session-reads.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
+import { type SessionDetail, sessionDetailRequestSchema, sessionDetailSchema } from '@/shared/schemas/views.js'
+import type { PricingCatalogue } from '@/core/domain/pricing/pricing-calculation.js'
+import type { ProxyPathConfig } from '@/core/domain/sessions/proxy-paths.js'
+import { calculateSessionDetail } from '@/core/analytics/projections/session-detail-calculation.js'
+import { buildSessionSummariesFromSnapshotResult } from '@/core/analytics/projections/aggregate-calculation.js'
+import { makeLedgerQuerySnapshot } from '@/core/application/queries/ledger-query-snapshot.js'
+import { LedgerSessionReads } from '@/core/ports/ledger-session-reads.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
 
 /** Fetch full detail facts for the requested public ID, retaining source identity. */
 export const querySessionDetail = Effect.fn('querySessionDetail')(function* (input: {

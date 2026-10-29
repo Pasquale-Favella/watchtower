@@ -1,4 +1,4 @@
-import { motionClass } from '@/shared/lib/motion'
+import { motionClass } from '@/renderer/shared/lib/motion'
 
 /** Three dots that breathe in sequence after the status text. */
 export function Ellipsis() {

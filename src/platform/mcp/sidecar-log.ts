@@ -1,6 +1,6 @@
 import { writeSync } from 'node:fs'
 
-import { fileErrorCode } from '../../infrastructure/ingestion/file-errors.js'
+import { fileErrorCode } from '@/infrastructure/ingestion/file-errors.js'
 
 /**
  * Sidecar stderr protocol (#129): one JSON line per failure, on fd 2, nothing

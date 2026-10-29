@@ -8,34 +8,34 @@ import type { SchemaError } from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { clearLedger } from '../../../core/application/commands/clear-ledger.js'
-import { queryActiveCurrency, selectDisplayCurrency } from '../../../core/application/commands/currency-commands.js'
-import { setRefreshCadence } from '../../../core/application/commands/ledger-config-commands.js'
-import { scanLedger } from '../../../core/application/commands/scan-ledger.js'
-import { settingsInfoEffect } from '../../../infrastructure/filesystem/settings-info.js'
-import { resolveCadenceMs } from '../../../core/domain/sessions/cadence.js'
+import { clearLedger } from '@/core/application/commands/clear-ledger.js'
+import { queryActiveCurrency, selectDisplayCurrency } from '@/core/application/commands/currency-commands.js'
+import { setRefreshCadence } from '@/core/application/commands/ledger-config-commands.js'
+import { scanLedger } from '@/core/application/commands/scan-ledger.js'
+import { settingsInfoEffect } from '@/infrastructure/filesystem/settings-info.js'
+import { resolveCadenceMs } from '@/core/domain/sessions/cadence.js'
 import {
   type CurrencyOption,
   FxRates,
   isValidCurrencyCode,
   listCurrencies,
   refreshFxRateWithRates,
-} from '../../../infrastructure/pricing/fx.js'
-import { logCodeFor } from '../../../infrastructure/logging/operational-log.js'
-import type { HttpFetch } from '../../../infrastructure/ingestion/fetch-utils.js'
-import { fileErrorCode, takeQueuedLogRecords } from '../../../infrastructure/ingestion/file-errors.js'
-import { refreshPricingNowEffect } from '../../../infrastructure/pricing/models.js'
+} from '@/infrastructure/pricing/fx.js'
+import { logCodeFor } from '@/infrastructure/logging/operational-log.js'
+import type { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
+import { fileErrorCode, takeQueuedLogRecords } from '@/infrastructure/ingestion/file-errors.js'
+import { refreshPricingNowEffect } from '@/infrastructure/pricing/models.js'
 import {
   buildScanSummaryRecords,
   ScanAbortedError,
   type ScanMetadata,
   type ScanProgress,
-} from '../../../infrastructure/ingestion/scan.js'
-import { LedgerConfig, LedgerQueries } from '../../../core/ports/repository.js'
-import type { EngineRuntime, EngineServices } from '../../../infrastructure/runtime/engine-runtime.js'
-import { ledgerConfigRequest } from './config-dispatch.js'
-import type { DbWorkerData, DbWorkerEvent } from './protocol.js'
-import { ledgerQueryRequest } from './query-dispatch.js'
+} from '@/infrastructure/ingestion/scan.js'
+import { LedgerConfig, LedgerQueries } from '@/core/ports/repository.js'
+import type { EngineRuntime, EngineServices } from '@/infrastructure/runtime/engine-runtime.js'
+import { ledgerConfigRequest } from '@/platform/electron/workers/config-dispatch.js'
+import type { DbWorkerData, DbWorkerEvent } from '@/platform/electron/workers/protocol.js'
+import { ledgerQueryRequest } from '@/platform/electron/workers/query-dispatch.js'
 
 export type DbWorkerEmit = (event: DbWorkerEvent) => void
 

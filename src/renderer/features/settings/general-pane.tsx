@@ -1,14 +1,14 @@
 import { ExternalLink, ShieldAlert, X } from 'lucide-react'
 import { useState } from 'react'
 
-import { AboutSection } from '@/features/settings/AboutSection'
-import { useSettingsGeneralStore } from '@/features/settings/use-settings-store'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { SegTabs } from '@/components/SegTabs'
-import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { DEFAULT_PERIOD_OPTIONS } from '@/shared/lib/settings-constants'
-import { CADENCE_UI_OPTIONS, type Theme } from '@/shared/lib/shell'
+import { AboutSection } from '@/renderer/features/settings/AboutSection'
+import { useSettingsGeneralStore } from '@/renderer/features/settings/use-settings-store'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { SegTabs } from '@/renderer/components/SegTabs'
+import { Button } from '@/renderer/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/components/ui/select'
+import { DEFAULT_PERIOD_OPTIONS } from '@/renderer/shared/lib/settings-constants'
+import { CADENCE_UI_OPTIONS, type Theme } from '@/renderer/shared/lib/shell'
 
 const THEME_OPTIONS = [
   { value: 'system', label: 'System' },

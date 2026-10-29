@@ -1,7 +1,7 @@
 import { dirname } from 'node:path'
 
 import * as Effect from 'effect/Effect'
-import * as FileSystem from '../../ports/filesystem.js'
+import * as FileSystem from '@/core/ports/filesystem.js'
 import * as PlatformError from 'effect/PlatformError'
 import * as Schema from 'effect/Schema'
 

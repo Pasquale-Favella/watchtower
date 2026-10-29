@@ -1,9 +1,9 @@
 import * as Effect from 'effect/Effect'
 import * as Atom from 'effect/reactivity/Atom'
 
-import type { OrbPanelRequest, OrbPlacement } from '../../shared/schemas/orb.js'
-import { BeaconRoleClient } from './beacon-role-client.js'
-import { PanelRoleClient } from './panel-role-client.js'
+import type { OrbPanelRequest, OrbPlacement } from '@/shared/schemas/orb.js'
+import { BeaconRoleClient } from '@/renderer/orb/beacon-role-client.js'
+import { PanelRoleClient } from '@/renderer/orb/panel-role-client.js'
 
 const initialPlacement: OrbPlacement = { expanded: false, peek: false, horizontal: 'right', vertical: 'bottom' }
 

@@ -86,19 +86,29 @@ import { readdir, stat } from 'fs/promises'
 import { homedir, platform } from 'os'
 import { basename, dirname, join, posix, win32 } from 'path'
 
-import { type AppPaths, overrideFor, platformFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { fileErrorCode, reportProviderIssue } from '../ingestion/file-errors.js'
-import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError, throwIfScanAborted } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import { blobToText, openDatabase, type SqliteDatabase } from '../ingestion/sqlite.js'
-import { estimateTokensFromChars } from '../../core/ingestion/parsers/token-estimate.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor, platformFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { fileErrorCode, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import {
+  MAX_SESSION_FILE_BYTES,
+  readSessionFileEffect,
+  readSessionLinesStream,
+} from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError, throwIfScanAborted } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import { blobToText, openDatabase, type SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import { estimateTokensFromChars } from '@/core/ingestion/parsers/token-estimate.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 type CopilotParserContext = ProviderScanContext & { readonly pricing: ScanPricing }
 const sqliteTextBlobSchema = Schema.Union([Schema.String, Schema.Uint8Array])

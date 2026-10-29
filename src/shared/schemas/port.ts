@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
-import { toolCallSchema } from './pipeline.js'
-import { cachedFileSchema, type FileFingerprint, fileFingerprintSchema } from './session-cache.js'
+import { toolCallSchema } from '@/shared/schemas/pipeline.js'
+import { cachedFileSchema, type FileFingerprint, fileFingerprintSchema } from '@/shared/schemas/session-cache.js'
 
 const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
 const writable = Schema.mutableKey

@@ -1,4 +1,4 @@
-import { Counter } from './Counter'
+import { Counter } from '@/renderer/components/shell/splash/Counter'
 
 /** One quiet line under the status: how many sources and files so far. */
 export function Tally({ sources, files }: { sources: number; files: number }) {

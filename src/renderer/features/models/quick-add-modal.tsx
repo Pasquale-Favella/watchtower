@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { SegTabs } from '@/components/SegTabs'
-import { Button } from '@/components/ui/button'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { SegTabs } from '@/renderer/components/SegTabs'
+import { Button } from '@/renderer/components/ui/button'
 import {
   Dialog,
   DialogContent,
@@ -10,14 +10,14 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from '@/components/ui/dialog'
-import { Input } from '@/components/ui/input'
-import { providerTitle } from '@/shared/lib/models'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+} from '@/renderer/components/ui/dialog'
+import { Input } from '@/renderer/components/ui/input'
+import { providerTitle } from '@/renderer/shared/lib/models'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
 
-import type { ModelReportRow } from '../../../shared/schemas/models.js'
-import { ModelPickerCombobox, type ModelPickerGroup } from './model-picker'
-import { useQuickAddPricingStore } from './use-pricing-store'
+import type { ModelReportRow } from '@/shared/schemas/models.js'
+import { ModelPickerCombobox, type ModelPickerGroup } from '@/renderer/features/models/model-picker'
+import { useQuickAddPricingStore } from '@/renderer/features/models/use-pricing-store'
 
 export type QuickAddTarget = {
   provider: string

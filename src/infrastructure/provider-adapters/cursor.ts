@@ -10,23 +10,29 @@ import { existsSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
-import { type AppPaths, readOptionalEnv } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { readCachedResultsEffect, writeCachedResultsEffect } from '../ingestion/cursor-cache.js'
-import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
+import { parsedProviderCallSchema } from '@/shared/schemas/providers.js'
+import { type AppPaths, readOptionalEnv } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { readCachedResultsEffect, writeCachedResultsEffect } from '@/infrastructure/ingestion/cursor-cache.js'
+import { fileErrorCode, queueLogRecord, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
 import {
   blobToText,
   isSqliteAvailable,
   isSqliteBusyError,
   openDatabase,
   type SqliteDatabase,
-} from '../ingestion/sqlite.js'
-import { estimateTokensFromChars } from '../../core/ingestion/parsers/token-estimate.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+} from '@/infrastructure/ingestion/sqlite.js'
+import { estimateTokensFromChars } from '@/core/ingestion/parsers/token-estimate.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 /** Matches cli-date.ts "all" period cap (6 months). */
 const CURSOR_MAX_LOOKBACK_MONTHS = 6

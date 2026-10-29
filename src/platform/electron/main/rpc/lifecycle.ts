@@ -22,11 +22,11 @@ import {
   type PanelLifecycleEvent,
   type PanelLifecycleFrame,
   panelLifecycleFrameSchema,
-} from '../../../../shared/rpc/lifecycle.js'
-import { coachHarnessesResultSchema, type CoachHarnessRow } from '../../../../shared/schemas/agents.js'
-import { type ActiveCurrency, activeCurrencySchema } from '../../../../shared/schemas/fx.js'
-import { type ScanStatus, scanStatusSchema } from '../../../../shared/schemas/ipc.js'
-import { type UpdateStatus, updateStatusSchema } from '../../../../shared/schemas/updates.js'
+} from '@/shared/rpc/lifecycle.js'
+import { coachHarnessesResultSchema, type CoachHarnessRow } from '@/shared/schemas/agents.js'
+import { type ActiveCurrency, activeCurrencySchema } from '@/shared/schemas/fx.js'
+import { type ScanStatus, scanStatusSchema } from '@/shared/schemas/ipc.js'
+import { type UpdateStatus, updateStatusSchema } from '@/shared/schemas/updates.js'
 
 type SnapshotField = 'scanStatus' | 'scanActivity' | 'currency' | 'updater' | 'harnesses'
 export type LifecyclePublishEvent =

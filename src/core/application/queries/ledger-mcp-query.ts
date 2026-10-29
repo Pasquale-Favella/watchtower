@@ -3,20 +3,20 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { ledgerMcpCallsSchema, ledgerMcpScopeResultSchema } from '../../../shared/schemas/ledger-mcp-results.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
+import { ledgerMcpCallsSchema, ledgerMcpScopeResultSchema } from '@/shared/schemas/ledger-mcp-results.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
 import {
   calculateLedgerMcpCalls,
   calculateLedgerMcpScope,
   type LedgerMcpCallsInput,
-} from '../../analytics/projections/ledger-mcp-calculation.js'
-import { overviewQueryRanges } from '../../domain/sessions/overview-scope.js'
-import type { PricingCatalogue } from '../../domain/pricing/pricing-calculation.js'
-import type { ProxyPathConfig } from '../../domain/sessions/proxy-paths.js'
-import { queryScopeFromSnapshotResult } from '../../analytics/projections/aggregate-calculation.js'
-import type { LedgerQueries } from '../../ports/repository.js'
-import { loadLedgerQuerySnapshotEffect } from './ledger-query-snapshot.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
+} from '@/core/analytics/projections/ledger-mcp-calculation.js'
+import { overviewQueryRanges } from '@/core/domain/sessions/overview-scope.js'
+import type { PricingCatalogue } from '@/core/domain/pricing/pricing-calculation.js'
+import type { ProxyPathConfig } from '@/core/domain/sessions/proxy-paths.js'
+import { queryScopeFromSnapshotResult } from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQueries } from '@/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '@/core/application/queries/ledger-query-snapshot.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
 
 export type LedgerMcpSnapshotInputs = {
   readonly catalogue: PricingCatalogue

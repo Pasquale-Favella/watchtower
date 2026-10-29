@@ -3,11 +3,11 @@ import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { ApplicationClient } from '@/shared/lib/application-rpc'
-import { runRoleLifecycle, type RoleConnectionReadiness } from '@/shared/lib/rpc-events'
-import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
-import { navigateToSection } from '../app/navigation.js'
-import { registry, runtime } from '../app/renderer-runtime.js'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
+import { runRoleLifecycle, type RoleConnectionReadiness } from '@/renderer/shared/lib/rpc-events'
+import { RendererProtocolLayer } from '@/renderer/shared/lib/rpc-connection'
+import { navigateToSection } from '@/renderer/app/navigation.js'
+import { registry, runtime } from '@/renderer/app/renderer-runtime.js'
 
 export const navigationReadinessAtom = Atom.keepAlive(Atom.make<RoleConnectionReadiness>('inactive'))
 const navigationRuntime = runtime(get => Layer.merge(get(ApplicationClient.runtime.layer), RendererProtocolLayer))

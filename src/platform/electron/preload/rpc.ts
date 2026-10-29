@@ -10,7 +10,7 @@ import {
   type RpcConnectionRequest,
   RpcConnectionResponseSchema,
   type RpcConnectionResult,
-} from '../../../shared/rpc/bridge.js'
+} from '@/shared/rpc/bridge.js'
 
 const CONNECT_CHANNEL = 'rpc:v1:connect'
 const PORT_CHANNEL = 'rpc:v1:port'

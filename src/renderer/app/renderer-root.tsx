@@ -1,14 +1,14 @@
 import { RegistryContext } from '@effect/atom-react'
 import type { ReactNode } from 'react'
 
-import { useThemeEffect } from '@/stores/hooks/use-theme-effect'
-import { hydratePreferences, preferencesAtom } from '@/features/settings/preferences-atoms'
-import { browserPreferenceStorage } from '@/shared/lib/preferences-browser'
-import { themeIsDark } from '@/shared/lib/shell'
+import { useThemeEffect } from '@/renderer/stores/hooks/use-theme-effect'
+import { hydratePreferences, preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
+import { browserPreferenceStorage } from '@/renderer/shared/lib/preferences-browser'
+import { themeIsDark } from '@/renderer/shared/lib/shell'
 
-import { periodAtom } from '../stores/atoms/scope.js'
-import { releaseWindowQueries } from '../stores/hooks/use-remote-query.js'
-import { type RendererRuntimeOwner, rendererRuntimeOwner } from './renderer-runtime.js'
+import { periodAtom } from '@/renderer/stores/atoms/scope.js'
+import { releaseWindowQueries } from '@/renderer/stores/hooks/use-remote-query.js'
+import { type RendererRuntimeOwner, rendererRuntimeOwner } from '@/renderer/app/renderer-runtime.js'
 
 if (import.meta.hot) import.meta.hot.dispose(() => window.location.reload())
 

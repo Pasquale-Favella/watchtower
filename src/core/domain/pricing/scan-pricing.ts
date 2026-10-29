@@ -4,7 +4,7 @@ import {
   getModelCosts,
   type LocalModelSavings,
   type PricingCatalogue,
-} from './pricing-calculation.js'
+} from '@/core/domain/pricing/pricing-calculation.js'
 
 export type ScanCostCalculation = (
   model: string,

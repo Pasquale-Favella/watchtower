@@ -5,7 +5,7 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Schema from 'effect/Schema'
 import electronUpdater, { type AppUpdater, type ProgressInfo } from 'electron-updater'
 
-import { UpdateError, type UpdateSource } from './updates.js'
+import { UpdateError, type UpdateSource } from '@/platform/electron/main/updates.js'
 
 const metadataSchema = Schema.fromJsonString(
   Schema.Struct({

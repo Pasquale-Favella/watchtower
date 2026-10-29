@@ -1,7 +1,7 @@
 import { Info } from 'lucide-react'
 
-import { cn } from '@/shared/lib/utils'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 
 /** InfoTip — a small info icon with a hover/focus tooltip explaining a metric.
  *  Used next to bento labels so each number carries its practical meaning

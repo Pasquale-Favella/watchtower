@@ -2,7 +2,7 @@ import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { createQuerySelectionState } from './query-slot.js'
+import { createQuerySelectionState } from '@/renderer/stores/atoms/query-slot.js'
 
 interface Selection<Request, Value, Error> {
   readonly request: Request

@@ -1,12 +1,12 @@
 import { Database, KeyRound, ShieldCheck } from 'lucide-react'
 import { useState } from 'react'
 
-import { formatBytes } from '@/features/settings/lib'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
-import { useSettingsPrivacyStore } from '@/features/settings/use-settings-store'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { Card } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
+import { formatBytes } from '@/renderer/features/settings/lib'
+import { ConfirmRemove, PaneHeader } from '@/renderer/features/settings/pane-parts'
+import { useSettingsPrivacyStore } from '@/renderer/features/settings/use-settings-store'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { Card } from '@/renderer/components/ui/card'
+import { Separator } from '@/renderer/components/ui/separator'
 
 /** Settings › Privacy & data: the local-only/no-API-keys claims, the SQLite
  * store's location and size, and a clear-data action. No telemetry toggle —

@@ -8,16 +8,22 @@ import { open, readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import type { AppPaths, Env } from '../config/environment.js'
-import { overrideFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { readSessionFileEffect } from '../ingestion/fs-utils.js'
-import { captureScanPricing, getShortModelName } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ToolCall } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import type { AppPaths, Env } from '@/infrastructure/config/environment.js'
+import { overrideFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { readSessionFileEffect } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing, getShortModelName } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type { ToolCall } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const METADATA_PREFIX_BYTES = 64 * 1024
 

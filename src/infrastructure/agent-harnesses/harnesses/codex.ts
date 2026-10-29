@@ -1,4 +1,4 @@
-import type { HarnessSpec } from './types.js'
+import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * Codex CLI — driven over ACP via the `codex-acp` wrapper

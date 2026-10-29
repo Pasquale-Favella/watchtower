@@ -23,7 +23,7 @@ import * as Option from 'effect/Option'
 import * as References from 'effect/References'
 import * as Tracer from 'effect/Tracer'
 
-import { errorCodeFor, type LogContext, type LogLevel, sanitizeOperationalRecord } from '../../shared/logging.js'
+import { errorCodeFor, type LogContext, type LogLevel, sanitizeOperationalRecord } from '@/shared/logging.js'
 
 /**
  * Main-owned Operational log (spec #126, ADR 0029).
@@ -75,7 +75,7 @@ export interface OperationalLogOptions {
 
 /** Emitting context for every record (spec #126 record shape). Forwarders
  * stamp their own; main paths use the default. */
-export type { LogContext, LogLevel } from '../../shared/logging.js'
+export type { LogContext, LogLevel } from '@/shared/logging.js'
 
 /**
  * Size grammar, transcribed from the `pino-roll` `size` option it replaces

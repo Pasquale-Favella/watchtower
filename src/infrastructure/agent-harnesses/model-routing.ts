@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import type { CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
+import type { CoachSessionModels, CoachSessionModes } from '@/shared/schemas/agents.js'
 
 /** A valid UI selection that the advertised session cannot apply because the
  *  agent exposed no matching setter. This is separate from SDK rejection. */

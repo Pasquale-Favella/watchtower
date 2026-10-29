@@ -8,17 +8,23 @@ import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { reportProviderIssue } from '../ingestion/file-errors.js'
-import { readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import { openDatabase } from '../ingestion/sqlite.js'
-import { estimateTokensFromChars } from '../../core/ingestion/parsers/token-estimate.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { readSessionLinesStream } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import { openDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import { estimateTokensFromChars } from '@/core/ingestion/parsers/token-estimate.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 type ConversationSummary = {
   model: string | null

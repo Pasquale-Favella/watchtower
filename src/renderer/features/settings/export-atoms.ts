@@ -1,9 +1,9 @@
 import * as Effect from 'effect/Effect'
 import * as Atom from 'effect/reactivity/Atom'
 
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import type { ExportResult } from '../../../shared/schemas/export.js'
+import type { ExportResult } from '@/shared/schemas/export.js'
 
 export type ExportFormat = 'csv' | 'json'
 

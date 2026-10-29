@@ -6,19 +6,19 @@ import { createReadStream } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { basename, join } from 'path'
 
-import { type AppPaths, appPaths, resolveCodexHome } from '../config/environment.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
+import { type AppPaths, appPaths, resolveCodexHome } from '@/infrastructure/config/environment.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
 import {
   getCachedCodexProjectEffect,
   lookupCachedCodexResultsEffect,
   writeCachedCodexResultsEffect,
-} from '../ingestion/codex-cache.js'
-import { normalizeContentBlocks } from '../../core/ingestion/parsers/content-utils.js'
-import { readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError, throwIfScanAborted } from '../../core/ingestion/reconciliation/scan-control.js'
-import { estimateTokensFromChars } from '../../core/ingestion/parsers/token-estimate.js'
-import type { DateRange, ToolCall } from '../../core/domain/observations/types.js'
+} from '@/infrastructure/ingestion/codex-cache.js'
+import { normalizeContentBlocks } from '@/core/ingestion/parsers/content-utils.js'
+import { readSessionLinesStream } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError, throwIfScanAborted } from '@/core/ingestion/reconciliation/scan-control.js'
+import { estimateTokensFromChars } from '@/core/ingestion/parsers/token-estimate.js'
+import type { DateRange, ToolCall } from '@/core/domain/observations/types.js'
 import type {
   ParsedProviderCall,
   ProbeRoot,
@@ -26,7 +26,7 @@ import type {
   ProviderScanContext,
   SessionParser,
   SessionSource,
-} from './types.js'
+} from '@/infrastructure/provider-adapters/types.js'
 
 const modelDisplayNames: Record<string, string> = {
   'codex-auto-review': 'Codex Auto Review',

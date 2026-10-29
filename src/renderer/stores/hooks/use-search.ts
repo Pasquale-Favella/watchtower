@@ -1,10 +1,10 @@
 import { useAtomValue } from '@effect/atom-react'
 import { useMemo } from 'react'
 
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import { overviewScopeAtom } from '../atoms/scope.js'
-import { debouncedSearchTextAtom, paletteSearchKey, searchSlot } from '../atoms/search.js'
-import { useRemoteQuery } from './use-remote-query.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import { overviewScopeAtom } from '@/renderer/stores/atoms/scope.js'
+import { debouncedSearchTextAtom, paletteSearchKey, searchSlot } from '@/renderer/stores/atoms/search.js'
+import { useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query.js'
 
 export function paletteSearchRequest(open: boolean, input: string, debounced: string, scope: OverviewScope) {
   const query = input.trim()

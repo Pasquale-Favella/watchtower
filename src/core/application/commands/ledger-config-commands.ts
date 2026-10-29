@@ -3,10 +3,10 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '../../../shared/schemas/ledger-mcp.js'
-import type { SkillsDismissalRequest } from '../../../shared/schemas/skills.js'
-import { CADENCE_OPTIONS, DEFAULT_CADENCE } from '../../domain/sessions/cadence.js'
-import { LedgerConfig } from '../../ports/repository.js'
+import { type LedgerMcpStartupMode, ledgerMcpStartupModeSchema } from '@/shared/schemas/ledger-mcp.js'
+import type { SkillsDismissalRequest } from '@/shared/schemas/skills.js'
+import { CADENCE_OPTIONS, DEFAULT_CADENCE } from '@/core/domain/sessions/cadence.js'
+import { LedgerConfig } from '@/core/ports/repository.js'
 
 export class LedgerConfigValidationError extends Schema.TaggedError<LedgerConfigValidationError>()(
   'LedgerConfigValidationError',

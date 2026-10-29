@@ -6,12 +6,12 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join, posix, win32 } from 'path'
 
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { ProviderScanContext } from './types.js'
-import type { ParsedProviderCall, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { ProviderScanContext } from '@/infrastructure/provider-adapters/types.js'
+import type { ParsedProviderCall, SessionParser, SessionSource } from '@/infrastructure/provider-adapters/types.js'
 
 export type ClineTaskCandidate = {
   source: SessionSource

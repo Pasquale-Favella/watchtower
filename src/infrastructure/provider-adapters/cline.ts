@@ -2,15 +2,20 @@ import * as Effect from 'effect/Effect'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { captureScanPricing } from '../pricing/models.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 import {
   type ClineTaskCandidate,
   createClineParser,
   discoverClineTaskCandidatesInBaseDirsEffect,
   getVSCodeGlobalStoragePath,
-} from './vscode-cline-parser.js'
+} from '@/infrastructure/provider-adapters/vscode-cline-parser.js'
 
 const EXTENSION_ID = 'saoudrizwan.claude-dev'
 

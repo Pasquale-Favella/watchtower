@@ -1,7 +1,7 @@
 import * as Atom from 'effect/reactivity/Atom'
 
-import type { OverviewPeriod, OverviewScope } from '../../../shared/schemas/overview.js'
-import type { DateRange } from '../../../shared/schemas/renderer.js'
+import type { OverviewPeriod, OverviewScope } from '@/shared/schemas/overview.js'
+import type { DateRange } from '@/shared/schemas/renderer.js'
 
 export const periodAtom = Atom.keepAlive(Atom.make<OverviewPeriod>('today'))
 export const customRangeAtom = Atom.keepAlive(Atom.make<DateRange | null>(null))

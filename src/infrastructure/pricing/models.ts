@@ -5,11 +5,11 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import { join } from 'path'
 
-import { type AppPaths, Env, resolveCacheDir } from '../config/environment.js'
-import snapshotData from './data/litellm-snapshot.json'
-import fallbackData from './data/pricing-fallback.json'
-import { DEFAULT_FETCH_TIMEOUT_MS, fetchJsonWithRetry, HttpFetch } from '../ingestion/fetch-utils.js'
-import { getShortModelName as getShortModelNamePure } from '../../core/domain/pricing/model-names.js'
+import { type AppPaths, Env, resolveCacheDir } from '@/infrastructure/config/environment.js'
+import snapshotData from '@/infrastructure/pricing/data/litellm-snapshot.json'
+import fallbackData from '@/infrastructure/pricing/data/pricing-fallback.json'
+import { DEFAULT_FETCH_TIMEOUT_MS, fetchJsonWithRetry, HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
+import { getShortModelName as getShortModelNamePure } from '@/core/domain/pricing/model-names.js'
 import {
   calculateCostResult,
   calculateRepricedCostResult,
@@ -25,20 +25,20 @@ import {
   type PricingConfigLookup,
   type RepricedCall,
   type UnpricedModelUsage,
-} from '../../core/domain/pricing/pricing-calculation.js'
-import { warnAboutUnknownModel } from './pricing-diagnostics.js'
+} from '@/core/domain/pricing/pricing-calculation.js'
+import { warnAboutUnknownModel } from '@/infrastructure/pricing/pricing-diagnostics.js'
 import {
   isProxiedPath as isProxiedPathPure,
   normalizeProxyPath as normalizeProxyPathPure,
   type ProxyPathConfig,
-} from '../../core/domain/sessions/proxy-paths.js'
-import { createScanPricing, type ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
+} from '@/core/domain/sessions/proxy-paths.js'
+import { createScanPricing, type ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
 
-export type { ModelCosts } from '../../core/domain/pricing/pricing-calculation.js'
-export type { ConfigRatePair, PricingConfigLookup } from '../../core/domain/pricing/pricing-calculation.js'
-export type { UnpricedModelUsage } from '../../core/domain/pricing/pricing-calculation.js'
+export type { ModelCosts } from '@/core/domain/pricing/pricing-calculation.js'
+export type { ConfigRatePair, PricingConfigLookup } from '@/core/domain/pricing/pricing-calculation.js'
+export type { UnpricedModelUsage } from '@/core/domain/pricing/pricing-calculation.js'
 /** Compatibility re-exports. Remove after consumers import the pure pricing module. */
-export { createPricingConfigLookup, normalizeModelKey } from '../../core/domain/pricing/pricing-calculation.js'
+export { createPricingConfigLookup, normalizeModelKey } from '@/core/domain/pricing/pricing-calculation.js'
 
 /** Temporary query adapter preserving pricing diagnostics. Retire when the
  * application workflows handle the pure calculation result's unpriced status. */

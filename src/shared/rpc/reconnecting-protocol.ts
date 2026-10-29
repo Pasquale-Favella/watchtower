@@ -10,8 +10,8 @@ import { RpcClientDefect, RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import type { RpcBridge } from './bridge.js'
-import { clientProtocolLayer, type RpcMessagePort, RpcPortError } from './port-protocol.js'
+import type { RpcBridge } from '@/shared/rpc/bridge.js'
+import { clientProtocolLayer, type RpcMessagePort, RpcPortError } from '@/shared/rpc/port-protocol.js'
 
 export type RendererConnectionState =
   | { readonly _tag: 'Connecting' }

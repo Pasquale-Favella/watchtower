@@ -1,11 +1,11 @@
 import { useEffect } from 'react'
 
-import { useCoachOverviewStore } from '@/features/coach-skills/hooks'
-import { ErrorPanel } from '@/components/ErrorPanel'
-import { motionClass } from '@/shared/lib/motion'
-import { cn } from '@/shared/lib/utils'
+import { useCoachOverviewStore } from '@/renderer/features/coach-skills/hooks'
+import { ErrorPanel } from '@/renderer/components/ErrorPanel'
+import { motionClass } from '@/renderer/shared/lib/motion'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import { ConversationView } from './conversation'
+import { ConversationView } from '@/renderer/features/coach-skills/conversation'
 
 /** The Coach section (ADR 0017, conversation prototype picked on map 58): a
  *  roomy chat surface where EVERY harness run is a conversation —

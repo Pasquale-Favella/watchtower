@@ -29,7 +29,7 @@ describe('overview scope module boundary', () => {
     const source = readFileSync(resolve(process.cwd(), 'src/core/domain/sessions/overview-scope.ts'), 'utf8')
     const imports = [...source.matchAll(/from '([^']+)'/g)].map(match => match[1])
 
-    expect(imports).toEqual(['date-fns', '../../../shared/schemas/overview.js', '../observations/types.js'])
+    expect(imports).toEqual(['date-fns', '@/shared/schemas/overview.js', '@/core/domain/observations/types.js'])
   })
 })
 

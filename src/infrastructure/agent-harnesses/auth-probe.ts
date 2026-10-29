@@ -2,9 +2,9 @@ import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Option from 'effect/Option'
 
-import { CommandError, CommandRunner } from '../../core/ports/process.js'
-import { CommandRunnerLiveLayer } from './command-runner-live.js'
-import type { HarnessAuthStatus } from './detect.js'
+import { CommandError, CommandRunner } from '@/core/ports/process.js'
+import { CommandRunnerLiveLayer } from '@/infrastructure/agent-harnesses/command-runner-live.js'
+import type { HarnessAuthStatus } from '@/infrastructure/agent-harnesses/detect.js'
 
 /**
  * Claude Code sign-in probe (auth wall early signal): asks the BASE `claude`

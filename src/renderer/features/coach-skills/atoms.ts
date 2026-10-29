@@ -6,21 +6,21 @@ import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Stream from 'effect/Stream'
 
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { overviewScopeAtom } from '@/stores/atoms/scope'
-import { preferencesAtom } from '@/features/settings/preferences-atoms'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { overviewScopeAtom } from '@/renderer/stores/atoms/scope'
+import { preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import { CoachRpcError } from '../../../shared/rpc/coach.js'
-import type { AnalyticsRpcError } from '../../../shared/rpc/errors.js'
+import { CoachRpcError } from '@/shared/rpc/coach.js'
+import type { AnalyticsRpcError } from '@/shared/rpc/errors.js'
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
   CoachSessionModels,
   CoachSessionModes,
-} from '../../../shared/schemas/agents.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import type { SkillsPayload } from '../../../shared/schemas/skills.js'
+} from '@/shared/schemas/agents.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import type { SkillsPayload } from '@/shared/schemas/skills.js'
 
 export interface ToolNotice {
   id?: string

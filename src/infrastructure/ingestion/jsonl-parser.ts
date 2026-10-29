@@ -1,10 +1,10 @@
-import { BASH_TOOLS, EDIT_TOOLS } from '../../core/analytics/detectors/classifier.js'
+import { BASH_TOOLS, EDIT_TOOLS } from '@/core/analytics/detectors/classifier.js'
 import type {
   ApiUsageIteration,
   AssistantMessageContent,
   JournalEntry,
   ToolUseBlock,
-} from '../../core/domain/observations/types.js'
+} from '@/core/domain/observations/types.js'
 
 export const USER_TEXT_CAP = 2000
 export const BASH_COMMAND_CAP = 2000

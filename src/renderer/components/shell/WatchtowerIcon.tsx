@@ -1,4 +1,4 @@
-import WatchtowerLogo from '@/assets/images/watchtower-logo.json'
+import WatchtowerLogo from '@/renderer/assets/images/watchtower-logo.json'
 import { GenIcon, type IconBaseProps, type IconTree } from 'react-icons'
 
 /** The logo art occupies only ~31% × ~53% of its 1024² source canvas (paths

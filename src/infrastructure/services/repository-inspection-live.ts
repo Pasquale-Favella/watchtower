@@ -7,13 +7,13 @@ import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 import * as Stream from 'effect/Stream'
 
-import { CommandRunner } from '../../core/ports/process.js'
+import { CommandRunner } from '@/core/ports/process.js'
 import {
   type CommitInfo,
   type InspectionRange,
   RepositoryInspection,
   RepositoryInspectionError,
-} from '../../core/ports/repository-inspection.js'
+} from '@/core/ports/repository-inspection.js'
 
 const GIT_TIMEOUT_MS = 5_000
 const MAX_GIT_OUTPUT_BYTES = 1024 * 1024

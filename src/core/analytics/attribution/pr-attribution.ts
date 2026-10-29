@@ -1,7 +1,7 @@
-import { getShortModelName } from '../../domain/pricing/model-names.js'
-import { type PricingCatalogue, resolveModelNameAlias } from '../../domain/pricing/pricing-calculation.js'
-import { inferProvider } from '../../domain/sessions/session-row.js'
-import { CATEGORY_LABELS, type SessionSummary, type TaskCategory } from '../../domain/observations/types.js'
+import { getShortModelName } from '@/core/domain/pricing/model-names.js'
+import { type PricingCatalogue, resolveModelNameAlias } from '@/core/domain/pricing/pricing-calculation.js'
+import { inferProvider } from '@/core/domain/sessions/session-row.js'
+import { CATEGORY_LABELS, type SessionSummary, type TaskCategory } from '@/core/domain/observations/types.js'
 
 export type PrRow = {
   /// Full PR URL (the aggregation key).

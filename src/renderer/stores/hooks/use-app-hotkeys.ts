@@ -1,9 +1,9 @@
 import { useHotkeys } from '@tanstack/react-hotkeys'
 
-import { navigateToSection } from '@/app/navigation'
-import { SHORTCUTS } from '@/app/shortcuts'
+import { navigateToSection } from '@/renderer/app/navigation'
+import { SHORTCUTS } from '@/renderer/app/shortcuts'
 
-import { usePaletteStore } from './use-palette-store.js'
+import { usePaletteStore } from '@/renderer/stores/hooks/use-palette-store.js'
 
 /** Shortcut registration, relocated out of AppRoot (ADR 0011). Section
  * actions navigate through the module-level app/navigation.ts (ADR 0014);

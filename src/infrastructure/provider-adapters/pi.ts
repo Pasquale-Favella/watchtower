@@ -6,13 +6,23 @@ import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { MAX_SESSION_FILE_BYTES, readSessionFileEffect, readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError, throwIfScanAborted } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../ingestion/scan-io.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import {
+  MAX_SESSION_FILE_BYTES,
+  readSessionFileEffect,
+  readSessionLinesStream,
+} from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError, throwIfScanAborted } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const writable = Schema.mutableKey
 const argumentSchema = Schema.Record(Schema.String, Schema.Unknown)

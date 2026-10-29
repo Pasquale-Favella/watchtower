@@ -3,14 +3,14 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type ModelsConfig, type ModelsPayload, modelsPayloadSchema } from '../../../shared/schemas/models.js'
-import { calculateModelsPayload } from '../../analytics/projections/models-calculation.js'
-import { overviewQueryRanges } from '../../domain/sessions/overview-scope.js'
-import { buildSessionSummariesFromSnapshotResult } from '../../analytics/projections/aggregate-calculation.js'
-import type { LedgerQueries } from '../../ports/repository.js'
-import { loadLedgerQuerySnapshotEffect } from './ledger-query-snapshot.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
-import type { ScopedViewQueryInputs } from './view-queries.js'
+import { type ModelsConfig, type ModelsPayload, modelsPayloadSchema } from '@/shared/schemas/models.js'
+import { calculateModelsPayload } from '@/core/analytics/projections/models-calculation.js'
+import { overviewQueryRanges } from '@/core/domain/sessions/overview-scope.js'
+import { buildSessionSummariesFromSnapshotResult } from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQueries } from '@/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '@/core/application/queries/ledger-query-snapshot.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import type { ScopedViewQueryInputs } from '@/core/application/queries/view-queries.js'
 
 export const queryModelsView = Effect.fn('queryModelsView')(function* (
   input: ScopedViewQueryInputs,

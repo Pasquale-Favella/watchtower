@@ -1,12 +1,12 @@
 import { useState } from 'react'
 
-import { navigateToSession } from '@/app/navigation'
-import { impactDot, trendLabel } from '@/features/optimize/lib'
-import { formatCompact } from '@/shared/lib/models'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+import { navigateToSession } from '@/renderer/app/navigation'
+import { impactDot, trendLabel } from '@/renderer/features/optimize/lib'
+import { formatCompact } from '@/renderer/shared/lib/models'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { OptimizeFinding, WasteAction } from '../../../shared/schemas/optimize.js'
+import type { OptimizeFinding, WasteAction } from '@/shared/schemas/optimize.js'
 
 type FindingProps = { finding: OptimizeFinding }
 type FindingRowProps = FindingProps & { defaultExpanded?: boolean }

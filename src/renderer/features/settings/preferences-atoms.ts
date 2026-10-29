@@ -11,7 +11,7 @@ import {
   type PreferenceStorage,
   readPreferences,
   writePreferences,
-} from '@/shared/lib/preferences'
+} from '@/renderer/shared/lib/preferences'
 
 export const preferencesAtom = Atom.keepAlive(
   Atom.make(defaultPreferences).pipe(

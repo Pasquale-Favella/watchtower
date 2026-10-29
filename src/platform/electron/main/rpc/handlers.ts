@@ -1,13 +1,13 @@
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import * as Analytics from '../../../../shared/rpc/analytics.js'
-import { ConfigRpcGroup, okResultSchema } from '../../../../shared/rpc/config.js'
-import { AnalyticsRpcError, ConfigRpcError } from '../../../../shared/rpc/errors.js'
-import { cadenceValueSchema } from '../../../../shared/schemas/cadence.js'
-import { activeCurrencySchema, currencyOptionsSchema } from '../../../../shared/schemas/fx.js'
-import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '../../../../shared/schemas/ipc.js'
-import { modelAliasSchema, priceOverrideSchema } from '../../../../shared/schemas/models.js'
+import * as Analytics from '@/shared/rpc/analytics.js'
+import { ConfigRpcGroup, okResultSchema } from '@/shared/rpc/config.js'
+import { AnalyticsRpcError, ConfigRpcError } from '@/shared/rpc/errors.js'
+import { cadenceValueSchema } from '@/shared/schemas/cadence.js'
+import { activeCurrencySchema, currencyOptionsSchema } from '@/shared/schemas/fx.js'
+import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '@/shared/schemas/ipc.js'
+import { modelAliasSchema, priceOverrideSchema } from '@/shared/schemas/models.js'
 
 export interface RpcDataWorker {
   readonly request: (operation: string, ...args: unknown[]) => Promise<unknown>

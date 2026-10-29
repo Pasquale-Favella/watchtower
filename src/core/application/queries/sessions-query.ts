@@ -3,13 +3,13 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type SessionRow, sessionRowSchema } from '../../../shared/schemas/views.js'
-import { overviewQueryRanges } from '../../domain/sessions/overview-scope.js'
-import { calculateSessionsView } from '../../analytics/projections/sessions-calculation.js'
-import type { LedgerQueries } from '../../ports/repository.js'
-import { loadLedgerQuerySnapshotEffect } from './ledger-query-snapshot.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
-import type { ScopedViewQueryInputs } from './view-queries.js'
+import { type SessionRow, sessionRowSchema } from '@/shared/schemas/views.js'
+import { overviewQueryRanges } from '@/core/domain/sessions/overview-scope.js'
+import { calculateSessionsView } from '@/core/analytics/projections/sessions-calculation.js'
+import type { LedgerQueries } from '@/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '@/core/application/queries/ledger-query-snapshot.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import type { ScopedViewQueryInputs } from '@/core/application/queries/view-queries.js'
 
 export const querySessionsView = Effect.fn('querySessionsView')(function* (
   input: ScopedViewQueryInputs,

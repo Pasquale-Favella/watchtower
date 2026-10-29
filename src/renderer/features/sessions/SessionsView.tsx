@@ -1,23 +1,23 @@
 import { useMemo, useState } from 'react'
 
-import { navigateToSession } from '@/app/navigation'
-import type { SessionRow } from '@/features/sessions/drilldown'
+import { navigateToSession } from '@/renderer/app/navigation'
+import type { SessionRow } from '@/renderer/features/sessions/drilldown'
 import {
   filterSessions,
   groupSessionsByProvider,
   type SessionSort,
   sortSessions,
   summarizeSessions,
-} from '@/features/sessions/sessions-lib'
-import { useSessionsStore } from '@/features/sessions/use-sessions-store'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { type SegOption, SegTabs } from '@/components/SegTabs'
-import { LoadingRegion, SkeletonRows } from '@/components/skeletons'
-import { Skeleton } from '@/components/ui/skeleton'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+} from '@/renderer/features/sessions/sessions-lib'
+import { useSessionsStore } from '@/renderer/features/sessions/use-sessions-store'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { type SegOption, SegTabs } from '@/renderer/components/SegTabs'
+import { LoadingRegion, SkeletonRows } from '@/renderer/components/skeletons'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { motionClass } from '@/renderer/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
 const SORT_OPTIONS: SegOption[] = [
   { value: 'cost', label: 'Cost' },

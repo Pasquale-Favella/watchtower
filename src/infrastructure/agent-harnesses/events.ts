@@ -1,4 +1,4 @@
-import type { CoachEvent } from '../../shared/schemas/agents.js'
+import type { CoachEvent } from '@/shared/schemas/agents.js'
 
 /**
  * AI SDK stream-part → CoachEvent derivation (ticket 20 / ADR 0005, revised

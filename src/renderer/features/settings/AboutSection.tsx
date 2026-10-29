@@ -1,9 +1,9 @@
 import { Download, ExternalLink, RefreshCcw } from 'lucide-react'
 
-import { releasePageUrl, REPO_URL } from '@/features/settings/updates'
-import { useSettingsUpdatesStore } from '@/features/settings/use-settings-store'
-import { Button } from '@/components/ui/button'
-import { useNativeStore } from '@/shared/hooks/use-native-store'
+import { releasePageUrl, REPO_URL } from '@/renderer/features/settings/updates'
+import { useSettingsUpdatesStore } from '@/renderer/features/settings/use-settings-store'
+import { Button } from '@/renderer/components/ui/button'
+import { useNativeStore } from '@/renderer/shared/hooks/use-native-store'
 
 export function AboutSection(): React.JSX.Element {
   const { openExternal: open } = useNativeStore()

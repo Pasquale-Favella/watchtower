@@ -2,12 +2,12 @@ import { useState } from 'react'
 import type { DateRange as DayPickerRange } from 'react-day-picker'
 import { CalendarIcon } from 'lucide-react'
 
-import { Button } from '@/components/ui/button'
-import { Calendar } from '@/components/ui/calendar'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { cn } from '@/shared/lib/utils'
+import { Button } from '@/renderer/components/ui/button'
+import { Calendar } from '@/renderer/components/ui/calendar'
+import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { DateRange } from '../../../shared/schemas/renderer.js'
+import type { DateRange } from '@/shared/schemas/renderer.js'
 export type { DateRange }
 
 /** Local calendar-date key ("YYYY-MM-DD") — mirrors `main/overview.ts`'s

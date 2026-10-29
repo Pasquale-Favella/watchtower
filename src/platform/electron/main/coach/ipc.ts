@@ -10,20 +10,20 @@ import {
   type CoachLoginTerminalResult,
   coachOpenLoginTerminalRequestSchema,
   type CoachRunResult,
-} from '../../../../shared/schemas/agents.js'
-import type { MainRuntime, MainServices } from '../main-runtime.js'
-import { createCoachCoordinator } from './coach-coordinator.js'
-import { harnessSpecs } from '../../../../infrastructure/agent-harnesses/harnesses/index.js'
-import type { AcpMcpServer } from '../../../../infrastructure/agent-harnesses/harnesses/types.js'
-import { openLoginTerminal } from '../../../../infrastructure/agent-harnesses/login-terminal.js'
+} from '@/shared/schemas/agents.js'
+import type { MainRuntime, MainServices } from '@/platform/electron/main/main-runtime.js'
+import { createCoachCoordinator } from '@/platform/electron/main/coach/coach-coordinator.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import { openLoginTerminal } from '@/infrastructure/agent-harnesses/login-terminal.js'
 import {
   CoachHarnessExecution,
   type HarnessProviderInput,
   type HarnessRunInput,
   type NativeHarnessInspection,
   type NativeHarnessRun,
-} from '../../../../infrastructure/agent-harnesses/runtime.js'
-import { type HarnessInstance, HarnessSnapshot } from '../../../../infrastructure/agent-harnesses/snapshot.js'
+} from '@/infrastructure/agent-harnesses/runtime.js'
+import { type HarnessInstance, HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
 
 /**
  * Coach & Skills backend (ADR 0017, reshaped by map 53): the connection between

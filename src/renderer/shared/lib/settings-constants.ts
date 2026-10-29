@@ -18,4 +18,4 @@ export const DEFAULT_PERIOD_VALUES: ReadonlyArray<string> = DEFAULT_PERIOD_OPTIO
  * SegTabs use the short `DEFAULT_PERIOD_OPTIONS` labels). Re-exported from the
  * shared lib (src/shared/lib/period-labels.ts) so the UI captions and the MCP
  * briefing the harness agents receive can never drift (ADR 0020). */
-export { PERIOD_LABELS } from '../../../shared/lib/period-labels.js'
+export { PERIOD_LABELS } from '@/shared/lib/period-labels.js'

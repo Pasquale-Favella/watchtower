@@ -14,10 +14,10 @@ import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 
-import { logCodeFor, safeLogOperationalEvent } from '../../infrastructure/logging/operational-log.js'
-import type { AcpMcpServer } from '../../infrastructure/agent-harnesses/harnesses/types.js'
-import { bearerHeaderValue } from './auth.js'
-import type { LedgerMcpSpawnContext } from './config.js'
+import { logCodeFor, safeLogOperationalEvent } from '@/infrastructure/logging/operational-log.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import { bearerHeaderValue } from '@/platform/mcp/auth.js'
+import type { LedgerMcpSpawnContext } from '@/platform/mcp/config.js'
 
 /**
  * Main-side spawner for the loopback-HTTP `watchtower-ledger` MCP server:

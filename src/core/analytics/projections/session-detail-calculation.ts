@@ -1,6 +1,6 @@
-import type { SessionDetail } from '../../../shared/schemas/views.js'
-import { inferProvider } from '../../domain/sessions/session-row.js'
-import { CATEGORY_LABELS, type SessionSummary } from '../../domain/observations/types.js'
+import type { SessionDetail } from '@/shared/schemas/views.js'
+import { inferProvider } from '@/core/domain/sessions/session-row.js'
+import { CATEGORY_LABELS, type SessionSummary } from '@/core/domain/observations/types.js'
 
 export function calculateSessionDetail(session: SessionSummary): SessionDetail {
   return {

@@ -1,8 +1,8 @@
 import { useAtomValue } from '@effect/atom-react'
 
-import { activeCurrencyAtom } from '@/features/settings/atoms'
+import { activeCurrencyAtom } from '@/renderer/features/settings/atoms'
 
-import { formatConverted, formatUsd } from './currency'
+import { formatConverted, formatUsd } from '@/renderer/shared/lib/currency'
 
 /** Reactive display helpers; changing currency repaints views without reloading USD analytics. */
 export function useCurrencyFormatter() {

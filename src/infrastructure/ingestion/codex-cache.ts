@@ -5,10 +5,10 @@ import * as Schema from 'effect/Schema'
 import { stat } from 'fs/promises'
 import { join } from 'path'
 
-import { type ParsedProviderCall, parsedProviderCallSchema } from '../../shared/schemas/providers.js'
-import { resolveCacheDir } from '../config/environment.js'
-import { isRecoverableCacheFailure, writeCacheTempFileEffect } from './cache-file-write.js'
-import { isScanAbortedError, throwIfScanAborted } from '../../core/ingestion/reconciliation/scan-control.js'
+import { type ParsedProviderCall, parsedProviderCallSchema } from '@/shared/schemas/providers.js'
+import { resolveCacheDir } from '@/infrastructure/config/environment.js'
+import { isRecoverableCacheFailure, writeCacheTempFileEffect } from '@/infrastructure/ingestion/cache-file-write.js'
+import { isScanAbortedError, throwIfScanAborted } from '@/core/ingestion/reconciliation/scan-control.js'
 
 // v4: attribute MCP calls emitted as event_msg/mcp_tool_call_end (issue #478).
 // Recent Codex sessions cached under v3 dropped these, so force a re-parse.

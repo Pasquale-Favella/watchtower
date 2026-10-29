@@ -1,8 +1,8 @@
 import { useAtomValue } from '@effect/atom-react'
 
-import { useSettingsPreferencesStore } from '../../features/settings/use-settings-store.js'
-import { appLifecycleReadinessAtom } from '../atoms/rpc-lifecycle.js'
-import { useScanHydrated } from './use-scan-store.js'
+import { useSettingsPreferencesStore } from '@/renderer/features/settings/use-settings-store.js'
+import { appLifecycleReadinessAtom } from '@/renderer/stores/atoms/rpc-lifecycle.js'
+import { useScanHydrated } from '@/renderer/stores/hooks/use-scan-store.js'
 
 export function useShellStore() {
   const hydrated = useScanHydrated()

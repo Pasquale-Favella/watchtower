@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { overviewScopeSchema } from './overview.js'
+import { overviewScopeSchema } from '@/shared/schemas/overview.js'
 
 const writable = Schema.mutableKey
 const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))

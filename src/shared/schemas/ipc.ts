@@ -5,8 +5,8 @@ import {
   ledgerMcpConnectionSchema,
   type LedgerMcpStatus,
   ledgerMcpStatusSchema,
-} from './ledger-mcp.js'
-import { scanMetadataSchema, scanProgressSchema } from './scan.js'
+} from '@/shared/schemas/ledger-mcp.js'
+import { scanMetadataSchema, scanProgressSchema } from '@/shared/schemas/scan.js'
 
 const writable = Schema.mutableKey
 const mutableArray = <S extends Schema.ConstraintDecoder<unknown>>(schema: S) => Schema.mutable(Schema.Array(schema))

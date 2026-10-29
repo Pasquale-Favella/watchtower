@@ -2,19 +2,28 @@ import * as Effect from 'effect/Effect'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { type AppPaths, overrideFor, platformFor } from '../config/environment.js'
-import { getShortModelName } from '../pricing/models.js'
-import { captureScanPricing } from '../pricing/models.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
+import { type AppPaths, overrideFor, platformFor } from '@/infrastructure/config/environment.js'
+import { getShortModelName } from '@/infrastructure/pricing/models.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
 import {
   createSqliteSessionParser,
   discoverSqliteSessionsEffect,
   OPENCODE_FAMILY_1X,
   OPENCODE_FAMILY_2X,
   type SqliteProviderConfig,
-} from './opencode-family-sqlite.js'
-import { createOpenCodeFileSessionParser, discoverOpenCodeFileSessionsEffect } from './opencode-file-parser.js'
-import type { ProbeRoot, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+} from '@/infrastructure/provider-adapters/opencode-family-sqlite.js'
+import {
+  createOpenCodeFileSessionParser,
+  discoverOpenCodeFileSessionsEffect,
+} from '@/infrastructure/provider-adapters/opencode-file-parser.js'
+import type {
+  ProbeRoot,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const toolNameMap: Record<string, string> = {
   bash: 'Bash',

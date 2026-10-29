@@ -1,9 +1,9 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { rendererNoticeSchema } from '../schemas/ipc.js'
-import { sectionSchema } from '../schemas/navigation.js'
-import { orbPanelRequestSchema, orbPlacementSchema } from '../schemas/orb.js'
+import { rendererNoticeSchema } from '@/shared/schemas/ipc.js'
+import { sectionSchema } from '@/shared/schemas/navigation.js'
+import { orbPanelRequestSchema, orbPlacementSchema } from '@/shared/schemas/orb.js'
 
 export const orbCommandSchema = Schema.Union([
   Schema.Struct({ _tag: Schema.Literal('Panel'), request: orbPanelRequestSchema }),

@@ -9,19 +9,19 @@ import {
   type SankeyNodeData,
   type SpendRow,
   stackedRows,
-} from '@/features/spend/lib'
-import { useSpendStore } from '@/features/spend/use-spend-store'
-import { Panel } from '@/components/Panel'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { SegTabs } from '@/components/SegTabs'
-import { LoadingRegion, SkeletonBars, SkeletonCard } from '@/components/skeletons'
-import { isOtherNode, seriesColorForModel } from '@/shared/lib/modelSeries'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+} from '@/renderer/features/spend/lib'
+import { useSpendStore } from '@/renderer/features/spend/use-spend-store'
+import { Panel } from '@/renderer/components/Panel'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { SegTabs } from '@/renderer/components/SegTabs'
+import { LoadingRegion, SkeletonBars, SkeletonCard } from '@/renderer/components/skeletons'
+import { isOtherNode, seriesColorForModel } from '@/renderer/shared/lib/modelSeries'
+import { motionClass } from '@/renderer/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { SpendDayEntry, SpendFlow } from '../../../shared/schemas/spend.js'
+import type { SpendDayEntry, SpendFlow } from '@/shared/schemas/spend.js'
 
 /** Projects have no model-series color, so segments cycle the theme's series
  * tokens, assigned deterministically by name so a project keeps its color

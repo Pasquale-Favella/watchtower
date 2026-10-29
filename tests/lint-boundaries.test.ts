@@ -34,21 +34,29 @@ function sourceImport(file: string, target: string): string {
 
 describe('engine dependency boundaries (ADR 0038)', () => {
   it('rejects desktop, renderer and preload dependencies, including types and resolved aliases', async () => {
-    for (const source of [
-      sourceImport(engineProbe, 'src/platform/electron/main/main-runtime.ts'),
-      sourceImport(engineProbe, 'src/infrastructure/runtime/engine-runtime.ts'),
-      sourceImport(engineProbe, 'src/platform/electron/preload/rpc.ts'),
-      sourceImport(engineProbe, 'src/renderer/shared/lib/utils.ts'),
+    for (const target of [
+      'src/platform/electron/main/main-runtime.ts',
+      'src/infrastructure/runtime/engine-runtime.ts',
+      'src/platform/electron/preload/rpc.ts',
+      'src/renderer/shared/lib/utils.ts',
     ]) {
-      for (const qualifier of ['', 'type ']) {
-        expect(
-          await errorRules(`import ${qualifier}* as dependency from '${source}'\nexport { dependency }\n`, engineProbe),
-        ).toContain('import-x/no-restricted-paths')
+      for (const source of [sourceImport(engineProbe, target), `@/${target.slice(4)}`]) {
+        for (const qualifier of ['', 'type ']) {
+          expect(
+            await errorRules(
+              `import ${qualifier}* as dependency from '${source}'\nexport { dependency }\n`,
+              engineProbe,
+            ),
+          ).toContain('import-x/no-restricted-paths')
+        }
       }
     }
     expect(
-      await errorRules("import * as dependency from '@/shared/lib/utils'\nexport { dependency }\n", engineProbe),
-    ).toContain('no-restricted-imports')
+      await errorRules(
+        "import * as dependency from '@/renderer/shared/lib/utils'\nexport { dependency }\n",
+        engineProbe,
+      ),
+    ).toContain('import-x/no-restricted-paths')
   })
 
   it('rejects Electron and React dependencies even when only their types are imported', async () => {
@@ -99,10 +107,29 @@ describe('engine dependency boundaries (ADR 0038)', () => {
   })
 })
 
+describe('source-root aliases', () => {
+  it('allows aliases in every application layer', async () => {
+    for (const [file, source] of [
+      [engineProbe, '@/core/ports/process.js'],
+      ['src/infrastructure/process/__boundary-probe.ts', '@/core/ports/process.js'],
+      [mainProbe, '@/infrastructure/runtime/engine-runtime.js'],
+      [preloadProbe, '@/shared/schemas/ipc.js'],
+      [rendererProbe, '@/shared/schemas/ipc.js'],
+      ['src/shared/__boundary-probe.ts', '@/shared/schemas/overview.js'],
+    ]) {
+      expect(await errorRules(`import * as dependency from '${source}'\nexport { dependency }\n`, file)).toEqual([])
+    }
+  })
+})
+
 describe('process boundaries (ADR 0005 / ADR 0023)', () => {
   it('requires renderer components to consume store hooks instead of atoms and query plumbing', async () => {
     const component = 'src/renderer/features/overview/__boundary-probe.tsx'
-    for (const source of ['@/stores/atoms/scope', '../settings/preferences-atoms', '@/stores/hooks/use-remote-query']) {
+    for (const source of [
+      '@/renderer/stores/atoms/scope',
+      '../settings/preferences-atoms',
+      '@/renderer/stores/hooks/use-remote-query',
+    ]) {
       expect(await errorRules(`import * as state from '${source}'\nexport const probe = state\n`, component)).toContain(
         'import-x/no-restricted-paths',
       )
@@ -159,7 +186,7 @@ describe('process boundaries (ADR 0005 / ADR 0023)', () => {
 
   it('rejects resolved aliases and deep relative imports across process boundaries', async () => {
     const aliasRules = await errorRules(
-      `import { makeMainRuntime } from '@/../platform/electron/main/main-runtime.js'\nexport const probe = makeMainRuntime\n`,
+      `import { makeMainRuntime } from '@/renderer/../platform/electron/main/main-runtime.js'\nexport const probe = makeMainRuntime\n`,
       deeplyNestedRendererProbe,
     )
     expect(aliasRules).toContain('import-x/no-restricted-paths')

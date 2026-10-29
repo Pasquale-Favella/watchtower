@@ -12,9 +12,9 @@ import {
   SiQwen,
   SiX,
 } from 'react-icons/si'
-import CodexLogo from '@/assets/images/harness-codex.json'
-import DroidLogo from '@/assets/images/harness-droid.json'
-import PiLogo from '@/assets/images/harness-pi.json'
+import CodexLogo from '@/renderer/assets/images/harness-codex.json'
+import DroidLogo from '@/renderer/assets/images/harness-droid.json'
+import PiLogo from '@/renderer/assets/images/harness-pi.json'
 
 /** Vendored brand marks, rendered through react-icons' `GenIcon` from raw
  *  icon-tree JSONs in `assets/images` — the same pattern as the Watchtower

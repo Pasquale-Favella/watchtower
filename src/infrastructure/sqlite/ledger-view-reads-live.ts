@@ -4,14 +4,14 @@ import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/sql/SqlClient'
 import { SqlError } from 'effect/sql/SqlError'
 
-import type { DateRange } from '../../core/domain/observations/types.js'
-import { LedgerViewReads } from '../../core/ports/ledger-view-reads.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import { LedgerViewReads } from '@/core/ports/ledger-view-reads.js'
 import {
   type OverviewReadData,
   overviewReadDataSchema,
-} from '../../core/analytics/projections/overview-read-projections.js'
-import { candidateTimestampBounds } from './scoped-snapshot-sql.js'
-import { type LedgerViewData, ledgerViewDataSchema } from '../../core/analytics/projections/view-read-projections.js'
+} from '@/core/analytics/projections/overview-read-projections.js'
+import { candidateTimestampBounds } from '@/infrastructure/sqlite/scoped-snapshot-sql.js'
+import { type LedgerViewData, ledgerViewDataSchema } from '@/core/analytics/projections/view-read-projections.js'
 
 const SELECT_VIEW_SESSIONS = `
   SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project,

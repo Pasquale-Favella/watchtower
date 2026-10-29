@@ -1,6 +1,6 @@
 import * as Effect from 'effect/Effect'
 
-import { CommandRunner } from '../../ports/process.js'
+import { CommandRunner } from '@/core/ports/process.js'
 
 const GIT_TIMEOUT_MS = 2_000
 

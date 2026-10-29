@@ -3,12 +3,12 @@ import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 import { Check } from 'lucide-react'
 
-import { cn } from '@/shared/lib/utils'
-import { motionClass, motionEnabled } from '@/shared/lib/motion'
+import { cn } from '@/renderer/shared/lib/utils'
+import { motionClass, motionEnabled } from '@/renderer/shared/lib/motion'
 
-import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
-import { Counter } from './Counter'
-import { nodeAngle, nodeRadius, providerName } from './progress'
+import type { SplashProviderProgress } from '@/shared/schemas/renderer.js'
+import { Counter } from '@/renderer/components/shell/splash/Counter'
+import { nodeAngle, nodeRadius, providerName } from '@/renderer/components/shell/splash/progress'
 
 /**
  * One detected source on the radar: a dot scattered inside the ring with its

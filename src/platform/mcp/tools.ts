@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
-import { type OverviewScope, overviewScopeSchema } from '../../shared/schemas/overview.js'
-import type { LedgerMcpQueries } from './query-api.js'
+import { type OverviewScope, overviewScopeSchema } from '@/shared/schemas/overview.js'
+import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
 
 /** The lifetime default: when a tool is called without a `scope` argument it
  *  reports the whole ledger history, exactly like the UI's Lifetime period. */

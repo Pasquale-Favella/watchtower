@@ -2,12 +2,12 @@ import { useRef } from 'react'
 import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 
-import { cn } from '@/shared/lib/utils'
-import { motionClass, motionEnabled } from '@/shared/lib/motion'
-import { WatchtowerIcon } from '@/components/shell/WatchtowerIcon'
+import { cn } from '@/renderer/shared/lib/utils'
+import { motionClass, motionEnabled } from '@/renderer/shared/lib/motion'
+import { WatchtowerIcon } from '@/renderer/components/shell/WatchtowerIcon'
 
-import type { SplashProviderProgress } from '../../../../shared/schemas/renderer.js'
-import { SourceNode } from './SourceNode'
+import type { SplashProviderProgress } from '@/shared/schemas/renderer.js'
+import { SourceNode } from '@/renderer/components/shell/splash/SourceNode'
 
 /** The radar: guide rings, a rotating beam, slow outward pulses, the logo at
  * the center, and every detected source as a labelled node scattered inside

@@ -7,13 +7,13 @@ import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Schema from 'effect/Schema'
 
-import { AssistantSetup } from '../../core/ports/assistant-setup.js'
+import { AssistantSetup } from '@/core/ports/assistant-setup.js'
 import type {
   DeferralEnvHit,
   McpConfigEntry,
   OptimizeSetup,
   SkillInventoryEntry,
-} from '../../core/domain/evidence/setup-facts.js'
+} from '@/core/domain/evidence/setup-facts.js'
 
 const JsonRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
 type Config = { mcpServers?: Record<string, unknown>; env?: Record<string, unknown> }

@@ -1,10 +1,10 @@
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 
-import { PricingDiagnostics } from '../../core/ports/pricing-diagnostics.js'
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { queueLogRecord } from '../ingestion/file-errors.js'
-import { looksLikeLocalModel } from '../../core/domain/pricing/pricing-calculation.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { queueLogRecord } from '@/infrastructure/ingestion/file-errors.js'
+import { looksLikeLocalModel } from '@/core/domain/pricing/pricing-calculation.js'
 
 /** Compatibility re-export; the model-name predicate is pure pricing logic. */
 export { looksLikeLocalModel }

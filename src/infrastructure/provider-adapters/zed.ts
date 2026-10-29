@@ -7,13 +7,19 @@ import { homedir } from 'os'
 import { join } from 'path'
 import zlib from 'zlib'
 
-import { fileErrorCode, queueLogRecord, reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { checkScanAbort } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../ingestion/sqlite.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { fileErrorCode, queueLogRecord, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 // Zed's built-in agent stores one row per thread in a single SQLite database;
 // the data blob is zstd-compressed JSON carrying per-request token counts.

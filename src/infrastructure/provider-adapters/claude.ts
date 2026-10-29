@@ -7,11 +7,16 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, delimiter as pathDelimiter, join, resolve } from 'path'
 
-import { type AppPaths, overrideFor, platformFor } from '../config/environment.js'
-import { reportProviderIssue } from '../ingestion/file-errors.js'
-import { getShortModelName } from '../pricing/models.js'
-import { scanAbortError } from '../../core/ingestion/reconciliation/scan-control.js'
-import type { DiscoverableProvider, ProbeRoot, ProviderScanContext, SessionSource } from './types.js'
+import { type AppPaths, overrideFor, platformFor } from '@/infrastructure/config/environment.js'
+import { reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { getShortModelName } from '@/infrastructure/pricing/models.js'
+import { scanAbortError } from '@/core/ingestion/reconciliation/scan-control.js'
+import type {
+  DiscoverableProvider,
+  ProbeRoot,
+  ProviderScanContext,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 export type ClaudeConfigSource = {
   id: string

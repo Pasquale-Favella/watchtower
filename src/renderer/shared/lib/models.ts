@@ -1,8 +1,8 @@
-import type { AuditRow, ModelReportRow } from '../../../shared/schemas/models.js'
+import type { AuditRow, ModelReportRow } from '@/shared/schemas/models.js'
 
-export { formatUsd, formatConverted } from './currency'
+export { formatUsd, formatConverted } from '@/renderer/shared/lib/currency'
 
-import type { ModelTaskGroup } from '../../../shared/schemas/renderer.js'
+import type { ModelTaskGroup } from '@/shared/schemas/renderer.js'
 export type { ModelTaskGroup }
 
 /** Task-category labels for the by-task lens (port of the pipeline's

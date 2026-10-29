@@ -1,8 +1,8 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 
-import { useScanning } from '@/stores/hooks/use-scan-store'
+import { useScanning } from '@/renderer/stores/hooks/use-scan-store'
 
-import { placementAtom, requestPlacementAtom } from './placement-atoms.js'
+import { placementAtom, requestPlacementAtom } from '@/renderer/orb/placement-atoms.js'
 
 export function useOrbBeaconStore() {
   const expanded = useAtomValue(placementAtom).expanded

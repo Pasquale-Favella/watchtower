@@ -7,11 +7,11 @@ import {
   type OptimizePayload,
   type Trend,
   type WasteAction,
-} from '../../../shared/schemas/optimize.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import { scopeDateRange } from '../../domain/sessions/overview-scope.js'
-import type { DateRange, ProjectSummary, SessionSummary } from '../../domain/observations/types.js'
-import type { DeferralEnvHit, OptimizeSetup } from '../../domain/evidence/setup-facts.js'
+} from '@/shared/schemas/optimize.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import { scopeDateRange } from '@/core/domain/sessions/overview-scope.js'
+import type { DateRange, ProjectSummary, SessionSummary } from '@/core/domain/observations/types.js'
+import type { DeferralEnvHit, OptimizeSetup } from '@/core/domain/evidence/setup-facts.js'
 
 export type {
   ContextBloatCandidate,
@@ -24,7 +24,7 @@ export type {
   PasteDestination,
   Trend,
   WasteAction,
-} from '../../../shared/schemas/optimize.js'
+} from '@/shared/schemas/optimize.js'
 
 /** Query-time Optimize diagnostics. Quantities describe observations or explicit
  * models; a pattern alone does not establish avoidable spend. */

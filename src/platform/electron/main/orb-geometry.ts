@@ -1,7 +1,7 @@
 import { screen } from 'electron'
 
-import { ORB_PANEL_SIZE, ORB_SIZE, type OrbPlacement } from '../../../shared/schemas/orb.js'
-import type { Point } from './orb-policy.js'
+import { ORB_PANEL_SIZE, ORB_SIZE, type OrbPlacement } from '@/shared/schemas/orb.js'
+import type { Point } from '@/platform/electron/main/orb-policy.js'
 
 /** Gap kept between the orb and the work-area edge. */
 const EDGE_MARGIN = 12

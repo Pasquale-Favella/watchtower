@@ -9,17 +9,17 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as SqlClient from 'effect/sql/SqlClient'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { AssistantSetup } from '../../core/ports/assistant-setup.js'
-import { ExportFiles } from '../../core/ports/export-files.js'
-import { GatewayReports } from '../../core/ports/gateway-reports.js'
-import { ScanSources } from '../../core/ports/ingestion.js'
-import { LedgerMaintenance } from '../../core/ports/ledger-maintenance.js'
-import { PricingDiagnostics } from '../../core/ports/pricing-diagnostics.js'
-import { CommandRunner } from '../../core/ports/process.js'
-import { RepositoryInspection } from '../../core/ports/repository-inspection.js'
-import { Env } from '../config/environment.js'
-import { HttpFetch } from '../ingestion/fetch-utils.js'
-import { ScanSourcesLive } from '../ingestion/scan-sources-live.js'
+import { AssistantSetup } from '@/core/ports/assistant-setup.js'
+import { ExportFiles } from '@/core/ports/export-files.js'
+import { GatewayReports } from '@/core/ports/gateway-reports.js'
+import { ScanSources } from '@/core/ports/ingestion.js'
+import { LedgerMaintenance } from '@/core/ports/ledger-maintenance.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import { CommandRunner } from '@/core/ports/process.js'
+import { RepositoryInspection } from '@/core/ports/repository-inspection.js'
+import { Env } from '@/infrastructure/config/environment.js'
+import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
+import { ScanSourcesLive } from '@/infrastructure/ingestion/scan-sources-live.js'
 import {
   OperationalLog,
   OperationalLogLoggerLayer,
@@ -27,17 +27,17 @@ import {
   OperationalLogMetricLayer,
   type OperationalLogSink,
   OperationalLogTracerLayer,
-} from '../logging/operational-log.js'
-import { NodePlatformLive, type NodePlatformServices } from '../platform/platform-live.js'
-import { FxRates } from '../pricing/fx.js'
-import { PricingDiagnosticsLive } from '../pricing/pricing-diagnostics.js'
-import { CommandRunnerLive } from '../process/command-runner.js'
-import { AssistantSetupLive } from '../services/assistant-setup-live.js'
-import { ExportFilesLive } from '../services/export-files-live.js'
-import { GatewayReportsLive } from '../services/gateway-reports-live.js'
-import { LedgerMaintenanceLive } from '../services/ledger-maintenance-live.js'
-import { RepositoryInspectionLive } from '../services/repository-inspection-live.js'
-import { initializeLedger } from '../sqlite/ledger-initialization.js'
+} from '@/infrastructure/logging/operational-log.js'
+import { NodePlatformLive, type NodePlatformServices } from '@/infrastructure/platform/platform-live.js'
+import { FxRates } from '@/infrastructure/pricing/fx.js'
+import { PricingDiagnosticsLive } from '@/infrastructure/pricing/pricing-diagnostics.js'
+import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
+import { AssistantSetupLive } from '@/infrastructure/services/assistant-setup-live.js'
+import { ExportFilesLive } from '@/infrastructure/services/export-files-live.js'
+import { GatewayReportsLive } from '@/infrastructure/services/gateway-reports-live.js'
+import { LedgerMaintenanceLive } from '@/infrastructure/services/ledger-maintenance-live.js'
+import { RepositoryInspectionLive } from '@/infrastructure/services/repository-inspection-live.js'
+import { initializeLedger } from '@/infrastructure/sqlite/ledger-initialization.js'
 import {
   LedgerConfig,
   LedgerExportReads,
@@ -46,7 +46,7 @@ import {
   LedgerQueries,
   LedgerSessionReads,
   LedgerViewReads,
-} from '../sqlite/ledger-repository.js'
+} from '@/infrastructure/sqlite/ledger-repository.js'
 
 export type EngineServices =
   | ScanSources

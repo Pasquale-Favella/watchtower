@@ -1,7 +1,7 @@
 import { useHotkey } from '@tanstack/react-hotkeys'
 
-import { useSidebar } from '@/components/ui/sidebar'
-import { shortcutForAction } from '@/app/shortcuts'
+import { useSidebar } from '@/renderer/components/ui/sidebar'
+import { shortcutForAction } from '@/renderer/app/shortcuts'
 
 /** The ⌘B / Ctrl+B sidebar toggle from the shortcuts registry (ADR 0001).
  * Lives inside SidebarProvider so it can reach the sidebar context. */

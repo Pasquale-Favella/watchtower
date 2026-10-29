@@ -1,4 +1,4 @@
-import type { HealthGrade, Impact } from '../../../shared/schemas/optimize.js'
+import type { HealthGrade, Impact } from '@/shared/schemas/optimize.js'
 
 /** Accent-tinted dot color for each severity (ADR 0008). */
 export function impactDot(impact: Impact): string {

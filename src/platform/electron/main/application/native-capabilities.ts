@@ -5,23 +5,23 @@ import type * as FileSystem from 'effect/FileSystem'
 import * as Schema from 'effect/Schema'
 import type { SaveDialogOptions } from 'electron'
 
-import { slugifyCandidateName } from '../../../../shared/lib/skills-draft.js'
-import { exportResultSchema } from '../../../../shared/schemas/export.js'
-import { scanResultSchema } from '../../../../shared/schemas/ipc.js'
+import { slugifyCandidateName } from '@/shared/lib/skills-draft.js'
+import { exportResultSchema } from '@/shared/schemas/export.js'
+import { scanResultSchema } from '@/shared/schemas/ipc.js'
 import {
   ledgerMcpStartupModeSchema,
   type LedgerMcpConnection,
   type LedgerMcpStatus,
-} from '../../../../shared/schemas/ledger-mcp.js'
-import { skillsDismissalResultSchema, type SkillsSaveResult } from '../../../../shared/schemas/skills.js'
-import type { AcpMcpServer } from '../../../../infrastructure/agent-harnesses/harnesses/types.js'
-import type { LedgerMcpSpawnContext } from '../../../mcp/config.js'
-import { LedgerMcpPool } from '../../../mcp/pool.js'
-import { exportStamp } from '../export-zip.js'
-import type { NativeRpcCapabilities } from '../rpc/native-handlers.js'
-import { AppUpdates } from '../updates.js'
-import { exportCsvZip } from './export-csv-zip.js'
-import { saveSkill } from '../../../../core/application/commands/save-skill.js'
+} from '@/shared/schemas/ledger-mcp.js'
+import { skillsDismissalResultSchema, type SkillsSaveResult } from '@/shared/schemas/skills.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import type { LedgerMcpSpawnContext } from '@/platform/mcp/config.js'
+import { LedgerMcpPool } from '@/platform/mcp/pool.js'
+import { exportStamp } from '@/platform/electron/main/export-zip.js'
+import type { NativeRpcCapabilities } from '@/platform/electron/main/rpc/native-handlers.js'
+import { AppUpdates } from '@/platform/electron/main/updates.js'
+import { exportCsvZip } from '@/platform/electron/main/application/export-csv-zip.js'
+import { saveSkill } from '@/core/application/commands/save-skill.js'
 
 export interface NativeApplicationPorts {
   readonly worker: {

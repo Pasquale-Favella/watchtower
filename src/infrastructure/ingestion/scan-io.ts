@@ -2,7 +2,7 @@ import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
 import { readdir } from 'fs/promises'
 
-import { isScanAbortedError, scanAbortError } from '../../core/ingestion/reconciliation/scan-control.js'
+import { isScanAbortedError, scanAbortError } from '@/core/ingestion/reconciliation/scan-control.js'
 
 export const checkScanAbort = Effect.fnUntraced(function* (signal?: AbortSignal): Effect.fn.Return<void, Error> {
   if (signal?.aborted) return yield* Effect.fail(scanAbortError(signal))

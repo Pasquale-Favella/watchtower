@@ -1,5 +1,5 @@
-import { harnessSpecs } from '../../infrastructure/agent-harnesses/harnesses/index.js'
-import type { AcpMcpServer } from '../../infrastructure/agent-harnesses/harnesses/types.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * Main-side builder for the injected `watchtower-ledger` MCP server: turns

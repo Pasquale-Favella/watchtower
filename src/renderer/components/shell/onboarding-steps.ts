@@ -10,7 +10,7 @@ import {
   Settings,
   Sparkles,
 } from 'lucide-react'
-import type { OnboardingStep } from '../../../shared/schemas/renderer.js'
+import type { OnboardingStep } from '@/shared/schemas/renderer.js'
 export type { OnboardingStep }
 
 export const ONBOARDING_KEY = 'watchtower:onboarded'

@@ -3,14 +3,14 @@ import * as Effect from 'effect/Effect'
 import * as Stream from 'effect/Stream'
 import { useEffect } from 'react'
 
-import { pinWindowAtom } from '@/stores/hooks/use-remote-query'
-import { registry, runtime } from '@/app/renderer-runtime'
+import { pinWindowAtom } from '@/renderer/stores/hooks/use-remote-query'
+import { registry, runtime } from '@/renderer/app/renderer-runtime'
 
-import { PanelRoleClient } from './panel-role-client'
-import { orbControls } from './native-shell'
-import { loadOrbOverviewAtom, orbRecentQuery, orbTodayQuery } from './panel-atoms'
-import { panelEventsReadyAtom, subscribeToOrbPanel } from './panel-wiring'
-import { placementAtom, requestPlacementAtom, syncPlacementAtom } from './placement-atoms'
+import { PanelRoleClient } from '@/renderer/orb/panel-role-client'
+import { orbControls } from '@/renderer/orb/native-shell'
+import { loadOrbOverviewAtom, orbRecentQuery, orbTodayQuery } from '@/renderer/orb/panel-atoms'
+import { panelEventsReadyAtom, subscribeToOrbPanel } from '@/renderer/orb/panel-wiring'
+import { placementAtom, requestPlacementAtom, syncPlacementAtom } from '@/renderer/orb/placement-atoms'
 
 const panelBootstrapAtom = PanelRoleClient.runtime.atom(get => {
   get.addFinalizer(subscribeToOrbPanel(get.registry))

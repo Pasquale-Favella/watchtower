@@ -6,14 +6,20 @@ import { readdir, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { readSessionFileEffect, readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { readSessionFileEffect, readSessionLinesStream } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const METADATA_FILENAME = 'meta.json'
 const MESSAGES_FILENAME = 'messages.jsonl'

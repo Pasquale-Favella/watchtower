@@ -1,12 +1,12 @@
 import { useState } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { seriesColorForModel } from '@/shared/lib/modelSeries'
-import { formatCompact, formatUsd, isUnpriced } from '@/shared/lib/models'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import type { ActiveCurrency } from '@/shared/lib/currency'
-import { TableCell, TableHead, TableRow } from '@/components/ui/table'
-import type { ModelReportRow } from '../../../shared/schemas/models.js'
+import { cn } from '@/renderer/shared/lib/utils'
+import { seriesColorForModel } from '@/renderer/shared/lib/modelSeries'
+import { formatCompact, formatUsd, isUnpriced } from '@/renderer/shared/lib/models'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import type { ActiveCurrency } from '@/renderer/shared/lib/currency'
+import { TableCell, TableHead, TableRow } from '@/renderer/components/ui/table'
+import type { ModelReportRow } from '@/shared/schemas/models.js'
 
 export const NUM_CELL = 'text-right font-mono tabular-nums'
 export const MUT_CELL = `${NUM_CELL} text-muted-foreground`

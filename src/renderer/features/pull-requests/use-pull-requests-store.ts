@@ -1,7 +1,7 @@
-import { useRemoteQuery } from '@/stores/hooks/use-remote-query'
-import { useScopeStore } from '@/stores/hooks/use-scope-store'
-import { pullRequestsQuery } from '@/features/pull-requests/atoms'
-import { keyOfScope } from '@/shared/lib/query-keys'
+import { useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
+import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
+import { pullRequestsQuery } from '@/renderer/features/pull-requests/atoms'
+import { keyOfScope } from '@/renderer/shared/lib/query-keys'
 
 export function usePullRequestsStore() {
   const { scope, provider, setProvider, detectedProviders } = useScopeStore()

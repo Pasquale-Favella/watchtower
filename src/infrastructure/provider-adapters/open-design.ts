@@ -6,15 +6,21 @@ import { stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, dirname, join } from 'path'
 
-import { type AppPaths, overrideFor, platformFor } from '../config/environment.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { readSessionLinesStream } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor, platformFor } from '@/infrastructure/config/environment.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { readSessionLinesStream } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const PROVIDER_NAME = 'open-design'
 const ENV_DIR = 'WATCHTOWER_OPEN_DESIGN_DIR'

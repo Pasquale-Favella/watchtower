@@ -1,17 +1,17 @@
 import { ExternalLink, EyeOff, Power, RefreshCw } from 'lucide-react'
 import type { ReactNode } from 'react'
 
-import { displayShortcutForAction } from '@/app/shortcuts'
-import { DailySpendChart } from '@/features/overview/DailySpendChart'
-import { formatChartDate, formatChartValue, spendTrend } from '@/features/overview/lib'
-import { SkeletonBars } from '@/components/skeletons'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardFooter, CardHeader } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { cn } from '@/shared/lib/utils'
+import { displayShortcutForAction } from '@/renderer/app/shortcuts'
+import { DailySpendChart } from '@/renderer/features/overview/DailySpendChart'
+import { formatChartDate, formatChartValue, spendTrend } from '@/renderer/features/overview/lib'
+import { SkeletonBars } from '@/renderer/components/skeletons'
+import { Button } from '@/renderer/components/ui/button'
+import { Card, CardContent, CardFooter, CardHeader } from '@/renderer/components/ui/card'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import { useOrbPanelStore } from './panel-store'
+import { useOrbPanelStore } from '@/renderer/orb/panel-store'
 
 /** The first-close peek's note (the main process decides when it shows). */
 const BACKGROUNDED_PEEK = 'Still watching in the background'

@@ -6,13 +6,19 @@ import { existsSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { checkScanAbort } from '../ingestion/scan-io.js'
-import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../ingestion/sqlite.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort } from '@/infrastructure/ingestion/scan-io.js'
+import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const DEFAULT_DB_PATH = join(homedir(), '.forge', '.forge.db')
 

@@ -5,10 +5,10 @@ import * as Stream from 'effect/Stream'
 import { readFile } from 'fs/promises'
 import { join } from 'path'
 
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, readDirectoryOrEmpty, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
 import {
   buildAssistantCallResult,
   decodeMessageRole,
@@ -17,8 +17,13 @@ import {
   type MessageData,
   type PartData,
   sanitize,
-} from './session-message.js'
-import type { ParsedProviderCall, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+} from '@/infrastructure/provider-adapters/session-message.js'
+import type {
+  ParsedProviderCall,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 // OpenCode 1.1+ stores sessions as file-based JSON instead of a SQLite DB:
 //   storage/session/<projectID>/<sessionID>.json   session metadata

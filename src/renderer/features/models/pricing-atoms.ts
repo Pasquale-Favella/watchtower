@@ -6,13 +6,13 @@ import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
-import { configInvalidationRevisionAtom } from '@/stores/atoms/config-change'
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
-import { isUnpriced } from '@/shared/lib/models'
+import { configInvalidationRevisionAtom } from '@/renderer/stores/atoms/config-change'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
+import { isUnpriced } from '@/renderer/shared/lib/models'
 
-import { configWriteReceiptSchema } from '../../../shared/rpc/config.js'
-import type { ModelAlias, ModelReportRow, PriceOverride } from '../../../shared/schemas/models.js'
+import { configWriteReceiptSchema } from '@/shared/rpc/config.js'
+import type { ModelAlias, ModelReportRow, PriceOverride } from '@/shared/schemas/models.js'
 
 type PricingClient = Pick<typeof ApplicationClient, 'runtime' | 'mutation' | 'query'>
 

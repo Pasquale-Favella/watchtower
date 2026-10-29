@@ -10,16 +10,21 @@ import { readFileSync, unlinkSync } from 'fs'
 import { stat as nativeStat } from 'fs/promises'
 import { join } from 'path'
 
-import { writeCacheTempFileEffect } from './cache-file-write.js'
+import { writeCacheTempFileEffect } from '@/infrastructure/ingestion/cache-file-write.js'
 
-import type { CachedCall, CachedFile, FileFingerprint } from '../../shared/schemas/session-cache.js'
+import type { CachedCall, CachedFile, FileFingerprint } from '@/shared/schemas/session-cache.js'
 import {
   cachedFileSchema,
   providerSectionSchema,
   type SessionCache,
   sessionCacheSchema,
-} from '../../shared/schemas/session-cache.js'
-import { type AppPaths, resolveCacheDir, resolveSnapshotEnvVar, type SnapshotEnvVar } from '../config/environment.js'
+} from '@/shared/schemas/session-cache.js'
+import {
+  type AppPaths,
+  resolveCacheDir,
+  resolveSnapshotEnvVar,
+  type SnapshotEnvVar,
+} from '@/infrastructure/config/environment.js'
 
 export type {
   CachedCall,
@@ -29,7 +34,7 @@ export type {
   FileFingerprint,
   ProviderSection,
   SessionCache,
-} from '../../shared/schemas/session-cache.js'
+} from '@/shared/schemas/session-cache.js'
 
 // ── Constants ──────────────────────────────────────────────────────────
 
@@ -481,7 +486,7 @@ export {
   reconcileFile,
   mergeCallByDedupKey,
   type ReconcileAction,
-} from '../../core/ingestion/reconciliation/session-cache-policy.js'
+} from '@/core/ingestion/reconciliation/session-cache-policy.js'
 
 // ── Temp Cleanup ───────────────────────────────────────────────────────
 

@@ -6,9 +6,9 @@ import * as Fiber from 'effect/Fiber'
 import * as Queue from 'effect/Queue'
 import * as Stream from 'effect/Stream'
 
-import { CoachRpcError, CoachRpcGroup, type CoachRunFrame } from '../../../../shared/rpc/coach.js'
-import type { CoachEvent, CoachRunResult } from '../../../../shared/schemas/agents.js'
-import type { NativeCoachRunnerCapabilities } from '../coach/ipc.js'
+import { CoachRpcError, CoachRpcGroup, type CoachRunFrame } from '@/shared/rpc/coach.js'
+import type { CoachEvent, CoachRunResult } from '@/shared/schemas/agents.js'
+import type { NativeCoachRunnerCapabilities } from '@/platform/electron/main/coach/ipc.js'
 
 const EVENT_CAPACITY = 128
 const MAX_PENDING_EVENT_BYTES = 2 * 1024 * 1024

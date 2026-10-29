@@ -2,10 +2,10 @@ import * as Effect from 'effect/Effect'
 import * as Atom from 'effect/reactivity/Atom'
 import * as Semaphore from 'effect/Semaphore'
 
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import type { ActiveCurrency, CurrencyOption } from '../../../shared/schemas/fx.js'
+import type { ActiveCurrency, CurrencyOption } from '@/shared/schemas/fx.js'
 
 const CADENCE_REQUEST = {}
 const CURRENCY_REQUEST = {}

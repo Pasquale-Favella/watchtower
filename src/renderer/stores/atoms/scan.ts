@@ -4,14 +4,14 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
 
-import { runtime as rendererRuntime } from '@/app/renderer-runtime'
-import { ApplicationClient, ApplicationProtocolLayer } from '@/shared/lib/application-rpc'
-import { getPlatform } from '@/shared/lib/native-shell'
+import { runtime as rendererRuntime } from '@/renderer/app/renderer-runtime'
+import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc'
+import { getPlatform } from '@/renderer/shared/lib/native-shell'
 
-import type { StoreChangedMessage } from '../../../shared/schemas/ipc.js'
-import type { SplashProviderProgress } from '../../../shared/schemas/renderer.js'
-import { SCAN_STAGE_ORDER, type ScanMetadata, type ScanProgress, type ScanStage } from '../../../shared/schemas/scan.js'
-import { configInvalidationRevisionAtom } from './config-change.js'
+import type { StoreChangedMessage } from '@/shared/schemas/ipc.js'
+import type { SplashProviderProgress } from '@/shared/schemas/renderer.js'
+import { SCAN_STAGE_ORDER, type ScanMetadata, type ScanProgress, type ScanStage } from '@/shared/schemas/scan.js'
+import { configInvalidationRevisionAtom } from '@/renderer/stores/atoms/config-change.js'
 
 export interface ScanState {
   readonly hydrated: boolean

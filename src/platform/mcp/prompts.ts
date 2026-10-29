@@ -1,4 +1,4 @@
-import { buildLedgerBriefing } from '../../infrastructure/agent-harnesses/prompts.js'
+import { buildLedgerBriefing } from '@/infrastructure/agent-harnesses/prompts.js'
 
 /** One zero-argument prompt template the SDK serves as the standard user
  *  message shape. */

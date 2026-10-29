@@ -1,4 +1,4 @@
-import { ROUTES, type Section, SECTIONS } from '../../shared/schemas/navigation.js'
+import { ROUTES, type Section, SECTIONS } from '@/shared/schemas/navigation.js'
 
 // The renderer's navigation entry point (ADR 0014). Sections and routes
 // themselves are declared once in shared/schemas/navigation.ts.

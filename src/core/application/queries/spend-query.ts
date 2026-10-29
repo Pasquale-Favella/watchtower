@@ -3,13 +3,13 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type SpendPayload, spendPayloadSchema } from '../../../shared/schemas/spend.js'
-import { overviewQueryRanges } from '../../domain/sessions/overview-scope.js'
-import { calculateSpendView } from '../../analytics/projections/spend-calculation.js'
-import type { LedgerQueries } from '../../ports/repository.js'
-import { loadLedgerQuerySnapshotEffect } from './ledger-query-snapshot.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
-import type { ScopedViewQueryInputs } from './view-queries.js'
+import { type SpendPayload, spendPayloadSchema } from '@/shared/schemas/spend.js'
+import { overviewQueryRanges } from '@/core/domain/sessions/overview-scope.js'
+import { calculateSpendView } from '@/core/analytics/projections/spend-calculation.js'
+import type { LedgerQueries } from '@/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '@/core/application/queries/ledger-query-snapshot.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import type { ScopedViewQueryInputs } from '@/core/application/queries/view-queries.js'
 
 export const querySpendView = Effect.fn('querySpendView')(function* (
   input: ScopedViewQueryInputs,

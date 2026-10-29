@@ -1,13 +1,13 @@
 import * as Schema from 'effect/Schema'
 
-import { modelAliasSchema, priceOverrideSchema } from '../../../shared/schemas/ledger.js'
+import { modelAliasSchema, priceOverrideSchema } from '@/shared/schemas/ledger.js'
 import {
   finiteNumber,
   jsonStringArray,
   nullableString,
   sessionProjectFields,
   sessionSummaryCallFields,
-} from './session-read-projections.js'
+} from '@/core/analytics/projections/session-read-projections.js'
 
 const exportSessionSchema = Schema.Struct({ ...sessionProjectFields, repoUrl: nullableString })
 const exportTurnSchema = Schema.Struct({

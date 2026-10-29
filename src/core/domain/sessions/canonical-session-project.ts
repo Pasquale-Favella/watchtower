@@ -1,9 +1,9 @@
-import type { LedgerSessionRow } from '../../../shared/schemas/ledger.js'
+import type { LedgerSessionRow } from '@/shared/schemas/ledger.js'
 import {
   deriveCanonicalProjectKey,
   isAbsoluteProjectPath,
   projectNameFromPath,
-} from '../../ingestion/normalization/parser-calculations.js'
+} from '@/core/ingestion/normalization/parser-calculations.js'
 
 type SessionProjectFields = Pick<
   LedgerSessionRow,

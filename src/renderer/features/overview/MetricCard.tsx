@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { Card } from '@/components/ui/card'
-import { InfoTip } from '@/components/InfoTip'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Card } from '@/renderer/components/ui/card'
+import { InfoTip } from '@/renderer/components/InfoTip'
 
 /** MetricCard — a single-stat card, rebuilt on
  * the shadcn `Card` primitive: uppercase label, large tabular-nums value, an

@@ -3,8 +3,8 @@ import * as Schema from 'effect/Schema'
 import type { IpcMain, IpcMainEvent, MessagePortMain, WebContents } from 'electron'
 import { MessageChannelMain } from 'electron'
 
-import { RpcConnectionRequestSchema, RpcConnectionResponseSchema } from '../../../../shared/rpc/bridge.js'
-import { type RpcMessagePort, RpcPortError } from '../../../../shared/rpc/port-protocol.js'
+import { RpcConnectionRequestSchema, RpcConnectionResponseSchema } from '@/shared/rpc/bridge.js'
+import { type RpcMessagePort, RpcPortError } from '@/shared/rpc/port-protocol.js'
 
 const CONNECT_CHANNEL = 'rpc:v1:connect'
 const PORT_CHANNEL = 'rpc:v1:port'

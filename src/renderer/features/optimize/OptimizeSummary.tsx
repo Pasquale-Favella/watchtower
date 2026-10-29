@@ -1,10 +1,10 @@
 import { Info } from 'lucide-react'
 
-import { healthBar, healthClass } from '@/features/optimize/lib'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+import { healthBar, healthClass } from '@/renderer/features/optimize/lib'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { OptimizePayload } from '../../../shared/schemas/optimize.js'
+import type { OptimizePayload } from '@/shared/schemas/optimize.js'
 
 type OptimizeSummaryProps = { payload: OptimizePayload }
 type MetricProps = { label: string; value: string; detail: string; tone?: string }

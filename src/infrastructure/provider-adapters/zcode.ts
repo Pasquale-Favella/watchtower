@@ -6,12 +6,18 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import { fileErrorCode, reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { checkScanAbort } from '../ingestion/scan-io.js'
-import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '../ingestion/sqlite.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { fileErrorCode, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort } from '@/infrastructure/ingestion/scan-io.js'
+import { isSqliteAvailable, openDatabase, type SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 /// ZCode (CLI v0.14.x) records usage in a single SQLite database at
 /// ~/.zcode/cli/db/db.sqlite. We read it because the other on-disk sources are

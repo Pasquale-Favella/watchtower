@@ -1,7 +1,7 @@
 import * as Effect from 'effect/Effect'
 
-import type { RpcBridge } from '../../../shared/rpc/bridge.js'
-import { type RpcMessagePort, RpcPortError } from '../../../shared/rpc/port-protocol.js'
+import type { RpcBridge } from '@/shared/rpc/bridge.js'
+import { type RpcMessagePort, RpcPortError } from '@/shared/rpc/port-protocol.js'
 
 /** Adapts the fixed preload capability to the shared Effect RPC protocol port. */
 export const rpcMessagePortFromBridge = (bridge: RpcBridge, generation: number): RpcMessagePort => ({

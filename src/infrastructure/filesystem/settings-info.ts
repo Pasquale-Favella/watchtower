@@ -5,7 +5,7 @@ import type { Dirent, Stats } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { join } from 'path'
 
-import { getClaudeConfigDirsEffect } from '../provider-adapters/claude.js'
+import { getClaudeConfigDirsEffect } from '@/infrastructure/provider-adapters/claude.js'
 
 export interface SettingsInfo {
   dataDir: string

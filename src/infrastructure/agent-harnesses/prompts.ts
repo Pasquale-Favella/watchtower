@@ -1,5 +1,5 @@
-import { PERIOD_LABELS } from '../../shared/lib/period-labels.js'
-import type { OverviewScope } from '../../shared/schemas/overview.js'
+import { PERIOD_LABELS } from '@/shared/lib/period-labels.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
 
 /**
  * Main-side prompt builders for the Coach harness run (ADR 0017, MCP-aware

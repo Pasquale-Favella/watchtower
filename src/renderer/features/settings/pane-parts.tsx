@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { Button } from '@/components/ui/button'
+import { Button } from '@/renderer/components/ui/button'
 
 /** The small title + subtitle header every settings pane leads with. */
 export function PaneHeader({ title, subtitle }: { title: string; subtitle: string }) {

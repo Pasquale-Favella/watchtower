@@ -7,15 +7,21 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import { type AppPaths, overrideFor, platformFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { fileErrorCode, reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing, getShortModelName } from '../pricing/models.js'
-import { checkScanAbort } from '../ingestion/scan-io.js'
-import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '../ingestion/sqlite.js'
-import type { ToolCall } from '../../core/domain/observations/types.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor, platformFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { fileErrorCode, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing, getShortModelName } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort } from '@/infrastructure/ingestion/scan-io.js'
+import { blobToText, isSqliteAvailable, openDatabase, type SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import type { ToolCall } from '@/core/domain/observations/types.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const sessionRowSchema = Schema.Struct({
   created_at: Schema.Unknown,

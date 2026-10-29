@@ -1,4 +1,4 @@
-import { PREFERENCES_STORAGE_KEY, type PreferenceStorage } from './preferences.js'
+import { PREFERENCES_STORAGE_KEY, type PreferenceStorage } from '@/renderer/shared/lib/preferences.js'
 
 /** Adapts one renderer window without reading browser globals at module load. */
 export function browserPreferenceStorage(browser: Window): PreferenceStorage {

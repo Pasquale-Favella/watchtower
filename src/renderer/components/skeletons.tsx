@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { Skeleton } from '@/components/ui/skeleton'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 
 /** Decorative bar-chart silhouette heights, cycled by the bar skeleton. */
 const BAR_HEIGHTS = [38, 62, 46, 74, 52, 86, 64, 92, 58, 78, 48, 68, 42, 58]

@@ -3,14 +3,18 @@ import * as Layer from 'effect/Layer'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { scanStateAtom } from '@/stores/atoms/scan'
-import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
+import { scanStateAtom } from '@/renderer/stores/atoms/scan'
+import { RendererProtocolLayer } from '@/renderer/shared/lib/rpc-connection'
 
-import type { BeaconLifecycleFrame } from '../../shared/rpc/lifecycle.js'
-import { registry, runtime } from '../app/renderer-runtime.js'
-import { BeaconRoleClient } from './beacon-role-client.js'
-import { placementAtom } from './placement-atoms.js'
-import { type RoleConnectionReadiness, type RoleLifecycleCursor, runRoleLifecycle } from '../shared/lib/rpc-events.js'
+import type { BeaconLifecycleFrame } from '@/shared/rpc/lifecycle.js'
+import { registry, runtime } from '@/renderer/app/renderer-runtime.js'
+import { BeaconRoleClient } from '@/renderer/orb/beacon-role-client.js'
+import { placementAtom } from '@/renderer/orb/placement-atoms.js'
+import {
+  type RoleConnectionReadiness,
+  type RoleLifecycleCursor,
+  runRoleLifecycle,
+} from '@/renderer/shared/lib/rpc-events.js'
 
 export const beaconEventsReadyAtom = Atom.keepAlive(Atom.make<RoleConnectionReadiness>('inactive'))
 

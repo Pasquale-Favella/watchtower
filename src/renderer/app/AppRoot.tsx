@@ -1,17 +1,17 @@
 import { Outlet } from '@tanstack/react-router'
 
-import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { SidebarInset, SidebarProvider } from '@/renderer/components/ui/sidebar'
+import { TooltipProvider } from '@/renderer/components/ui/tooltip'
 
-import { AppSidebar } from '../components/shell/app-sidebar'
-import { CommandPalette } from '../components/shell/CommandPalette'
-import { Onboarding } from '../components/shell/Onboarding'
-import { ScanIndicator } from '../components/shell/ScanIndicator'
-import { SidebarToggleShortcut } from '../components/shell/SidebarToggleShortcut'
-import { Splash } from '../components/shell/splash/Splash'
-import { useAppBootstrap } from '../stores/hooks/use-app-bootstrap'
-import { useAppHotkeys } from '../stores/hooks/use-app-hotkeys'
-import { useShellStore } from '../stores/hooks/use-shell-store'
+import { AppSidebar } from '@/renderer/components/shell/app-sidebar'
+import { CommandPalette } from '@/renderer/components/shell/CommandPalette'
+import { Onboarding } from '@/renderer/components/shell/Onboarding'
+import { ScanIndicator } from '@/renderer/components/shell/ScanIndicator'
+import { SidebarToggleShortcut } from '@/renderer/components/shell/SidebarToggleShortcut'
+import { Splash } from '@/renderer/components/shell/splash/Splash'
+import { useAppBootstrap } from '@/renderer/stores/hooks/use-app-bootstrap'
+import { useAppHotkeys } from '@/renderer/stores/hooks/use-app-hotkeys'
+import { useShellStore } from '@/renderer/stores/hooks/use-shell-store'
 
 /** Owns window bootstrap and renders Splash until ledger hydration completes. */
 export function AppRoot() {

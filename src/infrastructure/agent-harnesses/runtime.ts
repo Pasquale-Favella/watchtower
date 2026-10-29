@@ -1,5 +1,5 @@
-import { platformSpawnCommand as acpSpawnCommand } from '../process/executable.js'
-export { platformSpawnCommand as acpSpawnCommand } from '../process/executable.js'
+import { platformSpawnCommand as acpSpawnCommand } from '@/infrastructure/process/executable.js'
+export { platformSpawnCommand as acpSpawnCommand } from '@/infrastructure/process/executable.js'
 
 import { existsSync, statSync } from 'node:fs'
 
@@ -14,13 +14,17 @@ import * as Layer from 'effect/Layer'
 import * as Queue from 'effect/Queue'
 import * as Stream from 'effect/Stream'
 
-import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '../../shared/schemas/agents.js'
-import { CoachSdkFailure, coachSdkFailureMessage, type CoachSdkFailureStage } from './coach-errors.js'
-import type { HarnessInfo } from './detect.js'
-import { type CoachStreamPart, createCoachEventNormalizer } from './events.js'
-import { HARNESS_HANDSHAKE_TIMEOUT_MS } from './harness-timeouts.js'
-import { harnessSpecs } from './harnesses/index.js'
-import type { AcpAdapter, AcpMcpServer, HarnessSpec } from './harnesses/types.js'
+import type { CoachEvent, CoachSessionModels, CoachSessionModes } from '@/shared/schemas/agents.js'
+import {
+  CoachSdkFailure,
+  coachSdkFailureMessage,
+  type CoachSdkFailureStage,
+} from '@/infrastructure/agent-harnesses/coach-errors.js'
+import type { HarnessInfo } from '@/infrastructure/agent-harnesses/detect.js'
+import { type CoachStreamPart, createCoachEventNormalizer } from '@/infrastructure/agent-harnesses/events.js'
+import { HARNESS_HANDSHAKE_TIMEOUT_MS } from '@/infrastructure/agent-harnesses/harness-timeouts.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
+import type { AcpAdapter, AcpMcpServer, HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 import {
   describeCatalog,
   executeSelectionPlan,
@@ -30,9 +34,9 @@ import {
   routingPolicyFor,
   type SelectionProvider,
   SelectionUnavailableError,
-} from './model-routing.js'
-import { killProcessTreeSync } from './process-tree.js'
-import { encodeResumeCursor } from './resume-cursor.js'
+} from '@/infrastructure/agent-harnesses/model-routing.js'
+import { killProcessTreeSync } from '@/infrastructure/agent-harnesses/process-tree.js'
+import { encodeResumeCursor } from '@/infrastructure/agent-harnesses/resume-cursor.js'
 
 /**
  * The HarnessRuntime seam (ticket 18/20): the single main-process module that

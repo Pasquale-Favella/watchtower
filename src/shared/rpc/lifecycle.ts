@@ -1,11 +1,11 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { coachHarnessesResultSchema } from '../schemas/agents.js'
-import { activeCurrencySchema } from '../schemas/fx.js'
-import { scanStatusSchema, storeChangedMessageSchema } from '../schemas/ipc.js'
-import { scanProgressSchema } from '../schemas/scan.js'
-import { updateStatusSchema } from '../schemas/updates.js'
+import { coachHarnessesResultSchema } from '@/shared/schemas/agents.js'
+import { activeCurrencySchema } from '@/shared/schemas/fx.js'
+import { scanStatusSchema, storeChangedMessageSchema } from '@/shared/schemas/ipc.js'
+import { scanProgressSchema } from '@/shared/schemas/scan.js'
+import { updateStatusSchema } from '@/shared/schemas/updates.js'
 
 const writable = Schema.mutableKey
 const revision = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))

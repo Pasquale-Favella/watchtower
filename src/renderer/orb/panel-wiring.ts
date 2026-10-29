@@ -4,18 +4,22 @@ import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 
-import { configInvalidationRevisionAtom } from '@/stores/atoms/config-change'
-import { restartRpcQuery } from '@/stores/atoms/rpc-query'
-import { scanStateAtom } from '@/stores/atoms/scan'
-import { currencyChangedAtom } from '@/features/settings/atoms'
-import { RendererProtocolLayer } from '@/shared/lib/rpc-connection'
+import { configInvalidationRevisionAtom } from '@/renderer/stores/atoms/config-change'
+import { restartRpcQuery } from '@/renderer/stores/atoms/rpc-query'
+import { scanStateAtom } from '@/renderer/stores/atoms/scan'
+import { currencyChangedAtom } from '@/renderer/features/settings/atoms'
+import { RendererProtocolLayer } from '@/renderer/shared/lib/rpc-connection'
 
-import type { PanelLifecycleEvent, PanelLifecycleFrame } from '../../shared/rpc/lifecycle.js'
-import { registry, runtime } from '../app/renderer-runtime.js'
-import { orbRecentQuery, orbTodayQuery } from './panel-atoms.js'
-import { PanelRoleClient } from './panel-role-client.js'
-import { placementAtom } from './placement-atoms.js'
-import { type RoleConnectionReadiness, type RoleLifecycleCursor, runRoleLifecycle } from '../shared/lib/rpc-events.js'
+import type { PanelLifecycleEvent, PanelLifecycleFrame } from '@/shared/rpc/lifecycle.js'
+import { registry, runtime } from '@/renderer/app/renderer-runtime.js'
+import { orbRecentQuery, orbTodayQuery } from '@/renderer/orb/panel-atoms.js'
+import { PanelRoleClient } from '@/renderer/orb/panel-role-client.js'
+import { placementAtom } from '@/renderer/orb/placement-atoms.js'
+import {
+  type RoleConnectionReadiness,
+  type RoleLifecycleCursor,
+  runRoleLifecycle,
+} from '@/renderer/shared/lib/rpc-events.js'
 
 export const panelEventsReadyAtom = Atom.keepAlive(Atom.make<RoleConnectionReadiness>('inactive'))
 

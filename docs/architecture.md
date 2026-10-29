@@ -83,6 +83,20 @@ ledger still has one writer. Provider path and pricing snapshots remain local
 to their isolate. Replacing SQLite, Effect or the desktop stack would address
 different problems; this extraction provides no evidence for doing so.
 
+### Source imports and component generation
+
+`@/` resolves to `src/` in every process and test environment. TypeScript
+projects inherit this mapping from the root `tsconfig.json`; Electron Vite
+applies it to main, preload and renderer builds. Use paths such as
+`@/core/ports/repository.js` and `@/renderer/components/ui/button`.
+ESLint checks resolved dependencies, so aliases preserve the same architectural
+restrictions as relative imports.
+
+`components.json` directs shadcn to `@/renderer/components`, with UI components
+under `components/ui`, utilities under `@/renderer/shared/lib`, and hooks under
+`@/renderer/shared/hooks`. The Tailwind stylesheet remains
+`src/renderer/assets/main.css`.
+
 ## App map
 
 Each backend isolate owns its Effect runtime and resources. Each renderer

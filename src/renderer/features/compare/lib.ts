@@ -1,6 +1,6 @@
-import type { CompareFormatFn } from '../../../shared/schemas/compare.js'
-import { formatCompact } from '@/shared/lib/models'
-import { formatUsd, type ActiveCurrency } from '@/shared/lib/currency'
+import type { CompareFormatFn } from '@/shared/schemas/compare.js'
+import { formatCompact } from '@/renderer/shared/lib/models'
+import { formatUsd, type ActiveCurrency } from '@/renderer/shared/lib/currency'
 
 /** Format a comparison value per the metric's format function (ADR 0008),
  * using the `fmtMetric` rules: `—` for null, USD for cost, whole percents,

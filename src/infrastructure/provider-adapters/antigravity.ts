@@ -17,25 +17,31 @@ import { homedir } from 'os'
 import { basename, join } from 'path'
 import { fileURLToPath } from 'url'
 
-import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
-import { resolveCacheDir } from '../config/environment.js'
-import { mapPlatformCloseCause } from '../platform/platform-file-errors.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { readSessionLinesStream, SessionLineReadError } from '../ingestion/fs-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
+import { parsedProviderCallSchema } from '@/shared/schemas/providers.js'
+import { resolveCacheDir } from '@/infrastructure/config/environment.js'
+import { mapPlatformCloseCause } from '@/infrastructure/platform/platform-file-errors.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { readSessionLinesStream, SessionLineReadError } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
 import {
   hasScanAbortCause,
   isRecoverableScanFailureCause,
   isScanAbortedError,
   ScanAbortedError,
   scanAbortError,
-} from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { SqliteDatabase } from '../ingestion/sqlite.js'
-import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase } from '../ingestion/sqlite.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+} from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import { blobToText, isSqliteAvailable, isSqliteBusyError, openDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 type AntigravityConversationRoot = {
   dir: string

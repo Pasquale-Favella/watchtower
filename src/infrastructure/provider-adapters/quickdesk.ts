@@ -10,15 +10,15 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
-import type { SqliteDatabase } from '../ingestion/sqlite.js'
-import { blobToText, isSqliteAvailable, openDatabase } from '../ingestion/sqlite.js'
-import { estimateTokensFromChars } from '../../core/ingestion/parsers/token-estimate.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import { blobToText, isSqliteAvailable, openDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import { estimateTokensFromChars } from '@/core/ingestion/parsers/token-estimate.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
 import type {
   ParsedProviderCall,
   ProbeRoot,
@@ -26,7 +26,7 @@ import type {
   ProviderScanContext,
   SessionParser,
   SessionSource,
-} from './types.js'
+} from '@/infrastructure/provider-adapters/types.js'
 
 const METRICS_FILE_RE = /^metrics-(\d{4})-(\d{2})-(\d{2})\.jsonl$/
 

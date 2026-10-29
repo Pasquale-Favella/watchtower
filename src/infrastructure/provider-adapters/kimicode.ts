@@ -8,12 +8,12 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import { type AppPaths, type Env, overrideFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
+import { type AppPaths, type Env, overrideFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
 import type {
   ParsedProviderCall,
   ProbeRoot,
@@ -21,7 +21,7 @@ import type {
   ProviderScanContext,
   SessionParser,
   SessionSource,
-} from './types.js'
+} from '@/infrastructure/provider-adapters/types.js'
 
 type JsonObject = Record<string, unknown>
 

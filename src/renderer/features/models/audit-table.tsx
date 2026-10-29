@@ -1,10 +1,10 @@
-import { cn } from '@/shared/lib/utils'
-import { formatCompact, isAuditEstimated } from '@/shared/lib/models'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AuditRow } from '../../../shared/schemas/models.js'
-import { AliasLines, ModelDot, MUT_CELL, NUM_CELL, OverrideLine, TH } from './table-parts'
-import type { PricingRowActions } from './models-table'
+import { cn } from '@/renderer/shared/lib/utils'
+import { formatCompact, isAuditEstimated } from '@/renderer/shared/lib/models'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/renderer/components/ui/table'
+import type { AuditRow } from '@/shared/schemas/models.js'
+import { AliasLines, ModelDot, MUT_CELL, NUM_CELL, OverrideLine, TH } from '@/renderer/features/models/table-parts'
+import type { PricingRowActions } from '@/renderer/features/models/models-table'
 
 export function AuditTable({ rows, actions }: { rows: AuditRow[]; actions: PricingRowActions }) {
   const { formatUsd } = useCurrencyFormatter()

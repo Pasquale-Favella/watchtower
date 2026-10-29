@@ -1,10 +1,13 @@
-import type { AnalyticalViews, DashboardViews } from '../../../shared/schemas/views.js'
-import { isProxiedPath } from '../../domain/sessions/proxy-paths.js'
-import { sessionRowFromSummary } from '../../domain/sessions/session-row.js'
-import type { SessionSummary, TaskCategory } from '../../domain/observations/types.js'
-import { CATEGORY_LABELS } from '../../domain/observations/types.js'
-import { buildSessionSummariesFromSnapshotResult, sessionProjectKey } from './aggregate-calculation.js'
-import type { LedgerQuerySnapshot } from '../../application/queries/ledger-query-snapshot.js'
+import type { AnalyticalViews, DashboardViews } from '@/shared/schemas/views.js'
+import { isProxiedPath } from '@/core/domain/sessions/proxy-paths.js'
+import { sessionRowFromSummary } from '@/core/domain/sessions/session-row.js'
+import type { SessionSummary, TaskCategory } from '@/core/domain/observations/types.js'
+import { CATEGORY_LABELS } from '@/core/domain/observations/types.js'
+import {
+  buildSessionSummariesFromSnapshotResult,
+  sessionProjectKey,
+} from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQuerySnapshot } from '@/core/application/queries/ledger-query-snapshot.js'
 
 const ALL_TIME_RANGE = { start: new Date(-8640000000000000), end: new Date(8640000000000000) } as const
 

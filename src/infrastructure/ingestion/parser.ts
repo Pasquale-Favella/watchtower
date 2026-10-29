@@ -8,21 +8,32 @@ import { existsSync } from 'fs'
 import { lstat, readdir, readFile } from 'fs/promises'
 import { basename, dirname, join, resolve, sep } from 'path'
 
-import { parseOrSkip, type UnparsedTally } from '../../shared/schemas/extract.js'
-import { parsedProviderCallSchema } from '../../shared/schemas/providers.js'
-import { type AppPaths, Env, overrideFor } from '../config/environment.js'
-import { extractBashCommands } from '../../core/ingestion/parsers/bash-utils.js'
-import { billableOutputTokens } from '../../core/ingestion/normalization/billable-output.js'
-import { coordinateCacheRefreshEffect } from './cache-refresh-coordinator.js'
-import type { RefreshLockHandle } from './cache-refresh-lock.js'
-import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from '../../core/analytics/detectors/classifier.js'
-import { flushCodexCacheEffect } from './codex-cache.js'
-import { normalizeContentBlocks } from '../../core/ingestion/parsers/content-utils.js'
-import { HttpFetch } from './fetch-utils.js'
-import { logFileName, queueLogRecord } from './file-errors.js'
-import { readSessionLinesStream } from './fs-utils.js'
-import { BASH_COMMAND_CAP, MAX_ADDED_NAMES, MAX_TOOL_BLOCKS, parseJsonlLine, USER_TEXT_CAP } from './jsonl-parser.js'
-import { captureScanPricing, getProxyPathsConfigHash, getShortModelName, isProxiedPath } from '../pricing/models.js'
+import { parseOrSkip, type UnparsedTally } from '@/shared/schemas/extract.js'
+import { parsedProviderCallSchema } from '@/shared/schemas/providers.js'
+import { type AppPaths, Env, overrideFor } from '@/infrastructure/config/environment.js'
+import { extractBashCommands } from '@/core/ingestion/parsers/bash-utils.js'
+import { billableOutputTokens } from '@/core/ingestion/normalization/billable-output.js'
+import { coordinateCacheRefreshEffect } from '@/infrastructure/ingestion/cache-refresh-coordinator.js'
+import type { RefreshLockHandle } from '@/infrastructure/ingestion/cache-refresh-lock.js'
+import { BASH_TOOLS, classifyTurn, EDIT_TOOLS } from '@/core/analytics/detectors/classifier.js'
+import { flushCodexCacheEffect } from '@/infrastructure/ingestion/codex-cache.js'
+import { normalizeContentBlocks } from '@/core/ingestion/parsers/content-utils.js'
+import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
+import { logFileName, queueLogRecord } from '@/infrastructure/ingestion/file-errors.js'
+import { readSessionLinesStream } from '@/infrastructure/ingestion/fs-utils.js'
+import {
+  BASH_COMMAND_CAP,
+  MAX_ADDED_NAMES,
+  MAX_TOOL_BLOCKS,
+  parseJsonlLine,
+  USER_TEXT_CAP,
+} from '@/infrastructure/ingestion/jsonl-parser.js'
+import {
+  captureScanPricing,
+  getProxyPathsConfigHash,
+  getShortModelName,
+  isProxiedPath,
+} from '@/infrastructure/pricing/models.js'
 import {
   buildSpawnPrSets,
   extractPrUrlsFromProviderCall,
@@ -30,17 +41,17 @@ import {
   isAbsoluteProjectPath,
   normalizeProjectPathKey,
   projectNameFromPath,
-} from '../../core/ingestion/normalization/parser-calculations.js'
+} from '@/core/ingestion/normalization/parser-calculations.js'
 import {
   antigravityCascadeIdFromPath,
   flushAntigravityCacheEffect,
   shouldReparseAntigravitySource,
-} from '../provider-adapters/antigravity.js'
-import { getDesktopSessionsDirs } from '../provider-adapters/claude.js'
-import { createDevinScanReads, DevinScanReads } from '../provider-adapters/devin.js'
-import { discoverAllSessionsEffect, getProviderEffect } from '../provider-adapters/index.js'
-import { createKiroScanReads, KiroScanReads } from '../provider-adapters/kiro.js'
-import { createQuickdeskScanData, QuickdeskScanReads } from '../provider-adapters/quickdesk.js'
+} from '@/infrastructure/provider-adapters/antigravity.js'
+import { getDesktopSessionsDirs } from '@/infrastructure/provider-adapters/claude.js'
+import { createDevinScanReads, DevinScanReads } from '@/infrastructure/provider-adapters/devin.js'
+import { discoverAllSessionsEffect, getProviderEffect } from '@/infrastructure/provider-adapters/index.js'
+import { createKiroScanReads, KiroScanReads } from '@/infrastructure/provider-adapters/kiro.js'
+import { createQuickdeskScanData, QuickdeskScanReads } from '@/infrastructure/provider-adapters/quickdesk.js'
 import type {
   DiscoverableProvider,
   ParsedProviderCall,
@@ -48,14 +59,14 @@ import type {
   ProviderScanContext,
   ProviderScanServices,
   SessionSource,
-} from '../provider-adapters/types.js'
-import { fetchVercelGatewayReportEffect } from '../provider-adapters/vercel-gateway.js'
+} from '@/infrastructure/provider-adapters/types.js'
+import { fetchVercelGatewayReportEffect } from '@/infrastructure/provider-adapters/vercel-gateway.js'
 import {
   isScanAbortedError,
   type ScanAbortedError,
   scanAbortError,
-} from '../../core/ingestion/reconciliation/scan-control.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
+} from '@/core/ingestion/reconciliation/scan-control.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
 import {
   beginColdHydrationEffect,
   type CachedCall,
@@ -73,9 +84,9 @@ import {
   saveCacheEffect,
   sectionNeedsPrEvidenceReparse,
   type SessionCache,
-} from './session-cache.js'
-import { resolveSubagentAttribution, sessionIdentity } from './sessions-report.js'
-import { isSqliteBusyError } from './sqlite.js'
+} from '@/infrastructure/ingestion/session-cache.js'
+import { resolveSubagentAttribution, sessionIdentity } from '@/infrastructure/ingestion/sessions-report.js'
+import { isSqliteBusyError } from '@/infrastructure/ingestion/sqlite.js'
 import type {
   ApiUsageIteration,
   AssistantMessageContent,
@@ -91,15 +102,15 @@ import type {
   TokenUsage,
   ToolCall,
   ToolUseBlock,
-} from '../../core/domain/observations/types.js'
+} from '@/core/domain/observations/types.js'
 
 // ── Delta seam (map T3): per-file port-in events ─────────────────────────
 
-export type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
-import type { ScanDelta, ScanDeltaVerdict } from '../../shared/schemas/scan.js'
+export type { ScanDelta, ScanDeltaVerdict } from '@/shared/schemas/scan.js'
+import type { ScanDelta, ScanDeltaVerdict } from '@/shared/schemas/scan.js'
 
-export type { DeltaHandler } from '../../core/ports/ingestion.js'
-import type { DeltaHandler } from '../../core/ports/ingestion.js'
+export type { DeltaHandler } from '@/core/ports/ingestion.js'
+import type { DeltaHandler } from '@/core/ports/ingestion.js'
 
 function isSessionProvider(
   provider: DiscoverableProvider<FileSystem.FileSystem>,

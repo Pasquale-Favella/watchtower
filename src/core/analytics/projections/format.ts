@@ -1,6 +1,6 @@
 import pc from 'picocolors'
-import type { ProjectSummary } from '../../domain/observations/types.js'
-import { formatCost } from '../../domain/pricing/currency.js'
+import type { ProjectSummary } from '@/core/domain/observations/types.js'
+import { formatCost } from '@/core/domain/pricing/currency.js'
 
 export { formatCost }
 

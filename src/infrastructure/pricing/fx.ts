@@ -1,5 +1,5 @@
-import { FxRates } from '../../core/ports/fx-rates.js'
-export { FxRates } from '../../core/ports/fx-rates.js'
+import { FxRates } from '@/core/ports/fx-rates.js'
+export { FxRates } from '@/core/ports/fx-rates.js'
 import * as Clock from 'effect/Clock'
 import * as Effect from 'effect/Effect'
 import type { SchemaError } from 'effect/Schema'
@@ -11,9 +11,9 @@ import {
   isValidCurrencyCode,
   resolveSymbol,
   USD_CURRENCY,
-} from '../../core/analytics/projections/fx-calculation.js'
-import type { ActiveCurrency } from '../../shared/schemas/fx.js'
-import { fetchJsonWithRetry, HttpFetch } from '../ingestion/fetch-utils.js'
+} from '@/core/analytics/projections/fx-calculation.js'
+import type { ActiveCurrency } from '@/shared/schemas/fx.js'
+import { fetchJsonWithRetry, HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
 
 export {
   convertCost,
@@ -22,8 +22,8 @@ export {
   isValidCurrencyCode,
   listCurrencies,
   roundForActiveCurrency,
-} from '../../core/analytics/projections/fx-calculation.js'
-export type { ActiveCurrency, CurrencyOption } from '../../shared/schemas/fx.js'
+} from '@/core/analytics/projections/fx-calculation.js'
+export type { ActiveCurrency, CurrencyOption } from '@/shared/schemas/fx.js'
 
 /**
  * The Frankfurter-backed FX layer (ADR 0009). The main process is the only

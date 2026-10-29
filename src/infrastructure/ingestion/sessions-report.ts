@@ -1,18 +1,18 @@
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { captureModelPricingCatalogue, getShortModelName } from '../pricing/models.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { captureModelPricingCatalogue, getShortModelName } from '@/infrastructure/pricing/models.js'
 import {
   buildPrAttribution as buildPrAttributionFromSummaries,
   type PrAttribution,
   type PrRow,
   type PrTotals,
-} from '../../core/analytics/attribution/pr-attribution.js'
+} from '@/core/analytics/attribution/pr-attribution.js'
 import {
   aggregateSessionRows,
   inferProvider,
   type SessionRow,
   sessionRowFromSummary,
-} from '../../core/domain/sessions/session-row.js'
-import type { ProjectSummary, SessionSummary } from '../../core/domain/observations/types.js'
+} from '@/core/domain/sessions/session-row.js'
+import type { ProjectSummary, SessionSummary } from '@/core/domain/observations/types.js'
 
 /** Compatibility re-exports. Remove after report consumers import the pure row module. */
 export { inferProvider, sessionRowFromSummary }
@@ -224,7 +224,7 @@ export type {
   ResolvedChild,
   SessionPrAttribution,
   SubagentAttribution,
-} from '../../core/analytics/attribution/pr-attribution.js'
+} from '@/core/analytics/attribution/pr-attribution.js'
 export {
   allocateEven,
   attributeSessionPrSpend,
@@ -232,7 +232,7 @@ export {
   resolveSubagentAttribution,
   sessionIdentity,
   shortenPrUrl,
-} from '../../core/analytics/attribution/pr-attribution.js'
+} from '@/core/analytics/attribution/pr-attribution.js'
 
 /** Compatibility adapter until report consumers supply captured pricing. */
 export function buildPrAttribution(sessions: SessionSummary[], anchors: SessionSummary[] = []): PrAttribution {

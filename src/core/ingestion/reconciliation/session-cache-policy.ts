@@ -1,4 +1,4 @@
-import type { CachedCall, CachedFile, FileFingerprint } from '../../../shared/schemas/session-cache.js'
+import type { CachedCall, CachedFile, FileFingerprint } from '@/shared/schemas/session-cache.js'
 
 export type ReconcileAction =
   { action: 'unchanged' } | { action: 'appended'; readFromOffset: number } | { action: 'modified' } | { action: 'new' }

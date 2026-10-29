@@ -5,12 +5,18 @@ import * as Stream from 'effect/Stream'
 import { homedir, platform } from 'os'
 import { basename, join } from 'path'
 
-import { type AppPaths, overrideFor, platformFor } from '../config/environment.js'
-import { readSessionFileEffect } from '../ingestion/fs-utils.js'
-import { captureScanPricing, getShortModelName } from '../pricing/models.js'
-import { checkScanAbort, readDirectoryOrEmpty } from '../ingestion/scan-io.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { type AppPaths, overrideFor, platformFor } from '@/infrastructure/config/environment.js'
+import { readSessionFileEffect } from '@/infrastructure/ingestion/fs-utils.js'
+import { captureScanPricing, getShortModelName } from '@/infrastructure/pricing/models.js'
+import { checkScanAbort, readDirectoryOrEmpty } from '@/infrastructure/ingestion/scan-io.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 // zerostack (https://github.com/gi-dellav/zerostack) is a minimal Rust coding
 // agent. Each session is a single JSON file under <dataDir>/zerostack/sessions/.

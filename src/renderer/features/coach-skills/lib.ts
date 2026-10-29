@@ -1,5 +1,5 @@
-import type { SkillCandidate } from '../../../shared/schemas/skills.js'
-import type { CoachHarnessRow } from '../../../shared/schemas/agents.js'
+import type { SkillCandidate } from '@/shared/schemas/skills.js'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
 
 export function statusLabel(status: CoachHarnessRow['status']): string {
   return {

@@ -2,7 +2,7 @@ import { useRef } from 'react'
 import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 
-import { motionEnabled } from '@/shared/lib/motion'
+import { motionEnabled } from '@/renderer/shared/lib/motion'
 
 const numberFormat = new Intl.NumberFormat()
 

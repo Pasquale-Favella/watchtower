@@ -1,9 +1,9 @@
-import { which } from '../process/executable.js'
+import { which } from '@/infrastructure/process/executable.js'
 
-export { executablePathEnv, which } from '../process/executable.js'
+export { executablePathEnv, which } from '@/infrastructure/process/executable.js'
 
-import { harnessSpecs } from './harnesses/index.js'
-import type { HarnessSpec } from './harnesses/types.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
+import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 
 /**
  * The Harness registry (ADR 0016 / ticket 20): auto-detects installed
@@ -113,4 +113,4 @@ export function pickPreferredHarness(harnesses: HarnessInfo[]): HarnessInfo | un
   return sorted[0]
 }
 
-export { harnessSpecs } from './harnesses/index.js'
+export { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'

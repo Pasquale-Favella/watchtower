@@ -1,10 +1,10 @@
 import * as Context from 'effect/Context'
 import type * as Effect from 'effect/Effect'
 
-import type { ScanDelta, ScanMetadata, ScanOptions, ScanProgress } from '../../shared/schemas/scan.js'
-import type { DateRange } from '../domain/observations/types.js'
-import type { ScanPricing } from '../domain/pricing/scan-pricing.js'
-import type { GatewayReportRow } from '../domain/providers/gateway-report.js'
+import type { ScanDelta, ScanMetadata, ScanOptions, ScanProgress } from '@/shared/schemas/scan.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
+import type { GatewayReportRow } from '@/core/domain/providers/gateway-report.js'
 
 export type DeltaHandler = (delta: ScanDelta, pricing?: ScanPricing) => Effect.Effect<void, Error>
 

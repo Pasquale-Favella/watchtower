@@ -2,14 +2,14 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type ProjectRow, projectRowSchema, type SessionRow, sessionRowSchema } from '../../../shared/schemas/views.js'
-import type { PricingCatalogue } from '../../domain/pricing/pricing-calculation.js'
-import { LedgerSessionReads } from '../../ports/ledger-session-reads.js'
+import { type ProjectRow, projectRowSchema, type SessionRow, sessionRowSchema } from '@/shared/schemas/views.js'
+import type { PricingCatalogue } from '@/core/domain/pricing/pricing-calculation.js'
+import { LedgerSessionReads } from '@/core/ports/ledger-session-reads.js'
 import {
   buildProjectRowsFromSessionData,
   querySessionRowsFromSessionData,
-} from '../../analytics/projections/store-rows-calculation.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
+} from '@/core/analytics/projections/store-rows-calculation.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
 
 export const queryProjectRows = Effect.fn('queryProjectRows')(function* (input: {
   readonly catalogue: PricingCatalogue

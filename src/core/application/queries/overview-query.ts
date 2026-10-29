@@ -3,13 +3,13 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import { type OverviewPayload, overviewPayloadSchema } from '../../../shared/schemas/overview.js'
-import { calculateOverviewFromData } from '../../analytics/projections/overview-calculation.js'
-import { overviewQueryRanges } from '../../domain/sessions/overview-scope.js'
-import type { LocalModelSavings } from '../../domain/pricing/pricing-calculation.js'
-import { LedgerViewReads } from '../../ports/ledger-view-reads.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
-import type { ScopedViewQueryInputs } from './view-queries.js'
+import { type OverviewPayload, overviewPayloadSchema } from '@/shared/schemas/overview.js'
+import { calculateOverviewFromData } from '@/core/analytics/projections/overview-calculation.js'
+import { overviewQueryRanges } from '@/core/domain/sessions/overview-scope.js'
+import type { LocalModelSavings } from '@/core/domain/pricing/pricing-calculation.js'
+import { LedgerViewReads } from '@/core/ports/ledger-view-reads.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import type { ScopedViewQueryInputs } from '@/core/application/queries/view-queries.js'
 
 export type OverviewQueryInputs = ScopedViewQueryInputs & { readonly localSavings: LocalModelSavings }
 

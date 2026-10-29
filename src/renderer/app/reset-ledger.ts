@@ -1,18 +1,18 @@
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { coachDetection } from '@/features/coach-skills/atoms'
-import { compareQuery } from '@/features/compare/atoms'
-import { modelsQuery } from '@/features/models/atoms'
-import { pricingKnownModelsQuery } from '@/features/models/pricing-atoms'
-import { optimizeQuery, yieldQuery } from '@/features/optimize/atoms'
-import { overviewQuery } from '@/features/overview/atoms'
-import { pullRequestsQuery } from '@/features/pull-requests/atoms'
-import { sessionQuery, sessionRowsQuery } from '@/features/sessions/atoms'
-import { spendQuery } from '@/features/spend/atoms'
+import { coachDetection } from '@/renderer/features/coach-skills/atoms'
+import { compareQuery } from '@/renderer/features/compare/atoms'
+import { modelsQuery } from '@/renderer/features/models/atoms'
+import { pricingKnownModelsQuery } from '@/renderer/features/models/pricing-atoms'
+import { optimizeQuery, yieldQuery } from '@/renderer/features/optimize/atoms'
+import { overviewQuery } from '@/renderer/features/overview/atoms'
+import { pullRequestsQuery } from '@/renderer/features/pull-requests/atoms'
+import { sessionQuery, sessionRowsQuery } from '@/renderer/features/sessions/atoms'
+import { spendQuery } from '@/renderer/features/spend/atoms'
 
-import { restartRpcQuery } from '../stores/atoms/rpc-query.js'
-import { searchSlot } from '../stores/atoms/search.js'
+import { restartRpcQuery } from '@/renderer/stores/atoms/rpc-query.js'
+import { searchSlot } from '@/renderer/stores/atoms/search.js'
 
 /** Called only after a successful clear. Configuration and conversation state survive. */
 export function resetLedgerQueries(registry: AtomRegistry.AtomRegistry): void {

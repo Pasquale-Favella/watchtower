@@ -1,8 +1,8 @@
 import { Outlet } from '@tanstack/react-router'
 
-import { motionClass } from '@/shared/lib/motion'
-import { TopBar } from '@/components/shell/TopBar'
-import { StatusBar } from '@/components/shell/StatusBar'
+import { motionClass } from '@/renderer/shared/lib/motion'
+import { TopBar } from '@/renderer/components/shell/TopBar'
+import { StatusBar } from '@/renderer/components/shell/StatusBar'
 
 /** The dashboard layout route (ADR 0014): the TopBar/scroll-region/StatusBar
  * strip around the seven section views. Settings is full-bleed (its own

@@ -1,7 +1,7 @@
-import type { PullRequestsPayload } from '../../../shared/schemas/pull-requests.js'
-import { buildPrAttribution } from '../attribution/pr-attribution.js'
-import type { PricingCatalogue } from '../../domain/pricing/pricing-calculation.js'
-import type { SessionSummary } from '../../domain/observations/types.js'
+import type { PullRequestsPayload } from '@/shared/schemas/pull-requests.js'
+import { buildPrAttribution } from '@/core/analytics/attribution/pr-attribution.js'
+import type { PricingCatalogue } from '@/core/domain/pricing/pricing-calculation.js'
+import type { SessionSummary } from '@/core/domain/observations/types.js'
 
 export function calculatePullRequestsPayload(
   sessions: SessionSummary[],

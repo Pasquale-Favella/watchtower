@@ -1,5 +1,5 @@
-import type { ProjectSummary } from '../../core/domain/observations/types.js'
-import { aggregateTotals } from '../../core/analytics/projections/format.js'
+import type { ProjectSummary } from '@/core/domain/observations/types.js'
+import { aggregateTotals } from '@/core/analytics/projections/format.js'
 
 /**
  * Serializza tutti i progetti + un blocco `aggregate` di primo livello.

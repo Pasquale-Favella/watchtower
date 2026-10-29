@@ -2,11 +2,11 @@ import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 
-import { ScanSources } from '../../core/ports/ingestion.js'
-import { Env } from '../config/environment.js'
-import { OperationalLog } from '../logging/operational-log.js'
-import { HttpFetch } from './fetch-utils.js'
-import { runScan } from './scan.js'
+import { ScanSources } from '@/core/ports/ingestion.js'
+import { Env } from '@/infrastructure/config/environment.js'
+import { OperationalLog } from '@/infrastructure/logging/operational-log.js'
+import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
+import { runScan } from '@/infrastructure/ingestion/scan.js'
 
 export const ScanSourcesLive = Layer.effect(
   ScanSources,

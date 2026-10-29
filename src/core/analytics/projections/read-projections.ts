@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
-import type { LedgerCallRow } from '../../../shared/schemas/ledger.js'
+import type { LedgerCallRow } from '@/shared/schemas/ledger.js'
 
 /**
  * Purpose-shaped read projections for the ledger's bulk reads.

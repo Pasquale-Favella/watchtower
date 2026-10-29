@@ -1,12 +1,12 @@
-import './assets/main.css'
+import '@/renderer/assets/main.css'
 
 import { HotkeysProvider } from '@tanstack/react-hotkeys'
 import { RouterProvider } from '@tanstack/react-router'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 
-import { initializeRendererWindow, RendererRoot } from './app/renderer-root'
-import { router } from './app/router'
+import { initializeRendererWindow, RendererRoot } from '@/renderer/app/renderer-root'
+import { router } from '@/renderer/app/router'
 
 const reactRoot = ReactDOM.createRoot(document.getElementById('root') as HTMLElement)
 const disposeRenderer = initializeRendererWindow(window, { beforeDispose: () => reactRoot.unmount() })

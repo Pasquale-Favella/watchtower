@@ -4,9 +4,9 @@ import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Schema from 'effect/Schema'
 
-import type { ExportResult } from '../../../../shared/schemas/export.js'
-import { ensureZipSuffix, zipExportFolder } from '../export-zip.js'
-import { ExportFileError, exportFileErrorMessage } from '../../../../core/ports/export-files.js'
+import type { ExportResult } from '@/shared/schemas/export.js'
+import { ensureZipSuffix, zipExportFolder } from '@/platform/electron/main/export-zip.js'
+import { ExportFileError, exportFileErrorMessage } from '@/core/ports/export-files.js'
 
 export interface ExportCsvZipPorts {
   readonly defaultDirectory: string

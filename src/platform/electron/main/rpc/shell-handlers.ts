@@ -3,9 +3,9 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import { shell, type WebContents } from 'electron'
 
-import { OrbRpcGroup, ShellRpcError, ShellRpcGroup } from '../../../../shared/rpc/shell.js'
-import { BackgroundShell } from '../background-shell.js'
-import { safeLogOperationalEvent } from '../../../../infrastructure/logging/operational-log.js'
+import { OrbRpcGroup, ShellRpcError, ShellRpcGroup } from '@/shared/rpc/shell.js'
+import { BackgroundShell } from '@/platform/electron/main/background-shell.js'
+import { safeLogOperationalEvent } from '@/infrastructure/logging/operational-log.js'
 
 const unavailable = () => new ShellRpcError({ code: 'unavailable', message: 'Shell unavailable' })
 

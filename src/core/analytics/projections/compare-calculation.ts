@@ -8,11 +8,11 @@ import {
   type CompareWinner,
   type ComparisonRow,
   type WorkingStyleRow,
-} from '../../../shared/schemas/compare.js'
-import { getShortModelName } from '../../domain/pricing/model-names.js'
-import type { PricingCatalogue } from '../../domain/pricing/pricing-calculation.js'
-import { resolveModelNameAlias } from '../../domain/pricing/pricing-calculation.js'
-import type { SessionSummary } from '../../domain/observations/types.js'
+} from '@/shared/schemas/compare.js'
+import { getShortModelName } from '@/core/domain/pricing/model-names.js'
+import type { PricingCatalogue } from '@/core/domain/pricing/pricing-calculation.js'
+import { resolveModelNameAlias } from '@/core/domain/pricing/pricing-calculation.js'
+import type { SessionSummary } from '@/core/domain/observations/types.js'
 
 export type {
   CategoryComparison,
@@ -24,7 +24,7 @@ export type {
   CompareWinner,
   ComparisonRow,
   WorkingStyleRow,
-} from '../../../shared/schemas/compare.js'
+} from '@/shared/schemas/compare.js'
 
 /** The Compare section's scoped payload (ADR 0008): a model-pair picker, a
  * metrics comparison card, per-category one-shot comparison bars, and a

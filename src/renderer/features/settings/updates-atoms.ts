@@ -1,10 +1,10 @@
 import * as Effect from 'effect/Effect'
 import * as Atom from 'effect/reactivity/Atom'
 
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import type { UpdateStatus } from '../../../shared/schemas/updates.js'
+import type { UpdateStatus } from '@/shared/schemas/updates.js'
 
 type UpdateCommand = 'check' | 'download' | 'install'
 

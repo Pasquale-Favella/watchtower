@@ -4,15 +4,15 @@ import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as RpcClientError from 'effect/rpc/RpcClientError'
 
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { keyOfScope } from '@/shared/lib/query-keys'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { keyOfScope } from '@/renderer/shared/lib/query-keys'
 
-import type { AnalyticsRpcError } from '../../shared/rpc/errors.js'
-import type { ScanResult } from '../../shared/schemas/ipc.js'
-import type { OverviewPayload, OverviewScope } from '../../shared/schemas/overview.js'
-import { scanStateAtom } from '../stores/atoms/scan.js'
-import { runtime } from '../app/renderer-runtime.js'
-import { PanelRoleClient } from './panel-role-client.js'
+import type { AnalyticsRpcError } from '@/shared/rpc/errors.js'
+import type { ScanResult } from '@/shared/schemas/ipc.js'
+import type { OverviewPayload, OverviewScope } from '@/shared/schemas/overview.js'
+import { scanStateAtom } from '@/renderer/stores/atoms/scan.js'
+import { runtime } from '@/renderer/app/renderer-runtime.js'
+import { PanelRoleClient } from '@/renderer/orb/panel-role-client.js'
 
 /** The panel has no Scope selector: today is the headline and 30 days feed the trend. */
 export const ORB_SCOPES = {

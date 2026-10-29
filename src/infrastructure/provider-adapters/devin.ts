@@ -9,14 +9,20 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { homedir } from 'os'
 import { basename, join } from 'path'
 
-import { readSessionFileEffect } from '../ingestion/fs-utils.js'
-import { getShortModelName } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { SqliteDatabase } from '../ingestion/sqlite.js'
-import { openDatabase } from '../ingestion/sqlite.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { readSessionFileEffect } from '@/infrastructure/ingestion/fs-utils.js'
+import { getShortModelName } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { SqliteDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import { openDatabase } from '@/infrastructure/ingestion/sqlite.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 type DevinSessionMetadata = {
   id: string

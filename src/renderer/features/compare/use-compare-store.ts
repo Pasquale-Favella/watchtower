@@ -3,11 +3,16 @@ import * as Option from 'effect/Option'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import { useContext, useEffect, useMemo } from 'react'
 
-import { useRemoteQuery } from '@/stores/hooks/use-remote-query'
-import { useScopeStore } from '@/stores/hooks/use-scope-store'
-import { compareQuery, compareRequestKey, compareSelectionAtom, pairFromPayload } from '@/features/compare/atoms'
+import { useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
+import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
+import {
+  compareQuery,
+  compareRequestKey,
+  compareSelectionAtom,
+  pairFromPayload,
+} from '@/renderer/features/compare/atoms'
 
-import type { ComparePair } from '../../../shared/schemas/compare.js'
+import type { ComparePair } from '@/shared/schemas/compare.js'
 
 export function useCompareStore() {
   const { scope, provider, setProvider, detectedProviders } = useScopeStore()

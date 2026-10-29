@@ -1,11 +1,11 @@
 import { RegistryContext } from '@effect/atom-react'
 import { useContext, useEffect } from 'react'
 
-import { useRemoteQuery } from '@/stores/hooks/use-remote-query'
-import { sessionQuery } from '@/features/sessions/atoms'
-import { useNativeStore } from '@/shared/hooks/use-native-store'
-import type { SessionRequest } from '@/shared/lib/query-keys'
-import { sessionRequestKey } from '@/shared/lib/query-keys'
+import { useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
+import { sessionQuery } from '@/renderer/features/sessions/atoms'
+import { useNativeStore } from '@/renderer/shared/hooks/use-native-store'
+import type { SessionRequest } from '@/renderer/shared/lib/query-keys'
+import { sessionRequestKey } from '@/renderer/shared/lib/query-keys'
 
 export function useSessionStore(request: SessionRequest | null) {
   const query = useRemoteQuery(sessionQuery, request, sessionRequestKey)

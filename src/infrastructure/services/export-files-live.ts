@@ -8,9 +8,9 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as PlatformError from 'effect/PlatformError'
 
-import { ExportFileError, type ExportFileErrorReason, ExportFiles } from '../../core/ports/export-files.js'
-import type { ExportFileContent } from '../../core/analytics/projections/export-calculation.js'
-import { mapPlatformCloseCause } from '../platform/platform-file-errors.js'
+import { ExportFileError, type ExportFileErrorReason, ExportFiles } from '@/core/ports/export-files.js'
+import type { ExportFileContent } from '@/core/analytics/projections/export-calculation.js'
+import { mapPlatformCloseCause } from '@/infrastructure/platform/platform-file-errors.js'
 
 const EXPORT_MARKER_FILE = '.watchtower-export'
 

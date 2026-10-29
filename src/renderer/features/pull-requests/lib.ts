@@ -1,4 +1,4 @@
-import type { PullRequestRow } from '../../../shared/schemas/pull-requests.js'
+import type { PullRequestRow } from '@/shared/schemas/pull-requests.js'
 
 /** "Jul 10" — short month + day, no year. Invalid/empty input renders as an em dash. */
 export function formatDayShort(iso: string): string {

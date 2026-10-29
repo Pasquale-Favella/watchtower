@@ -2,11 +2,11 @@ import * as Cause from 'effect/Cause'
 import * as Schema from 'effect/Schema'
 import * as SqlError from 'effect/sql/SqlError'
 
-import { WorkerRpcError } from '../../../shared/rpc/worker.js'
-import { CurrencyCommandValidationError } from '../../../core/application/commands/currency-commands.js'
-import { LedgerConfigValidationError } from '../../../core/application/commands/ledger-config-commands.js'
-import { ScanAbortedError } from '../../../core/ingestion/reconciliation/scan-control.js'
-import { UnsupportedLedgerSchemaVersion } from '../../../infrastructure/sqlite/ledger-initialization.js'
+import { WorkerRpcError } from '@/shared/rpc/worker.js'
+import { CurrencyCommandValidationError } from '@/core/application/commands/currency-commands.js'
+import { LedgerConfigValidationError } from '@/core/application/commands/ledger-config-commands.js'
+import { ScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { UnsupportedLedgerSchemaVersion } from '@/infrastructure/sqlite/ledger-initialization.js'
 
 export type WorkerRpcFallbackCode = Extract<
   WorkerRpcError['code'],

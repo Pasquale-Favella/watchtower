@@ -1,6 +1,6 @@
-import type { ActiveCurrency } from '../../../shared/schemas/fx.js'
+import type { ActiveCurrency } from '@/shared/schemas/fx.js'
 
-export type { ActiveCurrency } from '../../../shared/schemas/fx.js'
+export type { ActiveCurrency } from '@/shared/schemas/fx.js'
 
 /** Format a raw USD amount using the supplied display-currency snapshot. */
 export function formatUsd(n: number, currency: ActiveCurrency): string {

@@ -1,6 +1,6 @@
-import type { SpendDayEntry, SpendFlow } from '../../../shared/schemas/spend.js'
+import type { SpendDayEntry, SpendFlow } from '@/shared/schemas/spend.js'
 
-import type { SankeyLinkData, SankeyNodeData, SpendRow } from '../../../shared/schemas/renderer.js'
+import type { SankeyLinkData, SankeyNodeData, SpendRow } from '@/shared/schemas/renderer.js'
 export type { SankeyLinkData, SankeyNodeData, SpendRow }
 
 /** "all" or empty -> "All models"; otherwise each hyphen/space-split token is

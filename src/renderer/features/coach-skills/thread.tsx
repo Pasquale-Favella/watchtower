@@ -1,7 +1,7 @@
 import { useRef } from 'react'
 
-import { Markdown } from '@/components/Markdown'
-import { Badge } from '@/components/ui/badge'
+import { Markdown } from '@/renderer/components/Markdown'
+import { Badge } from '@/renderer/components/ui/badge'
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -9,12 +9,18 @@ import {
   MessageScrollerItem,
   MessageScrollerProvider,
   MessageScrollerViewport,
-} from '@/components/ui/message-scroller'
-import { useChatRowIn } from '@/shared/lib/motion'
+} from '@/renderer/components/ui/message-scroller'
+import { useChatRowIn } from '@/renderer/shared/lib/motion'
 
-import { type ChatMessage } from './hooks'
-import { CopyButton, RetryButton, StreamingDots, ThinkingBlock, ToolCard } from './blocks'
-import { useCoachThreadStore } from './hooks'
+import { type ChatMessage } from '@/renderer/features/coach-skills/hooks'
+import {
+  CopyButton,
+  RetryButton,
+  StreamingDots,
+  ThinkingBlock,
+  ToolCard,
+} from '@/renderer/features/coach-skills/blocks'
+import { useCoachThreadStore } from '@/renderer/features/coach-skills/hooks'
 
 /** One thread message (ADR 0017): a user bubble, a streaming assistant turn
  *  with its run-context header, a live Thinking panel (when the harness

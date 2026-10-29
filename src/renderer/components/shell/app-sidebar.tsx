@@ -1,11 +1,11 @@
 import { useRouterState } from '@tanstack/react-router'
 import type { ComponentProps, ReactNode } from 'react'
 
-import { WatchtowerIcon } from '@/components/shell/WatchtowerIcon'
-import { useScopeStore } from '@/stores/hooks/use-scope-store'
-import { navigateToSection, sectionForPath } from '@/app/navigation'
-import { SECTION_ICONS } from '@/app/section-icons'
-import { displayShortcutForAction, type Section, shortcutForAction } from '@/app/shortcuts'
+import { WatchtowerIcon } from '@/renderer/components/shell/WatchtowerIcon'
+import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
+import { navigateToSection, sectionForPath } from '@/renderer/app/navigation'
+import { SECTION_ICONS } from '@/renderer/app/section-icons'
+import { displayShortcutForAction, type Section, shortcutForAction } from '@/renderer/app/shortcuts'
 import {
   Sidebar,
   SidebarContent,
@@ -18,11 +18,11 @@ import {
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
-} from '@/components/ui/sidebar'
-import { PERIOD_LABELS } from '@/shared/lib/settings-constants'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
+} from '@/renderer/components/ui/sidebar'
+import { PERIOD_LABELS } from '@/renderer/shared/lib/settings-constants'
+import { providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
 
-import { SECTIONS } from '../../../shared/schemas/navigation.js'
+import { SECTIONS } from '@/shared/schemas/navigation.js'
 
 /** Sidebar nav — ids and order come from navigation (ADR 0014, SECTIONS);
  * labels and keycap hints come from the shortcuts registry (ADR 0001). */

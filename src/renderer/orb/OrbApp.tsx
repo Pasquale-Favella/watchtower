@@ -1,5 +1,5 @@
-import { useOrbBeaconBootstrap } from './beacon-hooks'
-import { OrbBeacon } from './OrbBeacon'
+import { useOrbBeaconBootstrap } from '@/renderer/orb/beacon-hooks'
+import { OrbBeacon } from '@/renderer/orb/OrbBeacon'
 
 /**
  * The orb window's composition root (see main/background-shell.ts): just the

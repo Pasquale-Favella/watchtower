@@ -1,19 +1,19 @@
 import { useMemo } from 'react'
 
-import { navigateToSection } from '@/app/navigation'
-import { type BarItem, BarList } from '@/features/overview/BarList'
-import { DailySpendChart } from '@/features/overview/DailySpendChart'
-import { KpiBento, KpiBentoSkeleton } from '@/features/overview/KpiBento'
-import { formatChartDate, formatChartValue } from '@/features/overview/lib'
-import { useOverviewStore } from '@/features/overview/use-overview-store'
-import { Panel } from '@/components/Panel'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { LoadingRegion, SkeletonBars, SkeletonCard, SkeletonLines } from '@/components/skeletons'
-import { motionClass } from '@/shared/lib/motion'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+import { navigateToSection } from '@/renderer/app/navigation'
+import { type BarItem, BarList } from '@/renderer/features/overview/BarList'
+import { DailySpendChart } from '@/renderer/features/overview/DailySpendChart'
+import { KpiBento, KpiBentoSkeleton } from '@/renderer/features/overview/KpiBento'
+import { formatChartDate, formatChartValue } from '@/renderer/features/overview/lib'
+import { useOverviewStore } from '@/renderer/features/overview/use-overview-store'
+import { Panel } from '@/renderer/components/Panel'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { LoadingRegion, SkeletonBars, SkeletonCard, SkeletonLines } from '@/renderer/components/skeletons'
+import { motionClass } from '@/renderer/shared/lib/motion'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { OverviewPayload } from '../../../shared/schemas/overview.js'
+import type { OverviewPayload } from '@/shared/schemas/overview.js'
 
 function formatCompact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`

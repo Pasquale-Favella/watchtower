@@ -298,7 +298,7 @@ export default tseslint.config(
         {
           patterns: [
             {
-              regex: '^(?:electron(?:$|[/-])|@electron/|react(?:$|[/-])|@effect/atom-react(?:$|/)|@/)',
+              regex: '^(?:electron(?:$|[/-])|@electron/|react(?:$|[/-])|@effect/atom-react(?:$|/))',
               message: 'Engine code depends on Node and shared contracts, not Electron or React (ADR 0038).',
             },
           ],

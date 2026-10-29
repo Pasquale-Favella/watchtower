@@ -1,10 +1,10 @@
-import './orb.css'
+import '@/renderer/orb/orb.css'
 
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 
-import { initializeRendererWindow, RendererRoot } from '../app/renderer-root'
-import { OrbPanelApp } from './OrbPanelApp'
+import { initializeRendererWindow, RendererRoot } from '@/renderer/app/renderer-root'
+import { OrbPanelApp } from '@/renderer/orb/OrbPanelApp'
 
 const reactRoot = ReactDOM.createRoot(document.getElementById('root') as HTMLElement)
 const disposeRenderer = initializeRendererWindow(window, { beforeDispose: () => reactRoot.unmount() })

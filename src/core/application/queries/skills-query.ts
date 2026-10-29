@@ -8,16 +8,16 @@ import {
   type SkillsPayload,
   skillsPayloadSchema,
   type SkillsThresholds,
-} from '../../../shared/schemas/skills.js'
-import { overviewQueryRanges } from '../../domain/sessions/overview-scope.js'
-import { calculateSkillsView } from '../../analytics/detectors/skills-calculation.js'
-import { buildSessionSummariesFromSnapshotResult } from '../../analytics/projections/aggregate-calculation.js'
-import type { LedgerQueries } from '../../ports/repository.js'
-import { LedgerConfig } from '../../ports/repository.js'
-import { loadLedgerQuerySnapshotEffect } from './ledger-query-snapshot.js'
-import { AssistantSetup } from '../../ports/assistant-setup.js'
-import { PricingDiagnostics } from '../../ports/pricing-diagnostics.js'
-import type { ScopedViewQueryInputs } from './view-queries.js'
+} from '@/shared/schemas/skills.js'
+import { overviewQueryRanges } from '@/core/domain/sessions/overview-scope.js'
+import { calculateSkillsView } from '@/core/analytics/detectors/skills-calculation.js'
+import { buildSessionSummariesFromSnapshotResult } from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQueries } from '@/core/ports/repository.js'
+import { LedgerConfig } from '@/core/ports/repository.js'
+import { loadLedgerQuerySnapshotEffect } from '@/core/application/queries/ledger-query-snapshot.js'
+import { AssistantSetup } from '@/core/ports/assistant-setup.js'
+import { PricingDiagnostics } from '@/core/ports/pricing-diagnostics.js'
+import type { ScopedViewQueryInputs } from '@/core/application/queries/view-queries.js'
 
 export type SkillsViewQueryInputs = ScopedViewQueryInputs & {
   readonly thresholds?: SkillsThresholds

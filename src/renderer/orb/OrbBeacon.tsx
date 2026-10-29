@@ -1,10 +1,10 @@
-import { WatchtowerIcon } from '@/components/shell/WatchtowerIcon'
-import { displayShortcutForAction } from '@/app/shortcuts'
-import { cn } from '@/shared/lib/utils'
+import { WatchtowerIcon } from '@/renderer/components/shell/WatchtowerIcon'
+import { displayShortcutForAction } from '@/renderer/app/shortcuts'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import { ORB_SIZE } from '../../shared/schemas/orb.js'
-import { useOrbDrag } from './beacon-hooks'
-import { useOrbBeaconStore } from './beacon-store'
+import { ORB_SIZE } from '@/shared/schemas/orb.js'
+import { useOrbDrag } from '@/renderer/orb/beacon-hooks'
+import { useOrbBeaconStore } from '@/renderer/orb/beacon-store'
 
 /** The orb itself: the brand mark in a primary-ringed disc, with a beacon
  * sweeping its rim (faster while a scan runs — whichever window started it).

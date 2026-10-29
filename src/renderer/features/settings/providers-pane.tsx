@@ -1,12 +1,12 @@
-import { PaneHeader } from '@/features/settings/pane-parts'
-import { useSettingsProvidersStore } from '@/features/settings/use-settings-store'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { LoadingRegion } from '@/components/skeletons'
-import { Card } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { providerTitle } from '@/shared/lib/models'
-import { seriesColorForModel } from '@/shared/lib/modelSeries'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+import { PaneHeader } from '@/renderer/features/settings/pane-parts'
+import { useSettingsProvidersStore } from '@/renderer/features/settings/use-settings-store'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { LoadingRegion } from '@/renderer/components/skeletons'
+import { Card } from '@/renderer/components/ui/card'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { providerTitle } from '@/renderer/shared/lib/models'
+import { seriesColorForModel } from '@/renderer/shared/lib/modelSeries'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
 
 /** Settings › Providers: a read-only list of the providers detected on this
  * machine (auto-detected from local session files — no setup needed). */

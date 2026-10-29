@@ -1,5 +1,5 @@
-import type { ActiveCurrency, CurrencyOption } from '../../../shared/schemas/fx.js'
-import type { CurrencyRate } from '../../../shared/schemas/ledger.js'
+import type { ActiveCurrency, CurrencyOption } from '@/shared/schemas/fx.js'
+import type { CurrencyRate } from '@/shared/schemas/ledger.js'
 
 export const USD_CURRENCY: Readonly<ActiveCurrency> = { code: 'USD', symbol: '$', rate: 1 }
 

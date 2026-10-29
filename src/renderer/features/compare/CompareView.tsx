@@ -1,19 +1,19 @@
 import { useMemo } from 'react'
 
-import { compareValue } from '@/features/compare/lib'
-import { useCompareStore } from '@/features/compare/use-compare-store'
-import { Panel } from '@/components/Panel'
-import { QueryErrorNotice } from '@/components/QueryErrorNotice'
-import { SegTabs } from '@/components/SegTabs'
-import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/components/skeletons'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Skeleton } from '@/components/ui/skeleton'
-import { categoryLabel } from '@/shared/lib/models'
-import { seriesColorForModel } from '@/shared/lib/modelSeries'
-import { motionClass } from '@/shared/lib/motion'
-import { providerOptionsFromDetected } from '@/shared/lib/shell'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { cn } from '@/shared/lib/utils'
+import { compareValue } from '@/renderer/features/compare/lib'
+import { useCompareStore } from '@/renderer/features/compare/use-compare-store'
+import { Panel } from '@/renderer/components/Panel'
+import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { SegTabs } from '@/renderer/components/SegTabs'
+import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/renderer/components/skeletons'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/components/ui/select'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { categoryLabel } from '@/renderer/shared/lib/models'
+import { seriesColorForModel } from '@/renderer/shared/lib/modelSeries'
+import { motionClass } from '@/renderer/shared/lib/motion'
+import { providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { cn } from '@/renderer/shared/lib/utils'
 
 import type {
   CategoryComparison,
@@ -22,7 +22,7 @@ import type {
   CompareWinner,
   ComparisonRow,
   WorkingStyleRow,
-} from '../../../shared/schemas/compare.js'
+} from '@/shared/schemas/compare.js'
 
 const ROW_GRID = 'grid grid-cols-[minmax(0,1fr)_150px_150px] gap-x-3'
 const VALUE_CELL = 'text-right font-mono tabular-nums'

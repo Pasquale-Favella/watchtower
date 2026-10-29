@@ -5,19 +5,19 @@ import * as Stream from 'effect/Stream'
 import { readdir } from 'fs/promises'
 import { join } from 'path'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { fileErrorCode, reportProviderIssue } from '../ingestion/file-errors.js'
-import { captureScanPricing } from '../pricing/models.js'
-import { isScanAbortedError } from '../../core/ingestion/reconciliation/scan-control.js'
-import { checkScanAbort, scanIo } from '../ingestion/scan-io.js'
-import type { ScanPricing } from '../../core/domain/pricing/scan-pricing.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { fileErrorCode, reportProviderIssue } from '@/infrastructure/ingestion/file-errors.js'
+import { captureScanPricing } from '@/infrastructure/pricing/models.js'
+import { isScanAbortedError } from '@/core/ingestion/reconciliation/scan-control.js'
+import { checkScanAbort, scanIo } from '@/infrastructure/ingestion/scan-io.js'
+import type { ScanPricing } from '@/core/domain/pricing/scan-pricing.js'
 import {
   blobToText,
   isSqliteAvailable,
   isSqliteBusyError,
   openDatabase,
   type SqliteDatabase,
-} from '../ingestion/sqlite.js'
+} from '@/infrastructure/ingestion/sqlite.js'
 import {
   buildAssistantCallResult,
   decodeMessageRole,
@@ -29,8 +29,13 @@ import {
   parseTimestamp,
   type PartData,
   sanitize,
-} from './session-message.js'
-import type { ParsedProviderCall, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+} from '@/infrastructure/provider-adapters/session-message.js'
+import type {
+  ParsedProviderCall,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // THIS IS NOT A GENERIC SQLITE READER.

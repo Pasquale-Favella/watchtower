@@ -6,15 +6,15 @@ import {
   type ModelPickerGroup,
   uniqueAliasTargets,
   usagePickerItem,
-} from '@/features/models/model-picker'
-import { useAliasPricingStore } from '@/features/models/use-pricing-store'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
-import { LoadingRegion } from '@/components/skeletons'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { Separator } from '@/components/ui/separator'
-import { Skeleton } from '@/components/ui/skeleton'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+} from '@/renderer/features/models/model-picker'
+import { useAliasPricingStore } from '@/renderer/features/models/use-pricing-store'
+import { ConfirmRemove, PaneHeader } from '@/renderer/features/settings/pane-parts'
+import { LoadingRegion } from '@/renderer/components/skeletons'
+import { Button } from '@/renderer/components/ui/button'
+import { Card } from '@/renderer/components/ui/card'
+import { Separator } from '@/renderer/components/ui/separator'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
 
 /** Settings › Model aliases: full CRUD against the store's alias config
  * table. An alias maps an unrecognized model name to a priced model so its

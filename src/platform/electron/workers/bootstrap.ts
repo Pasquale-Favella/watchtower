@@ -5,13 +5,13 @@ import * as Exit from 'effect/Exit'
 import { RpcServer, RpcWorker } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { WorkerRpcGroup } from '../../../shared/rpc/worker.js'
-import { initAppPaths, readAppPathsEffect } from '../../../infrastructure/config/environment.js'
-import { openEngineRuntime } from '../../../infrastructure/runtime/engine-runtime.js'
-import { DbWorkerContext, type DbWorkerDeps, type DbWorkerEmit } from './context.js'
-import { makeWorkerOperationalLogSink } from './operational-log-sink.js'
-import type { DbWorkerData } from './protocol.js'
-import { dbWorkerRpcServerLayer } from './rpc-server.js'
+import { WorkerRpcGroup } from '@/shared/rpc/worker.js'
+import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
+import { openEngineRuntime } from '@/infrastructure/runtime/engine-runtime.js'
+import { DbWorkerContext, type DbWorkerDeps, type DbWorkerEmit } from '@/platform/electron/workers/context.js'
+import { makeWorkerOperationalLogSink } from '@/platform/electron/workers/operational-log-sink.js'
+import type { DbWorkerData } from '@/platform/electron/workers/protocol.js'
+import { dbWorkerRpcServerLayer } from '@/platform/electron/workers/rpc-server.js'
 
 export interface DbWorkerContextBootstrapDependencies {
   readonly openRuntime: typeof openEngineRuntime

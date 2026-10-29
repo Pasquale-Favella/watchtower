@@ -1,4 +1,4 @@
-import { cn } from '@/shared/lib/utils'
+import { cn } from '@/renderer/shared/lib/utils'
 
 export type SegOption = { value: string; label: string }
 

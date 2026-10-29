@@ -2,8 +2,8 @@ import * as Effect from 'effect/Effect'
 import type { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Schema from 'effect/Schema'
 
-import { WorkerRpcError, WorkerRpcGroup } from '../../../shared/rpc/worker.js'
-import type { WorkerRpcClient } from './rpc-transport.js'
+import { WorkerRpcError, WorkerRpcGroup } from '@/shared/rpc/worker.js'
+import type { WorkerRpcClient } from '@/platform/electron/workers/rpc-transport.js'
 
 type Operation = {
   readonly tag: keyof WorkerRpcClient

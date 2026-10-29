@@ -8,7 +8,7 @@ import * as Queue from 'effect/Queue'
 import * as Ref from 'effect/Ref'
 import * as Schema from 'effect/Schema'
 
-import { type UpdateStatus, updateStatusSchema } from '../../../shared/schemas/updates.js'
+import { type UpdateStatus, updateStatusSchema } from '@/shared/schemas/updates.js'
 
 export class UpdateError extends Schema.TaggedError<UpdateError>()('UpdateError', {
   code: Schema.Literals(['check-failed', 'download-failed', 'invalid-update']),

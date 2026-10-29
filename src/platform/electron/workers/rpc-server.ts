@@ -14,10 +14,10 @@ import {
   WorkerRpcError,
   WorkerRpcGroup,
   type WorkerRpcSuccess,
-} from '../../../shared/rpc/worker.js'
-import type { DbWorkerContext, DbWorkerEmit } from './context.js'
-import type { DbWorkerEvent } from './protocol.js'
-import { workerRpcError } from './rpc-errors.js'
+} from '@/shared/rpc/worker.js'
+import type { DbWorkerContext, DbWorkerEmit } from '@/platform/electron/workers/context.js'
+import type { DbWorkerEvent } from '@/platform/electron/workers/protocol.js'
+import { workerRpcError } from '@/platform/electron/workers/rpc-errors.js'
 
 const EVENT_CAPACITY = 4096
 const EVENT_BYTE_CAPACITY = 2 * 1024 * 1024

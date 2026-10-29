@@ -1,6 +1,6 @@
-import type { YieldBucket, YieldCategory, YieldDetail, YieldPayload } from '../../../shared/schemas/yield.js'
-import type { CommitInfo, InspectionIssue } from '../../ports/repository-inspection.js'
-import type { ProjectSummary, SessionSummary } from '../../domain/observations/types.js'
+import type { YieldBucket, YieldCategory, YieldDetail, YieldPayload } from '@/shared/schemas/yield.js'
+import type { CommitInfo, InspectionIssue } from '@/core/ports/repository-inspection.js'
+import type { ProjectSummary, SessionSummary } from '@/core/domain/observations/types.js'
 
 export type YieldRepoGroup = {
   readonly commits: readonly CommitInfo[]

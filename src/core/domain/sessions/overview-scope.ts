@@ -1,7 +1,7 @@
 import { eachDayOfInterval, endOfDay, startOfDay, startOfMonth, subDays, subMonths } from 'date-fns'
 
-import type { OverviewPeriod, OverviewScope } from '../../../shared/schemas/overview.js'
-import type { DateRange, SessionSummary } from '../observations/types.js'
+import type { OverviewPeriod, OverviewScope } from '@/shared/schemas/overview.js'
+import type { DateRange, SessionSummary } from '@/core/domain/observations/types.js'
 
 // Local calendar dates keep period windows and daily bucketing aligned with the user's calendar.
 export function localDateKey(d: Date): string {

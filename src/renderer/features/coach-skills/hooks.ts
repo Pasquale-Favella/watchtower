@@ -1,9 +1,9 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useMemo } from 'react'
 
-import { querySnapshot, useRemoteQuery } from '@/stores/hooks/use-remote-query'
-import { useOverviewScope } from '@/stores/hooks/use-scope-store'
-import { preferencesAtom, setPreferencesAtom } from '@/features/settings/preferences-atoms'
+import { querySnapshot, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
+import { useOverviewScope } from '@/renderer/stores/hooks/use-scope-store'
+import { preferencesAtom, setPreferencesAtom } from '@/renderer/features/settings/preferences-atoms'
 
 import {
   cancelCoachAtom,
@@ -20,7 +20,7 @@ import {
   setHarnessAtom,
   setModeIdAtom,
   setModelIdAtom,
-} from './atoms'
+} from '@/renderer/features/coach-skills/atoms'
 
 /** Selects a presentation value from the window-owned Coach state atom. */
 export function useCoachState<Value>(select: (state: CoachState) => Value): Value {
@@ -99,4 +99,4 @@ export function useCoachHarnessSetupStore() {
   }
 }
 
-export type { ChatMessage, ToolNotice, CoachKindCache } from './atoms'
+export type { ChatMessage, ToolNotice, CoachKindCache } from '@/renderer/features/coach-skills/atoms'

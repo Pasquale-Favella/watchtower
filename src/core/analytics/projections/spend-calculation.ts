@@ -1,19 +1,16 @@
 import { subDays } from 'date-fns'
 
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import type {
-  SpendDayEntry,
-  SpendFlowLink,
-  SpendFlowNode,
-  SpendPayload,
-  SpendSegment,
-} from '../../../shared/schemas/spend.js'
-import { localDateKey, localDateKeys, overviewDateRange } from '../../domain/sessions/overview-scope.js'
-import { getShortModelName } from '../../domain/pricing/model-names.js'
-import { resolveModelNameAlias } from '../../domain/pricing/pricing-calculation.js'
-import type { SessionSummary } from '../../domain/observations/types.js'
-import { buildSessionSummariesFromSnapshotResult, sessionProjectKey } from './aggregate-calculation.js'
-import type { LedgerQuerySnapshot } from '../../application/queries/ledger-query-snapshot.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import type { SpendDayEntry, SpendFlowLink, SpendFlowNode, SpendPayload, SpendSegment } from '@/shared/schemas/spend.js'
+import { localDateKey, localDateKeys, overviewDateRange } from '@/core/domain/sessions/overview-scope.js'
+import { getShortModelName } from '@/core/domain/pricing/model-names.js'
+import { resolveModelNameAlias } from '@/core/domain/pricing/pricing-calculation.js'
+import type { SessionSummary } from '@/core/domain/observations/types.js'
+import {
+  buildSessionSummariesFromSnapshotResult,
+  sessionProjectKey,
+} from '@/core/analytics/projections/aggregate-calculation.js'
+import type { LedgerQuerySnapshot } from '@/core/application/queries/ledger-query-snapshot.js'
 
 const SPEND_CHART_DAYS = 15
 const TOP_NODE_LIMIT = 8

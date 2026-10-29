@@ -1,13 +1,13 @@
 import { Check, Copy, KeyRound, RotateCcw, Server } from 'lucide-react'
 import { type JSX, useEffect, useRef, useState } from 'react'
 
-import { PaneHeader } from '@/features/settings/pane-parts'
-import { useSettingsMcpStore } from '@/features/settings/use-settings-store'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { PaneHeader } from '@/renderer/features/settings/pane-parts'
+import { useSettingsMcpStore } from '@/renderer/features/settings/use-settings-store'
+import { Button } from '@/renderer/components/ui/button'
+import { Card } from '@/renderer/components/ui/card'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/components/ui/select'
 
-import type { LedgerMcpStartupMode } from '../../../shared/schemas/ledger-mcp.js'
+import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 const STARTUP_OPTIONS: Array<{ value: LedgerMcpStartupMode; label: string }> = [
   { value: 'on-demand', label: 'On demand' },

@@ -1,8 +1,8 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 
-import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '../atoms/palette.js'
-import { refreshScanAtom } from '../atoms/scan.js'
-import { resetSearchAtom, searchTextAtom } from '../atoms/search.js'
+import { paletteOpenAtom, setPaletteOpenAtom, togglePaletteAtom } from '@/renderer/stores/atoms/palette.js'
+import { refreshScanAtom } from '@/renderer/stores/atoms/scan.js'
+import { resetSearchAtom, searchTextAtom } from '@/renderer/stores/atoms/search.js'
 
 export function usePaletteStore() {
   const open = useAtomValue(paletteOpenAtom)

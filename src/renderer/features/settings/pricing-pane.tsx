@@ -6,17 +6,17 @@ import {
   type ModelPickerGroup,
   uniqueAliasTargets,
   usagePickerItem,
-} from '@/features/models/model-picker'
-import { useOverridePricingStore } from '@/features/models/use-pricing-store'
-import { validatePricing } from '@/features/settings/lib'
-import { ConfirmRemove, PaneHeader } from '@/features/settings/pane-parts'
-import { LoadingRegion } from '@/components/skeletons'
-import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Separator } from '@/components/ui/separator'
-import { Skeleton } from '@/components/ui/skeleton'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+} from '@/renderer/features/models/model-picker'
+import { useOverridePricingStore } from '@/renderer/features/models/use-pricing-store'
+import { validatePricing } from '@/renderer/features/settings/lib'
+import { ConfirmRemove, PaneHeader } from '@/renderer/features/settings/pane-parts'
+import { LoadingRegion } from '@/renderer/components/skeletons'
+import { Button } from '@/renderer/components/ui/button'
+import { Card } from '@/renderer/components/ui/card'
+import { Input } from '@/renderer/components/ui/input'
+import { Separator } from '@/renderer/components/ui/separator'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
 
 /** Settings › Pricing: full CRUD against the store's price-override config
  * table — set/update an override or add a new model, and remove one to revert

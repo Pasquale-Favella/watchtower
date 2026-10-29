@@ -1,6 +1,6 @@
-import type { SessionRow } from './drilldown'
+import type { SessionRow } from '@/renderer/features/sessions/drilldown'
 
-import type { SessionGroup, SessionSort } from '../../../shared/schemas/renderer.js'
+import type { SessionGroup, SessionSort } from '@/shared/schemas/renderer.js'
 export type { SessionGroup, SessionSort }
 
 /** Search — case-insensitive match over

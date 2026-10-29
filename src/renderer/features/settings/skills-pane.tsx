@@ -1,4 +1,4 @@
-import { useSettingsSkillsStore } from './use-settings-store'
+import { useSettingsSkillsStore } from '@/renderer/features/settings/use-settings-store'
 
 /** Settings › Skills detection (ticket 24, ADR 0017): the frequency × spread
  * gate the detection core consumes — the suggested-skill pool the unified

@@ -17,15 +17,15 @@ import {
   type OverviewSubagentRow,
   type OverviewToolRow,
   type OverviewUnpricedModel,
-} from '../../../shared/schemas/overview.js'
+} from '@/shared/schemas/overview.js'
 import {
   localDateKey,
   localDateKeys,
   overviewDateRange,
   periodWindowStart,
-} from '../../domain/sessions/overview-scope.js'
-import { EDIT_TOOLS } from '../detectors/classifier.js'
-import { getShortModelName } from '../../domain/pricing/model-names.js'
+} from '@/core/domain/sessions/overview-scope.js'
+import { EDIT_TOOLS } from '@/core/analytics/detectors/classifier.js'
+import { getShortModelName } from '@/core/domain/pricing/model-names.js'
 import {
   calculateRepricedCostResult,
   createPricingConfigLookup,
@@ -35,9 +35,13 @@ import {
   type LocalModelSavings,
   type PricingCatalogue,
   resolveModelNameAlias,
-} from '../../domain/pricing/pricing-calculation.js'
-import { CATEGORY_LABELS, type TaskCategory } from '../../domain/observations/types.js'
-import type { OverviewReadCall, OverviewReadData, OverviewReadTurn } from './overview-read-projections.js'
+} from '@/core/domain/pricing/pricing-calculation.js'
+import { CATEGORY_LABELS, type TaskCategory } from '@/core/domain/observations/types.js'
+import type {
+  OverviewReadCall,
+  OverviewReadData,
+  OverviewReadTurn,
+} from '@/core/analytics/projections/overview-read-projections.js'
 
 // These shared pure helpers retain independent oracle copies pinned to baseline 30a87fc.
 

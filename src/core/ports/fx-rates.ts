@@ -4,8 +4,8 @@ import * as Layer from 'effect/Layer'
 import type { SchemaError } from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import type { CurrencyRate } from '../../shared/schemas/ledger.js'
-import { LedgerConfig } from './repository.js'
+import type { CurrencyRate } from '@/shared/schemas/ledger.js'
+import { LedgerConfig } from '@/core/ports/repository.js'
 
 function sanitizeDisplayCurrencyCode(code: string): string {
   return /^[A-Za-z]{3}$/.test(code) ? code.toUpperCase() : 'USD'

@@ -1,8 +1,8 @@
 import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import type { OverviewPeriod } from '../../shared/schemas/overview.js'
-import { periodAtom } from '../stores/atoms/scope.js'
+import type { OverviewPeriod } from '@/shared/schemas/overview.js'
+import { periodAtom } from '@/renderer/stores/atoms/scope.js'
 
 export interface RendererRuntimeOwner {
   readonly registry: AtomRegistry.AtomRegistry

@@ -1,7 +1,7 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 
-import { overviewScopeAtom, setCustomRangeAtom, setPeriodAtom, setProviderAtom } from '../atoms/scope.js'
-import { useDetectedProviders } from './use-scan-store.js'
+import { overviewScopeAtom, setCustomRangeAtom, setPeriodAtom, setProviderAtom } from '@/renderer/stores/atoms/scope.js'
+import { useDetectedProviders } from '@/renderer/stores/hooks/use-scan-store.js'
 
 export function useScopeStore() {
   const scope = useAtomValue(overviewScopeAtom)

@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react'
 
 import { ChevronDownIcon } from 'lucide-react'
-import { cn } from '@/shared/lib/utils'
-import { Button } from '@/components/ui/button'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Button } from '@/renderer/components/ui/button'
 import {
   Combobox,
   ComboboxContent,
@@ -15,11 +15,11 @@ import {
   ComboboxSeparator,
   ComboboxTrigger,
   ComboboxValue,
-} from '@/components/ui/combobox'
-import { formatUsd } from '@/shared/lib/currency'
-import { providerTitle } from '@/shared/lib/models'
-import type { ModelAlias, ModelReportRow } from '../../../shared/schemas/models.js'
-import { ModelDot } from './table-parts'
+} from '@/renderer/components/ui/combobox'
+import { formatUsd } from '@/renderer/shared/lib/currency'
+import { providerTitle } from '@/renderer/shared/lib/models'
+import type { ModelAlias, ModelReportRow } from '@/shared/schemas/models.js'
+import { ModelDot } from '@/renderer/features/models/table-parts'
 
 /** Dedupes aliases by their priced target so each target appears once. */
 export function uniqueAliasTargets(aliases: ModelAlias[]): ModelAlias[] {

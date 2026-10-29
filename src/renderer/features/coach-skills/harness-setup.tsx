@@ -1,13 +1,13 @@
 import { Check, Clipboard, ExternalLink, RefreshCw } from 'lucide-react'
 import { useState } from 'react'
 
-import { Button } from '@/components/ui/button'
-import { cn } from '@/shared/lib/utils'
+import { Button } from '@/renderer/components/ui/button'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { CoachHarnessRow } from '../../../shared/schemas/agents.js'
-import { HarnessStatusDot } from './harness-status'
-import { useCoachHarnessSetupStore } from './hooks'
-import { statusLabel } from './lib'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
+import { HarnessStatusDot } from '@/renderer/features/coach-skills/harness-status'
+import { useCoachHarnessSetupStore } from '@/renderer/features/coach-skills/hooks'
+import { statusLabel } from '@/renderer/features/coach-skills/lib'
 
 export function HarnessSetup({ row, compact = false }: { row: CoachHarnessRow; compact?: boolean }) {
   const { refreshHarnesses, openLoginTerminal } = useCoachHarnessSetupStore()

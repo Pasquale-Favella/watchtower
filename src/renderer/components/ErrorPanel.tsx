@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-import { cn } from '@/shared/lib/utils'
+import { cn } from '@/renderer/shared/lib/utils'
 
 /** Shared renderer error state (ADR 0005): the single visible panel a view
  * renders when an IPC payload fails validation or the IPC call itself rejects.

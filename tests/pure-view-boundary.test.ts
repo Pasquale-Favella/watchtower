@@ -69,8 +69,10 @@ function runtimeImports(filePath: string, source = readFileSync(filePath, 'utf8'
 }
 
 function resolveLocalImport(fromFile: string, specifier: string): string | undefined {
-  if (!specifier.startsWith('.')) return undefined
-  const resolved = resolve(dirname(fromFile), specifier)
+  if (!specifier.startsWith('.') && !specifier.startsWith('@/')) return undefined
+  const resolved = specifier.startsWith('@/')
+    ? resolve('src', specifier.slice(2))
+    : resolve(dirname(fromFile), specifier)
   const basePath = extname(resolved) === '.js' ? resolved.slice(0, -3) : resolved
   const candidates = extname(basePath)
     ? [basePath]
@@ -136,7 +138,8 @@ function graphViolations(rootPaths: string[], pure = false): string[] {
       if (forbiddenPackage.test(specifier) || (pure && /^effect(?:\/|$)/.test(specifier)))
         forbidden.push(`${current}: ${specifier}`)
       const dependency = resolveLocalImport(current, specifier)
-      if (specifier.startsWith('.') && !dependency) forbidden.push(`${current}: unresolved ${specifier}`)
+      if ((specifier.startsWith('.') || specifier.startsWith('@/')) && !dependency)
+        forbidden.push(`${current}: unresolved ${specifier}`)
       if (dependency) {
         if (forbiddenModule.test(dependency.replace(/\\/g, '/'))) forbidden.push(`${current}: ${specifier}`)
         pending.push(dependency)

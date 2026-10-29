@@ -1,7 +1,7 @@
-import type { LedgerMcpCall, LedgerMcpScopeResult } from '../../../shared/schemas/ledger-mcp-results.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import type { DateRange } from '../../domain/observations/types.js'
-import type { LedgerScope } from './aggregate-calculation.js'
+import type { LedgerMcpCall, LedgerMcpScopeResult } from '@/shared/schemas/ledger-mcp-results.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import type { LedgerScope } from '@/core/analytics/projections/aggregate-calculation.js'
 
 function isWithinRange(timestamp: string, range: DateRange): boolean {
   const ms = new Date(timestamp).getTime()

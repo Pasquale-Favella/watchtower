@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { toolCallSchema } from './pipeline.js'
+import { toolCallSchema } from '@/shared/schemas/pipeline.js'
 
 const finiteNumber = Schema.Number.pipe(Schema.check(Schema.isFinite()))
 const writable = Schema.mutableKey

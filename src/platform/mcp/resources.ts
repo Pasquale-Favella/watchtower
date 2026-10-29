@@ -1,6 +1,6 @@
-import { scopeWindowLabel } from '../../infrastructure/agent-harnesses/prompts.js'
-import type { LedgerMcpQueries } from './query-api.js'
-import { LIFETIME_SCOPE } from './tools.js'
+import { scopeWindowLabel } from '@/infrastructure/agent-harnesses/prompts.js'
+import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
+import { LIFETIME_SCOPE } from '@/platform/mcp/tools.js'
 
 /** MCP resources are read-only documents. Query-backed resources read current
  *  ledger state on every request, so a long-lived server never serves stale

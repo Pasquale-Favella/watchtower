@@ -5,10 +5,10 @@ import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
-import { hasBearerAuthorization } from './auth.js'
-import type { LedgerMcpQueries } from './query-api.js'
-import { createLedgerMcpServer } from './server.js'
-import { reportSidecarRequestFailure } from './sidecar-log.js'
+import { hasBearerAuthorization } from '@/platform/mcp/auth.js'
+import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
+import { createLedgerMcpServer } from '@/platform/mcp/server.js'
+import { reportSidecarRequestFailure } from '@/platform/mcp/sidecar-log.js'
 
 /**
  * The loopback-HTTP face of the `watchtower-ledger` MCP server: the SAME

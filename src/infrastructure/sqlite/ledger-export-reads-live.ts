@@ -4,12 +4,9 @@ import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/sql/SqlClient'
 import { SqlError } from 'effect/sql/SqlError'
 
-import {
-  type LedgerExportData,
-  ledgerExportDataSchema,
-} from '../../core/analytics/projections/export-read-projections.js'
-import { LedgerExportReads } from '../../core/ports/ledger-export-reads.js'
-import { SELECT_VIEW_ALIASES, SELECT_VIEW_OVERRIDES } from './ledger-view-reads-live.js'
+import { type LedgerExportData, ledgerExportDataSchema } from '@/core/analytics/projections/export-read-projections.js'
+import { LedgerExportReads } from '@/core/ports/ledger-export-reads.js'
+import { SELECT_VIEW_ALIASES, SELECT_VIEW_OVERRIDES } from '@/infrastructure/sqlite/ledger-view-reads-live.js'
 
 const SELECT_EXPORT_SESSIONS = `
   SELECT s.source_id AS sourceId, s.session_id AS sessionId, s.project AS project,

@@ -3,12 +3,12 @@ import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as FileSystem from 'effect/FileSystem'
 
-import { mapPlatformCloseCause } from '../platform/platform-file-errors.js'
+import { mapPlatformCloseCause } from '@/infrastructure/platform/platform-file-errors.js'
 import {
   hasScanAbortCause,
   isRecoverableScanFailureCause,
   throwIfScanAborted,
-} from '../../core/ingestion/reconciliation/scan-control.js'
+} from '@/core/ingestion/reconciliation/scan-control.js'
 
 function toError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause), { cause })

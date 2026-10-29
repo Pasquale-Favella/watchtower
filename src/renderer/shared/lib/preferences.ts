@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
-import { overviewPeriodSchema } from '../../../shared/schemas/overview.js'
-import { DEFAULT_SKILLS_THRESHOLDS } from '../../../shared/skills-defaults.js'
+import { overviewPeriodSchema } from '@/shared/schemas/overview.js'
+import { DEFAULT_SKILLS_THRESHOLDS } from '@/shared/skills-defaults.js'
 
 export const PREFERENCES_STORAGE_KEY = 'watchtower:settings'
 

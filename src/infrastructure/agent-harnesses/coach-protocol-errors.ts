@@ -1,6 +1,6 @@
 import * as Cause from 'effect/Cause'
 
-import { CoachSdkFailure, coachSdkFailureMessage } from './coach-errors.js'
+import { CoachSdkFailure, coachSdkFailureMessage } from '@/infrastructure/agent-harnesses/coach-errors.js'
 
 /** Maps failures only at the renderer protocol boundary. */
 export function coachProtocolError(error: unknown): string {

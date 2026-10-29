@@ -1,8 +1,8 @@
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from 'recharts'
 
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
-import { cn } from '@/shared/lib/utils'
-import type { OverviewDailyEntry } from '../../../shared/schemas/overview.js'
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/renderer/components/ui/chart'
+import { cn } from '@/renderer/shared/lib/utils'
+import type { OverviewDailyEntry } from '@/shared/schemas/overview.js'
 
 /** Single-series daily-spend bar chart config (shadcn `ChartContainer`). The
  * key matches the Bar's `name`, so the tooltip row labels it "Spend". */

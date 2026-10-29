@@ -1,6 +1,6 @@
-import { executeSqliteScript, runSqliteMigrations } from './sqlite-migrations.js'
+import { executeSqliteScript, runSqliteMigrations } from '@/infrastructure/sqlite/sqlite-migrations.js'
 
-export { UnsupportedLedgerSchemaVersion } from './sqlite-migrations.js'
+export { UnsupportedLedgerSchemaVersion } from '@/infrastructure/sqlite/sqlite-migrations.js'
 
 const migrations = [
   {

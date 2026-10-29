@@ -3,7 +3,7 @@ import type * as Effect from 'effect/Effect'
 import type * as Schema from 'effect/Schema'
 import type { SqlError } from 'effect/sql/SqlError'
 
-import type { LedgerExportData } from '../analytics/projections/export-read-projections.js'
+import type { LedgerExportData } from '@/core/analytics/projections/export-read-projections.js'
 
 export interface LedgerExportReadsPort {
   getExportData(): Effect.Effect<LedgerExportData, SqlError | Schema.SchemaError>

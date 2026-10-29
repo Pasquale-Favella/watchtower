@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 import * as SchemaGetter from 'effect/SchemaGetter'
 
-import { modelAliasRowSchema, priceOverrideRowSchema } from '../../../shared/schemas/ledger.js'
+import { modelAliasRowSchema, priceOverrideRowSchema } from '@/shared/schemas/ledger.js'
 
 // Match the canonical ledger codecs' Number coercion for SQLite numeric columns.
 export const finiteNumber = Schema.Unknown.pipe(

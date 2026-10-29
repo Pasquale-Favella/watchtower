@@ -1,7 +1,7 @@
 /** Pure pricing resolution and arithmetic. The caller captures the catalogue
  * once and passes it to calculations; this module never reads application
  * state, performs IO, or logs. */
-import type { ModelCosts as SharedModelCosts, PriceOverride } from '../../../shared/schemas/models.js'
+import type { ModelCosts as SharedModelCosts, PriceOverride } from '@/shared/schemas/models.js'
 
 export type ModelCosts = SharedModelCosts
 

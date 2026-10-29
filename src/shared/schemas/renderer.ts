@@ -1,9 +1,9 @@
 import type { Hotkey } from '@tanstack/react-hotkeys'
 import type { ComponentType } from 'react'
 
-import type { ModelReportRow } from './models.js'
-import type { Section } from './navigation.js'
-import type { SessionRow } from './views.js'
+import type { ModelReportRow } from '@/shared/schemas/models.js'
+import type { Section } from '@/shared/schemas/navigation.js'
+import type { SessionRow } from '@/shared/schemas/views.js'
 
 /** Renderer-local UI shapes have no IPC wire counterpart and no parse site. */
 export interface DateRange {

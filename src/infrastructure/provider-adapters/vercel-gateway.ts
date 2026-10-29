@@ -2,13 +2,19 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import { Env } from '../config/environment.js'
-import { fetchJsonWithRetry, HttpFetch, HttpFetchError } from '../ingestion/fetch-utils.js'
-import { fileErrorCode, queueLogRecord } from '../ingestion/file-errors.js'
-import { ScanAbortedError, scanAbortError } from '../../core/ingestion/reconciliation/scan-control.js'
-import type { DateRange } from '../../core/domain/observations/types.js'
-import { type GatewayReportRow, gatewayReportSchema } from '../../core/domain/providers/gateway-report.js'
-import type { ParsedProviderCall, Provider, ProviderScanContext, SessionParser, SessionSource } from './types.js'
+import { Env } from '@/infrastructure/config/environment.js'
+import { fetchJsonWithRetry, HttpFetch, HttpFetchError } from '@/infrastructure/ingestion/fetch-utils.js'
+import { fileErrorCode, queueLogRecord } from '@/infrastructure/ingestion/file-errors.js'
+import { ScanAbortedError, scanAbortError } from '@/core/ingestion/reconciliation/scan-control.js'
+import type { DateRange } from '@/core/domain/observations/types.js'
+import { type GatewayReportRow, gatewayReportSchema } from '@/core/domain/providers/gateway-report.js'
+import type {
+  ParsedProviderCall,
+  Provider,
+  ProviderScanContext,
+  SessionParser,
+  SessionSource,
+} from '@/infrastructure/provider-adapters/types.js'
 
 const REPORT_URL = 'https://ai-gateway.vercel.sh/v1/report'
 

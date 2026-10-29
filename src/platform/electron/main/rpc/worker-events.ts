@@ -1,11 +1,11 @@
 import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 
-import { activeCurrencySchema } from '../../../../shared/schemas/fx.js'
-import { storeChangedMessageSchema } from '../../../../shared/schemas/ipc.js'
-import { scanProgressSchema } from '../../../../shared/schemas/scan.js'
-import type { DbWorkerEvent } from '../../workers/protocol.js'
-import type { LifecyclePublishEvent } from './lifecycle.js'
+import { activeCurrencySchema } from '@/shared/schemas/fx.js'
+import { storeChangedMessageSchema } from '@/shared/schemas/ipc.js'
+import { scanProgressSchema } from '@/shared/schemas/scan.js'
+import type { DbWorkerEvent } from '@/platform/electron/workers/protocol.js'
+import type { LifecyclePublishEvent } from '@/platform/electron/main/rpc/lifecycle.js'
 
 const invalidPayloadEventSchema = Schema.Literals(['scan:progress', 'store:changed', 'currency:changed', 'scan:error'])
 

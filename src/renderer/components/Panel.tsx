@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
-import { cn } from '@/shared/lib/utils'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Card, CardContent, CardHeader, CardTitle } from '@/renderer/components/ui/card'
 
 /** Panel — a card (`.phead` strip + `.pbody`)
  * mapped onto the shadcn `Card` primitive with theme tokens. Every section's

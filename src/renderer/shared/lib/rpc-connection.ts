@@ -1,5 +1,5 @@
-import type { RpcBridge } from '../../../shared/rpc/bridge.js'
-import { reconnectingRendererProtocolLayer } from '../../../shared/rpc/reconnecting-protocol.js'
+import type { RpcBridge } from '@/shared/rpc/bridge.js'
+import { reconnectingRendererProtocolLayer } from '@/shared/rpc/reconnecting-protocol.js'
 
 const unavailableConnection = { _tag: 'Failed', code: 'unavailable' } as const
 const requiredBridge = (): RpcBridge => {

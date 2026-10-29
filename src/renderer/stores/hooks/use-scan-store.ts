@@ -1,7 +1,7 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
 import * as Atom from 'effect/reactivity/Atom'
 
-import { refreshScanAtom, scanStateAtom } from '../atoms/scan.js'
+import { refreshScanAtom, scanStateAtom } from '@/renderer/stores/atoms/scan.js'
 
 const hydratedAtom = Atom.make(get => get(scanStateAtom).hydrated)
 const scanningAtom = Atom.make(get => get(scanStateAtom).scanning)

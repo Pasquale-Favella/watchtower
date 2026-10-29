@@ -1,19 +1,19 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { cadenceValueSchema } from '../schemas/cadence.js'
-import { comparePairSchema, comparePayloadSchema } from '../schemas/compare.js'
-import { exportResultSchema } from '../schemas/export.js'
-import { activeCurrencySchema, currencyOptionsSchema } from '../schemas/fx.js'
-import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '../schemas/ipc.js'
-import { ledgerMcpStartupModeSchema } from '../schemas/ledger-mcp.js'
-import { modelAliasSchema, modelsPayloadSchema, priceOverrideSchema } from '../schemas/models.js'
-import { optimizePayloadSchema } from '../schemas/optimize.js'
-import { overviewPayloadSchema, overviewScopeSchema } from '../schemas/overview.js'
-import { pullRequestsPayloadSchema } from '../schemas/pull-requests.js'
-import { scanMetadataSchema, scanProgressSchema } from '../schemas/scan.js'
-import { skillsDismissalRequestSchema, skillsPayloadSchema, skillsThresholdsSchema } from '../schemas/skills.js'
-import { spendPayloadSchema } from '../schemas/spend.js'
+import { cadenceValueSchema } from '@/shared/schemas/cadence.js'
+import { comparePairSchema, comparePayloadSchema } from '@/shared/schemas/compare.js'
+import { exportResultSchema } from '@/shared/schemas/export.js'
+import { activeCurrencySchema, currencyOptionsSchema } from '@/shared/schemas/fx.js'
+import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '@/shared/schemas/ipc.js'
+import { ledgerMcpStartupModeSchema } from '@/shared/schemas/ledger-mcp.js'
+import { modelAliasSchema, modelsPayloadSchema, priceOverrideSchema } from '@/shared/schemas/models.js'
+import { optimizePayloadSchema } from '@/shared/schemas/optimize.js'
+import { overviewPayloadSchema, overviewScopeSchema } from '@/shared/schemas/overview.js'
+import { pullRequestsPayloadSchema } from '@/shared/schemas/pull-requests.js'
+import { scanMetadataSchema, scanProgressSchema } from '@/shared/schemas/scan.js'
+import { skillsDismissalRequestSchema, skillsPayloadSchema, skillsThresholdsSchema } from '@/shared/schemas/skills.js'
+import { spendPayloadSchema } from '@/shared/schemas/spend.js'
 import {
   analyticalViewsSchema,
   dashboardViewsSchema,
@@ -22,8 +22,8 @@ import {
   sessionDetailRequestSchema,
   sessionDetailSchema,
   sessionRowSchema,
-} from '../schemas/views.js'
-import { yieldPayloadSchema } from '../schemas/yield.js'
+} from '@/shared/schemas/views.js'
+import { yieldPayloadSchema } from '@/shared/schemas/yield.js'
 
 /** Distinct ordinary requests admitted by the main-owned worker supervisor. */
 export const WORKER_REQUEST_CAPACITY = 128

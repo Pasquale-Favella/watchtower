@@ -1,11 +1,11 @@
 import { PanelLeft, RefreshCw } from 'lucide-react'
 import type { ReactElement, ReactNode } from 'react'
 
-import { usePaletteStore } from '@/stores/hooks/use-palette-store'
-import { usePaletteSearch } from '@/stores/hooks/use-search'
-import { navigateToSection, navigateToSession } from '@/app/navigation'
-import { SECTION_ICONS } from '@/app/section-icons'
-import { displayShortcutForAction, NAV_SECTIONS, type Section, shortcutForAction } from '@/app/shortcuts'
+import { usePaletteStore } from '@/renderer/stores/hooks/use-palette-store'
+import { usePaletteSearch } from '@/renderer/stores/hooks/use-search'
+import { navigateToSection, navigateToSession } from '@/renderer/app/navigation'
+import { SECTION_ICONS } from '@/renderer/app/section-icons'
+import { displayShortcutForAction, NAV_SECTIONS, type Section, shortcutForAction } from '@/renderer/app/shortcuts'
 import {
   Command,
   CommandDialog,
@@ -16,8 +16,8 @@ import {
   CommandList,
   CommandSeparator,
   CommandShortcut,
-} from '@/components/ui/command'
-import { useSidebar } from '@/components/ui/sidebar'
+} from '@/renderer/components/ui/command'
+import { useSidebar } from '@/renderer/components/ui/sidebar'
 
 /** The v1 palette rows (ADR 0028): every Section plus the two runnable
  * registry Actions. The palette's own trigger is never a row. */

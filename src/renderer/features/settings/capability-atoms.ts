@@ -4,13 +4,13 @@ import * as Reactivity from 'effect/reactivity/Reactivity'
 import { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Stream from 'effect/Stream'
 
-import { appliedLedgerGenerationAtom } from '@/stores/atoms/config-change'
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { refreshScanAtom } from '@/stores/atoms/scan'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { appliedLedgerGenerationAtom } from '@/renderer/stores/atoms/config-change'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { refreshScanAtom } from '@/renderer/stores/atoms/scan'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import { ConfigRpcError } from '../../../shared/rpc/errors.js'
-import { NativeRpcError } from '../../../shared/rpc/native.js'
+import { ConfigRpcError } from '@/shared/rpc/errors.js'
+import { NativeRpcError } from '@/shared/rpc/native.js'
 
 export const SETTINGS_INFO_REQUEST = {}
 export const PROVIDERS_REQUEST = {}

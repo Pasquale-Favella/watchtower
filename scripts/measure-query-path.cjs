@@ -436,11 +436,12 @@ function installTypeScriptHook() {
 
   const originalResolve = Module._resolveFilename
   Module._resolveFilename = function resolveWithTsFallback(request, parent, ...rest) {
+    const sourceRequest = request.startsWith('@/') ? path.join(REPO_ROOT, 'src', request.slice(2)) : request
     try {
-      return originalResolve.call(this, request, parent, ...rest)
+      return originalResolve.call(this, sourceRequest, parent, ...rest)
     } catch (error) {
-      if (request.startsWith('.') && /\.jsx?$/.test(request)) {
-        const base = request.replace(/\.jsx?$/, '')
+      if ((sourceRequest.startsWith('.') || path.isAbsolute(sourceRequest)) && /\.jsx?$/.test(sourceRequest)) {
+        const base = sourceRequest.replace(/\.jsx?$/, '')
         for (const ext of SOURCE_EXTENSIONS) {
           try {
             return originalResolve.call(this, base + ext, parent, ...rest)

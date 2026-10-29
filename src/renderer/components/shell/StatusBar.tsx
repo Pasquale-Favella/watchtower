@@ -1,5 +1,5 @@
-import { useScanning, useUnparsedTotal } from '@/stores/hooks/use-scan-store'
-import { displayShortcutForAction, sectionsRangeLabel, shortcutForAction } from '@/app/shortcuts'
+import { useScanning, useUnparsedTotal } from '@/renderer/stores/hooks/use-scan-store'
+import { displayShortcutForAction, sectionsRangeLabel, shortcutForAction } from '@/renderer/app/shortcuts'
 
 /** The footer — reads scanning/unparsed from the scan store and the shortcut
  * hints from the registry (ADR 0011). */

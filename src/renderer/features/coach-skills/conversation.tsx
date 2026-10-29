@@ -7,10 +7,10 @@ import {
   useCoachPickerStore,
   useCoachState,
   useCoachWelcomeStore,
-} from '@/features/coach-skills/hooks'
-import { candidateKey, craftSkillPrompt } from '@/features/coach-skills/lib'
-import { InfoTip } from '@/components/InfoTip'
-import { LoadingRegion, SkeletonPills } from '@/components/skeletons'
+} from '@/renderer/features/coach-skills/hooks'
+import { candidateKey, craftSkillPrompt } from '@/renderer/features/coach-skills/lib'
+import { InfoTip } from '@/renderer/components/InfoTip'
+import { LoadingRegion, SkeletonPills } from '@/renderer/components/skeletons'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,15 +20,15 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
+} from '@/renderer/components/ui/alert-dialog'
+import { Button } from '@/renderer/components/ui/button'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/components/ui/select'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
 
-import type { SkillCandidate } from '../../../shared/schemas/skills.js'
-import { HarnessModelPicker } from './harness-model-picker'
-import { Thread } from './thread'
+import type { SkillCandidate } from '@/shared/schemas/skills.js'
+import { HarnessModelPicker } from '@/renderer/features/coach-skills/harness-model-picker'
+import { Thread } from '@/renderer/features/coach-skills/thread'
 
 /** Claude sign-in hint + API-key passthrough toggle, shown as a floating pill
  *  above the composer, almost as wide as the textarea card (slightly inset

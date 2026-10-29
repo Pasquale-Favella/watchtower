@@ -1,6 +1,6 @@
-import { formatConverted, type ActiveCurrency } from '@/shared/lib/currency'
+import { formatConverted, type ActiveCurrency } from '@/renderer/shared/lib/currency'
 
-import type { OverviewPayload } from '../../../shared/schemas/overview.js'
+import type { OverviewPayload } from '@/shared/schemas/overview.js'
 
 /** Overview helpers shared by its components and the background orb. */
 

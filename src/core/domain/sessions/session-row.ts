@@ -1,4 +1,4 @@
-import type { ProjectSummary, SessionSummary } from '../observations/types.js'
+import type { ProjectSummary, SessionSummary } from '@/core/domain/observations/types.js'
 
 export type SessionRow = {
   sessionId: string

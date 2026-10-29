@@ -1,7 +1,7 @@
 import * as Schema from 'effect/Schema'
 
-import { modelAliasSchema, priceOverrideSchema } from '../../../shared/schemas/ledger.js'
-import { finiteNumber, jsonStringArray, nullableString } from './session-read-projections.js'
+import { modelAliasSchema, priceOverrideSchema } from '@/shared/schemas/ledger.js'
+import { finiteNumber, jsonStringArray, nullableString } from '@/core/analytics/projections/session-read-projections.js'
 
 const toolSequence = Schema.fromJsonString(
   Schema.mutable(

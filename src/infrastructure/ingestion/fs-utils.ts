@@ -7,9 +7,9 @@ import * as Stream from 'effect/Stream'
 import { createReadStream, readFileSync, statSync } from 'fs'
 import { readFile, stat } from 'fs/promises'
 
-import { type AppPaths, overrideFor } from '../config/environment.js'
-import { logFileName, queueLogRecord } from './file-errors.js'
-import { throwIfScanAborted } from '../../core/ingestion/reconciliation/scan-control.js'
+import { type AppPaths, overrideFor } from '@/infrastructure/config/environment.js'
+import { logFileName, queueLogRecord } from '@/infrastructure/ingestion/file-errors.js'
+import { throwIfScanAborted } from '@/core/ingestion/reconciliation/scan-control.js'
 
 // Hard cap well below V8's 512 MB string limit. Callers that need line-by-line
 // processing should use readSessionLinesStream(), which avoids materializing the

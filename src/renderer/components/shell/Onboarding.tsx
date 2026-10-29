@@ -1,10 +1,10 @@
 import { useState } from 'react'
 
-import { ONBOARDING_STEPS } from '@/components/shell/onboarding-steps'
-import { WatchtowerIcon } from '@/components/shell/WatchtowerIcon'
-import { useSettingsPreferencesStore } from '@/features/settings/use-settings-store'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
+import { ONBOARDING_STEPS } from '@/renderer/components/shell/onboarding-steps'
+import { WatchtowerIcon } from '@/renderer/components/shell/WatchtowerIcon'
+import { useSettingsPreferencesStore } from '@/renderer/features/settings/use-settings-store'
+import { Button } from '@/renderer/components/ui/button'
+import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/renderer/components/ui/dialog'
 
 /**
  * First-launch onboarding (ADR 0012): a welcome screen plus one step per app

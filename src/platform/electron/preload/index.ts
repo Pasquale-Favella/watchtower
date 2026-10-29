@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-import { createRpcBridge } from './rpc.js'
+import { createRpcBridge } from '@/platform/electron/preload/rpc.js'
 
 const rpcOwner = createRpcBridge(ipcRenderer)
 const preloadWindow = globalThis as typeof globalThis & {

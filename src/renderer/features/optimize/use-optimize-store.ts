@@ -1,7 +1,7 @@
-import { useRemoteQuery } from '@/stores/hooks/use-remote-query'
-import { useScopeStore } from '@/stores/hooks/use-scope-store'
-import { optimizeQuery } from '@/features/optimize/atoms'
-import { keyOfScope } from '@/shared/lib/query-keys'
+import { useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
+import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
+import { optimizeQuery } from '@/renderer/features/optimize/atoms'
+import { keyOfScope } from '@/renderer/shared/lib/query-keys'
 
 export function useOptimizeStore() {
   const { scope, provider, setProvider, detectedProviders } = useScopeStore()

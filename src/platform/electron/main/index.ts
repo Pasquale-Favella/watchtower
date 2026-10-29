@@ -12,40 +12,44 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
-import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '../../../shared/rpc/application.js'
-import { serverProtocolLayer } from '../../../shared/rpc/port-protocol.js'
-import type { LedgerMcpStartupMode } from '../../../shared/schemas/ledger-mcp.js'
-import { createApplicationAgents } from './coach/ipc.js'
-import { HarnessSnapshot } from '../../../infrastructure/agent-harnesses/snapshot.js'
-import { buildLedgerMcpServer, ledgerMcpTransportFor } from '../../mcp/config.js'
-import { LedgerMcpPool } from '../../mcp/pool.js'
-import { createNativeApplicationCapabilities } from './application/native-capabilities.js'
-import { BackgroundShell, type BackgroundShellHandle, backgroundShellLayer } from './background-shell.js'
-import { DbWorkerClient } from '../workers/client.js'
-import { acquireElectronUpdates } from './electron-updates.js'
-import { initAppPaths, readAppPathsEffect } from '../../../infrastructure/config/environment.js'
-import { makeMainRuntime, type MainServices } from './main-runtime.js'
+import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
+import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
+import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
+import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
+import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
+import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
+import { LedgerMcpPool } from '@/platform/mcp/pool.js'
+import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
+import {
+  BackgroundShell,
+  type BackgroundShellHandle,
+  backgroundShellLayer,
+} from '@/platform/electron/main/background-shell.js'
+import { DbWorkerClient } from '@/platform/electron/workers/client.js'
+import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
+import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
+import { makeMainRuntime, type MainServices } from '@/platform/electron/main/main-runtime.js'
 import {
   closeOperationalLog,
   initOperationalLog,
   logCodeFor,
   safeLogOperationalEvent,
-} from '../../../infrastructure/logging/operational-log.js'
-import { closeMainResources, createQuitCoordinator } from './quit-coordinator.js'
-import { coachHandlers } from './rpc/coach-handlers.js'
-import { registerElectronRpc, type RpcWindowRole } from './rpc/electron.js'
-import { analyticsHandlers, configHandlers } from './rpc/handlers.js'
+} from '@/infrastructure/logging/operational-log.js'
+import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
+import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
+import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
+import { analyticsHandlers, configHandlers } from '@/platform/electron/main/rpc/handlers.js'
 import {
   LifecycleHub,
   type LifecycleHubService,
   lifecycleHandlers,
   lifecycleLayer,
   type LifecyclePublishEvent,
-} from './rpc/lifecycle.js'
-import { lifecycleEventFromWorker } from './rpc/worker-events.js'
-import { shellHandlers } from './rpc/shell-handlers.js'
-import { nativeHandlers } from './rpc/native-handlers.js'
-import { AppUpdates, updatesLayer } from './updates.js'
+} from '@/platform/electron/main/rpc/lifecycle.js'
+import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
+import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
+import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
+import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the

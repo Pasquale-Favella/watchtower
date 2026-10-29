@@ -1,13 +1,13 @@
-import { cn } from '@/shared/lib/utils'
-import { Card } from '@/components/ui/card'
-import { Skeleton } from '@/components/ui/skeleton'
-import { SkeletonBars } from '@/components/skeletons'
-import { useCurrencyFormatter } from '@/shared/lib/use-currency-formatter'
-import { navigateToSection } from '@/app/navigation'
-import type { OverviewPayload } from '../../../shared/schemas/overview.js'
-import { Sparkline } from '@/features/overview/Sparkline'
-import { EfficiencyGauge } from '@/features/overview/EfficiencyGauge'
-import { formatChartDate, spendTrend } from '@/features/overview/lib'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Card } from '@/renderer/components/ui/card'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { SkeletonBars } from '@/renderer/components/skeletons'
+import { useCurrencyFormatter } from '@/renderer/shared/lib/use-currency-formatter'
+import { navigateToSection } from '@/renderer/app/navigation'
+import type { OverviewPayload } from '@/shared/schemas/overview.js'
+import { Sparkline } from '@/renderer/features/overview/Sparkline'
+import { EfficiencyGauge } from '@/renderer/features/overview/EfficiencyGauge'
+import { formatChartDate, spendTrend } from '@/renderer/features/overview/lib'
 
 function formatCount(unit: string): (v: number) => string {
   return (v: number) => `${Math.round(v).toLocaleString('en-US')} ${unit}`

@@ -1,8 +1,8 @@
 import { detectPlatform, formatForDisplay, type Hotkey } from '@tanstack/react-hotkeys'
 
-import { SHORTCUTS } from '../../shared/lib/shortcuts.js'
-import type { Section } from '../../shared/schemas/navigation.js'
-import type { ShortcutAction, ShortcutDef, Platform } from '../../shared/schemas/renderer.js'
+import { SHORTCUTS } from '@/shared/lib/shortcuts.js'
+import type { Section } from '@/shared/schemas/navigation.js'
+import type { ShortcutAction, ShortcutDef, Platform } from '@/shared/schemas/renderer.js'
 export type { Section, ShortcutAction, ShortcutDef, Platform }
 
 /** Sections in sidebar/nav order. `Mod+1`–`Mod+7` map to the first seven. */

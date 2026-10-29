@@ -2,12 +2,12 @@ import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type { RpcClientError } from 'effect/rpc/RpcClientError'
 
-import { createRpcQuerySlot } from '@/stores/atoms/rpc-query'
-import { ApplicationClient } from '@/shared/lib/application-rpc'
+import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
+import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
 
-import type { AnalyticsRpcError } from '../../../shared/rpc/errors.js'
-import type { OverviewScope } from '../../../shared/schemas/overview.js'
-import type { SearchHit } from '../../../shared/schemas/views.js'
+import type { AnalyticsRpcError } from '@/shared/rpc/errors.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
+import type { SearchHit } from '@/shared/schemas/views.js'
 
 export interface PaletteSearchRequest {
   readonly query: string

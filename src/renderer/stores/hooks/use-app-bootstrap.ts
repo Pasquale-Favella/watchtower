@@ -3,23 +3,28 @@ import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
 import { useEffect } from 'react'
 
-import { appLifecycleReadinessAtom, appRpcLifecycleAtom } from '@/stores/atoms/rpc-lifecycle'
+import { appLifecycleReadinessAtom, appRpcLifecycleAtom } from '@/renderer/stores/atoms/rpc-lifecycle'
 import {
   hydrateScanProvidersAtom,
   refreshScanAtom,
   rehydrateScanAtom,
   type ScanHydrationState,
   scanStateAtom,
-} from '@/stores/atoms/scan'
-import { registry, runtime } from '@/app/renderer-runtime'
-import { navigationAtom } from '@/stores/subscribe'
-import { coachDetection, mountCoachWorkflow } from '@/features/coach-skills/atoms'
-import { loadCadenceAtom, loadCurrencyOptionsAtom, setCadenceAtom, setCurrencyAtom } from '@/features/settings/atoms'
-import { mountSettingsCapabilityWorkflow } from '@/features/settings/capability-atoms'
-import { preferencesAtom } from '@/features/settings/preferences-atoms'
-import { ApplicationClient, ApplicationProtocolLayer } from '@/shared/lib/application-rpc'
+} from '@/renderer/stores/atoms/scan'
+import { registry, runtime } from '@/renderer/app/renderer-runtime'
+import { navigationAtom } from '@/renderer/stores/subscribe'
+import { coachDetection, mountCoachWorkflow } from '@/renderer/features/coach-skills/atoms'
+import {
+  loadCadenceAtom,
+  loadCurrencyOptionsAtom,
+  setCadenceAtom,
+  setCurrencyAtom,
+} from '@/renderer/features/settings/atoms'
+import { mountSettingsCapabilityWorkflow } from '@/renderer/features/settings/capability-atoms'
+import { preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
+import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc'
 
-import { pinWindowAtom } from './use-remote-query.js'
+import { pinWindowAtom } from '@/renderer/stores/hooks/use-remote-query.js'
 
 export function shouldStartInitialScan(hydration: ScanHydrationState, scanning: boolean): boolean {
   return hydration === 'unscanned' && !scanning

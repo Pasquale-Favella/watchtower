@@ -7,7 +7,7 @@ import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { RpcClientError } from 'effect/rpc/RpcClientError'
 import { useContext, useEffect } from 'react'
 
-import type { RpcQuerySlot } from '../atoms/rpc-query.js'
+import type { RpcQuerySlot } from '@/renderer/stores/atoms/rpc-query.js'
 
 const windowPins = new WeakMap<AtomRegistry.AtomRegistry, Map<object, () => void>>()
 

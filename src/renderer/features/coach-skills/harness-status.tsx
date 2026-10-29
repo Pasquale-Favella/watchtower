@@ -1,6 +1,6 @@
-import { cn } from '@/shared/lib/utils'
-import type { CoachHarnessRow } from '../../../shared/schemas/agents.js'
-import { statusLabel } from './lib'
+import { cn } from '@/renderer/shared/lib/utils'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
+import { statusLabel } from '@/renderer/features/coach-skills/lib'
 
 const dotClass: Record<CoachHarnessRow['status'], string> = {
   ready: 'bg-emerald-500',

@@ -1,6 +1,6 @@
 import { basename } from 'node:path'
 
-export { errnoCodeFor as fileErrorCode } from '../../shared/logging.js'
+export { errnoCodeFor as fileErrorCode } from '@/shared/logging.js'
 
 /**
  * Worker-side file-error outbox (#128). The scan pipeline runs on the

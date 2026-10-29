@@ -3,8 +3,8 @@
 import * as React from 'react'
 import { Combobox as ComboboxPrimitive } from '@base-ui/react/combobox'
 
-import { cn } from '@/shared/lib/utils'
-import { Button } from '@/components/ui/button'
+import { cn } from '@/renderer/shared/lib/utils'
+import { Button } from '@/renderer/components/ui/button'
 import { CheckIcon, ChevronDownIcon, XIcon } from 'lucide-react'
 
 const Combobox = ComboboxPrimitive.Root

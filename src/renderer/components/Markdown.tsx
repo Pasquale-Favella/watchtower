@@ -2,7 +2,7 @@ import type { AnchorHTMLAttributes, MouseEvent } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-import { useNativeStore } from '@/shared/hooks/use-native-store'
+import { useNativeStore } from '@/renderer/shared/hooks/use-native-store'
 
 /** Harness links open in the default browser through the guarded
  *  `open-external` IPC channel (http/https only, main-process enforced) — the

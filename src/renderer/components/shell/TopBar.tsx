@@ -1,19 +1,19 @@
 import { useRouterState } from '@tanstack/react-router'
 import type { ReactNode } from 'react'
 
-import { CustomRangePicker } from '@/components/shell/CustomRangePicker'
-import { useScopeStore } from '@/stores/hooks/use-scope-store'
-import { sectionForPath } from '@/app/navigation'
-import { shortcutForAction } from '@/app/shortcuts'
-import { SegTabs } from '@/components/SegTabs'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
-import { SidebarTrigger } from '@/components/ui/sidebar'
-import { DEFAULT_PERIOD_OPTIONS, PERIOD_LABELS } from '@/shared/lib/settings-constants'
-import { buildScopeCaption, providerOptionsFromDetected } from '@/shared/lib/shell'
-import { cn } from '@/shared/lib/utils'
+import { CustomRangePicker } from '@/renderer/components/shell/CustomRangePicker'
+import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
+import { sectionForPath } from '@/renderer/app/navigation'
+import { shortcutForAction } from '@/renderer/app/shortcuts'
+import { SegTabs } from '@/renderer/components/SegTabs'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/components/ui/select'
+import { Separator } from '@/renderer/components/ui/separator'
+import { SidebarTrigger } from '@/renderer/components/ui/sidebar'
+import { DEFAULT_PERIOD_OPTIONS, PERIOD_LABELS } from '@/renderer/shared/lib/settings-constants'
+import { buildScopeCaption, providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
+import { cn } from '@/renderer/shared/lib/utils'
 
-import type { OverviewPeriod } from '../../../shared/schemas/overview.js'
+import type { OverviewPeriod } from '@/shared/schemas/overview.js'
 
 /** TopBarShell — presentational top bar: title, scope caption, period SegTabs,
  * provider Select, and the custom-range picker slot. Maps the `.pop` (provider

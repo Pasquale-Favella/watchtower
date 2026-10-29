@@ -1,4 +1,4 @@
-import type { ClassifiedTurn, ParsedTurn, TaskCategory, ToolCall } from '../../domain/observations/types.js'
+import type { ClassifiedTurn, ParsedTurn, TaskCategory, ToolCall } from '@/core/domain/observations/types.js'
 
 const TEST_PATTERNS = /\b(test|pytest|vitest|jest|mocha|spec|coverage|npm\s+test|npx\s+vitest|npx\s+jest)\b/i
 const GIT_PATTERNS =

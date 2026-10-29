@@ -21,14 +21,24 @@ import {
 import { existsSync } from 'fs'
 import { join } from 'path'
 
-import { acceleratorFor, SHORTCUTS } from '../../../shared/lib/shortcuts.js'
-import { type Section } from '../../../shared/schemas/navigation.js'
-import { type OrbPlacement } from '../../../shared/schemas/orb.js'
-import { type OrbCommand, type ShellEvent, ShellRpcError } from '../../../shared/rpc/shell.js'
-import { logCodeFor, safeLogOperationalEvent } from '../../../infrastructure/logging/operational-log.js'
-import { clampToWorkArea, defaultOrbPosition, orbBounds, panelLayout } from './orb-geometry.js'
-import { containsPoint, createHeldRequest, createPeekGate, offsetAnchor, type Point } from './orb-policy.js'
-import { DEFAULT_SHELL_PREFERENCES, loadShellPreferences, saveShellPreferences } from './shell-preferences.js'
+import { acceleratorFor, SHORTCUTS } from '@/shared/lib/shortcuts.js'
+import { type Section } from '@/shared/schemas/navigation.js'
+import { type OrbPlacement } from '@/shared/schemas/orb.js'
+import { type OrbCommand, type ShellEvent, ShellRpcError } from '@/shared/rpc/shell.js'
+import { logCodeFor, safeLogOperationalEvent } from '@/infrastructure/logging/operational-log.js'
+import { clampToWorkArea, defaultOrbPosition, orbBounds, panelLayout } from '@/platform/electron/main/orb-geometry.js'
+import {
+  containsPoint,
+  createHeldRequest,
+  createPeekGate,
+  offsetAnchor,
+  type Point,
+} from '@/platform/electron/main/orb-policy.js'
+import {
+  DEFAULT_SHELL_PREFERENCES,
+  loadShellPreferences,
+  saveShellPreferences,
+} from '@/platform/electron/main/shell-preferences.js'
 
 /**
  * The background shell: what keeps Watchtower alive once its window is
