@@ -2,6 +2,7 @@ import * as Result from 'effect/Result'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
+import { WORKSPACE_WORKER_PROTOCOL_VERSION, WorkspaceWorkerRpcGroup } from '../src/shared/rpc/workspace-worker.js'
 import {
   agentSessionSchema,
   conversationSchema,
@@ -14,6 +15,7 @@ import {
   dispatchFailureCommandSchema,
   recordDriverEventCommandSchema,
   workspaceSnapshotSchema,
+  WorkspaceStoreError,
 } from '../src/shared/schemas/workspace-store.js'
 
 describe('agent workspace domain schemas', () => {
@@ -190,6 +192,129 @@ describe('agent workspace domain schemas', () => {
         Schema.decodeUnknownResult(workspaceSnapshotSchema)({
           ...snapshot,
           runs: [{ ...snapshot.runs[0], status: 'unrecognized-status' }],
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('exposes exactly the workspace store operations plus readiness and shutdown', () => {
+    expect([...WorkspaceWorkerRpcGroup.requests.keys()].sort()).toEqual(
+      [
+        'workspace-worker:ready',
+        'workspace-worker:registerProject',
+        'workspace-worker:createTask',
+        'workspace-worker:beginRun',
+        'workspace-worker:claimDispatch',
+        'workspace-worker:acknowledgeDispatch',
+        'workspace-worker:recordDriverEvent',
+        'workspace-worker:failDispatch',
+        'workspace-worker:requestInterrupt',
+        'workspace-worker:recoverWorker',
+        'workspace-worker:pageEvents',
+        'workspace-worker:readTaskSnapshot',
+        'workspace-worker:shutdown',
+      ].sort(),
+    )
+  })
+
+  it('requires positive worker epochs and a nonempty native session identity', () => {
+    const claimDispatch = WorkspaceWorkerRpcGroup.requests.get('workspace-worker:claimDispatch')
+    const acknowledgeDispatch = WorkspaceWorkerRpcGroup.requests.get('workspace-worker:acknowledgeDispatch')
+    if (!claimDispatch || !acknowledgeDispatch) throw new Error('Workspace dispatch RPC is missing')
+
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(claimDispatch.payloadSchema)({
+          runId: 'run-1',
+          ownerEpoch: 1,
+          claimedAt: '2026-10-29T10:00:00Z',
+        }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(claimDispatch.payloadSchema)({
+          runId: 'run-1',
+          ownerEpoch: 0,
+          claimedAt: '2026-10-29T10:00:00Z',
+        }),
+      ),
+    ).toBe(true)
+
+    const acknowledgement = {
+      runId: 'run-1',
+      acknowledgement: {
+        ownerEpoch: 1,
+        nativeSessionId: 'native-session-1',
+        acknowledgedAt: '2026-10-29T10:00:00Z',
+      },
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(acknowledgeDispatch.payloadSchema)(acknowledgement))).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(acknowledgeDispatch.payloadSchema)({
+          ...acknowledgement,
+          acknowledgement: { ...acknowledgement.acknowledgement, ownerEpoch: 0 },
+        }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(acknowledgeDispatch.payloadSchema)({
+          ...acknowledgement,
+          acknowledgement: { ...acknowledgement.acknowledgement, nativeSessionId: '  ' },
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('bounds event paging, strips extra fields, and rejects generic op/args requests', () => {
+    const pageEvents = WorkspaceWorkerRpcGroup.requests.get('workspace-worker:pageEvents')
+    if (!pageEvents) throw new Error('Workspace event paging RPC is missing')
+
+    for (const payload of [
+      { afterSequence: 0, limit: 1 },
+      { afterSequence: 7, limit: 500 },
+    ]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(pageEvents.payloadSchema)(payload))).toBe(true)
+    }
+    for (const payload of [
+      { afterSequence: -1, limit: 1 },
+      { afterSequence: 0, limit: 0 },
+      { afterSequence: 0, limit: 501 },
+    ]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(pageEvents.payloadSchema)(payload))).toBe(true)
+    }
+
+    expect(Schema.decodeUnknownSync(pageEvents.payloadSchema)({ afterSequence: 0, limit: 1, extra: true })).toEqual({
+      afterSequence: 0,
+      limit: 1,
+    })
+    expect(Result.isFailure(Schema.decodeUnknownResult(pageEvents.payloadSchema)({ op: 'pageEvents', args: {} }))).toBe(
+      true,
+    )
+  })
+
+  it('versions readiness and rejects unknown workspace error codes', () => {
+    const ready = WorkspaceWorkerRpcGroup.requests.get('workspace-worker:ready')
+    if (!ready) throw new Error('Workspace readiness RPC is missing')
+
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(ready.successSchema)({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(ready.successSchema)({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION + 1 }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(WorkspaceStoreError)({
+          _tag: 'WorkspaceStoreError',
+          code: 'unknown-code',
+          message: 'Workspace operation failed',
         }),
       ),
     ).toBe(true)

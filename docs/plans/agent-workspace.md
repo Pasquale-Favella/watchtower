@@ -1,9 +1,9 @@
 # Agent workspace implementation
 
-Status: implementation in progress. Application service, driver and operational
-store prototypes are under test, but are not connected to production execution.
-No workspace release or native protocol certification is complete on this branch
-yet.
+Status: implementation in progress. Application service, driver, operational
+store and dedicated worker prototypes are under test, but are not connected to
+production execution. No workspace release or native protocol certification is
+complete on this branch yet.
 
 [Issue #178](https://github.com/Pasquale-Favella/watchtower/issues/178) owns the
 requirements, agreed directions, work breakdown and acceptance gates. This file
@@ -28,10 +28,12 @@ authority under [the tracker convention](../agents/issue-tracker.md).
 
 ## Current implementation evidence
 
-The 2026-10-29 driver, operational-store and application-service checkpoint builds
-on `92068f5`. Exact published commit references and subsequent local checkpoints
-are recorded in [PR #179](https://github.com/Pasquale-Favella/watchtower/pull/179).
-The evidence below covers these prototypes, not a completed workspace release:
+The 2026-10-29 driver checkpoint is published as `efa93ba`; operational storage
+and the application service are published as `8ec99c3`, following `92068f5`.
+The dedicated worker follow-up builds on `8ec99c3`. Exact published references
+and subsequent checkpoints are recorded in
+[PR #179](https://github.com/Pasquale-Favella/watchtower/pull/179). The evidence
+below covers these prototypes, not a completed workspace release:
 
 - The [driver spike](../research/agent-driver-conformance.md) covers Codex App
   Server, the Claude SDK candidate and generic ACP. Deterministic regressions
@@ -53,22 +55,37 @@ The evidence below covers these prototypes, not a completed workspace release:
   claim failures, uncertain delivery, early interruption, retrying failed native
   interrupts and explicit shutdown-deadline failure. These use fake drivers, not
   real native execution or renderer subscriptions.
-- Full Vitest: 315 files passed, 3,516 tests passed and 5 skipped. All four
+- The dedicated workspace worker owns operational SQLite in a standalone Node
+  thread. The official Effect RPC protocol exposes the eleven WorkspaceStore
+  methods plus versioned readiness and shutdown, with authoritative schemas,
+  sanitized errors, 64 concurrent requests, 1 MiB request and 4 MiB response
+  limits. Admitted mutations drain before SQL closes and shutdown acknowledges.
+  The scoped client implements the existing port without automatic reconnect,
+  retry or resend. Initialization covers the entire handshake; shutdown has a
+  configured deadline followed by a 250 ms native termination budget, and
+  unconfirmed cleanup is reported rather than silently accepted.
+  Seven real-thread integration tests cover the lifecycle, explicit worker
+  replacement/recovery, startup and cleanup deadlines, invalid/oversized input
+  and concurrency bounds. Three handler tests and eleven shared Schema tests
+  pass. The production build includes a separate workspace-worker entry, but
+  main, renderer and Coach do not use it yet.
+- Full Vitest: 317 files passed, 3,530 tests passed and 5 skipped. All four
   TypeScript projects, Effect diagnostics and diagnostic fixtures, ESLint,
   Prettier and the Electron production build passed. Three real Electron smoke
   tests passed for boot/navigation, renderer lifetime and Operational log.
-- At the preceding driver/store checkpoint, Windows NSIS packaging and the
-  packaged application verifier passed, including boot, RPC/SQLite, MCP
-  stdio/HTTP, export and configuration. Packaging was not rerun for the additive
-  application-service slice, which has no production wiring yet. Installer
+- Windows NSIS packaging and the packaged application verifier passed again
+  with the new build entry, including boot, RPC/SQLite, MCP stdio/HTTP, export
+  and configuration. These generic application checks do not exercise the new
+  workspace worker inside the package or certify native drivers. Installer
   install/uninstall acceptance requires a disposable hosted runner and was not
   run locally. macOS/Linux packaging and native-driver execution remain unverified.
 
-This does not complete M0.2, M0.3, M1.1 or M1.3. The dedicated workspace worker,
-production composition and RPC, durable queue/response commands, admission and
-backlog budgets, text batching, fault injection, streaming measurements and
-Coach migration remain open. A reported shutdown timeout retains uncertainty;
-it does not establish that an uncooperative native process was terminated.
+This does not complete M0.2, M0.3, M1.1 or M1.3. Production workspace-worker
+composition and replacement supervision, service/driver routing and RPC,
+durable queue/response commands, admission and backlog budgets, text batching,
+fault injection, streaming measurements and Coach migration remain open. A
+reported shutdown timeout retains uncertainty; it does not establish that an
+uncooperative native process was terminated.
 Exact stored-path exclusion is not canonical filesystem identity: case aliases,
 symlinks and junctions still require the checkout resolver. Authenticated native
 turns, permitted Claude distribution and packaged-driver/cross-platform checks
