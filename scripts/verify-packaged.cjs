@@ -192,7 +192,7 @@ async function installRendererRpcProbe(window) {
     let sequence = 0
     let disposed = false
     const prefix = `watchtower-packaged-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const call = (tag, payload = null) =>
+    const call = (tag, payload = null, timeoutMs = 10000) =>
       new Promise((resolve, reject) => {
         if (disposed) return reject(new Error('Packaged RPC probe is disposed'))
         const id = `${prefix}-${++sequence}`
@@ -206,7 +206,10 @@ async function installRendererRpcProbe(window) {
           if (error) reject(error)
           else resolve(value)
         }
-        const timeout = setTimeout(() => finish(new Error(`Packaged RPC timed out: ${tag}`)), 10000)
+        const timeout = setTimeout(
+          () => finish(new Error(`Packaged RPC timed out after ${timeoutMs}ms: ${tag}`)),
+          timeoutMs,
+        )
         unsubscribe = bridge.onMessage(raw => {
           let frame
           try {
@@ -701,12 +704,17 @@ async function main() {
           inputPricePerMillion: 0,
           outputPricePerMillion: 2,
         })
-        const info = await call('settings:clear')
+        // Clear also reclaims SQLite storage and recursively measures the profile.
+        // SQLite may wait five seconds per busy maintenance statement.
+        const clearStarted = performance.now()
+        const info = await call('settings:clear', null, 30000)
+        const clearElapsedMs = Math.round(performance.now() - clearStarted)
         return {
           selected,
           cached,
           invalid,
           info,
+          clearElapsedMs,
           aliasReceipt,
           priceReceipt,
           currency: await call('currency:get'),
@@ -745,6 +753,7 @@ async function main() {
       assert.deepEqual(cleared.sessions, [])
       console.log(
         'Packaged currency select/cache/validation and clear/reclaim RPC passed; facts cleared, config retained.',
+        `Clear/reclaim and size measurement: ${cleared.clearElapsedMs}ms.`,
       )
 
       // Exercise the packaged background shell with its actual windows. A
