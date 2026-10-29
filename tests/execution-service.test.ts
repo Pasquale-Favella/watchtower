@@ -15,6 +15,7 @@ import {
   type AgentDriverSession,
   type AgentSessionContext,
 } from '@/core/ports/agent-driver.js'
+import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import type { AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
@@ -99,13 +100,17 @@ const makeRuntime = (
   connect: DriverConnect,
   options: Partial<ExecutionServiceOptions> = {},
   storeService?: WorkspaceStore['Service'],
+  additionalDrivers: ReadonlyArray<AgentDriver['Service']> = [],
 ) =>
   ManagedRuntime.make(
     Layer.provideMerge(
       ExecutionService.layer({ ownerEpoch: 7, ...options }),
       Layer.merge(
         storeService ? Layer.succeed(WorkspaceStore, storeService) : WorkspaceStoreLive({ filename: ':memory:' }),
-        Layer.succeed(AgentDriver, AgentDriver.of({ driverId: 'test-driver', connect })),
+        Layer.succeed(
+          AgentDriverRegistry,
+          AgentDriverRegistry.fromDrivers([AgentDriver.of({ driverId: 'test-driver', connect }), ...additionalDrivers]),
+        ),
       ),
     ),
   )
@@ -116,6 +121,130 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
 }
 
 describe('ExecutionService', () => {
+  it('routes runs to their own drivers and isolates cancellation and connection cleanup', async () => {
+    const firstStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const secondStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const firstTerminal = await Effect.runPromise(Deferred.make<undefined>())
+    const secondTerminal = await Effect.runPromise(Deferred.make<undefined>())
+    const firstClosed = await Effect.runPromise(Deferred.make<undefined>())
+    const firstSubmitted: string[] = []
+    const secondSubmitted: string[] = []
+    const firstConnections: string[] = []
+    const secondConnections: string[] = []
+    const closed: string[] = []
+    let secondInterrupts = 0
+    const firstSession = makeSession({
+      submit: input => {
+        firstSubmitted.push(input.runId)
+        return Effect.succeed({ nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 })
+      },
+      events: () =>
+        Stream.fromEffect(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(firstStarted, undefined)
+            yield* Deferred.await(firstTerminal)
+            return { kind: 'turnInterrupted', nativeTurnId: 'native-turn' } as const
+          }),
+        ),
+      interrupt: () =>
+        Effect.as(Deferred.succeed(firstTerminal, undefined), {
+          acknowledged: true,
+          termination: 'stillRunning' as const,
+        }),
+    })
+    const secondSession = makeSession({
+      submit: input => {
+        secondSubmitted.push(input.runId)
+        return Effect.succeed({ nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 })
+      },
+      events: () =>
+        Stream.fromEffect(
+          Effect.gen(function* () {
+            yield* Deferred.succeed(secondStarted, undefined)
+            yield* Deferred.await(secondTerminal)
+            return { kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const
+          }),
+        ),
+      interrupt: () => {
+        secondInterrupts += 1
+        return Effect.succeed({ acknowledged: true, termination: 'stillRunning' as const })
+      },
+    })
+    const secondDriver = AgentDriver.of({
+      driverId: 'other-driver',
+      connect: options =>
+        Effect.sync(() => {
+          secondConnections.push(options.connectionId)
+          return makeConnection(secondSession, {
+            identity: { id: options.connectionId, driverId: 'other-driver', authentication: 'authenticated' },
+            close: () => Effect.sync(() => void closed.push('other-driver')),
+          })
+        }),
+    })
+    const runtime = makeRuntime(
+      options =>
+        Effect.sync(() => {
+          firstConnections.push(options.connectionId)
+          return makeConnection(firstSession, {
+            close: () =>
+              Effect.gen(function* () {
+                closed.push('test-driver')
+                yield* Deferred.succeed(firstClosed, undefined)
+              }),
+          })
+        }),
+      {},
+      undefined,
+      [secondDriver],
+    )
+    const otherProject = { ...project, id: 'project-2' as never, repositoryIdentity: 'repo:two' }
+    const otherCheckout = { ...checkout, id: 'checkout-2' as never, path: 'C:/other-repo' }
+    const otherTask = { ...task, id: 'task-2' as never, projectId: otherProject.id }
+    const otherConversation = { ...conversation, id: 'conversation-2' as never }
+    const otherCommand = {
+      ...command,
+      commandId: 'other-command',
+      runId: 'other-run' as never,
+      taskId: otherTask.id,
+      conversationId: otherConversation.id,
+      checkoutId: otherCheckout.id,
+      provisionalAgentSessionId: 'other-session',
+      driverId: 'other-driver',
+      connectionId: 'connection-2',
+    }
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      await run(store.registerProject({ project: otherProject, mainCheckout: otherCheckout }))
+      await run(store.createTask({ task: otherTask, conversation: otherConversation }))
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await run(service.start(otherCommand))
+      await run(Deferred.await(firstStarted))
+      await run(Deferred.await(secondStarted))
+
+      expect([firstSubmitted, secondSubmitted]).toEqual([['run-1'], ['other-run']])
+      expect([firstConnections, secondConnections]).toEqual([['connection-1'], ['connection-2']])
+      await run(service.interrupt(command.runId))
+      await run(Deferred.await(firstClosed))
+
+      expect(secondInterrupts).toBe(0)
+      expect(closed).toEqual(['test-driver'])
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('interrupted')
+      expect((await run(store.readTaskSnapshot(otherTask.id, 10))).runs[0]?.status).toBe('running')
+      await run(Deferred.succeed(secondTerminal, undefined))
+      await run(service.stopAll())
+      expect(closed).toEqual(['test-driver', 'other-driver'])
+      expect((await run(store.readTaskSnapshot(otherTask.id, 10))).runs[0]?.status).toBe('completed')
+    } finally {
+      await Effect.runPromise(Deferred.succeed(firstTerminal, undefined))
+      await Effect.runPromise(Deferred.succeed(secondTerminal, undefined))
+      await runtime.dispose()
+    }
+  })
+
   it.each([
     { mismatch: 'driver' as const, expectedConnects: 0 },
     { mismatch: 'connection' as const, expectedConnects: 1 },
@@ -172,6 +301,50 @@ describe('ExecutionService', () => {
         status: 'failed',
         failure: 'launch-failed',
       })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('settles an unregistered driver before native calls so it leaves no recoverable dispatch', async () => {
+    let connectCalls = 0
+    let submitCalls = 0
+    const session = makeSession({
+      submit: () => {
+        submitCalls += 1
+        return Effect.die(new Error('An unregistered driver must not submit'))
+      },
+    })
+    const runtime = makeRuntime(() => {
+      connectCalls += 1
+      return Effect.succeed(makeConnection(session))
+    })
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, driverId: 'unregistered-driver' }))
+      await run(service.stopAll())
+
+      expect(connectCalls).toBe(0)
+      expect(submitCalls).toBe(0)
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
+        status: 'failed',
+        failure: 'launch-failed',
+      })
+      expect(await run(store.recoverWorker(7, '2026-10-29T10:00:02Z'))).toBe(0)
+      expect(
+        await run(
+          store.beginRun({
+            ...command,
+            commandId: 'after-unregistered',
+            runId: 'after-unregistered-run' as never,
+            provisionalAgentSessionId: 'after-unregistered-session',
+          }),
+        ),
+      ).toMatchObject({ replayed: false })
     } finally {
       await runtime.dispose()
     }
@@ -439,30 +612,34 @@ describe('ExecutionService', () => {
     }
   })
 
-  it('does not dispatch a replayed durable beginRun receipt', async () => {
-    let connectCalls = 0
-    const runtime = makeRuntime(() =>
-      Effect.sync(() => {
-        connectCalls += 1
-        throw new Error('A replayed command must not connect to a driver')
-      }),
-    )
+  it.each(['test-driver', 'unregistered-driver'])(
+    'does not dispatch a replayed durable beginRun receipt for %s',
+    async driverId => {
+      let connectCalls = 0
+      const runtime = makeRuntime(() =>
+        Effect.sync(() => {
+          connectCalls += 1
+          throw new Error('A replayed command must not connect to a driver')
+        }),
+      )
 
-    try {
-      const store = await runtime.runPromise(WorkspaceStore)
-      const run: RunEffect = effect => runtime.runPromise(effect)
-      await setup(store, run)
-      await runtime.runPromise(store.beginRun(command))
+      try {
+        const store = await runtime.runPromise(WorkspaceStore)
+        const run: RunEffect = effect => runtime.runPromise(effect)
+        await setup(store, run)
+        const originalCommand = { ...command, driverId }
+        await runtime.runPromise(store.beginRun(originalCommand))
 
-      const service = await runtime.runPromise(ExecutionService)
-      const receipt = await runtime.runPromise(service.start(command))
+        const service = await runtime.runPromise(ExecutionService)
+        const receipt = await runtime.runPromise(service.start(originalCommand))
 
-      expect(receipt).toMatchObject({ commandId: 'command-1', runId: 'run-1', replayed: true })
-      expect(connectCalls).toBe(0)
-    } finally {
-      await runtime.dispose()
-    }
-  })
+        expect(receipt).toMatchObject({ commandId: 'command-1', runId: 'run-1', replayed: true })
+        expect(connectCalls).toBe(0)
+      } finally {
+        await runtime.dispose()
+      }
+    },
+  )
 
   it('claims before native dispatch and commits terminal events before publishing them', async () => {
     const order: string[] = []

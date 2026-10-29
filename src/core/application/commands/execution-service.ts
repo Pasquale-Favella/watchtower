@@ -12,13 +12,13 @@ import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
-import {
-  AgentDriver,
-  type AgentDriverError,
-  type AgentDriverSession,
-  type AgentSessionContext,
-  type UnsupportedAgentOperation,
+import type {
+  AgentDriverError,
+  AgentDriverSession,
+  AgentSessionContext,
+  UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
+import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
@@ -129,7 +129,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const closeDeadlineMs = parsedOptions.closeDeadlineMs ?? 10_000
     const maxConcurrentRuns = parsedOptions.maxConcurrentRuns ?? 4
     const store = yield* WorkspaceStore
-    const driver = yield* AgentDriver
+    const drivers = yield* AgentDriverRegistry
     const appScope = yield* Scope.Scope
     const workerScope = yield* Scope.make()
     const runPermits = yield* Semaphore.make(maxConcurrentRuns)
@@ -198,10 +198,11 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             state.shuttingDown = true
             return
           }
+          const driver = yield* drivers.resolve(state.claim.driverId)
           if (driver.driverId !== state.claim.driverId) {
             return yield* new ExecutionServiceError({
               reason: 'background-failure',
-              message: 'Dispatch claim driver did not match the injected agent driver',
+              message: 'Dispatch claim driver did not match the resolved agent driver',
             })
           }
           const connection = yield* driver.connect({ connectionId: state.claim.connectionId })
