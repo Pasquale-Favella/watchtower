@@ -338,6 +338,58 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:requestInterrupt'](payload),
           )
         },
+        recordRequestResponse: command =>
+          invoke('workspace-worker:recordRequestResponse', command, () =>
+            rawClient['workspace-worker:recordRequestResponse'](command),
+          ),
+        settleRequestResponse: (runId, requestId, outcome) => {
+          const payload = { runId, requestId, outcome }
+          return invoke('workspace-worker:settleRequestResponse', payload, () =>
+            rawClient['workspace-worker:settleRequestResponse'](payload),
+          )
+        },
+        recordSteer: command =>
+          invoke('workspace-worker:recordSteer', command, () => rawClient['workspace-worker:recordSteer'](command)),
+        settleSteer: (runId, commandId, outcome) => {
+          const payload = { runId, commandId, outcome }
+          return invoke('workspace-worker:settleSteer', payload, () =>
+            rawClient['workspace-worker:settleSteer'](payload),
+          )
+        },
+        enqueueFollowUp: command =>
+          invoke('workspace-worker:enqueueFollowUp', command, () =>
+            rawClient['workspace-worker:enqueueFollowUp'](command),
+          ),
+        cancelQueuedFollowUp: (conversationId, commandId) => {
+          const payload = { conversationId, commandId }
+          return invoke('workspace-worker:cancelQueuedFollowUp', payload, () =>
+            rawClient['workspace-worker:cancelQueuedFollowUp'](payload),
+          )
+        },
+        listQueuedFollowUps: (conversationId, options) => {
+          const payload = { conversationId, options }
+          return invoke('workspace-worker:listQueuedFollowUps', payload, () =>
+            rawClient['workspace-worker:listQueuedFollowUps'](payload),
+          )
+        },
+        listRequestResponses: (taskId, options) => {
+          const payload = { taskId, options }
+          return invoke('workspace-worker:listRequestResponses', payload, () =>
+            rawClient['workspace-worker:listRequestResponses'](payload),
+          )
+        },
+        listSteerIntents: (taskId, options) => {
+          const payload = { taskId, options }
+          return invoke('workspace-worker:listSteerIntents', payload, () =>
+            rawClient['workspace-worker:listSteerIntents'](payload),
+          )
+        },
+        promoteNextFollowUp: (conversationId, command) => {
+          const payload = { conversationId, command }
+          return invoke('workspace-worker:promoteNextFollowUp', payload, () =>
+            rawClient['workspace-worker:promoteNextFollowUp'](payload),
+          )
+        },
         recoverWorker: (replacedEpoch, recoveredAt) => {
           const payload = { replacedEpoch, recoveredAt }
           return invoke('workspace-worker:recoverWorker', payload, () =>

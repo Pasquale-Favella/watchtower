@@ -9,7 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceWorkerStoreLive } from '@/platform/electron/workers/workspace/client.js'
-import { type BeginRunCommand, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import { type BeginRunCommand, type QueuedFollowUpPage, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 const timestamp = '2026-10-29T10:00:00Z'
 const project = {
@@ -135,11 +135,11 @@ parentPort.on = (event, listener) => on(event, event === 'message'
   : listener)
 
 const group = RpcGroup.make(
-  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(1) }) }),
+  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(3) }) }),
   Rpc.make('workspace-worker:shutdown', { success: Schema.Void }),
 )
 const handlers = group.toLayer({
-  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 1 }),
+  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 3 }),
   'workspace-worker:shutdown': () => Effect.succeed(undefined),
 })
 const program = Effect.scoped(Effect.gen(function* () {
@@ -167,6 +167,239 @@ afterAll(async () => {
 })
 
 describe('workspace worker RPC client', () => {
+  it('keeps large queued prompts and delivery histories readable through bounded cursor pages', async () => {
+    await withStore(join(fixtureDirectory, 'bounded-history.db'), async store => {
+      await setup(store)
+      for (let index = 0; index < 5; index += 1) {
+        await Effect.runPromise(
+          store.enqueueFollowUp({
+            commandId: `large-queue-${index}`,
+            issuedAt: timestamp,
+            taskId: task.id,
+            conversationId: conversation.id,
+            prompt: 'q'.repeat(900 * 1024),
+          }),
+        )
+      }
+      await Effect.runPromise(store.beginRun(beginRun))
+      await Effect.runPromise(store.claimDispatch(beginRun.runId, 7, timestamp))
+      await Effect.runPromise(
+        store.acknowledgeDispatch(beginRun.runId, {
+          ownerEpoch: 7,
+          nativeSessionId: 'native-large',
+          acknowledgedAt: timestamp,
+        }),
+      )
+      for (let index = 0; index < 8; index += 1) {
+        await Effect.runPromise(
+          store.recordSteer({
+            commandId: `large-steer-${index}`,
+            issuedAt: timestamp,
+            runId: beginRun.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            message: 's'.repeat(700 * 1024),
+          }),
+        )
+        await Effect.runPromise(
+          store.recordDriverEvent(beginRun.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: `pending-large-${index}`,
+            occurredAt: timestamp,
+            event: {
+              kind: 'requestPending',
+              request: {
+                runId: beginRun.runId,
+                requestId: `large-request-${index}`,
+                generation: 1,
+                kind: 'question',
+                prompt: 'Answer?',
+                questions: [],
+              },
+            },
+          }),
+        )
+        await Effect.runPromise(
+          store.recordRequestResponse({
+            commandId: `large-response-${index}`,
+            issuedAt: timestamp,
+            runId: beginRun.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            requestId: `large-request-${index}`,
+            decision: { kind: 'answers', answers: { answer: 'r'.repeat(700 * 1024) } },
+          }),
+        )
+      }
+      const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
+      expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(2 * 1024 * 1024)
+      expect(snapshot.requestResponseSummary).toMatchObject({ total: 8, truncated: true, pendingCount: 8 })
+      expect(snapshot.steerIntentSummary).toMatchObject({ total: 8, truncated: true, pendingCount: 8 })
+      expect(snapshot.queuedFollowUps).toHaveLength(5)
+      expect(snapshot.queuedFollowUps?.[0]).toMatchObject({ promptByteLength: 900 * 1024 })
+      expect(snapshot.queuedFollowUps?.[0]).not.toHaveProperty('prompt')
+      const firstResponse = await Effect.runPromise(store.listRequestResponses(task.id, { limit: 1 }))
+      expect(firstResponse.items[0]?.decision).toMatchObject({
+        kind: 'answers',
+        answers: { answer: 'r'.repeat(700 * 1024) },
+      })
+      const firstSteer = await Effect.runPromise(store.listSteerIntents(task.id, { limit: 1 }))
+      expect(firstSteer.items[0]?.message).toHaveLength(700 * 1024)
+      await expect(Effect.runPromise(store.listQueuedFollowUps(conversation.id, { limit: 51 }))).rejects.toMatchObject({
+        code: 'invalid-data',
+      })
+      const queueIds: Array<string> = []
+      let queueCursor: number | null = 0
+      while (queueCursor !== null) {
+        const page: QueuedFollowUpPage = await Effect.runPromise(
+          store.listQueuedFollowUps(conversation.id, { afterPosition: queueCursor, limit: 50 }),
+        )
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(2 * 1024 * 1024)
+        expect(page.items.length).toBeGreaterThan(0)
+        expect(page.items[0]?.prompt).toHaveLength(900 * 1024)
+        queueIds.push(...page.items.map(item => item.commandId))
+        queueCursor = page.nextAfterPosition
+      }
+      expect(queueIds).toEqual(['large-queue-0', 'large-queue-1', 'large-queue-2', 'large-queue-3', 'large-queue-4'])
+      const historyReaders: ReadonlyArray<
+        (options: { afterPosition: number; limit: number }) => Effect.Effect<
+          {
+            readonly items: ReadonlyArray<{ readonly commandId: string }>
+            readonly nextAfterPosition: number | null
+          },
+          WorkspaceStoreError
+        >
+      > = [options => store.listRequestResponses(task.id, options), options => store.listSteerIntents(task.id, options)]
+      for (const list of historyReaders) {
+        const ids: Array<string> = []
+        let cursor: number | null = 0
+        while (cursor !== null) {
+          const page: {
+            readonly items: ReadonlyArray<{ readonly commandId: string }>
+            readonly nextAfterPosition: number | null
+          } = await Effect.runPromise(list({ afterPosition: cursor, limit: 50 }))
+          expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(2 * 1024 * 1024)
+          expect(page.items.length).toBeGreaterThan(0)
+          ids.push(...page.items.map(item => item.commandId))
+          cursor = page.nextAfterPosition
+        }
+        expect(ids).toHaveLength(8)
+        expect(new Set(ids).size).toBe(8)
+      }
+    })
+  }, 20_000)
+
+  it('round-trips durable responses, steering and the queue through a real worker and reopen', async () => {
+    const filename = join(fixtureDirectory, 'delivery-queue.db')
+    const queued = {
+      commandId: 'queue-worker',
+      taskId: task.id,
+      conversationId: conversation.id,
+      prompt: 'Queued first',
+      modelId: 'queued-model',
+      issuedAt: timestamp,
+    }
+    await withStore(filename, async store => {
+      await setup(store)
+      await Effect.runPromise(store.enqueueFollowUp(queued))
+      await Effect.runPromise(
+        store.enqueueFollowUp({ ...queued, commandId: 'queue-worker-2', prompt: 'Queued second' }),
+      )
+    })
+    await withStore(filename, async store => {
+      expect(await Effect.runPromise(store.enqueueFollowUp(queued))).toMatchObject({ replayed: true })
+      expect((await Effect.runPromise(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([
+        { commandId: queued.commandId },
+        { commandId: 'queue-worker-2' },
+      ])
+      await Effect.runPromise(store.cancelQueuedFollowUp(conversation.id, 'queue-worker-2'))
+      const promoted = await Effect.runPromise(store.promoteNextFollowUp(conversation.id, beginRun))
+      expect(promoted?.followUp.prompt).toBe('Queued first')
+      const claim = await Effect.runPromise(store.claimDispatch(beginRun.runId, 7, timestamp))
+      expect(claim).toMatchObject({ prompt: 'Queued first', modelId: 'queued-model' })
+      await Effect.runPromise(
+        store.acknowledgeDispatch(beginRun.runId, {
+          ownerEpoch: 7,
+          nativeSessionId: 'native-delivery',
+          acknowledgedAt: timestamp,
+        }),
+      )
+      await Effect.runPromise(
+        store.recordDriverEvent(beginRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'request-worker',
+          occurredAt: timestamp,
+          event: {
+            kind: 'requestPending',
+            request: {
+              runId: beginRun.runId,
+              generation: 1,
+              requestId: 'approval-worker',
+              kind: 'approval',
+              prompt: 'Allow?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      const response = {
+        commandId: 'respond-worker',
+        runId: beginRun.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        requestId: 'approval-worker',
+        decision: { kind: 'approve' as const },
+        issuedAt: timestamp,
+      }
+      expect(await Effect.runPromise(store.recordRequestResponse(response))).toMatchObject({ replayed: false })
+      expect(await Effect.runPromise(store.recordRequestResponse(response))).toMatchObject({ replayed: true })
+      await Effect.runPromise(
+        store.settleRequestResponse(beginRun.runId, 'approval-worker', {
+          ownerEpoch: 7,
+          occurredAt: timestamp,
+          outcome: 'uncertain',
+        }),
+      )
+      const steer = {
+        commandId: 'steer-worker',
+        runId: beginRun.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        message: 'Please focus',
+        issuedAt: timestamp,
+      }
+      expect(await Effect.runPromise(store.recordSteer(steer))).toMatchObject({ replayed: false })
+      await Effect.runPromise(
+        store.settleSteer(beginRun.runId, steer.commandId, {
+          ownerEpoch: 7,
+          occurredAt: timestamp,
+          outcome: 'accepted',
+          nativeConfirmation: 'unconfirmed',
+        }),
+      )
+    })
+    await withStore(filename, async store => {
+      expect((await Effect.runPromise(store.listQueuedFollowUps(conversation.id))).items).toEqual([])
+      expect(
+        await Effect.runPromise(
+          store.promoteNextFollowUp(conversation.id, {
+            ...beginRun,
+            commandId: 'no-double-promote',
+            runId: 'run-no-double' as never,
+          }),
+        ),
+      ).toBeNull()
+      const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.requestResponses).toMatchObject([{ state: 'uncertain' }])
+      expect(snapshot.steerIntents).toMatchObject([
+        { state: 'accepted', delivery: { nativeConfirmation: 'unconfirmed' } },
+      ])
+      expect(snapshot.queuedFollowUps).toEqual([])
+    })
+  }, 20_000)
+
   it('runs the durable WorkspaceStore lifecycle through one bundled worker', async () => {
     const filename = join(fixtureDirectory, 'lifecycle.db')
     await withStore(filename, async store => {

@@ -28,6 +28,7 @@ const safeMessages = {
   'command-conflict': 'Workspace command conflicts with a prior operation.',
   'admission-conflict': 'Workspace operation is not currently admissible.',
   'stale-epoch': 'Workspace worker epoch is stale.',
+  'stale-request': 'Workspace request is no longer pending.',
   'invalid-transition': 'Workspace state transition is invalid.',
   'invalid-data': 'Workspace operation data is invalid.',
   'database-unavailable': 'Workspace database operation failed.',
@@ -227,6 +228,57 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
     'workspace-worker:readTaskSnapshot': ({ taskId, runLimit }) =>
       execute('workspace-worker:readTaskSnapshot', { taskId, runLimit }, () =>
         options.store.readTaskSnapshot(taskId, runLimit),
+      ),
+    'workspace-worker:recordRequestResponse': command =>
+      execute(
+        'workspace-worker:recordRequestResponse',
+        command,
+        () => options.store.recordRequestResponse(command),
+        true,
+      ),
+    'workspace-worker:settleRequestResponse': ({ runId, requestId, outcome }) =>
+      execute(
+        'workspace-worker:settleRequestResponse',
+        { runId, requestId, outcome },
+        () => options.store.settleRequestResponse(runId, requestId, outcome),
+        true,
+      ),
+    'workspace-worker:recordSteer': command =>
+      execute('workspace-worker:recordSteer', command, () => options.store.recordSteer(command), true),
+    'workspace-worker:settleSteer': ({ runId, commandId, outcome }) =>
+      execute(
+        'workspace-worker:settleSteer',
+        { runId, commandId, outcome },
+        () => options.store.settleSteer(runId, commandId, outcome),
+        true,
+      ),
+    'workspace-worker:enqueueFollowUp': command =>
+      execute('workspace-worker:enqueueFollowUp', command, () => options.store.enqueueFollowUp(command), true),
+    'workspace-worker:cancelQueuedFollowUp': ({ conversationId, commandId }) =>
+      execute(
+        'workspace-worker:cancelQueuedFollowUp',
+        { conversationId, commandId },
+        () => options.store.cancelQueuedFollowUp(conversationId, commandId),
+        true,
+      ),
+    'workspace-worker:listQueuedFollowUps': ({ conversationId, options: pageOptions }) =>
+      execute('workspace-worker:listQueuedFollowUps', { conversationId, options: pageOptions }, () =>
+        options.store.listQueuedFollowUps(conversationId, pageOptions),
+      ),
+    'workspace-worker:listRequestResponses': ({ taskId, options: pageOptions }) =>
+      execute('workspace-worker:listRequestResponses', { taskId, options: pageOptions }, () =>
+        options.store.listRequestResponses(taskId, pageOptions),
+      ),
+    'workspace-worker:listSteerIntents': ({ taskId, options: pageOptions }) =>
+      execute('workspace-worker:listSteerIntents', { taskId, options: pageOptions }, () =>
+        options.store.listSteerIntents(taskId, pageOptions),
+      ),
+    'workspace-worker:promoteNextFollowUp': ({ conversationId, command }) =>
+      execute(
+        'workspace-worker:promoteNextFollowUp',
+        { conversationId, command },
+        () => options.store.promoteNextFollowUp(conversationId, command),
+        true,
       ),
     'workspace-worker:shutdown': () => Effect.flatMap(WorkspaceWorkerRpcState, state => state.shutdown()),
   })

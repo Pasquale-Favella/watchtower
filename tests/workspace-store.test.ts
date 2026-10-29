@@ -1,5 +1,4 @@
 import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import * as Sqlite from '@effect/sql-sqlite-node'
@@ -77,6 +76,644 @@ const acceptRun = async (
 }
 
 describe('WorkspaceStore', () => {
+  it('recovers pending deliveries on an already terminal run', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'terminal-pending',
+          occurredAt: command.issuedAt,
+          event: {
+            kind: 'requestPending',
+            request: {
+              runId: command.runId,
+              requestId: 'terminal-request',
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Allow?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      await run(
+        store.recordRequestResponse({
+          commandId: 'terminal-response',
+          issuedAt: command.issuedAt,
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          requestId: 'terminal-request',
+          decision: { kind: 'approve' },
+        }),
+      )
+      await run(
+        store.recordSteer({
+          commandId: 'terminal-steer',
+          issuedAt: command.issuedAt,
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          message: 'Focus',
+        }),
+      )
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'terminal-completed',
+          occurredAt: command.issuedAt,
+          event: { kind: 'turnCompleted' },
+        }),
+      )
+      expect(await run(store.recoverWorker(7, command.issuedAt))).toBe(0)
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.runs).toMatchObject([{ status: 'completed' }])
+      expect(snapshot.requestResponses).toMatchObject([{ state: 'uncertain', recoveryReason: 'worker-replaced' }])
+      expect(snapshot.steerIntents).toMatchObject([{ state: 'uncertain', recoveryReason: 'worker-replaced' }])
+      expect(snapshot.requestResponseSummary).toMatchObject({ pendingCount: 0, uncertainCount: 1 })
+      expect(snapshot.steerIntentSummary).toMatchObject({ pendingCount: 0, uncertainCount: 1 })
+    })
+  })
+
+  it('prioritizes unresolved deliveries in bounded snapshots while cursor pages retain complete history', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      for (let index = 0; index < 6; index += 1) {
+        await run(
+          store.recordDriverEvent(command.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: `priority-pending-${index}`,
+            occurredAt: command.issuedAt,
+            event: {
+              kind: 'requestPending',
+              request: {
+                runId: command.runId,
+                requestId: `priority-request-${index}`,
+                generation: 1,
+                kind: 'approval',
+                prompt: 'Allow?',
+                questions: [],
+              },
+            },
+          }),
+        )
+        await run(
+          store.recordRequestResponse({
+            commandId: `priority-response-${index}`,
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            requestId: `priority-request-${index}`,
+            decision: { kind: 'approve' },
+          }),
+        )
+        await run(
+          store.recordSteer({
+            commandId: `priority-steer-${index}`,
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            message: 'Focus',
+          }),
+        )
+        if (index > 0) {
+          const outcome = {
+            ownerEpoch: 7,
+            occurredAt: command.issuedAt,
+            outcome: index === 1 ? ('uncertain' as const) : ('accepted' as const),
+          }
+          await run(store.settleRequestResponse(command.runId, `priority-request-${index}`, outcome))
+          await run(store.settleSteer(command.runId, `priority-steer-${index}`, outcome))
+        }
+      }
+      const snapshot = await run(store.readTaskSnapshot(task.id, 2))
+      expect(snapshot.requestResponses).toMatchObject([
+        { commandId: 'priority-response-0', state: 'pending' },
+        { commandId: 'priority-response-1', state: 'uncertain' },
+      ])
+      expect(snapshot.steerIntents).toMatchObject([
+        { commandId: 'priority-steer-0', state: 'pending' },
+        { commandId: 'priority-steer-1', state: 'uncertain' },
+      ])
+      expect(snapshot.requestResponseSummary).toMatchObject({
+        total: 6,
+        truncated: true,
+        pendingCount: 1,
+        uncertainCount: 1,
+      })
+      const first = await run(store.listRequestResponses(task.id, { limit: 2 }))
+      expect(first.items.map(item => item.commandId)).toEqual(['priority-response-0', 'priority-response-1'])
+      expect(first).toMatchObject({ total: 6, truncated: true })
+      if (first.nextAfterPosition === null) throw new Error('Expected a response history cursor')
+      const second = await run(
+        store.listRequestResponses(task.id, { afterPosition: first.nextAfterPosition, limit: 50 }),
+      )
+      expect(second.items.map(item => item.commandId)).toEqual([
+        'priority-response-2',
+        'priority-response-3',
+        'priority-response-4',
+        'priority-response-5',
+      ])
+      expect(second).toMatchObject({ total: 6, truncated: false, nextAfterPosition: null })
+      for (const options of [{ afterPosition: -1 }, { afterPosition: 0.5 }, { limit: 0 }, { limit: 51 }]) {
+        await expect(run(store.listQueuedFollowUps(conversation.id, options))).rejects.toMatchObject({
+          code: 'invalid-data',
+        })
+        await expect(run(store.listRequestResponses(task.id, options))).rejects.toMatchObject({ code: 'invalid-data' })
+        await expect(run(store.listSteerIntents(task.id, options))).rejects.toMatchObject({ code: 'invalid-data' })
+      }
+    })
+  })
+
+  it.each(['memory', 'file'] as const)(
+    'recovers pending deliveries as uncertain without resending (%s)',
+    async storage => {
+      const directory = storage === 'file' ? mkdtempSync(join(process.cwd(), '.workspace-recovery-')) : undefined
+      const filename = directory ? join(directory, 'workspace.db') : ':memory:'
+      let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      try {
+        let store = await runtime.runPromise(WorkspaceStore)
+        let run: RunEffect = effect => runtime.runPromise(effect)
+        await setup(store, run)
+        await acceptRun(store, run)
+        await run(
+          store.recordDriverEvent(command.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: 'pending-recovery',
+            occurredAt: command.issuedAt,
+            event: {
+              kind: 'requestPending',
+              request: {
+                runId: command.runId,
+                requestId: 'recovery-request',
+                generation: 1,
+                kind: 'approval',
+                prompt: 'Allow?',
+                questions: [],
+              },
+            },
+          }),
+        )
+        await run(
+          store.recordRequestResponse({
+            commandId: 'recovery-response',
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            requestId: 'recovery-request',
+            decision: { kind: 'approve' },
+          }),
+        )
+        await run(
+          store.recordSteer({
+            commandId: 'recovery-steer',
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            message: 'Focus',
+          }),
+        )
+        if (directory) {
+          await runtime.dispose()
+          runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+          store = await runtime.runPromise(WorkspaceStore)
+          run = effect => runtime.runPromise(effect)
+        }
+        await run(store.recoverWorker(7, command.issuedAt))
+        const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+        expect(snapshot.requestResponses).toMatchObject([
+          { state: 'uncertain', delivery: { outcome: 'uncertain' }, recoveryReason: 'worker-replaced' },
+        ])
+        expect(snapshot.steerIntents).toMatchObject([
+          { state: 'uncertain', delivery: { outcome: 'uncertain' }, recoveryReason: 'worker-replaced' },
+        ])
+        expect(
+          [...(snapshot.requestResponses ?? []), ...(snapshot.steerIntents ?? [])].some(
+            intent => intent.state === 'pending',
+          ),
+        ).toBe(false)
+        const page = await run(store.pageEvents(0, 100))
+        expect(
+          page.events.filter(event => event.kind === 'requestResponseSettled' || event.kind === 'steerSettled'),
+        ).toMatchObject([
+          { data: { outcome: 'uncertain', reason: 'worker-replaced' } },
+          { data: { outcome: 'uncertain', reason: 'worker-replaced' } },
+        ])
+        await run(store.recoverWorker(7, command.issuedAt))
+        expect((await run(store.pageEvents(0, 100))).highWatermark).toBe(page.highWatermark)
+        if (directory) {
+          await runtime.dispose()
+          runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+          store = await runtime.runPromise(WorkspaceStore)
+          run = effect => runtime.runPromise(effect)
+          expect((await run(store.readTaskSnapshot(task.id, 10))).requestResponses).toMatchObject([
+            { state: 'uncertain' },
+          ])
+        }
+      } finally {
+        await runtime.dispose()
+        if (directory) rmSync(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
+  it('fences response and steering intent delivery and reconciles a late native resolution', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'approval-pending',
+          occurredAt: command.issuedAt,
+          event: {
+            kind: 'requestPending',
+            request: {
+              runId: command.runId,
+              requestId: 'approval',
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Allow?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      const response = {
+        commandId: 'respond-epoch',
+        issuedAt: command.issuedAt,
+        runId: command.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        requestId: 'approval',
+        decision: { kind: 'approve' as const },
+      }
+      const steer = {
+        commandId: 'steer-epoch',
+        issuedAt: command.issuedAt,
+        runId: command.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        message: 'Focus',
+      }
+      await expect(run(store.recordRequestResponse({ ...response, ownerEpoch: 6 }))).rejects.toMatchObject({
+        code: 'stale-epoch',
+      })
+      await expect(run(store.recordSteer({ ...steer, ownerEpoch: 6 }))).rejects.toMatchObject({ code: 'stale-epoch' })
+      await expect(run(store.recordSteer({ ...steer, generation: 2 }))).rejects.toMatchObject({
+        code: 'membership-conflict',
+      })
+      await expect(run(store.recordSteer({ ...steer, expectedNativeTurnId: 'wrong-turn' }))).rejects.toMatchObject({
+        code: 'membership-conflict',
+      })
+      await run(store.recordRequestResponse(response))
+      await run(store.recordSteer(steer))
+      const accepted = {
+        ownerEpoch: 7,
+        occurredAt: command.issuedAt,
+        outcome: 'accepted' as const,
+        nativeConfirmation: 'confirmed' as const,
+      }
+      await expect(
+        run(store.settleRequestResponse(command.runId, 'approval', { ...accepted, ownerEpoch: 6 })),
+      ).rejects.toMatchObject({ code: 'stale-epoch' })
+      await expect(
+        run(store.settleSteer(command.runId, steer.commandId, { ...accepted, ownerEpoch: 6 })),
+      ).rejects.toMatchObject({ code: 'stale-epoch' })
+      await run(store.settleRequestResponse(command.runId, 'approval', accepted))
+      await run(store.settleRequestResponse(command.runId, 'approval', accepted))
+      await run(store.settleSteer(command.runId, steer.commandId, { ...accepted, outcome: 'failed' }))
+      const high = (await run(store.pageEvents(0, 100))).highWatermark
+      await run(store.settleSteer(command.runId, steer.commandId, { ...accepted, outcome: 'failed' }))
+      expect((await run(store.pageEvents(0, 100))).highWatermark).toBe(high)
+      await expect(
+        run(store.settleRequestResponse(command.runId, 'approval', { ...accepted, outcome: 'uncertain' })),
+      ).rejects.toMatchObject({ code: 'invalid-transition' })
+      await expect(run(store.settleSteer(command.runId, steer.commandId, accepted))).rejects.toMatchObject({
+        code: 'invalid-transition',
+      })
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'approval-resolved',
+          occurredAt: command.issuedAt,
+          event: { kind: 'requestResolved', requestId: 'approval', decision: { kind: 'approve' } },
+        }),
+      )
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.requestResponses).toMatchObject([
+        { state: 'resolved', delivery: { outcome: 'accepted', nativeConfirmation: 'confirmed' } },
+      ])
+      expect(snapshot.steerIntents).toMatchObject([{ state: 'failed' }])
+      expect(await run(store.recordRequestResponse(response))).toMatchObject({ replayed: true })
+    })
+  })
+
+  it.each(['unknown', 'generation', 'resolved', 'expired'] as const)(
+    'rejects a stale %s approval without recording an intent',
+    async reason => {
+      await withStore(async (store, run) => {
+        await setup(store, run)
+        await acceptRun(store, run)
+        if (reason !== 'unknown') {
+          await run(
+            store.recordDriverEvent(command.runId, {
+              ownerEpoch: 7,
+              generation: 1,
+              eventId: 'pending',
+              occurredAt: command.issuedAt,
+              event: {
+                kind: 'requestPending',
+                request: {
+                  runId: command.runId,
+                  requestId: 'approval',
+                  generation: 1,
+                  kind: 'approval',
+                  prompt: 'Allow?',
+                  questions: [],
+                },
+              },
+            }),
+          )
+        }
+        if (reason === 'resolved') {
+          await run(
+            store.recordDriverEvent(command.runId, {
+              ownerEpoch: 7,
+              generation: 1,
+              eventId: 'resolved',
+              occurredAt: command.issuedAt,
+              event: { kind: 'requestResolved', requestId: 'approval', decision: { kind: 'approve' } },
+            }),
+          )
+        }
+        if (reason === 'expired') {
+          await run(
+            store.recordDriverEvent(command.runId, {
+              ownerEpoch: 7,
+              generation: 1,
+              eventId: 'complete',
+              occurredAt: command.issuedAt,
+              event: { kind: 'turnCompleted' },
+            }),
+          )
+        }
+        await expect(
+          run(
+            store.recordRequestResponse({
+              commandId: 'respond-stale',
+              issuedAt: command.issuedAt,
+              runId: command.runId,
+              ownerEpoch: 7,
+              generation: reason === 'generation' ? 2 : 1,
+              requestId: 'approval',
+              decision: { kind: 'approve' },
+            }),
+          ),
+        ).rejects.toMatchObject({ code: 'stale-request' })
+        expect((await run(store.readTaskSnapshot(task.id, 10))).requestResponses).toEqual([])
+      })
+    },
+  )
+
+  it('rejects steering on a run that failed before a native session existed', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(store.beginRun(command))
+      await run(
+        store.failDispatch(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      await expect(
+        run(
+          store.recordSteer({
+            commandId: 'steer-failed',
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            message: 'Continue',
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'invalid-transition' })
+    })
+  })
+
+  it('preserves ordered queued follow-ups across file-backed reopen and rolls back failed promotion', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-queue-'))
+    const filename = join(directory, 'workspace.db')
+    let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    try {
+      let store = await runtime.runPromise(WorkspaceStore)
+      let run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const followUp = {
+        commandId: 'queue-reopen-1',
+        taskId: task.id,
+        conversationId: conversation.id,
+        prompt: 'First',
+        issuedAt: command.issuedAt,
+        modelId: 'explicit-model',
+        modeId: null,
+      }
+      await run(store.enqueueFollowUp(followUp))
+      await run(store.enqueueFollowUp({ ...followUp, commandId: 'queue-reopen-2', prompt: 'Second' }))
+      await expect(run(store.enqueueFollowUp({ ...followUp, prompt: 'Conflicting' }))).rejects.toMatchObject({
+        code: 'command-conflict',
+      })
+      await runtime.dispose()
+      runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      store = await runtime.runPromise(WorkspaceStore)
+      run = effect => runtime.runPromise(effect)
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([
+        { prompt: 'First' },
+        { prompt: 'Second' },
+      ])
+      expect((await run(store.readTaskSnapshot(task.id, 10))).queuedFollowUps).toHaveLength(2)
+      await expect(
+        run(store.promoteNextFollowUp(conversation.id, { ...command, checkoutId: 'missing' as never })),
+      ).rejects.toMatchObject({ code: 'not-found' })
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toHaveLength(2)
+      const promoted = await run(
+        store.promoteNextFollowUp(conversation.id, { ...command, nativeSessionId: 'native-existing' }),
+      )
+      expect(promoted?.followUp.commandId).toBe(followUp.commandId)
+      await runtime.dispose()
+      runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      store = await runtime.runPromise(WorkspaceStore)
+      run = effect => runtime.runPromise(effect)
+      expect(
+        await run(store.promoteNextFollowUp(conversation.id, { ...command, commandId: 'cannot-promote-twice' })),
+      ).toBeNull()
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([{ prompt: 'Second' }])
+      const claim = await run(store.claimDispatch(command.runId, 7, command.issuedAt))
+      expect(claim).toMatchObject({
+        prompt: 'First',
+        modelId: 'explicit-model',
+        modeId: null,
+        nativeSessionId: 'native-existing',
+      })
+      await run(store.cancelQueuedFollowUp(conversation.id, 'queue-reopen-2'))
+      expect(
+        await run(store.enqueueFollowUp({ ...followUp, commandId: 'queue-reopen-2', prompt: 'Second' })),
+      ).toMatchObject({ replayed: true })
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toEqual([])
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('records steering before delivery and rejects a terminal run', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      const steer = {
+        commandId: 'steer-1',
+        runId: command.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        expectedNativeTurnId: 'native-turn-1',
+        message: 'Focus on tests',
+        issuedAt: command.issuedAt,
+      }
+      expect(await run(store.recordSteer(steer))).toMatchObject({ replayed: false })
+      expect(await run(store.recordSteer(steer))).toMatchObject({ replayed: true })
+      await run(
+        store.settleSteer(command.runId, steer.commandId, {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          outcome: 'accepted',
+          nativeConfirmation: 'unconfirmed',
+        }),
+      )
+      expect((await run(store.readTaskSnapshot(task.id, 20))).steerIntents).toMatchObject([
+        { state: 'accepted', delivery: { nativeConfirmation: 'unconfirmed' } },
+      ])
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'completed',
+          occurredAt: command.issuedAt,
+          event: { kind: 'turnCompleted' },
+        }),
+      )
+      await expect(run(store.recordSteer({ ...steer, commandId: 'steer-2' }))).rejects.toMatchObject({
+        code: 'invalid-transition',
+      })
+    })
+  })
+
+  it('promotes only one queued follow-up atomically and blocks promotion while a run is active', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const followUp = {
+        commandId: 'queue-1',
+        taskId: task.id,
+        conversationId: conversation.id,
+        prompt: 'Follow up',
+        issuedAt: command.issuedAt,
+      }
+      expect(await run(store.enqueueFollowUp(followUp))).toMatchObject({ replayed: false })
+      expect(await run(store.enqueueFollowUp(followUp))).toMatchObject({ replayed: true })
+      await run(store.enqueueFollowUp({ ...followUp, commandId: 'queue-2', prompt: 'Second' }))
+      const promoted = await Promise.all([
+        run(store.promoteNextFollowUp(conversation.id, command)),
+        run(store.promoteNextFollowUp(conversation.id, { ...command, runId: 'run-2' as never, commandId: 'start-2' })),
+      ])
+      expect(promoted.filter(Boolean)).toHaveLength(1)
+      expect((await run(store.readTaskSnapshot(task.id, 20))).runs).toMatchObject([{ status: 'queued' }])
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([
+        { commandId: 'queue-2', prompt: 'Second' },
+      ])
+      expect(await run(store.promoteNextFollowUp(conversation.id, { ...command, commandId: 'start-3' }))).toBeNull()
+      await run(store.cancelQueuedFollowUp(conversation.id, 'queue-2'))
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toEqual([])
+    })
+  })
+
+  it('records a response before delivery, fences stale approvals and retains uncertainty', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'approval',
+          occurredAt: command.issuedAt,
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'approval-1',
+              runId: command.runId,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Approve',
+              questions: [],
+            },
+          },
+        }),
+      )
+      const response = {
+        commandId: 'respond-1',
+        runId: command.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        requestId: 'approval-1',
+        decision: { kind: 'approve' as const },
+        issuedAt: command.issuedAt,
+      }
+      expect(await run(store.recordRequestResponse(response))).toMatchObject({ replayed: false })
+      expect((await run(store.readTaskSnapshot(task.id, 20))).requestResponses).toMatchObject([{ state: 'pending' }])
+      expect(await run(store.recordRequestResponse(response))).toMatchObject({ replayed: true })
+      await expect(run(store.recordRequestResponse({ ...response, decision: { kind: 'deny' } }))).rejects.toMatchObject(
+        { code: 'command-conflict' },
+      )
+      await run(
+        store.settleRequestResponse(command.runId, 'approval-1', {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          outcome: 'uncertain',
+        }),
+      )
+      expect((await run(store.readTaskSnapshot(task.id, 20))).requestResponses).toMatchObject([{ state: 'uncertain' }])
+      await expect(run(store.recordRequestResponse({ ...response, commandId: 'respond-2' }))).rejects.toMatchObject({
+        code: 'stale-request',
+      })
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'resolved',
+          occurredAt: command.issuedAt,
+          event: { kind: 'requestResolved', requestId: 'approval-1', decision: { kind: 'approve' } },
+        }),
+      )
+      await expect(run(store.recordRequestResponse({ ...response, commandId: 'respond-3' }))).rejects.toMatchObject({
+        code: 'stale-request',
+      })
+    })
+  })
+
   it('commits a run receipt, prompt, event and intent once, and replays only an exact command', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
@@ -273,7 +910,7 @@ describe('WorkspaceStore', () => {
   })
 
   it('rejects claims from a recovered worker epoch after reopening with a pending intent', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'watchtower-workspace-store-'))
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-store-'))
     const filename = join(directory, 'workspace.sqlite')
     let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
 
@@ -337,7 +974,7 @@ describe('WorkspaceStore', () => {
   })
 
   it('maps malformed stored task JSON to invalid-data when reading a snapshot', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'watchtower-workspace-store-'))
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-store-'))
     const filename = join(directory, 'workspace.sqlite')
     const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
 
@@ -366,7 +1003,7 @@ describe('WorkspaceStore', () => {
   })
 
   it('recovers a claimed intent after reopening without allowing a resend or overlapping start', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'watchtower-workspace-store-'))
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-store-'))
     const filename = join(directory, 'workspace.sqlite')
     let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
 
@@ -694,7 +1331,7 @@ describe('WorkspaceStore', () => {
   })
 
   it('backfills pending driver requests when upgrading an existing workspace database', async () => {
-    const directory = mkdtempSync(join(tmpdir(), 'watchtower-workspace-store-'))
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-store-'))
     const filename = join(directory, 'workspace.sqlite')
     let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
 
@@ -763,7 +1400,10 @@ describe('WorkspaceStore', () => {
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
             yield* sql`DROP TABLE workspace_driver_request_state`
-            yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id = 5`
+            yield* sql`DROP TABLE workspace_request_response_intent`
+            yield* sql`DROP TABLE workspace_steer_intent`
+            yield* sql`DROP TABLE workspace_follow_up_queue`
+            yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`
           }),
         )
       } finally {

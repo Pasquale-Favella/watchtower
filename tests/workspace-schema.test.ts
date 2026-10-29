@@ -11,14 +11,185 @@ import {
   workspaceCheckoutSchema,
 } from '../src/shared/schemas/workspace.js'
 import {
+  deliveryOutcomeSchema,
   dispatchClaimSchema,
   dispatchFailureCommandSchema,
+  enqueueFollowUpCommandSchema,
+  followUpReceiptSchema,
+  promotedFollowUpSchema,
+  queuedFollowUpPageSchema,
+  queuedFollowUpPreviewSchema,
+  queuedFollowUpSchema,
   recordDriverEventCommandSchema,
+  recordRequestResponseCommandSchema,
+  recordSteerCommandSchema,
+  requestResponseIntentSchema,
+  requestResponsePageSchema,
+  settleDeliveryCommandSchema,
+  steerIntentPageSchema,
+  steerIntentSchema,
+  workspaceReadPageOptionsSchema,
   workspaceSnapshotSchema,
   WorkspaceStoreError,
 } from '../src/shared/schemas/workspace-store.js'
 
 describe('agent workspace domain schemas', () => {
+  it('validates bounded history cursors, page envelopes and compact queue previews', () => {
+    for (const options of [{}, { afterPosition: 0, limit: 1 }, { afterPosition: 3, limit: 50 }]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(workspaceReadPageOptionsSchema)(options))).toBe(true)
+    }
+    for (const options of [{ afterPosition: -1 }, { afterPosition: 0.1 }, { limit: 0 }, { limit: 51 }]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(workspaceReadPageOptionsSchema)(options))).toBe(true)
+    }
+    const empty = { items: [], total: 0, truncated: false, nextAfterPosition: null }
+    for (const schema of [queuedFollowUpPageSchema, requestResponsePageSchema, steerIntentPageSchema]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(schema)(empty))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)({ ...empty, total: -1 }))).toBe(true)
+      expect(Result.isFailure(Schema.decodeUnknownResult(schema)({ ...empty, nextAfterPosition: 0 }))).toBe(true)
+    }
+    const preview = {
+      commandId: 'queue',
+      taskId: 'task',
+      conversationId: 'conversation',
+      issuedAt: '2026-10-29T10:00:00Z',
+      position: 1,
+      promptByteLength: 900000,
+      promptPreview: 'Short preview',
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(queuedFollowUpPreviewSchema)(preview))).toBe(true)
+    expect(
+      Schema.decodeUnknownSync(queuedFollowUpPreviewSchema)({ ...preview, prompt: 'not exposed' }),
+    ).not.toHaveProperty('prompt')
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(queuedFollowUpPreviewSchema)({ ...preview, promptByteLength: -1 })),
+    ).toBe(true)
+  })
+
+  it('validates response and steering identity, owner epoch and generation', () => {
+    const response = {
+      commandId: 'respond',
+      issuedAt: '2026-10-29T10:00:00Z',
+      runId: 'run',
+      ownerEpoch: 7,
+      generation: 1,
+      requestId: 'approval',
+      decision: { kind: 'approve' },
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(recordRequestResponseCommandSchema)(response))).toBe(true)
+    for (const invalid of [
+      { ...response, ownerEpoch: 0 },
+      { ...response, generation: 0 },
+      { ...response, requestId: '' },
+      { ...response, decision: { kind: 'yes' } },
+    ]) {
+      expect(Result.isFailure(Schema.decodeUnknownResult(recordRequestResponseCommandSchema)(invalid))).toBe(true)
+    }
+    const steer = {
+      commandId: 'steer',
+      issuedAt: response.issuedAt,
+      runId: response.runId,
+      ownerEpoch: 7,
+      generation: 1,
+      expectedNativeTurnId: 'native-turn',
+      message: 'Focus',
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(recordSteerCommandSchema)(steer))).toBe(true)
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(recordSteerCommandSchema)({ ...steer, expectedNativeTurnId: '' })),
+    ).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(recordSteerCommandSchema)({ ...steer, message: ' ' }))).toBe(
+      true,
+    )
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(requestResponseIntentSchema)({
+          ...response,
+          state: 'uncertain',
+          delivery: { outcome: 'uncertain' },
+        }),
+      ),
+    ).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(steerIntentSchema)({ ...steer, state: 'pending' }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(steerIntentSchema)({ ...steer, state: 'retrying' }))).toBe(true)
+  })
+
+  it('distinguishes local acceptance, native confirmation, failure and uncertainty', () => {
+    for (const delivery of [
+      { outcome: 'accepted' },
+      { outcome: 'accepted', nativeConfirmation: 'confirmed' },
+      { outcome: 'accepted', nativeConfirmation: 'unconfirmed' },
+      { outcome: 'failed' },
+      { outcome: 'uncertain' },
+    ]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(deliveryOutcomeSchema)(delivery))).toBe(true)
+      expect(
+        Result.isSuccess(
+          Schema.decodeUnknownResult(settleDeliveryCommandSchema)({
+            ...delivery,
+            ownerEpoch: 7,
+            occurredAt: '2026-10-29T10:00:00Z',
+          }),
+        ),
+      ).toBe(true)
+    }
+    expect(Result.isFailure(Schema.decodeUnknownResult(deliveryOutcomeSchema)({ outcome: 'retry' }))).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(deliveryOutcomeSchema)({ outcome: 'accepted', nativeConfirmation: 'probably' }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(settleDeliveryCommandSchema)({
+          outcome: 'uncertain',
+          ownerEpoch: 0,
+          occurredAt: 'now',
+        }),
+      ),
+    ).toBe(true)
+  })
+
+  it('validates ordered queue entries, override nulls and queue-specific receipts', () => {
+    const queued = {
+      commandId: 'queue',
+      issuedAt: '2026-10-29T10:00:00Z',
+      taskId: 'task',
+      conversationId: 'conversation',
+      prompt: 'Follow up',
+      driverId: 'codex',
+      connectionId: 'local',
+      modelId: null,
+      modeId: 'plan',
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(enqueueFollowUpCommandSchema)(queued))).toBe(true)
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(enqueueFollowUpCommandSchema)({ ...queued, conversationId: '' })),
+    ).toBe(true)
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(enqueueFollowUpCommandSchema)({ ...queued, driverId: '' })),
+    ).toBe(true)
+    expect(Result.isSuccess(Schema.decodeUnknownResult(queuedFollowUpSchema)({ ...queued, position: 1 }))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(queuedFollowUpSchema)({ ...queued, position: 0 }))).toBe(true)
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(followUpReceiptSchema)({
+          commandId: queued.commandId,
+          conversationId: queued.conversationId,
+          acceptedAt: queued.issuedAt,
+          replayed: false,
+        }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(promotedFollowUpSchema)({
+          followUp: { ...queued, position: 1 },
+          receipt: { commandId: 'start', runId: 'run', acceptedAt: queued.issuedAt, replayed: false },
+        }),
+      ),
+    ).toBe(true)
+  })
+
   it('validates repository identity and explicit checkout identity independently of display names', () => {
     const project = {
       id: 'project-1',
@@ -212,6 +383,16 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:recoverWorker',
         'workspace-worker:pageEvents',
         'workspace-worker:readTaskSnapshot',
+        'workspace-worker:recordRequestResponse',
+        'workspace-worker:settleRequestResponse',
+        'workspace-worker:recordSteer',
+        'workspace-worker:settleSteer',
+        'workspace-worker:enqueueFollowUp',
+        'workspace-worker:cancelQueuedFollowUp',
+        'workspace-worker:listQueuedFollowUps',
+        'workspace-worker:listRequestResponses',
+        'workspace-worker:listSteerIntents',
+        'workspace-worker:promoteNextFollowUp',
         'workspace-worker:shutdown',
       ].sort(),
     )

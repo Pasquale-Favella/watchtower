@@ -1,25 +1,36 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { agentRunIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
+import { agentRunIdSchema, conversationIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import {
   beginRunCommandSchema,
   commandReceiptSchema,
   createTaskCommandSchema,
   dispatchClaimSchema,
   dispatchFailureCommandSchema,
+  enqueueFollowUpCommandSchema,
+  followUpReceiptSchema,
+  promotedFollowUpSchema,
+  queuedFollowUpPageSchema,
   recordDriverEventCommandSchema,
+  recordRequestResponseCommandSchema,
+  recordSteerCommandSchema,
   registerProjectCommandSchema,
+  requestResponsePageSchema,
+  settleDeliveryCommandSchema,
+  steerIntentPageSchema,
   workerEpochSchema,
+  WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   workspaceEventPageSchema,
   workspaceExecutionEventSchema,
+  workspaceReadPageOptionsSchema,
   workspaceSnapshotSchema,
   WorkspaceStoreError,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 1
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 3
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
-export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = 1024 * 1024
+export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
 
 const text = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1))
@@ -100,6 +111,59 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:readTaskSnapshot', {
     payload: Schema.Struct({ taskId: taskIdSchema, runLimit: pageLimit }),
     success: workspaceSnapshotSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:recordRequestResponse', {
+    payload: recordRequestResponseCommandSchema,
+    success: commandReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:settleRequestResponse', {
+    payload: Schema.Struct({ runId: agentRunIdSchema, requestId: text, outcome: settleDeliveryCommandSchema }),
+    success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:recordSteer', {
+    payload: recordSteerCommandSchema,
+    success: commandReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:settleSteer', {
+    payload: Schema.Struct({ runId: agentRunIdSchema, commandId: text, outcome: settleDeliveryCommandSchema }),
+    success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:enqueueFollowUp', {
+    payload: enqueueFollowUpCommandSchema,
+    success: followUpReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:cancelQueuedFollowUp', {
+    payload: Schema.Struct({ conversationId: conversationIdSchema, commandId: text }),
+    success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:listQueuedFollowUps', {
+    payload: Schema.Struct({
+      conversationId: conversationIdSchema,
+      options: Schema.optional(workspaceReadPageOptionsSchema),
+    }),
+    success: queuedFollowUpPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listRequestResponses', {
+    payload: Schema.Struct({ taskId: taskIdSchema, options: Schema.optional(workspaceReadPageOptionsSchema) }),
+    success: requestResponsePageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listSteerIntents', {
+    payload: Schema.Struct({ taskId: taskIdSchema, options: Schema.optional(workspaceReadPageOptionsSchema) }),
+    success: steerIntentPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:promoteNextFollowUp', {
+    payload: Schema.Struct({ conversationId: conversationIdSchema, command: beginRunCommandSchema }),
+    success: Schema.NullOr(promotedFollowUpSchema),
     error,
   }),
   Rpc.make('workspace-worker:shutdown', { success: Schema.Void, error }),

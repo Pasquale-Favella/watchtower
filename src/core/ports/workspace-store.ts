@@ -1,17 +1,27 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 
-import type { AgentRunId, TaskId } from '@/shared/schemas/workspace.js'
+import type { AgentRunId, ConversationId, TaskId } from '@/shared/schemas/workspace.js'
 import type {
   BeginRunCommand,
   CommandReceipt,
   CreateTaskCommand,
   DispatchClaim,
   DispatchFailureCommand,
+  EnqueueFollowUpCommand,
+  FollowUpReceipt,
+  PromotedFollowUp,
+  QueuedFollowUpPage,
   RecordDriverEventCommand,
+  RecordRequestResponseCommand,
+  RecordSteerCommand,
   RegisterProjectCommand,
+  RequestResponsePage,
+  SettleDeliveryCommand,
+  SteerIntentPage,
   WorkspaceEventPage,
   WorkspaceExecutionEvent,
+  WorkspaceReadPageOptions,
   WorkspaceSnapshot,
 } from '@/shared/schemas/workspace-store.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
@@ -51,6 +61,41 @@ export class WorkspaceStore extends Context.Service<
       ownerEpoch: number,
       requestedAt: string,
     ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly recordRequestResponse: (
+      command: RecordRequestResponseCommand,
+    ) => Effect.Effect<CommandReceipt, WorkspaceStoreError>
+    readonly settleRequestResponse: (
+      runId: AgentRunId,
+      requestId: string,
+      outcome: SettleDeliveryCommand,
+    ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly recordSteer: (command: RecordSteerCommand) => Effect.Effect<CommandReceipt, WorkspaceStoreError>
+    readonly settleSteer: (
+      runId: AgentRunId,
+      commandId: string,
+      outcome: SettleDeliveryCommand,
+    ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly enqueueFollowUp: (command: EnqueueFollowUpCommand) => Effect.Effect<FollowUpReceipt, WorkspaceStoreError>
+    readonly cancelQueuedFollowUp: (
+      conversationId: ConversationId,
+      commandId: string,
+    ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly listQueuedFollowUps: (
+      conversationId: ConversationId,
+      options?: WorkspaceReadPageOptions,
+    ) => Effect.Effect<QueuedFollowUpPage, WorkspaceStoreError>
+    readonly listRequestResponses: (
+      taskId: TaskId,
+      options?: WorkspaceReadPageOptions,
+    ) => Effect.Effect<RequestResponsePage, WorkspaceStoreError>
+    readonly listSteerIntents: (
+      taskId: TaskId,
+      options?: WorkspaceReadPageOptions,
+    ) => Effect.Effect<SteerIntentPage, WorkspaceStoreError>
+    readonly promoteNextFollowUp: (
+      conversationId: ConversationId,
+      command: BeginRunCommand,
+    ) => Effect.Effect<PromotedFollowUp | null, WorkspaceStoreError>
     readonly recoverWorker: (replacedEpoch: number, recoveredAt: string) => Effect.Effect<number, WorkspaceStoreError>
     readonly pageEvents: (
       afterSequence: number,

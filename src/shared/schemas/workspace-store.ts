@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { agentDriverEventSchema, agentRunSchema } from '@/shared/schemas/execution.js'
+import { agentDriverEventSchema, agentRequestDecisionSchema, agentRunSchema } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
   conversationIdSchema,
@@ -21,6 +21,7 @@ export const workspaceStoreErrorCodeSchema = Schema.Literals([
   'command-conflict',
   'admission-conflict',
   'stale-epoch',
+  'stale-request',
   'invalid-transition',
   'invalid-data',
   'database-unavailable',
@@ -136,6 +137,151 @@ export const dispatchFailureCommandSchema = Schema.Struct({
 })
 export type DispatchFailureCommand = Schema.Schema.Type<typeof dispatchFailureCommandSchema>
 
+export const deliveryOutcomeSchema = Schema.Struct({
+  outcome: Schema.Literals(['accepted', 'failed', 'uncertain']),
+  nativeConfirmation: Schema.optional(Schema.Literals(['confirmed', 'unconfirmed'])),
+  nativeRequestId: Schema.optional(text),
+})
+export type WorkspaceDeliveryOutcome = Schema.Schema.Type<typeof deliveryOutcomeSchema>
+
+export const settleDeliveryCommandSchema = Schema.Struct({
+  ...deliveryOutcomeSchema.fields,
+  ownerEpoch: workerEpochSchema,
+  occurredAt: timestamp,
+})
+export type SettleDeliveryCommand = Schema.Schema.Type<typeof settleDeliveryCommandSchema>
+
+export const recordRequestResponseCommandSchema = Schema.Struct({
+  commandId: text,
+  issuedAt: timestamp,
+  runId: agentRunIdSchema,
+  ownerEpoch: workerEpochSchema,
+  generation: beginRunCommandSchema.fields.generation,
+  requestId: text,
+  decision: agentRequestDecisionSchema,
+})
+export type RecordRequestResponseCommand = Schema.Schema.Type<typeof recordRequestResponseCommandSchema>
+
+export const requestResponseIntentSchema = Schema.Struct({
+  ...recordRequestResponseCommandSchema.fields,
+  state: Schema.Literals(['pending', 'accepted', 'failed', 'uncertain', 'resolved']),
+  delivery: Schema.optional(deliveryOutcomeSchema),
+  recoveryReason: Schema.optional(Schema.Literal('worker-replaced')),
+})
+export type RequestResponseIntent = Schema.Schema.Type<typeof requestResponseIntentSchema>
+
+export const recordSteerCommandSchema = Schema.Struct({
+  commandId: text,
+  issuedAt: timestamp,
+  runId: agentRunIdSchema,
+  ownerEpoch: workerEpochSchema,
+  generation: beginRunCommandSchema.fields.generation,
+  expectedNativeTurnId: Schema.optional(text),
+  message: text,
+})
+export type RecordSteerCommand = Schema.Schema.Type<typeof recordSteerCommandSchema>
+
+export const steerIntentSchema = Schema.Struct({
+  ...recordSteerCommandSchema.fields,
+  state: Schema.Literals(['pending', 'accepted', 'failed', 'uncertain']),
+  delivery: Schema.optional(deliveryOutcomeSchema),
+  recoveryReason: Schema.optional(Schema.Literal('worker-replaced')),
+})
+export type SteerIntent = Schema.Schema.Type<typeof steerIntentSchema>
+
+export const enqueueFollowUpCommandSchema = Schema.Struct({
+  commandId: text,
+  issuedAt: timestamp,
+  taskId: taskIdSchema,
+  conversationId: conversationIdSchema,
+  prompt: Schema.String,
+  driverId: Schema.optional(text),
+  connectionId: Schema.optional(text),
+  modelId: beginRunCommandSchema.fields.modelId,
+  modeId: beginRunCommandSchema.fields.modeId,
+})
+export type EnqueueFollowUpCommand = Schema.Schema.Type<typeof enqueueFollowUpCommandSchema>
+
+export const followUpReceiptSchema = Schema.Struct({
+  commandId: text,
+  conversationId: conversationIdSchema,
+  acceptedAt: timestamp,
+  replayed: Schema.Boolean,
+})
+export type FollowUpReceipt = Schema.Schema.Type<typeof followUpReceiptSchema>
+
+export const queuedFollowUpSchema = Schema.Struct({
+  ...enqueueFollowUpCommandSchema.fields,
+  position: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+})
+export type QueuedFollowUp = Schema.Schema.Type<typeof queuedFollowUpSchema>
+
+export const WORKSPACE_STORE_COMMAND_BYTE_CAPACITY = 1024 * 1024
+export const workspaceReadPageOptionsSchema = Schema.Struct({
+  afterPosition: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  limit: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
+  ),
+})
+export type WorkspaceReadPageOptions = Schema.Schema.Type<typeof workspaceReadPageOptionsSchema>
+
+const readPageFields = {
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  truncated: Schema.Boolean,
+  nextAfterPosition: Schema.NullOr(queuedFollowUpSchema.fields.position),
+}
+export const queuedFollowUpPageSchema = Schema.Struct({ ...readPageFields, items: Schema.Array(queuedFollowUpSchema) })
+export type QueuedFollowUpPage = Schema.Schema.Type<typeof queuedFollowUpPageSchema>
+export const requestResponseHistoryItemSchema = Schema.Struct({
+  ...requestResponseIntentSchema.fields,
+  position: queuedFollowUpSchema.fields.position,
+})
+export const requestResponsePageSchema = Schema.Struct({
+  ...readPageFields,
+  items: Schema.Array(requestResponseHistoryItemSchema),
+})
+export type RequestResponsePage = Schema.Schema.Type<typeof requestResponsePageSchema>
+export const steerHistoryItemSchema = Schema.Struct({
+  ...steerIntentSchema.fields,
+  position: queuedFollowUpSchema.fields.position,
+})
+export const steerIntentPageSchema = Schema.Struct({ ...readPageFields, items: Schema.Array(steerHistoryItemSchema) })
+export type SteerIntentPage = Schema.Schema.Type<typeof steerIntentPageSchema>
+
+export const queuedFollowUpPreviewSchema = Schema.Struct({
+  commandId: text,
+  taskId: taskIdSchema,
+  conversationId: conversationIdSchema,
+  issuedAt: timestamp,
+  position: queuedFollowUpSchema.fields.position,
+  promptByteLength: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  promptPreview: Schema.String,
+})
+const snapshotSectionSummarySchema = Schema.Struct({
+  total: readPageFields.total,
+  truncated: Schema.Boolean,
+  pendingCount: Schema.optional(readPageFields.total),
+  uncertainCount: Schema.optional(readPageFields.total),
+})
+export const requestResponseSnapshotSchema = Schema.Struct({
+  ...requestResponseIntentSchema.fields,
+  decision: Schema.optional(agentRequestDecisionSchema),
+  decisionKind: Schema.optional(Schema.String),
+  payloadTruncated: Schema.optional(Schema.Boolean),
+})
+export const steerIntentSnapshotSchema = Schema.Struct({
+  ...steerIntentSchema.fields,
+  message: Schema.optional(Schema.String),
+  messagePreview: Schema.optional(Schema.String),
+  payloadTruncated: Schema.optional(Schema.Boolean),
+})
+
+export const promotedFollowUpSchema = Schema.Struct({
+  followUp: queuedFollowUpSchema,
+  receipt: commandReceiptSchema,
+})
+export type PromotedFollowUp = Schema.Schema.Type<typeof promotedFollowUpSchema>
+
 export const workspaceExecutionEventSchema = Schema.Struct({
   sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   schemaVersion: Schema.Literal(1),
@@ -148,6 +294,10 @@ export const workspaceExecutionEventSchema = Schema.Struct({
     'runFailed',
     'runInterruptRequested',
     'driverEvent',
+    'requestResponseRecorded',
+    'requestResponseSettled',
+    'steerRecorded',
+    'steerSettled',
   ]),
   runId: agentRunIdSchema,
   taskId: taskIdSchema,
@@ -166,6 +316,12 @@ export type WorkspaceEventPage = Schema.Schema.Type<typeof workspaceEventPageSch
 export const workspaceSnapshotSchema = Schema.Struct({
   task: Schema.Struct({ id: taskIdSchema, projectId: projectIdSchema, title: text, status: Schema.String }),
   runs: Schema.Array(agentRunSchema),
+  requestResponses: Schema.optional(Schema.Array(requestResponseSnapshotSchema)),
+  steerIntents: Schema.optional(Schema.Array(steerIntentSnapshotSchema)),
+  queuedFollowUps: Schema.optional(Schema.Array(queuedFollowUpPreviewSchema)),
+  requestResponseSummary: Schema.optional(snapshotSectionSummarySchema),
+  steerIntentSummary: Schema.optional(snapshotSectionSummarySchema),
+  queuedFollowUpSummary: Schema.optional(snapshotSectionSummarySchema),
   highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 })
 export type WorkspaceSnapshot = Schema.Schema.Type<typeof workspaceSnapshotSchema>

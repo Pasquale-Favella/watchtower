@@ -63,6 +63,128 @@ const withWorkspaceStore = <A, E, R>(
   )
 
 describe('workspace worker RPC server', () => {
+  it('round-trips durable delivery intents and follow-up queue operations', async () => {
+    const result = await Effect.runPromise(
+      withWorkspaceStore((store, sqlScope) => {
+        const handlers = workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) })
+        return Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(WorkspaceWorkerRpcGroup)
+          yield* client['workspace-worker:registerProject']({ project, mainCheckout: checkout })
+          yield* client['workspace-worker:createTask']({ task, conversation })
+          const queued = {
+            commandId: 'queue',
+            taskId: task.id,
+            conversationId: conversation.id,
+            prompt: 'Queued',
+            issuedAt: command.issuedAt,
+          }
+          yield* client['workspace-worker:enqueueFollowUp'](queued)
+          const listed = yield* client['workspace-worker:listQueuedFollowUps']({ conversationId: conversation.id })
+          yield* client['workspace-worker:cancelQueuedFollowUp']({
+            conversationId: conversation.id,
+            commandId: queued.commandId,
+          })
+          const canceled = yield* client['workspace-worker:listQueuedFollowUps']({ conversationId: conversation.id })
+          yield* client['workspace-worker:enqueueFollowUp']({ ...queued, commandId: 'queue-2' })
+          const promoted = yield* client['workspace-worker:promoteNextFollowUp']({
+            conversationId: conversation.id,
+            command,
+          })
+          yield* client['workspace-worker:claimDispatch']({
+            runId: command.runId,
+            ownerEpoch: 7,
+            claimedAt: command.issuedAt,
+          })
+          yield* client['workspace-worker:acknowledgeDispatch']({
+            runId: command.runId,
+            acknowledgement: { ownerEpoch: 7, nativeSessionId: 'native', acknowledgedAt: command.issuedAt },
+          })
+          yield* client['workspace-worker:recordDriverEvent']({
+            runId: command.runId,
+            command: {
+              ownerEpoch: 7,
+              generation: 1,
+              eventId: 'pending',
+              occurredAt: command.issuedAt,
+              event: {
+                kind: 'requestPending',
+                request: {
+                  runId: command.runId,
+                  generation: 1,
+                  requestId: 'approval',
+                  kind: 'approval',
+                  prompt: 'Allow?',
+                  questions: [],
+                },
+              },
+            },
+          })
+          const response = yield* client['workspace-worker:recordRequestResponse']({
+            commandId: 'respond',
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            requestId: 'approval',
+            decision: { kind: 'approve' },
+          })
+          yield* client['workspace-worker:settleRequestResponse']({
+            runId: command.runId,
+            requestId: 'approval',
+            outcome: { ownerEpoch: 7, occurredAt: command.issuedAt, outcome: 'uncertain' },
+          })
+          const steer = yield* client['workspace-worker:recordSteer']({
+            commandId: 'steer',
+            issuedAt: command.issuedAt,
+            runId: command.runId,
+            ownerEpoch: 7,
+            generation: 1,
+            message: 'Focus',
+          })
+          yield* client['workspace-worker:settleSteer']({
+            runId: command.runId,
+            commandId: 'steer',
+            outcome: {
+              ownerEpoch: 7,
+              occurredAt: command.issuedAt,
+              outcome: 'accepted',
+              nativeConfirmation: 'confirmed',
+            },
+          })
+          const snapshot = yield* client['workspace-worker:readTaskSnapshot']({ taskId: task.id, runLimit: 10 })
+          const responseHistory = yield* client['workspace-worker:listRequestResponses']({
+            taskId: task.id,
+            options: { limit: 1 },
+          })
+          const steerHistory = yield* client['workspace-worker:listSteerIntents']({
+            taskId: task.id,
+            options: { limit: 1 },
+          })
+          return { listed, canceled, promoted, response, steer, snapshot, responseHistory, steerHistory }
+        }).pipe(Effect.provide(handlers))
+      }),
+    )
+    expect(result.listed.items).toMatchObject([{ prompt: 'Queued' }])
+    expect(result.canceled.items).toEqual([])
+    expect(result.promoted?.receipt).toMatchObject({ runId: command.runId, replayed: false })
+    expect(result.response).toMatchObject({ commandId: 'respond', replayed: false })
+    expect(result.steer).toMatchObject({ commandId: 'steer', replayed: false })
+    expect(result.responseHistory).toMatchObject({
+      total: 1,
+      truncated: false,
+      items: [{ commandId: 'respond', state: 'uncertain' }],
+    })
+    expect(result.steerHistory).toMatchObject({
+      total: 1,
+      truncated: false,
+      items: [{ commandId: 'steer', state: 'accepted' }],
+    })
+    expect(result.snapshot.requestResponses).toMatchObject([{ state: 'uncertain' }])
+    expect(result.snapshot.steerIntents).toMatchObject([
+      { state: 'accepted', delivery: { nativeConfirmation: 'confirmed' } },
+    ])
+  })
+
   it('routes every frozen operation through the SQLite store and closes SQL before shutdown ACK', async () => {
     const result = await Effect.runPromise(
       withWorkspaceStore((store, sqlScope) => {
@@ -142,7 +264,7 @@ describe('workspace worker RPC server', () => {
       }),
     )
 
-    expect(result.ready).toEqual({ protocolVersion: 1 })
+    expect(result.ready).toEqual({ protocolVersion: 3 })
     expect(result.receipt).toMatchObject({ commandId: command.commandId, runId: command.runId, replayed: false })
     expect(result.claim).toMatchObject({ runId: command.runId, ownerEpoch: 7, workspacePath: checkout.path })
     expect(result.event).toMatchObject({ kind: 'driverEvent', runId: command.runId })

@@ -20,14 +20,30 @@ import {
   type BeginRunCommand,
   beginRunCommandSchema,
   type CommandReceipt,
+  commandReceiptSchema,
   createTaskCommandSchema,
   type DispatchClaim,
   dispatchFailureCommandSchema,
+  enqueueFollowUpCommandSchema,
+  followUpReceiptSchema,
+  queuedFollowUpSchema,
   recordDriverEventCommandSchema,
+  recordRequestResponseCommandSchema,
+  recordSteerCommandSchema,
   registerProjectCommandSchema,
+  requestResponseHistoryItemSchema,
+  requestResponseIntentSchema,
+  type SettleDeliveryCommand,
+  settleDeliveryCommandSchema,
+  steerHistoryItemSchema,
+  steerIntentSchema,
   workerEpochSchema,
+  WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
+  type WorkspaceDeliveryOutcome,
   type WorkspaceExecutionEvent,
   workspaceExecutionEventSchema,
+  type WorkspaceReadPageOptions,
+  workspaceReadPageOptionsSchema,
   WorkspaceStoreError,
 } from '@/shared/schemas/workspace-store.js'
 
@@ -124,6 +140,35 @@ const migrations = [
           ELSE 'pending'
         END
       FROM pending_requests pending;
+    `),
+  },
+  {
+    version: 6,
+    name: 'durable_workspace_delivery_and_follow_up',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_request_response_intent (
+        run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        request_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (run_id, request_id)
+      );
+      CREATE INDEX workspace_response_by_state ON workspace_request_response_intent(run_id, state);
+      CREATE TABLE workspace_steer_intent (
+        command_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        state TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX workspace_steer_by_run ON workspace_steer_intent(run_id, state);
+      CREATE TABLE workspace_follow_up_queue (
+        position INTEGER PRIMARY KEY AUTOINCREMENT,
+        command_id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES workspace_task(id),
+        conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX workspace_queue_by_conversation ON workspace_follow_up_queue(conversation_id, position);
     `),
   },
 ] as const
@@ -774,6 +819,12 @@ const makeService = Effect.gen(function* () {
                 UPDATE workspace_driver_request_state SET state = 'resolved'
                 WHERE run_id = ${runId} AND request_id = ${event.requestId} AND state = 'pending'
               `
+              const responses =
+                yield* sql`SELECT payload FROM workspace_request_response_intent WHERE run_id = ${runId} AND request_id = ${event.requestId}`
+              if (responses[0]) {
+                const response = yield* decodeJson(requestResponseIntentSchema)(String(responses[0].payload))
+                yield* sql`UPDATE workspace_request_response_intent SET state = 'resolved', payload = ${encode({ ...response, state: 'resolved' })} WHERE run_id = ${runId} AND request_id = ${event.requestId}`
+              }
             } else if (
               event.kind === 'turnCompleted' ||
               event.kind === 'turnInterrupted' ||
@@ -914,6 +965,350 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  function deliveryOutcome(command: SettleDeliveryCommand): WorkspaceDeliveryOutcome {
+    return {
+      outcome: command.outcome,
+      ...(command.nativeConfirmation === undefined ? {} : { nativeConfirmation: command.nativeConfirmation }),
+      ...(command.nativeRequestId === undefined ? {} : { nativeRequestId: command.nativeRequestId }),
+    }
+  }
+
+  const replayReceipt = Effect.fnUntraced(function* (command: { readonly commandId: string }) {
+    const prior =
+      yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+    if (!prior[0]) return undefined
+    if (prior[0].fingerprint !== fingerprint(command))
+      return yield* Effect.fail(safeError('command-conflict', 'Command ID was already used with different input'))
+    const receipt = yield* decodeJson(commandReceiptSchema)(String(prior[0].payload))
+    return { ...receipt, replayed: true }
+  })
+
+  const saveReceipt = Effect.fnUntraced(function* (command: {
+    readonly commandId: string
+    readonly runId: AgentRun['id']
+    readonly issuedAt: string
+  }) {
+    const receipt: CommandReceipt = {
+      commandId: command.commandId,
+      runId: command.runId,
+      acceptedAt: command.issuedAt,
+      replayed: false,
+    }
+    yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${fingerprint(command)}, ${encode(receipt)})`
+    return receipt
+  })
+
+  const validateCommandBytes = (command: unknown) =>
+    Buffer.byteLength(encode(command), 'utf8') <= WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
+      ? Effect.void
+      : Effect.fail(safeError('invalid-data', 'Workspace command exceeds the byte limit'))
+
+  const recordRequestResponse: WorkspaceStore['Service']['recordRequestResponse'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(recordRequestResponseCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Request response command is invalid')),
+        )
+        yield* validateCommandBytes(command)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const replay = yield* replayReceipt(command)
+            if (replay) return replay
+            const { run } = yield* loadOwnedDispatch(command.runId, command.ownerEpoch, true)
+            const pending =
+              yield* sql`SELECT state FROM workspace_driver_request_state WHERE run_id = ${command.runId} AND request_id = ${command.requestId}`
+            const prior =
+              yield* sql`SELECT state FROM workspace_request_response_intent WHERE run_id = ${command.runId} AND request_id = ${command.requestId}`
+            if (run.generation !== command.generation || pending[0]?.state !== 'pending' || prior.length > 0)
+              return yield* Effect.fail(safeError('stale-request', 'Request is no longer available for a response'))
+            const intent = { ...command, state: 'pending' as const }
+            yield* sql`INSERT INTO workspace_request_response_intent (run_id, request_id, state, payload) VALUES (${command.runId}, ${command.requestId}, 'pending', ${encode(intent)})`
+            yield* appendEvent(run, 'requestResponseRecorded', command.issuedAt, {
+              commandId: command.commandId,
+              requestId: command.requestId,
+            })
+            return yield* saveReceipt(command)
+          }),
+        )
+      }),
+    )
+
+  const settleRequestResponse: WorkspaceStore['Service']['settleRequestResponse'] = (runId, requestId, outcome) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(settleDeliveryCommandSchema)(outcome).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delivery outcome is invalid')),
+        )
+        yield* validateCommandBytes(outcome)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { run } = yield* loadOwnedDispatch(runId, outcome.ownerEpoch, true)
+            const rows =
+              yield* sql`SELECT payload FROM workspace_request_response_intent WHERE run_id = ${runId} AND request_id = ${requestId}`
+            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Request response intent does not exist'))
+            const intent = yield* decodeJson(requestResponseIntentSchema)(String(rows[0].payload))
+            const delivery = deliveryOutcome(outcome)
+            if (intent.delivery) {
+              if (fingerprint(intent.delivery) === fingerprint(delivery)) return
+              return yield* Effect.fail(safeError('invalid-transition', 'Delivery was already settled'))
+            }
+            const state = intent.state === 'resolved' ? 'resolved' : outcome.outcome
+            yield* sql`UPDATE workspace_request_response_intent SET state = ${state}, payload = ${encode({ ...intent, state, delivery })} WHERE run_id = ${runId} AND request_id = ${requestId}`
+            yield* appendEvent(run, 'requestResponseSettled', outcome.occurredAt, { requestId, ...delivery })
+          }),
+        )
+      }),
+    )
+
+  const recordSteer: WorkspaceStore['Service']['recordSteer'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(recordSteerCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Steering command is invalid')),
+        )
+        yield* validateCommandBytes(command)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const replay = yield* replayReceipt(command)
+            if (replay) return replay
+            const { run } = yield* loadOwnedDispatch(command.runId, command.ownerEpoch)
+            if (run.status === 'completed' || run.status === 'failed' || run.status === 'interrupted')
+              return yield* Effect.fail(safeError('invalid-transition', 'Terminal Run cannot accept steering'))
+            if (
+              command.generation !== run.generation ||
+              (command.expectedNativeTurnId !== undefined && command.expectedNativeTurnId !== run.nativeTurnId)
+            )
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Steering does not match the current generation or native turn'),
+              )
+            yield* sql`INSERT INTO workspace_steer_intent (command_id, run_id, state, payload) VALUES (${command.commandId}, ${command.runId}, 'pending', ${encode({ ...command, state: 'pending' })})`
+            yield* appendEvent(run, 'steerRecorded', command.issuedAt, { commandId: command.commandId })
+            return yield* saveReceipt(command)
+          }),
+        )
+      }),
+    )
+
+  const settleSteer: WorkspaceStore['Service']['settleSteer'] = (runId, commandId, outcome) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(settleDeliveryCommandSchema)(outcome).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delivery outcome is invalid')),
+        )
+        yield* validateCommandBytes(outcome)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { run } = yield* loadOwnedDispatch(runId, outcome.ownerEpoch)
+            const rows =
+              yield* sql`SELECT payload FROM workspace_steer_intent WHERE run_id = ${runId} AND command_id = ${commandId}`
+            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Steering intent does not exist'))
+            const intent = yield* decodeJson(steerIntentSchema)(String(rows[0].payload))
+            const delivery = deliveryOutcome(outcome)
+            if (intent.delivery) {
+              if (fingerprint(intent.delivery) === fingerprint(delivery)) return
+              return yield* Effect.fail(safeError('invalid-transition', 'Delivery was already settled'))
+            }
+            yield* sql`UPDATE workspace_steer_intent SET state = ${outcome.outcome}, payload = ${encode({ ...intent, state: outcome.outcome, delivery })} WHERE run_id = ${runId} AND command_id = ${commandId}`
+            yield* appendEvent(run, 'steerSettled', outcome.occurredAt, { commandId, ...delivery })
+          }),
+        )
+      }),
+    )
+
+  const enqueueFollowUp: WorkspaceStore['Service']['enqueueFollowUp'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(enqueueFollowUpCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Follow-up command is invalid')),
+        )
+        yield* validateCommandBytes(command)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const prior =
+              yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+            if (prior[0]) {
+              if (prior[0].fingerprint !== fingerprint(command))
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const receipt = yield* decodeJson(followUpReceiptSchema)(String(prior[0].payload))
+              return { ...receipt, replayed: true }
+            }
+            const membership =
+              yield* sql`SELECT c.task_id, t.archived FROM workspace_conversation c JOIN workspace_task t ON t.id = c.task_id WHERE c.id = ${command.conversationId}`
+            if (!membership[0]) return yield* Effect.fail(safeError('not-found', 'Conversation does not exist'))
+            if (membership[0].task_id !== command.taskId || membership[0].archived)
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Follow-up must belong to an active Task and Conversation'),
+              )
+            yield* sql`INSERT INTO workspace_follow_up_queue (command_id, task_id, conversation_id, payload) VALUES (${command.commandId}, ${command.taskId}, ${command.conversationId}, ${encode(command)})`
+            const receipt = {
+              commandId: command.commandId,
+              conversationId: command.conversationId,
+              acceptedAt: command.issuedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${fingerprint(command)}, ${encode(receipt)})`
+            return receipt
+          }),
+        )
+      }),
+    )
+
+  const decodeQueuedFollowUp = Effect.fnUntraced(function* (row: Record<string, unknown>) {
+    const command = yield* decodeJson(enqueueFollowUpCommandSchema)(String(row.payload))
+    return yield* Schema.decodeUnknownEffect(queuedFollowUpSchema)({ ...command, position: Number(row.position) }).pipe(
+      Effect.mapError(() => safeError('invalid-data', 'Stored follow-up failed validation')),
+    )
+  })
+
+  const decodeReadOptions = (options: WorkspaceReadPageOptions = {}) =>
+    Schema.decodeUnknownEffect(workspaceReadPageOptionsSchema)(options).pipe(
+      Effect.map(options => ({ afterPosition: options.afterPosition ?? 0, limit: options.limit ?? 20 })),
+      Effect.mapError(() => safeError('invalid-data', 'Workspace read cursor or limit is invalid')),
+    )
+
+  function boundedItems<A>(items: ReadonlyArray<A>, byteBudget: number, atLeastOne = false): Array<A> {
+    const selected: Array<A> = []
+    let bytes = 1024
+    for (const item of items) {
+      const size = Buffer.byteLength(encode(item), 'utf8') + 1
+      if (bytes + size > byteBudget && (!atLeastOne || selected.length > 0)) break
+      selected.push(item)
+      bytes += size
+    }
+    return selected
+  }
+
+  function readPage<A extends { readonly position: number }>(
+    items: ReadonlyArray<A>,
+    total: number,
+    remaining: number,
+  ) {
+    const selected = boundedItems(items, 1536 * 1024, true)
+    const truncated = remaining > selected.length
+    return {
+      items: selected,
+      total,
+      truncated,
+      nextAfterPosition: truncated ? (selected[selected.length - 1]?.position ?? null) : null,
+    }
+  }
+
+  const listQueuedFollowUps: WorkspaceStore['Service']['listQueuedFollowUps'] = (conversationId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN position > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId}`
+            const rows =
+              yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} AND position > ${afterPosition} ORDER BY position LIMIT ${limit}`
+            const items = yield* Effect.forEach(rows, decodeQueuedFollowUp)
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const listRequestResponses: WorkspaceStore['Service']['listRequestResponses'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN i.rowid > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const rows =
+              yield* sql`SELECT i.rowid AS position, i.payload FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} AND i.rowid > ${afterPosition} ORDER BY i.rowid LIMIT ${limit}`
+            const items = yield* Effect.forEach(rows, row =>
+              Effect.gen(function* () {
+                const intent = yield* decodeJson(requestResponseIntentSchema)(String(row.payload))
+                return yield* Schema.decodeUnknownEffect(requestResponseHistoryItemSchema)({
+                  ...intent,
+                  position: Number(row.position),
+                }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored response cursor failed validation')))
+              }),
+            )
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const listSteerIntents: WorkspaceStore['Service']['listSteerIntents'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN i.rowid > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const rows =
+              yield* sql`SELECT i.rowid AS position, i.payload FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} AND i.rowid > ${afterPosition} ORDER BY i.rowid LIMIT ${limit}`
+            const items = yield* Effect.forEach(rows, row =>
+              Effect.gen(function* () {
+                const intent = yield* decodeJson(steerIntentSchema)(String(row.payload))
+                return yield* Schema.decodeUnknownEffect(steerHistoryItemSchema)({
+                  ...intent,
+                  position: Number(row.position),
+                }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored steering cursor failed validation')))
+              }),
+            )
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const cancelQueuedFollowUp: WorkspaceStore['Service']['cancelQueuedFollowUp'] = (conversationId, commandId) =>
+    guard(
+      sql`DELETE FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} AND command_id = ${commandId}`.pipe(
+        Effect.asVoid,
+      ),
+    )
+
+  // Beginning the Run in the dequeue transaction prevents loss or double promotion after a crash.
+  const promoteNextFollowUp: WorkspaceStore['Service']['promoteNextFollowUp'] = (conversationId, command) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(beginRunCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Promotion Run command is invalid')),
+        )
+        if (command.conversationId !== conversationId)
+          return yield* Effect.fail(safeError('membership-conflict', 'Promotion Conversation does not match the Run'))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const active =
+              yield* sql`SELECT r.id FROM workspace_agent_run r JOIN workspace_dispatch_intent i ON i.run_id = r.id WHERE i.conversation_id = ${conversationId} AND r.status NOT IN ('completed', 'failed', 'interrupted') LIMIT 1`
+            if (active.length > 0) return null
+            const head =
+              yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} ORDER BY position LIMIT 1`
+            if (!head[0]) return null
+            const followUpCommand = yield* decodeJson(enqueueFollowUpCommandSchema)(String(head[0].payload))
+            if (followUpCommand.taskId !== command.taskId)
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Promotion Task does not match queued follow-up'),
+              )
+            const followUp = { ...followUpCommand, position: Number(head[0].position) }
+            const receipt = yield* beginRun({
+              ...command,
+              prompt: followUp.prompt,
+              driverId: followUp.driverId ?? command.driverId,
+              connectionId: followUp.connectionId ?? command.connectionId,
+              modelId: followUp.modelId === undefined ? command.modelId : followUp.modelId,
+              modeId: followUp.modeId === undefined ? command.modeId : followUp.modeId,
+            })
+            if (receipt.replayed)
+              return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
+            yield* sql`DELETE FROM workspace_follow_up_queue WHERE position = ${followUp.position}`
+            return { followUp, receipt }
+          }),
+        )
+      }),
+    )
+
   const recoverWorker = (replacedEpoch: number, recoveredAt: string) =>
     guard(
       Effect.gen(function* () {
@@ -921,6 +1316,49 @@ const makeService = Effect.gen(function* () {
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             yield* sql`UPDATE workspace_worker_epoch SET retired_epoch = MAX(retired_epoch, ${replacedEpoch}) WHERE singleton = 1`
+            const responseRows = yield* sql`
+              SELECT i.run_id, i.request_id, i.payload, r.payload AS run_payload
+              FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') = ${replacedEpoch}
+            `
+            for (const row of responseRows) {
+              const intent = yield* decodeJson(requestResponseIntentSchema)(String(row.payload))
+              const run = yield* decodeRun(String(row.run_payload))
+              const recovered = {
+                ...intent,
+                state: 'uncertain',
+                delivery: { outcome: 'uncertain' },
+                recoveryReason: 'worker-replaced',
+              }
+              yield* sql`UPDATE workspace_request_response_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE run_id = ${row.run_id} AND request_id = ${row.request_id}`
+              yield* appendEvent(run, 'requestResponseSettled', recoveredAt, {
+                requestId: row.request_id,
+                outcome: 'uncertain',
+                reason: 'worker-replaced',
+              })
+            }
+            const steerRows = yield* sql`
+              SELECT i.command_id, i.payload, r.payload AS run_payload
+              FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') = ${replacedEpoch}
+            `
+            for (const row of steerRows) {
+              const intent = yield* decodeJson(steerIntentSchema)(String(row.payload))
+              const run = yield* decodeRun(String(row.run_payload))
+              const recovered = {
+                ...intent,
+                state: 'uncertain',
+                delivery: { outcome: 'uncertain' },
+                recoveryReason: 'worker-replaced',
+              }
+              yield* sql`UPDATE workspace_steer_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE command_id = ${row.command_id}`
+              yield* appendEvent(run, 'steerSettled', recoveredAt, {
+                commandId: row.command_id,
+                outcome: 'uncertain',
+                reason: 'worker-replaced',
+              })
+            }
+            yield* sql`UPDATE workspace_driver_request_state SET state = 'expired' WHERE state = 'pending' AND run_id IN (SELECT run_id FROM workspace_dispatch_intent WHERE owner_epoch = ${replacedEpoch})`
             const intents =
               yield* sql`SELECT i.run_id, i.state, r.payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE i.owner_epoch = ${replacedEpoch} AND i.state IN ('claimed', 'accepted')`
             let recovered = 0
@@ -1008,7 +1446,84 @@ const makeService = Effect.gen(function* () {
             const runs = yield* Effect.forEach(runRows as Array<{ payload: unknown }>, row =>
               decodeRun(String(row.payload)),
             )
-            return { task: taskPayload, runs, highWatermark: Number(high[0]?.high ?? 0) }
+            const deliveryLimit = Math.min(runLimit, 50)
+            const responseCounts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(i.state = 'pending'), 0) AS pending, COALESCE(SUM(i.state = 'uncertain'), 0) AS uncertain FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const responseRows =
+              yield* sql`SELECT i.payload FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} ORDER BY CASE i.state WHEN 'pending' THEN 0 WHEN 'uncertain' THEN 1 ELSE 2 END, i.rowid DESC LIMIT ${deliveryLimit}`
+            const responses = yield* Effect.forEach(responseRows, row =>
+              decodeJson(requestResponseIntentSchema)(String(row.payload)),
+            )
+            // Full delivery bodies remain available through the cursor-paged history reads.
+            const requestResponses = boundedItems(
+              responses.map(intent => {
+                if (Buffer.byteLength(encode(intent), 'utf8') <= 8192) return intent
+                const { decision, ...preview } = intent
+                return { ...preview, decisionKind: decision.kind, payloadTruncated: true }
+              }),
+              512 * 1024,
+            )
+            const steerCounts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(i.state = 'pending'), 0) AS pending, COALESCE(SUM(i.state = 'uncertain'), 0) AS uncertain FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const steerRows =
+              yield* sql`SELECT i.payload FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} ORDER BY CASE i.state WHEN 'pending' THEN 0 WHEN 'uncertain' THEN 1 ELSE 2 END, i.rowid DESC LIMIT ${deliveryLimit}`
+            const steers = yield* Effect.forEach(steerRows, row => decodeJson(steerIntentSchema)(String(row.payload)))
+            const steerIntents = boundedItems(
+              steers.map(intent => {
+                if (Buffer.byteLength(encode(intent), 'utf8') <= 8192) return intent
+                const { message, ...preview } = intent
+                return { ...preview, messagePreview: message.slice(0, 512), payloadTruncated: true }
+              }),
+              512 * 1024,
+            )
+            const queueCounts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_follow_up_queue WHERE task_id = ${taskId}`
+            const queuedRows =
+              yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE task_id = ${taskId} ORDER BY position LIMIT ${deliveryLimit}`
+            const queue = yield* Effect.forEach(queuedRows, decodeQueuedFollowUp)
+            const queuedFollowUps = boundedItems(
+              queue.map(({ commandId, taskId, conversationId, issuedAt, position, prompt }) => ({
+                commandId,
+                taskId,
+                conversationId,
+                issuedAt,
+                position,
+                promptByteLength: Buffer.byteLength(prompt, 'utf8'),
+                promptPreview: prompt.slice(0, 512),
+              })),
+              512 * 1024,
+            )
+            const requestResponseSummary = {
+              total: Number(responseCounts[0]?.total ?? 0),
+              pendingCount: Number(responseCounts[0]?.pending ?? 0),
+              uncertainCount: Number(responseCounts[0]?.uncertain ?? 0),
+              truncated:
+                Number(responseCounts[0]?.total ?? 0) > requestResponses.length ||
+                requestResponses.some(intent => 'payloadTruncated' in intent),
+            }
+            const steerIntentSummary = {
+              total: Number(steerCounts[0]?.total ?? 0),
+              pendingCount: Number(steerCounts[0]?.pending ?? 0),
+              uncertainCount: Number(steerCounts[0]?.uncertain ?? 0),
+              truncated:
+                Number(steerCounts[0]?.total ?? 0) > steerIntents.length ||
+                steerIntents.some(intent => 'payloadTruncated' in intent),
+            }
+            const queuedFollowUpSummary = {
+              total: Number(queueCounts[0]?.total ?? 0),
+              truncated: Number(queueCounts[0]?.total ?? 0) > queuedFollowUps.length,
+            }
+            return {
+              task: taskPayload,
+              runs,
+              requestResponses,
+              steerIntents,
+              queuedFollowUps,
+              requestResponseSummary,
+              steerIntentSummary,
+              queuedFollowUpSummary,
+              highWatermark: Number(high[0]?.high ?? 0),
+            }
           }),
         )
       }),
@@ -1023,6 +1538,16 @@ const makeService = Effect.gen(function* () {
     recordDriverEvent,
     failDispatch,
     requestInterrupt,
+    recordRequestResponse,
+    settleRequestResponse,
+    recordSteer,
+    settleSteer,
+    enqueueFollowUp,
+    cancelQueuedFollowUp,
+    listQueuedFollowUps,
+    listRequestResponses,
+    listSteerIntents,
+    promoteNextFollowUp,
     recoverWorker,
     pageEvents,
     readTaskSnapshot,
