@@ -1,7 +1,9 @@
 # Agent workspace implementation
 
-Status: planning. No workspace implementation or protocol certification is
-complete on this branch yet.
+Status: implementation in progress. Application service, driver and operational
+store prototypes are under test, but are not connected to production execution.
+No workspace release or native protocol certification is complete on this branch
+yet.
 
 [Issue #178](https://github.com/Pasquale-Favella/watchtower/issues/178) owns the
 requirements, agreed directions, work breakdown and acceptance gates. This file
@@ -23,6 +25,54 @@ authority under [the tracker convention](../agents/issue-tracker.md).
    before M0.3 validates operational persistence and recovery. M0.3 covers atomic
    command receipts, dispatch ambiguity, worker replacement, snapshot/replay and
    measured streaming limits in real Electron.
+
+## Current implementation evidence
+
+The 2026-10-29 driver, operational-store and application-service checkpoint builds
+on `92068f5`. Exact published commit references and subsequent local checkpoints
+are recorded in [PR #179](https://github.com/Pasquale-Favella/watchtower/pull/179).
+The evidence below covers these prototypes, not a completed workspace release:
+
+- The [driver spike](../research/agent-driver-conformance.md) covers Codex App
+  Server, the Claude SDK candidate and generic ACP. Deterministic regressions
+  cover early cancellation, stale turn identity, pending native requests,
+  disconnects, uncertain mutations and native-session validation. Claude child
+  environment passthrough is restricted; unrelated host secrets are excluded.
+- The operational SQLite prototype has command receipts, dispatch intents,
+  bounded event/snapshot reads, composite native identity and forward migrations.
+  Twenty real-SQLite tests cover provisional-session admission, exact stored-path
+  exclusion, retired worker epochs, native ownership, corrupt task data,
+  file-backed reopen/recovery, event deduplication and terminal lifecycle updates.
+  Indexed request state avoids transcript scans on each delta. Terminal events
+  settle dispatch intents atomically, so completed Runs cannot block recovery.
+- The application ExecutionService prototype owns native dispatch and ingestion
+  in its own scope, with a concurrent-execution limit. It claims durable intent
+  before native calls, validates driver/connection/session identity, loads exact
+  resume identities, commits native events before publication, and never resends
+  a replayed command. Fourteen tests cover receipt replay at capacity, launch and
+  claim failures, uncertain delivery, early interruption, retrying failed native
+  interrupts and explicit shutdown-deadline failure. These use fake drivers, not
+  real native execution or renderer subscriptions.
+- Full Vitest: 315 files passed, 3,516 tests passed and 5 skipped. All four
+  TypeScript projects, Effect diagnostics and diagnostic fixtures, ESLint,
+  Prettier and the Electron production build passed. Three real Electron smoke
+  tests passed for boot/navigation, renderer lifetime and Operational log.
+- At the preceding driver/store checkpoint, Windows NSIS packaging and the
+  packaged application verifier passed, including boot, RPC/SQLite, MCP
+  stdio/HTTP, export and configuration. Packaging was not rerun for the additive
+  application-service slice, which has no production wiring yet. Installer
+  install/uninstall acceptance requires a disposable hosted runner and was not
+  run locally. macOS/Linux packaging and native-driver execution remain unverified.
+
+This does not complete M0.2, M0.3, M1.1 or M1.3. The dedicated workspace worker,
+production composition and RPC, durable queue/response commands, admission and
+backlog budgets, text batching, fault injection, streaming measurements and
+Coach migration remain open. A reported shutdown timeout retains uncertainty;
+it does not establish that an uncooperative native process was terminated.
+Exact stored-path exclusion is not canonical filesystem identity: case aliases,
+symlinks and junctions still require the checkout resolver. Authenticated native
+turns, permitted Claude distribution and packaged-driver/cross-platform checks
+remain release gates. Ordinary tests make no paid inference calls.
 
 ## Constraints for these slices
 
