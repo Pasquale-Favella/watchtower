@@ -28,6 +28,7 @@ import {
   logCodeFor,
   safeLogOperationalEvent,
 } from '@/infrastructure/logging/operational-log.js'
+import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
 import {
   BackgroundShell,
@@ -135,7 +136,8 @@ const workspaceHostLayer = Layer.effect(
         // Leave headroom inside the 15-second quit ceiling for the worker and ledger drain.
         closeDeadlineMs: 3_000,
         closeTimeoutMs: 2_000,
-        loadConnections: () => loadDetectedHarnessConnections(snapshot, process.execPath),
+        loadConnections: () =>
+          loadDetectedHarnessConnections(snapshot, process.execPath).pipe(Effect.provide(NodePlatformLive)),
       }),
       scope,
     )

@@ -1,6 +1,9 @@
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
+import * as Sink from 'effect/Sink'
+import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
 import {
@@ -11,12 +14,47 @@ import {
 import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
 import type { HarnessSpec } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
 import {
+  discoverNativeHarnessExecutables,
+  type ValidatedNativeHarnessExecutable,
+} from '../src/infrastructure/agent-harnesses/native-executables.js'
+import {
   type HarnessInstance,
   HarnessProbe,
   HarnessSnapshot,
   harnessSnapshotLayer,
 } from '../src/infrastructure/agent-harnesses/snapshot.js'
 import { OperationalLog } from '../src/infrastructure/logging/operational-log.js'
+
+const nativeProbeLayer = (output = 'codex-cli 0.165.0', exitCode = 0) =>
+  Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make(() =>
+      Effect.succeed(
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(123),
+          exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(exitCode)),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          stdout: Stream.make(new TextEncoder().encode(output)),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+          unref: Effect.succeed(Effect.void),
+        }),
+      ),
+    ),
+  )
+
+const validatedExecutables = (path: string, output?: string, exitCode?: number) =>
+  Effect.runPromise(
+    discoverNativeHarnessExecutables({
+      platform: 'win32',
+      commandExists: () => path,
+      resolveNativeExecutable: path => path,
+    }).pipe(Effect.provide(nativeProbeLayer(output, exitCode))),
+  )
 
 const spec = (overrides: Partial<HarnessSpec> = {}): HarnessSpec => ({
   kind: 'fixture',
@@ -181,34 +219,41 @@ describe('detected Harness connection catalog', () => {
     expect(result.rows[0]).toMatchObject({ driverId: 'acp', harnessKind: 'codex', capabilities: 'unknown' })
   })
 
-  it('adds native drivers only from explicit validated executable evidence', () => {
-    const result = catalog([], {
-      nativeExecutables: [
-        {
-          instanceId: 'codex-native:one',
-          harnessKind: 'codex',
-          driverId: 'codex-app-server',
-          displayName: 'Codex',
-          validatedExecutable: '/opt/codex/bin/codex',
-        },
-        {
-          instanceId: 'claude-native:one',
-          harnessKind: 'claude',
-          driverId: 'claude-agent-sdk',
-          displayName: 'Claude Code',
-          validatedExecutable: '/opt/claude/bin/claude',
-        },
-      ],
-    })
-
+  it('adds native drivers only from validated discovery evidence, never from ACP detection or Claude PATH presence', async () => {
+    const nativeExecutables = await validatedExecutables('C:\\tools\\codex.exe')
+    const result = catalog([], { nativeExecutables })
     expect(result.connections).toEqual([
-      expect.objectContaining({ driverId: 'codex-app-server', command: '/opt/codex/bin/codex' }),
-      expect.objectContaining({ driverId: 'claude-agent-sdk' }),
+      expect.objectContaining({ driverId: 'codex-app-server', command: 'C:\\tools\\codex.exe' }),
     ])
-    expect(result.rows.map(row => [row.driverId, row.capabilities, row.provenance])).toEqual([
-      ['codex-app-server', 'unknown', 'native-discovery'],
-      ['claude-agent-sdk', 'unknown', 'native-discovery'],
+    expect(result.rows).toMatchObject([
+      { driverId: 'codex-app-server', capabilities: 'unknown', provenance: 'native-discovery' },
     ])
+    expect(
+      catalog([], { nativeExecutables: await validatedExecutables('C:\\tools\\codex.exe', 'codex-cli 0.165.0', 1) })
+        .rows,
+    ).toEqual([])
+  })
+
+  it('ignores unvalidated executable claims even when a caller bypasses the static evidence type', () => {
+    const nativeExecutables = [
+      {
+        instanceId: 'codex:path',
+        harnessKind: 'codex',
+        driverId: 'codex-app-server',
+        displayName: 'Codex',
+        validatedExecutable: 'C:\\tools\\codex.exe',
+      },
+    ] as unknown as ValidatedNativeHarnessExecutable[]
+    expect(catalog([], { nativeExecutables }).connections).toEqual([])
+  })
+
+  it('keeps native session connection identity when a validated binary moves or updates', async () => {
+    const before = catalog([], { nativeExecutables: await validatedExecutables('C:\\tools\\v1\\codex.exe') })
+    const after = catalog([], {
+      nativeExecutables: await validatedExecutables('D:\\tools\\v2\\codex.exe', 'codex-cli 0.166.0'),
+    })
+    expect(after.connections[0]?.id).toBe(before.connections[0]?.id)
+    expect(after.connections[0]).toMatchObject({ command: 'D:\\tools\\v2\\codex.exe' })
   })
 
   it('ignores detected harnesses without a trusted ACP adapter', () => {
@@ -231,7 +276,17 @@ describe('detected Harness connection catalog', () => {
     expect(catalog([instance({ kind: 'unknown' })]).connections).toEqual([])
   })
 
-  it('loads current connection definitions from the live snapshot after discovery and refresh', async () => {
+  it('loads ACP and validated native connections lazily, preserving identity after refresh and binary moves', async () => {
+    let nativeLookups = 0
+    let nativePath = 'C:\\tools\\v1\\codex.exe'
+    const nativeDiscovery = {
+      platform: 'win32' as const,
+      commandExists: () => {
+        nativeLookups += 1
+        return nativePath
+      },
+      resolveNativeExecutable: (path: string) => path,
+    }
     let detected = [
       instance({ kind: 'codex', bin: 'C:/app/v1/codex-acp.js', bundledEntry: 'C:/app/v1/codex-acp.js' }, 'codex').info,
     ]
@@ -247,20 +302,31 @@ describe('detected Harness connection catalog', () => {
     const { before, after } = await Effect.runPromise(
       Effect.gen(function* () {
         const snapshot = yield* HarnessSnapshot
-        const before = yield* loadDetectedHarnessConnections(snapshot, 'C:/app/electron.exe')
+        const load = loadDetectedHarnessConnections(snapshot, 'C:/app/electron.exe', nativeDiscovery)
+        expect(nativeLookups).toBe(0)
+        const before = yield* load
         yield* Effect.yieldNow
         detected = [
           instance({ kind: 'codex', bin: 'C:/app/v2/codex-acp.js', bundledEntry: 'C:/app/v2/codex-acp.js' }, 'codex')
             .info,
         ]
         yield* snapshot.refresh()
-        const after = yield* loadDetectedHarnessConnections(snapshot, 'C:/app/electron.exe')
+        nativePath = 'D:\\tools\\v2\\codex.exe'
+        const after = yield* loadDetectedHarnessConnections(snapshot, 'C:/app/electron.exe', nativeDiscovery)
         return { before, after }
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(Layer.merge(layer, nativeProbeLayer()))),
     )
 
-    expect(before).toMatchObject([{ driverId: 'acp', args: ['C:/app/v1/codex-acp.js'], nodeRuntime: 'electron' }])
-    expect(after).toMatchObject([{ driverId: 'acp', args: ['C:/app/v2/codex-acp.js'], nodeRuntime: 'electron' }])
+    expect(before).toMatchObject([
+      { driverId: 'acp', args: ['C:/app/v1/codex-acp.js'], nodeRuntime: 'electron' },
+      { driverId: 'codex-app-server', command: 'C:\\tools\\v1\\codex.exe' },
+    ])
+    expect(after).toMatchObject([
+      { driverId: 'acp', args: ['C:/app/v2/codex-acp.js'], nodeRuntime: 'electron' },
+      { driverId: 'codex-app-server', command: 'D:\\tools\\v2\\codex.exe' },
+    ])
+    expect(after[1]?.id).toBe(before[1]?.id)
+    expect(nativeLookups).toBe(2)
     expect(after[0]?.id).toBe(before[0]?.id)
     expect(Object.isFrozen(after)).toBe(true)
   })

@@ -1,29 +1,21 @@
 import { createHash } from 'node:crypto'
 
 import * as Effect from 'effect/Effect'
+import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 
 import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
 import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
 import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import {
+  discoverNativeHarnessExecutables,
+  isValidatedNativeHarnessExecutable,
+  type NativeExecutableDiscoveryOptions,
+  type ValidatedNativeHarnessExecutable,
+} from '@/infrastructure/agent-harnesses/native-executables.js'
 import type { HarnessInstance, HarnessSnapshotService } from '@/infrastructure/agent-harnesses/snapshot.js'
 import type { HarnessConnection, HarnessDriverId } from '@/shared/schemas/harness-connections.js'
 
-/** Native binaries enter the catalog only after a caller has discovered and validated the executable. */
-export type ValidatedNativeHarnessExecutable =
-  | {
-      readonly instanceId: string
-      readonly harnessKind: 'codex'
-      readonly driverId: 'codex-app-server'
-      readonly displayName: string
-      readonly validatedExecutable: string
-    }
-  | {
-      readonly instanceId: string
-      readonly harnessKind: 'claude'
-      readonly driverId: 'claude-agent-sdk'
-      readonly displayName: string
-      readonly validatedExecutable: string
-    }
+export type { ValidatedNativeHarnessExecutable } from '@/infrastructure/agent-harnesses/native-executables.js'
 
 export interface HarnessConnectionCatalogOptions {
   readonly instances: ReadonlyArray<HarnessInstance>
@@ -54,13 +46,9 @@ function connectionId(parts: ReadonlyArray<string>): string {
   return `harness-acp-${digest}`
 }
 
-function nativeConnectionId(
-  driverId: 'codex-app-server' | 'claude-agent-sdk',
-  instanceId: string,
-  executable: string,
-): string {
+function nativeConnectionId(driverId: ValidatedNativeHarnessExecutable['driverId'], instanceId: string): string {
   const digest = createHash('sha256')
-    .update(JSON.stringify([driverId, instanceId, executable]))
+    .update(JSON.stringify([driverId, instanceId]))
     .digest('hex')
     .slice(0, 24)
   return `harness-native-${digest}`
@@ -107,11 +95,14 @@ function nativeConnection(executable: ValidatedNativeHarnessExecutable): {
   readonly connection: HarnessConnection
   readonly row: HarnessConnectionCatalogRow
 } {
-  const id = nativeConnectionId(executable.driverId, executable.instanceId, executable.validatedExecutable)
-  const connection: HarnessConnection =
-    executable.driverId === 'codex-app-server'
-      ? Object.freeze({ id, driverId: executable.driverId, command: executable.validatedExecutable })
-      : Object.freeze({ id, driverId: executable.driverId })
+  // The PATH slot is a managed authentication context, not a versioned install directory.
+  // Revalidate the replacement binary on discovery, but keep persisted sessions bound to this slot.
+  const id = nativeConnectionId(executable.driverId, executable.instanceId)
+  const connection: HarnessConnection = Object.freeze({
+    id,
+    driverId: executable.driverId,
+    command: executable.validatedExecutable,
+  })
   const row: HarnessConnectionCatalogRow = Object.freeze({
     connectionId: id,
     label: executable.displayName,
@@ -137,7 +128,9 @@ export function createDetectedHarnessConnectionCatalog(
     return entry ? [entry] : []
   })
 
-  for (const executable of options.nativeExecutables ?? []) entries.push(nativeConnection(executable))
+  for (const executable of options.nativeExecutables ?? []) {
+    if (isValidatedNativeHarnessExecutable(executable)) entries.push(nativeConnection(executable))
+  }
 
   const ids = new Set<string>()
   for (const { connection } of entries) {
@@ -156,11 +149,13 @@ export function createDetectedHarnessConnectionCatalog(
   })
 }
 
-/** Supply `loadConnections: () => loadDetectedHarnessConnections(snapshot, runtimeExecutable)` to the host. */
+/** The host invokes this lazily; its composition root supplies the scoped platform spawner. */
 export const loadDetectedHarnessConnections = Effect.fn('loadDetectedHarnessConnections')(function* (
   snapshot: HarnessSnapshotService,
   runtimeExecutable: string,
-): Effect.fn.Return<ReadonlyArray<HarnessConnection>, unknown> {
+  nativeDiscovery: NativeExecutableDiscoveryOptions = {},
+): Effect.fn.Return<ReadonlyArray<HarnessConnection>, unknown, ChildProcessSpawner.ChildProcessSpawner> {
+  const nativeExecutables = yield* discoverNativeHarnessExecutables(nativeDiscovery)
   const rows = yield* snapshot.list()
   const instances = yield* Effect.forEach(rows, row => snapshot.get(row.instanceId))
   return yield* Effect.try({
@@ -168,6 +163,7 @@ export const loadDetectedHarnessConnections = Effect.fn('loadDetectedHarnessConn
       createDetectedHarnessConnectionCatalog({
         instances: instances.filter(instance => instance !== undefined),
         runtimeExecutable,
+        nativeExecutables,
       }).connections,
     catch: error => error,
   })
