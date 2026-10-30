@@ -10,6 +10,8 @@ import {
   dispatchFailureCommandSchema,
   enqueueFollowUpCommandSchema,
   followUpReceiptSchema,
+  nativeSessionBindingSchema,
+  ownerEpochAcquisitionSchema,
   promotedFollowUpSchema,
   queuedFollowUpPageSchema,
   recordDriverEventCommandSchema,
@@ -28,7 +30,7 @@ import {
   WorkspaceStoreError,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 3
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 5
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -75,6 +77,11 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
     success: dispatchClaimSchema,
     error,
   }),
+  Rpc.make('workspace-worker:bindNativeSession', {
+    payload: Schema.Struct({ runId: agentRunIdSchema, binding: nativeSessionBindingSchema }),
+    success: Schema.Void,
+    error,
+  }),
   Rpc.make('workspace-worker:acknowledgeDispatch', {
     payload: Schema.Struct({ runId: agentRunIdSchema, acknowledgement: nativeTurnAcknowledgementSchema }),
     success: Schema.Void,
@@ -98,6 +105,11 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:recoverWorker', {
     payload: Schema.Struct({ replacedEpoch: workerEpochSchema, recoveredAt: timestamp }),
     success: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    error,
+  }),
+  Rpc.make('workspace-worker:acquireOwnerEpoch', {
+    payload: Schema.Struct({ recoveredAt: timestamp }),
+    success: ownerEpochAcquisitionSchema,
     error,
   }),
   Rpc.make('workspace-worker:pageEvents', {

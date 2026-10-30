@@ -62,13 +62,14 @@ const acceptRun = async (
   run: RunEffect,
   runCommand: BeginRunCommand = command,
   ownerEpoch = 7,
+  nativeSessionId = 'native-session-1',
 ) => {
   await run(store.beginRun(runCommand))
   await run(store.claimDispatch(runCommand.runId, ownerEpoch, '2026-10-29T10:00:02Z'))
   await run(
     store.acknowledgeDispatch(runCommand.runId, {
       ownerEpoch,
-      nativeSessionId: 'native-session-1',
+      nativeSessionId,
       nativeTurnId: 'native-turn-1',
       acknowledgedAt: '2026-10-29T10:00:03Z',
     }),
@@ -76,6 +77,254 @@ const acceptRun = async (
 }
 
 describe('WorkspaceStore', () => {
+  it('allocates unique owner epochs atomically and advances them after reopening the database', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-epoch-'))
+    const filename = join(directory, 'workspace.sqlite')
+    let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    try {
+      let store = await runtime.runPromise(WorkspaceStore)
+      const allocated = await Promise.all([
+        runtime.runPromise(store.acquireOwnerEpoch('2026-10-29T10:00:00Z')),
+        runtime.runPromise(store.acquireOwnerEpoch('2026-10-29T10:00:00Z')),
+      ])
+      expect(allocated.map(value => value.ownerEpoch).sort()).toEqual([1, 2])
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      await acceptRun(store, run, command, 2)
+      await expect(runtime.runPromise(store.acquireOwnerEpoch('2026-10-29T10:00:01Z'))).resolves.toMatchObject({
+        ownerEpoch: 3,
+        recoveredCount: 1,
+      })
+
+      await runtime.dispose()
+      runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      store = await runtime.runPromise(WorkspaceStore)
+      await expect(runtime.runPromise(store.acquireOwnerEpoch('2026-10-29T10:00:02Z'))).resolves.toMatchObject({
+        ownerEpoch: 4,
+        recoveredCount: 0,
+      })
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('recovers every older owned intent and delivery while leaving never-claimed work dispatchable', async () => {
+    await withStore(async (store, run) => {
+      const projects = [
+        project,
+        ...[2, 3].map(id => ({
+          ...project,
+          id: `p-${id}` as never,
+          repositoryIdentity: `repo:${id}`,
+        })),
+      ]
+      const checkouts = [
+        checkout,
+        ...[2, 3].map(id => ({
+          ...checkout,
+          id: `co-${id}` as never,
+          path: `C:/repo-${id}`,
+        })),
+      ]
+      const tasks = [
+        task,
+        ...[2, 3].map(id => ({
+          ...task,
+          id: `t-${id}` as never,
+          projectId: `p-${id}` as never,
+        })),
+      ]
+      const conversations = [
+        conversation,
+        ...[2, 3].map(id => ({
+          ...conversation,
+          id: `c-${id}` as never,
+        })),
+      ]
+
+      for (let index = 0; index < projects.length; index += 1) {
+        const currentProject = projects[index]
+        const currentCheckout = checkouts[index]
+        const currentTask = tasks[index]
+        const currentConversation = conversations[index]
+        if (!currentProject || !currentCheckout || !currentTask || !currentConversation)
+          throw new Error('workspace fixture is incomplete')
+        await run(store.registerProject({ project: currentProject, mainCheckout: currentCheckout }))
+        await run(store.createTask({ task: currentTask, conversation: currentConversation }))
+      }
+
+      const ownedRuns = [
+        { epoch: 4, runId: 'old-run-4', responseId: 'old-request-4' },
+        { epoch: 7, runId: 'old-run-7', responseId: 'old-request-7' },
+      ]
+      for (const [index, owned] of ownedRuns.entries()) {
+        const currentTask = tasks[index]
+        const currentConversation = conversations[index]
+        const currentCheckout = checkouts[index]
+        if (!currentTask || !currentConversation || !currentCheckout) throw new Error('workspace fixture is incomplete')
+        const runCommand = {
+          ...command,
+          commandId: `command-${owned.runId}`,
+          runId: owned.runId as never,
+          taskId: currentTask.id,
+          conversationId: currentConversation.id,
+          checkoutId: currentCheckout.id,
+          provisionalAgentSessionId: `session-${owned.runId}`,
+        }
+        await acceptRun(store, run, runCommand, owned.epoch, `native-${owned.runId}`)
+        await run(
+          store.recordDriverEvent(runCommand.runId, {
+            ownerEpoch: owned.epoch,
+            generation: 1,
+            eventId: `request-${owned.runId}`,
+            occurredAt: command.issuedAt,
+            event: {
+              kind: 'requestPending',
+              request: {
+                requestId: owned.responseId,
+                runId: runCommand.runId,
+                generation: 1,
+                kind: 'approval',
+                prompt: 'Approve?',
+                questions: [],
+              },
+            },
+          }),
+        )
+        await run(
+          store.recordRequestResponse({
+            commandId: `response-${owned.runId}`,
+            issuedAt: command.issuedAt,
+            runId: runCommand.runId,
+            ownerEpoch: owned.epoch,
+            generation: 1,
+            requestId: owned.responseId,
+            decision: { kind: 'approve' },
+          }),
+        )
+      }
+
+      const pendingTask = tasks[2]
+      const pendingConversation = conversations[2]
+      const pendingCheckout = checkouts[2]
+      if (!pendingTask || !pendingConversation || !pendingCheckout) throw new Error('workspace fixture is incomplete')
+      await run(
+        store.beginRun({
+          ...command,
+          commandId: 'never-claimed-command',
+          runId: 'never-claimed-run' as never,
+          taskId: pendingTask.id,
+          conversationId: pendingConversation.id,
+          checkoutId: pendingCheckout.id,
+        }),
+      )
+
+      await expect(run(store.acquireOwnerEpoch('2026-10-29T10:00:04Z'))).resolves.toMatchObject({
+        ownerEpoch: 8,
+        recoveredCount: 2,
+      })
+      for (const [index, owned] of ownedRuns.entries()) {
+        const currentTask = tasks[index]
+        if (!currentTask) throw new Error('workspace fixture is incomplete')
+        await expect(run(store.readTaskSnapshot(currentTask.id, 10))).resolves.toMatchObject({
+          runs: [{ id: owned.runId, status: 'recoveryRequired' }],
+          requestResponses: [{ requestId: owned.responseId, state: 'uncertain' }],
+        })
+      }
+      await expect(run(store.claimDispatch('never-claimed-run' as never, 8, command.issuedAt))).resolves.toMatchObject({
+        runId: 'never-claimed-run',
+        ownerEpoch: 8,
+      })
+    })
+  })
+
+  it('binds the native session before submit without accepting the turn, then preserves early request state on acknowledgement', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(store.beginRun(command))
+      const acquisition = await run(store.acquireOwnerEpoch(command.issuedAt))
+      const ownerEpoch = acquisition.ownerEpoch
+      await run(store.claimDispatch(command.runId, ownerEpoch, command.issuedAt))
+      const binding = {
+        ownerEpoch,
+        nativeSessionId: 'native-session-pre-submit',
+        generation: 1,
+        recordedAt: command.issuedAt,
+      }
+      await run(store.bindNativeSession(command.runId, binding))
+      await expect(run(store.readTaskSnapshot(task.id, 10))).resolves.toMatchObject({
+        runs: [{ id: command.runId, status: 'starting', nativeTurnId: null, sessionId: 'session-1' }],
+      })
+      await expect(run(store.pageEvents(0, 10))).resolves.toMatchObject({
+        events: [{ kind: 'runQueued' }, { kind: 'dispatchClaimed' }],
+      })
+      await expect(
+        run(store.bindNativeSession(command.runId, { ...binding, nativeSessionId: 'different-session' })),
+      ).rejects.toMatchObject({
+        code: 'membership-conflict',
+      })
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch,
+          generation: 1,
+          eventId: 'early-request',
+          occurredAt: '2026-10-29T10:00:03Z',
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'early-approval',
+              runId: command.runId,
+              sessionId: 'session-1' as never,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Approve the action?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      await run(
+        store.recordRequestResponse({
+          commandId: 'early-response',
+          issuedAt: '2026-10-29T10:00:04Z',
+          runId: command.runId,
+          ownerEpoch,
+          generation: 1,
+          requestId: 'early-approval',
+          decision: { kind: 'approve' },
+        }),
+      )
+      await expect(run(store.readTaskSnapshot(task.id, 10))).resolves.toMatchObject({
+        runs: [{ status: 'awaitingInput', startedAt: '2026-10-29T10:00:03Z', nativeTurnId: null }],
+        requestResponses: [{ requestId: 'early-approval', state: 'pending' }],
+      })
+      await run(
+        store.acknowledgeDispatch(command.runId, {
+          ownerEpoch,
+          nativeSessionId: binding.nativeSessionId,
+          nativeTurnId: 'submit-confirmed-turn',
+          acknowledgedAt: '2026-10-29T10:00:05Z',
+        }),
+      )
+      await expect(run(store.readTaskSnapshot(task.id, 10))).resolves.toMatchObject({
+        runs: [{ status: 'awaitingInput', startedAt: '2026-10-29T10:00:03Z', nativeTurnId: 'submit-confirmed-turn' }],
+      })
+      const events = await run(store.pageEvents(0, 20))
+      expect(events.events.map(event => event.kind)).toContain('runStarted')
+      await expect(
+        run(
+          store.acknowledgeDispatch(command.runId, {
+            ownerEpoch,
+            nativeSessionId: binding.nativeSessionId,
+            nativeTurnId: 'submit-confirmed-turn',
+            acknowledgedAt: '2026-10-29T10:00:05Z',
+          }),
+        ),
+      ).resolves.toBeUndefined()
+    })
+  })
+
   it('recovers pending deliveries on an already terminal run', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
@@ -973,6 +1222,30 @@ describe('WorkspaceStore', () => {
     })
   })
 
+  it('fails closed when its persisted owner epoch exceeds the safe integer range', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-corrupt-epoch-'))
+    const filename = join(directory, 'workspace.sqlite')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_worker_epoch SET allocated_epoch = ${Number.MAX_SAFE_INTEGER + 1} WHERE singleton = 1`
+        }),
+      )
+      await expect(runtime.runPromise(store.acquireOwnerEpoch('2026-10-29T10:00:00Z'))).rejects.toMatchObject({
+        _tag: 'WorkspaceStoreError',
+        code: 'invalid-data',
+      })
+    } finally {
+      await writer.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('maps malformed stored task JSON to invalid-data when reading a snapshot', async () => {
     const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-store-'))
     const filename = join(directory, 'workspace.sqlite')
@@ -1404,6 +1677,7 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE workspace_steer_intent`
             yield* sql`DROP TABLE workspace_follow_up_queue`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`
+            yield* sql`ALTER TABLE workspace_worker_epoch DROP COLUMN allocated_epoch`
           }),
         )
       } finally {

@@ -186,6 +186,13 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.claimDispatch(runId, ownerEpoch, claimedAt),
         true,
       ),
+    'workspace-worker:bindNativeSession': ({ runId, binding }) =>
+      execute(
+        'workspace-worker:bindNativeSession',
+        { runId, binding },
+        () => options.store.bindNativeSession(runId, binding),
+        true,
+      ),
     'workspace-worker:acknowledgeDispatch': ({ runId, acknowledgement }) =>
       execute(
         'workspace-worker:acknowledgeDispatch',
@@ -219,6 +226,13 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         'workspace-worker:recoverWorker',
         { replacedEpoch, recoveredAt },
         () => options.store.recoverWorker(replacedEpoch, recoveredAt),
+        true,
+      ),
+    'workspace-worker:acquireOwnerEpoch': ({ recoveredAt }) =>
+      execute(
+        'workspace-worker:acquireOwnerEpoch',
+        { recoveredAt },
+        () => options.store.acquireOwnerEpoch(recoveredAt),
         true,
       ),
     'workspace-worker:pageEvents': ({ afterSequence, limit }) =>

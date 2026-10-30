@@ -26,6 +26,8 @@ import {
   dispatchFailureCommandSchema,
   enqueueFollowUpCommandSchema,
   followUpReceiptSchema,
+  nativeSessionBindingSchema,
+  ownerEpochAcquisitionSchema,
   queuedFollowUpSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
@@ -169,6 +171,19 @@ const migrations = [
         payload TEXT NOT NULL
       );
       CREATE INDEX workspace_queue_by_conversation ON workspace_follow_up_queue(conversation_id, position);
+    `),
+  },
+  {
+    version: 7,
+    name: 'persist_workspace_owner_epoch_counter',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_worker_epoch ADD COLUMN allocated_epoch INTEGER NOT NULL DEFAULT 0 CHECK (allocated_epoch >= 0);
+      UPDATE workspace_worker_epoch SET allocated_epoch = MAX(
+        retired_epoch,
+        COALESCE((SELECT MAX(owner_epoch) FROM workspace_dispatch_intent), 0),
+        COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_request_response_intent WHERE json_valid(payload)), 0),
+        COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_steer_intent WHERE json_valid(payload)), 0)
+      ) WHERE singleton = 1;
     `),
   },
 ] as const
@@ -458,8 +473,19 @@ const makeService = Effect.gen(function* () {
         yield* decodeWorkerEpoch(ownerEpoch)
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const worker = yield* sql`SELECT retired_epoch FROM workspace_worker_epoch WHERE singleton = 1`
-            if (ownerEpoch <= Number(worker[0]?.retired_epoch ?? 0))
+            const worker =
+              yield* sql`SELECT CAST(retired_epoch AS TEXT) AS retired_epoch, CAST(allocated_epoch AS TEXT) AS allocated_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+            const retiredEpoch = Number(worker[0]?.retired_epoch)
+            const allocatedEpoch = Number(worker[0]?.allocated_epoch)
+            if (
+              !Number.isSafeInteger(retiredEpoch) ||
+              retiredEpoch < 0 ||
+              !Number.isSafeInteger(allocatedEpoch) ||
+              allocatedEpoch < 0
+            )
+              return yield* Effect.fail(safeError('invalid-data', 'Stored workspace owner epoch is invalid'))
+            // Keep the old caller-owned path only for databases that have never allocated an epoch here.
+            if (ownerEpoch <= retiredEpoch || (allocatedEpoch > 0 && ownerEpoch !== allocatedEpoch))
               return yield* Effect.fail(safeError('stale-epoch', 'Worker epoch has already been retired'))
             const rows = yield* sql`
               SELECT i.*, r.payload AS run_payload, r.task_id AS run_task_id,
@@ -523,6 +549,69 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  const associateNativeSession = Effect.fnUntraced(function* (
+    runId: Parameters<WorkspaceStore['Service']['bindNativeSession']>[0],
+    binding: Parameters<WorkspaceStore['Service']['bindNativeSession']>[1],
+  ) {
+    yield* Schema.decodeUnknownEffect(nativeSessionBindingSchema)(binding).pipe(
+      Effect.mapError(() => safeError('invalid-data', 'Native session binding is invalid')),
+    )
+    const { row, run } = yield* loadOwnedDispatch(runId, binding.ownerEpoch)
+    if (row.state !== 'claimed' && row.state !== 'accepted')
+      return yield* Effect.fail(safeError('invalid-transition', 'Native session cannot bind to this dispatch'))
+    if (binding.generation !== run.generation || binding.generation !== Number(row.generation))
+      return yield* Effect.fail(safeError('membership-conflict', 'Native session generation does not match the Run'))
+    if (row.requested_native_session_id && row.requested_native_session_id !== binding.nativeSessionId)
+      return yield* Effect.fail(safeError('membership-conflict', 'Native session does not match the requested session'))
+    if (row.native_session_id && row.native_session_id !== binding.nativeSessionId)
+      return yield* Effect.fail(safeError('membership-conflict', 'Native session identity changed during binding'))
+
+    const existing = yield* sql`
+      SELECT id, task_id, conversation_id, checkout_id, generation, driver_id, connection_id
+      FROM workspace_agent_session
+      WHERE driver_id = ${row.driver_id} AND connection_id = ${row.connection_id}
+        AND native_session_id = ${binding.nativeSessionId}
+    `
+    let sessionId = String(row.provisional_session_id)
+    if (existing[0]) {
+      const session = existing[0] as Record<string, unknown>
+      if (
+        session.task_id !== row.task_id ||
+        session.conversation_id !== row.conversation_id ||
+        session.checkout_id !== row.checkout_id ||
+        Number(session.generation) !== Number(row.generation) ||
+        session.driver_id !== row.driver_id ||
+        session.connection_id !== row.connection_id
+      ) {
+        return yield* Effect.fail(
+          safeError('membership-conflict', 'Native session identity belongs to another execution context'),
+        )
+      }
+      sessionId = String(session.id)
+    } else {
+      yield* sql`INSERT INTO workspace_agent_session (id, task_id, conversation_id, checkout_id, generation, driver_id, connection_id, native_session_id, status) VALUES (${row.provisional_session_id}, ${row.task_id}, ${row.conversation_id}, ${row.checkout_id}, ${Number(row.generation)}, ${row.driver_id}, ${row.connection_id}, ${binding.nativeSessionId}, 'active')`
+    }
+    if (run.sessionId && run.sessionId !== sessionId)
+      return yield* Effect.fail(safeError('membership-conflict', 'Agent Session changed during native session binding'))
+    if (!run.sessionId) {
+      const associatedRun = { ...run, sessionId: sessionId as AgentRun['sessionId'] }
+      yield* sql`UPDATE workspace_agent_run SET session_id = ${sessionId}, payload = ${encode(associatedRun)} WHERE id = ${runId}`
+    }
+    if (!row.native_session_id)
+      yield* sql`UPDATE workspace_dispatch_intent SET native_session_id = ${binding.nativeSessionId} WHERE run_id = ${runId}`
+    return { row, run: run.sessionId ? run : { ...run, sessionId: sessionId as AgentRun['sessionId'] }, sessionId }
+  })
+
+  const bindNativeSession = (
+    runId: Parameters<WorkspaceStore['Service']['bindNativeSession']>[0],
+    binding: Parameters<WorkspaceStore['Service']['bindNativeSession']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        return yield* sql.withTransaction(associateNativeSession(runId, binding).pipe(Effect.asVoid))
+      }),
+    )
+
   const acknowledgeDispatch = (
     runId: Parameters<WorkspaceStore['Service']['acknowledgeDispatch']>[0],
     acknowledgement: Parameters<WorkspaceStore['Service']['acknowledgeDispatch']>[1],
@@ -532,68 +621,72 @@ const makeService = Effect.gen(function* () {
         yield* decodeWorkerEpoch(acknowledgement.ownerEpoch)
         yield* sql.withTransaction(
           Effect.gen(function* () {
-            const rows =
-              yield* sql`SELECT i.*, r.task_id, r.payload AS run_payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE i.run_id = ${runId}`
-            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Dispatch intent does not exist'))
-            const intent = rows[0] as Record<string, unknown>
-            if (intent.state !== 'claimed' || Number(intent.owner_epoch) !== acknowledgement.ownerEpoch)
-              return yield* Effect.fail(
-                safeError('stale-epoch', 'Dispatch acknowledgement does not match the current claim'),
-              )
+            const generationRows = yield* sql`SELECT generation FROM workspace_dispatch_intent WHERE run_id = ${runId}`
+            const intentRows = yield* sql`
+              SELECT state, owner_epoch, native_session_id, native_turn_id
+              FROM workspace_dispatch_intent WHERE run_id = ${runId}
+            `
+            const prior = intentRows[0] as Record<string, unknown> | undefined
+            if (!prior) return yield* Effect.fail(safeError('not-found', 'Dispatch intent does not exist'))
             if (
-              intent.requested_native_session_id &&
-              intent.requested_native_session_id !== acknowledgement.nativeSessionId
-            ) {
+              prior.state === 'settled' &&
+              Number(prior.owner_epoch) === acknowledgement.ownerEpoch &&
+              prior.native_session_id === acknowledgement.nativeSessionId &&
+              prior.native_turn_id === (acknowledgement.nativeTurnId ?? null)
+            )
+              return
+            const binding = {
+              ownerEpoch: acknowledgement.ownerEpoch,
+              nativeSessionId: acknowledgement.nativeSessionId,
+              generation: Number(generationRows[0]?.generation),
+              recordedAt: acknowledgement.acknowledgedAt,
+            }
+            const associated = yield* associateNativeSession(runId, binding)
+            if (associated.row.state === 'accepted') {
+              const acceptedTurnId = associated.row.native_turn_id as string | null
+              if (acceptedTurnId === (acknowledgement.nativeTurnId ?? null)) return
               return yield* Effect.fail(
-                safeError('membership-conflict', 'Native acknowledgement does not match the requested session'),
+                safeError('membership-conflict', 'Native acknowledgement changed after acceptance'),
               )
             }
-            const existing =
-              yield* sql`SELECT id, task_id, conversation_id, checkout_id, generation, driver_id, connection_id FROM workspace_agent_session WHERE driver_id = ${intent.driver_id} AND connection_id = ${intent.connection_id} AND native_session_id = ${acknowledgement.nativeSessionId}`
-            let sessionId = String(intent.provisional_session_id)
-            if (existing[0]) {
-              const session = existing[0] as Record<string, unknown>
-              if (
-                session.task_id !== intent.task_id ||
-                session.conversation_id !== intent.conversation_id ||
-                session.checkout_id !== intent.checkout_id ||
-                Number(session.generation) !== Number(intent.generation) ||
-                session.driver_id !== intent.driver_id ||
-                session.connection_id !== intent.connection_id
-              ) {
-                return yield* Effect.fail(
-                  safeError('membership-conflict', 'Native session identity belongs to another execution context'),
-                )
-              }
-              sessionId = String(session.id)
-            } else {
-              yield* sql`INSERT INTO workspace_agent_session (id, task_id, conversation_id, checkout_id, generation, driver_id, connection_id, native_session_id, status) VALUES (${intent.provisional_session_id}, ${intent.task_id}, ${intent.conversation_id}, ${intent.checkout_id}, ${Number(intent.generation)}, ${intent.driver_id}, ${intent.connection_id}, ${acknowledgement.nativeSessionId}, 'active')`
-            }
-            const current = yield* decodeRun(String(intent.run_payload))
+            const current = associated.run
             if (
               (current.nativeTurnId &&
                 acknowledgement.nativeTurnId &&
                 current.nativeTurnId !== acknowledgement.nativeTurnId) ||
-              (intent.native_turn_id &&
+              (associated.row.native_turn_id &&
                 acknowledgement.nativeTurnId &&
-                intent.native_turn_id !== acknowledgement.nativeTurnId)
-            ) {
+                associated.row.native_turn_id !== acknowledgement.nativeTurnId)
+            )
               return yield* Effect.fail(
                 safeError('membership-conflict', 'Native turn identity changed during acknowledgement'),
               )
+            const nativeTurnId = acknowledgement.nativeTurnId ?? current.nativeTurnId ?? null
+            let startedRun: AgentRun
+            if (current.status === 'starting') {
+              startedRun = yield* transition(current, 'running', acknowledgement.acknowledgedAt, { nativeTurnId })
+            } else if (current.status === 'interruptRequested' && !current.startedAt) {
+              const started = yield* transition(
+                { ...current, status: 'starting' },
+                'running',
+                acknowledgement.acknowledgedAt,
+                { nativeTurnId },
+              )
+              startedRun = { ...started, status: 'interruptRequested' }
+            } else if (
+              current.status === 'running' ||
+              current.status === 'awaitingInput' ||
+              current.status === 'interruptRequested'
+            ) {
+              startedRun = { ...current, nativeTurnId }
+            } else {
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Native acknowledgement is not valid for this Run'),
+              )
             }
-            const wasInterruptRequested = current.status === 'interruptRequested'
-            const transitionSource = wasInterruptRequested ? { ...current, status: 'starting' as const } : current
-            const startedRun = yield* transition(transitionSource, 'running', acknowledgement.acknowledgedAt, {
-              nativeTurnId: acknowledgement.nativeTurnId ?? current.nativeTurnId ?? null,
-            })
-            const run = wasInterruptRequested ? { ...startedRun, status: 'interruptRequested' as const } : startedRun
-            const associatedRun = { ...run, sessionId: sessionId as AgentRun['sessionId'] }
-            yield* sql`UPDATE workspace_agent_run SET session_id = ${sessionId}, payload = ${encode(associatedRun)}, status = ${associatedRun.status} WHERE id = ${runId}`
-            yield* sql`UPDATE workspace_dispatch_intent SET state = 'accepted', native_session_id = ${acknowledgement.nativeSessionId}, native_turn_id = ${acknowledgement.nativeTurnId ?? current.nativeTurnId ?? null} WHERE run_id = ${runId}`
-            yield* appendEvent(run, 'runStarted', acknowledgement.acknowledgedAt, {
-              nativeTurnId: acknowledgement.nativeTurnId ?? null,
-            })
+            yield* persistRun(startedRun)
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'accepted', native_turn_id = ${nativeTurnId} WHERE run_id = ${runId}`
+            yield* appendEvent(startedRun, 'runStarted', acknowledgement.acknowledgedAt, { nativeTurnId })
           }),
         )
       }),
@@ -708,7 +801,8 @@ const makeService = Effect.gen(function* () {
                 return yield* Effect.fail(safeError('invalid-data', 'Committed driver event is missing'))
               return yield* decodeStoredEvent(savedRows[0] as Record<string, unknown>)
             }
-            if (row.state !== 'accepted') {
+            const boundButUnaccepted = row.state === 'claimed' && row.native_session_id !== null
+            if (row.state !== 'accepted' && !boundButUnaccepted) {
               if (run.status === 'completed' || run.status === 'failed' || run.status === 'interrupted')
                 return yield* Effect.fail(
                   safeError('invalid-transition', 'Terminal Run cannot accept another driver event'),
@@ -717,6 +811,13 @@ const makeService = Effect.gen(function* () {
             }
 
             const event = command.event as AgentDriverEvent
+            if (
+              row.state === 'claimed' &&
+              (event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed')
+            )
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Terminal driver event arrived before native submission was accepted'),
+              )
             if (event.kind === 'requestPending') {
               const priorRequest = yield* sql`
                 SELECT state FROM workspace_driver_request_state
@@ -742,12 +843,14 @@ const makeService = Effect.gen(function* () {
             }
 
             const suppliedTurnId =
-              event.kind === 'turnStarted' ||
-              event.kind === 'turnCompleted' ||
-              event.kind === 'turnInterrupted' ||
-              event.kind === 'turnFailed'
-                ? event.nativeTurnId
-                : undefined
+              row.state === 'claimed'
+                ? undefined
+                : event.kind === 'turnStarted' ||
+                    event.kind === 'turnCompleted' ||
+                    event.kind === 'turnInterrupted' ||
+                    event.kind === 'turnFailed'
+                  ? event.nativeTurnId
+                  : undefined
             const currentTurnId = run.nativeTurnId ?? (row.native_turn_id as string | null) ?? null
             if (
               suppliedTurnId &&
@@ -789,7 +892,10 @@ const makeService = Effect.gen(function* () {
                 break
               case 'requestPending':
                 if (run.status === 'running') updatedRun = yield* transitionWithNativeId('awaitingInput')
-                else if (run.status !== 'awaitingInput' && run.status !== 'interruptRequested')
+                else if (run.status === 'starting') {
+                  const started = yield* transition(run, 'running', command.occurredAt)
+                  updatedRun = yield* transition(started, 'awaitingInput', command.occurredAt)
+                } else if (run.status !== 'awaitingInput' && run.status !== 'interruptRequested')
                   return yield* Effect.fail(safeError('invalid-transition', 'Agent request is not valid for this Run'))
                 break
               case 'requestResolved':
@@ -841,7 +947,11 @@ const makeService = Effect.gen(function* () {
             }
             if (nativeTurnId !== null)
               yield* sql`UPDATE workspace_dispatch_intent SET native_turn_id = ${nativeTurnId} WHERE run_id = ${runId}`
-            const data = { eventId: command.eventId, event: command.event }
+            const storedEvent =
+              row.state === 'claimed' && suppliedTurnId !== undefined
+                ? { ...event, nativeTurnId: undefined }
+                : command.event
+            const data = { eventId: command.eventId, event: storedEvent }
             const sequence = yield* appendEvent(updatedRun, 'driverEvent', command.occurredAt, data)
             yield* sql`
               INSERT INTO workspace_driver_event_identity (run_id, event_id, fingerprint, sequence)
@@ -1309,79 +1419,124 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  const recoverWorkerInTransaction = Effect.fnUntraced(function* (replacedEpoch: number, recoveredAt: string) {
+    yield* sql`UPDATE workspace_worker_epoch SET retired_epoch = MAX(retired_epoch, ${replacedEpoch}) WHERE singleton = 1`
+    const responseRows = yield* sql`
+              SELECT i.run_id, i.request_id, i.payload, r.payload AS run_payload
+              FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') <= ${replacedEpoch}
+            `
+    for (const row of responseRows) {
+      const intent = yield* decodeJson(requestResponseIntentSchema)(String(row.payload))
+      const run = yield* decodeRun(String(row.run_payload))
+      const recovered = {
+        ...intent,
+        state: 'uncertain',
+        delivery: { outcome: 'uncertain' },
+        recoveryReason: 'worker-replaced',
+      }
+      yield* sql`UPDATE workspace_request_response_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE run_id = ${row.run_id} AND request_id = ${row.request_id}`
+      yield* appendEvent(run, 'requestResponseSettled', recoveredAt, {
+        requestId: row.request_id,
+        outcome: 'uncertain',
+        reason: 'worker-replaced',
+      })
+    }
+    const steerRows = yield* sql`
+              SELECT i.command_id, i.payload, r.payload AS run_payload
+              FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') <= ${replacedEpoch}
+            `
+    for (const row of steerRows) {
+      const intent = yield* decodeJson(steerIntentSchema)(String(row.payload))
+      const run = yield* decodeRun(String(row.run_payload))
+      const recovered = {
+        ...intent,
+        state: 'uncertain',
+        delivery: { outcome: 'uncertain' },
+        recoveryReason: 'worker-replaced',
+      }
+      yield* sql`UPDATE workspace_steer_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE command_id = ${row.command_id}`
+      yield* appendEvent(run, 'steerSettled', recoveredAt, {
+        commandId: row.command_id,
+        outcome: 'uncertain',
+        reason: 'worker-replaced',
+      })
+    }
+    yield* sql`UPDATE workspace_driver_request_state SET state = 'expired' WHERE state = 'pending' AND run_id IN (SELECT run_id FROM workspace_dispatch_intent WHERE owner_epoch <= ${replacedEpoch})`
+    const intents =
+      yield* sql`SELECT i.run_id, i.state, i.owner_epoch, r.payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE i.owner_epoch <= ${replacedEpoch} AND i.state IN ('claimed', 'accepted')`
+    let recovered = 0
+    for (const row of intents as Array<Record<string, unknown>>) {
+      const current = yield* decodeRun(String(row.payload))
+      if (current.status === 'completed' || current.status === 'failed' || current.status === 'interrupted') {
+        yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${Number(row.owner_epoch)}`
+        continue
+      }
+      const status = row.state === 'claimed' ? 'uncertain' : 'recoveryRequired'
+      const run = yield* transition(current, status, recoveredAt)
+      yield* persistRun(run)
+      yield* sql`UPDATE workspace_dispatch_intent SET state = 'recoveryRequired' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${Number(row.owner_epoch)}`
+      yield* appendEvent(run, row.state === 'claimed' ? 'runUncertain' : 'runRecoveryRequired', recoveredAt, {
+        replacedEpoch,
+      })
+      recovered += 1
+    }
+    return recovered
+  })
+
   const recoverWorker = (replacedEpoch: number, recoveredAt: string) =>
     guard(
       Effect.gen(function* () {
         yield* decodeWorkerEpoch(replacedEpoch)
+        return yield* sql.withTransaction(recoverWorkerInTransaction(replacedEpoch, recoveredAt))
+      }),
+    )
+
+  const acquireOwnerEpoch = Effect.fn('WorkspaceStore.acquireOwnerEpoch')(function* (recoveredAt: string) {
+    return yield* guard(
+      Effect.gen(function* () {
+        if (!Schema.is(timestampSchema)(recoveredAt))
+          return yield* Effect.fail(safeError('invalid-data', 'Owner epoch recovery timestamp is invalid'))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`UPDATE workspace_worker_epoch SET retired_epoch = MAX(retired_epoch, ${replacedEpoch}) WHERE singleton = 1`
-            const responseRows = yield* sql`
-              SELECT i.run_id, i.request_id, i.payload, r.payload AS run_payload
-              FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id
-              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') = ${replacedEpoch}
+            const rows = yield* sql`
+              SELECT CAST(allocated_epoch AS TEXT) AS allocated_epoch,
+                CAST(retired_epoch AS TEXT) AS retired_epoch,
+                CAST(MAX(
+                  COALESCE((SELECT MAX(owner_epoch) FROM workspace_dispatch_intent), 0),
+                  COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_request_response_intent WHERE json_valid(payload)), 0),
+                  COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_steer_intent WHERE json_valid(payload)), 0)
+                ) AS TEXT) AS persisted_epoch
+              FROM workspace_worker_epoch WHERE singleton = 1
             `
-            for (const row of responseRows) {
-              const intent = yield* decodeJson(requestResponseIntentSchema)(String(row.payload))
-              const run = yield* decodeRun(String(row.run_payload))
-              const recovered = {
-                ...intent,
-                state: 'uncertain',
-                delivery: { outcome: 'uncertain' },
-                recoveryReason: 'worker-replaced',
-              }
-              yield* sql`UPDATE workspace_request_response_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE run_id = ${row.run_id} AND request_id = ${row.request_id}`
-              yield* appendEvent(run, 'requestResponseSettled', recoveredAt, {
-                requestId: row.request_id,
-                outcome: 'uncertain',
-                reason: 'worker-replaced',
-              })
-            }
-            const steerRows = yield* sql`
-              SELECT i.command_id, i.payload, r.payload AS run_payload
-              FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id
-              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') = ${replacedEpoch}
-            `
-            for (const row of steerRows) {
-              const intent = yield* decodeJson(steerIntentSchema)(String(row.payload))
-              const run = yield* decodeRun(String(row.run_payload))
-              const recovered = {
-                ...intent,
-                state: 'uncertain',
-                delivery: { outcome: 'uncertain' },
-                recoveryReason: 'worker-replaced',
-              }
-              yield* sql`UPDATE workspace_steer_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE command_id = ${row.command_id}`
-              yield* appendEvent(run, 'steerSettled', recoveredAt, {
-                commandId: row.command_id,
-                outcome: 'uncertain',
-                reason: 'worker-replaced',
-              })
-            }
-            yield* sql`UPDATE workspace_driver_request_state SET state = 'expired' WHERE state = 'pending' AND run_id IN (SELECT run_id FROM workspace_dispatch_intent WHERE owner_epoch = ${replacedEpoch})`
-            const intents =
-              yield* sql`SELECT i.run_id, i.state, r.payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE i.owner_epoch = ${replacedEpoch} AND i.state IN ('claimed', 'accepted')`
-            let recovered = 0
-            for (const row of intents as Array<Record<string, unknown>>) {
-              const current = yield* decodeRun(String(row.payload))
-              if (current.status === 'completed' || current.status === 'failed' || current.status === 'interrupted') {
-                yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${replacedEpoch}`
-                continue
-              }
-              const status = row.state === 'claimed' ? 'uncertain' : 'recoveryRequired'
-              const run = yield* transition(current, status, recoveredAt)
-              yield* persistRun(run)
-              yield* sql`UPDATE workspace_dispatch_intent SET state = 'recoveryRequired' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${replacedEpoch}`
-              yield* appendEvent(run, row.state === 'claimed' ? 'runUncertain' : 'runRecoveryRequired', recoveredAt, {
-                replacedEpoch,
-              })
-              recovered += 1
-            }
-            return recovered
+            const allocatedEpoch = Number(rows[0]?.allocated_epoch)
+            const retiredEpoch = Number(rows[0]?.retired_epoch)
+            const persistedEpoch = Number(rows[0]?.persisted_epoch)
+            const safeEpochValue = Schema.Number.check(
+              Schema.isInt(),
+              Schema.isGreaterThanOrEqualTo(0),
+              Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+            )
+            for (const epoch of [allocatedEpoch, retiredEpoch, persistedEpoch])
+              yield* Schema.decodeUnknownEffect(safeEpochValue)(epoch).pipe(
+                Effect.mapError(() => safeError('invalid-data', 'Stored workspace owner epoch is invalid')),
+              )
+            const previousEpoch = Math.max(allocatedEpoch, retiredEpoch, persistedEpoch)
+            if (previousEpoch >= Number.MAX_SAFE_INTEGER)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored workspace owner epoch is invalid'))
+            const ownerEpoch = previousEpoch + 1
+            yield* sql`UPDATE workspace_worker_epoch SET allocated_epoch = ${ownerEpoch} WHERE singleton = 1`
+            const recoveredCount =
+              previousEpoch === 0 ? 0 : yield* recoverWorkerInTransaction(previousEpoch, recoveredAt)
+            return yield* Schema.decodeUnknownEffect(ownerEpochAcquisitionSchema)({ ownerEpoch, recoveredCount }).pipe(
+              Effect.mapError(() => safeError('invalid-data', 'Workspace owner epoch acquisition failed validation')),
+            )
           }),
         )
       }),
     )
+  })
 
   const pageEvents = (afterSequence: number, limit: number) =>
     guard(
@@ -1534,6 +1689,7 @@ const makeService = Effect.gen(function* () {
     createTask,
     beginRun,
     claimDispatch,
+    bindNativeSession,
     acknowledgeDispatch,
     recordDriverEvent,
     failDispatch,
@@ -1549,6 +1705,7 @@ const makeService = Effect.gen(function* () {
     listSteerIntents,
     promoteNextFollowUp,
     recoverWorker,
+    acquireOwnerEpoch,
     pageEvents,
     readTaskSnapshot,
   })

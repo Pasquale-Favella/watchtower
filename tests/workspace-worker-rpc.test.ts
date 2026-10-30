@@ -95,6 +95,15 @@ describe('workspace worker RPC server', () => {
             ownerEpoch: 7,
             claimedAt: command.issuedAt,
           })
+          yield* client['workspace-worker:bindNativeSession']({
+            runId: command.runId,
+            binding: {
+              ownerEpoch: 7,
+              nativeSessionId: 'native',
+              generation: 1,
+              recordedAt: command.issuedAt,
+            },
+          })
           yield* client['workspace-worker:acknowledgeDispatch']({
             runId: command.runId,
             acknowledgement: { ownerEpoch: 7, nativeSessionId: 'native', acknowledgedAt: command.issuedAt },
@@ -264,7 +273,7 @@ describe('workspace worker RPC server', () => {
       }),
     )
 
-    expect(result.ready).toEqual({ protocolVersion: 3 })
+    expect(result.ready).toEqual({ protocolVersion: 5 })
     expect(result.receipt).toMatchObject({ commandId: command.commandId, runId: command.runId, replayed: false })
     expect(result.claim).toMatchObject({ runId: command.runId, ownerEpoch: 7, workspacePath: checkout.path })
     expect(result.event).toMatchObject({ kind: 'driverEvent', runId: command.runId })

@@ -10,6 +10,8 @@ import type {
   DispatchFailureCommand,
   EnqueueFollowUpCommand,
   FollowUpReceipt,
+  NativeSessionBinding,
+  OwnerEpochAcquisition,
   PromotedFollowUp,
   QueuedFollowUpPage,
   RecordDriverEventCommand,
@@ -44,6 +46,10 @@ export class WorkspaceStore extends Context.Service<
       ownerEpoch: number,
       claimedAt: string,
     ) => Effect.Effect<DispatchClaim, WorkspaceStoreError>
+    readonly bindNativeSession: (
+      runId: AgentRunId,
+      binding: NativeSessionBinding,
+    ) => Effect.Effect<void, WorkspaceStoreError>
     readonly acknowledgeDispatch: (
       runId: AgentRunId,
       acknowledgement: NativeTurnAcknowledgement,
@@ -97,6 +103,7 @@ export class WorkspaceStore extends Context.Service<
       command: BeginRunCommand,
     ) => Effect.Effect<PromotedFollowUp | null, WorkspaceStoreError>
     readonly recoverWorker: (replacedEpoch: number, recoveredAt: string) => Effect.Effect<number, WorkspaceStoreError>
+    readonly acquireOwnerEpoch: (recoveredAt: string) => Effect.Effect<OwnerEpochAcquisition, WorkspaceStoreError>
     readonly pageEvents: (
       afterSequence: number,
       limit: number,

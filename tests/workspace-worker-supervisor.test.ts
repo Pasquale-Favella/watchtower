@@ -56,7 +56,6 @@ const fixture = (name: string, options: Partial<WorkspaceWorkerSupervisorOptions
     WorkspaceWorkerSupervisorLive({
       filename: join(directory, `${name}.db`),
       workerPath,
-      allocateOwnerEpoch: previous => Effect.succeed(previous === undefined ? 7 : previous + 1),
       ...options,
       workerFactory: (path, data) => {
         const worker = options.workerFactory
@@ -72,7 +71,22 @@ const fixture = (name: string, options: Partial<WorkspaceWorkerSupervisorOptions
 }
 
 describe('workspace worker supervisor', () => {
-  it('starts one scoped worker and exposes a stable usable store and its caller-allocated owner epoch', async () => {
+  it('advances its durable owner epoch across a complete application runtime restart', async () => {
+    const first = fixture('application-restart')
+    await first.runtime.runPromise(WorkspaceWorkerSupervisor)
+    await first.runtime.dispose()
+
+    const restarted = fixture('application-restart')
+    try {
+      const supervisor = await restarted.runtime.runPromise(WorkspaceWorkerSupervisor)
+      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(2)
+      expect(restarted.workers).toHaveLength(1)
+    } finally {
+      await restarted.runtime.dispose()
+    }
+  }, 15_000)
+
+  it('starts one scoped worker and exposes a stable usable store with its durable owner epoch', async () => {
     const { runtime, workers } = fixture('start')
     try {
       const supervisor = await runtime.runPromise(WorkspaceWorkerSupervisor)
@@ -80,7 +94,7 @@ describe('workspace worker supervisor', () => {
         state: 'ready',
         lastFailure: null,
       })
-      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(7)
+      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(1)
       await Effect.runPromise(supervisor.store.registerProject({ project, mainCheckout: checkout }))
       expect(workers).toHaveLength(1)
     } finally {
@@ -122,11 +136,11 @@ describe('workspace worker supervisor', () => {
             prompt: 'Recover safely',
           }),
         )
-        await Effect.runPromise(store.claimDispatch(runId, 7, timestamp))
+        await Effect.runPromise(store.claimDispatch(runId, 1, timestamp))
         if (delivery === 'accepted')
           await Effect.runPromise(
             store.acknowledgeDispatch(runId, {
-              ownerEpoch: 7,
+              ownerEpoch: 1,
               nativeSessionId: 'native-recovery',
               acknowledgedAt: timestamp,
             }),
@@ -136,7 +150,7 @@ describe('workspace worker supervisor', () => {
         await worker.terminate()
         await expect
           .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 })
-          .toBe(8)
+          .toBe(2)
         expect(supervisor.store).toBe(store)
         expect(workers).toHaveLength(2)
         const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
@@ -148,7 +162,7 @@ describe('workspace worker supervisor', () => {
           events.events.filter(
             event => event.kind === (delivery === 'accepted' ? 'runRecoveryRequired' : 'runUncertain'),
           ),
-        ).toMatchObject([{ data: { replacedEpoch: 7 } }])
+        ).toMatchObject([{ data: { replacedEpoch: 1 } }])
         expect(events.events.filter(event => event.kind === 'dispatchClaimed')).toHaveLength(1)
       } finally {
         await runtime.dispose()
@@ -164,7 +178,7 @@ describe('workspace worker supervisor', () => {
       const first = workers[0]
       if (!first) throw new Error('worker missing')
       await first.terminate()
-      await expect.poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 }).toBe(8)
+      await expect.poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 }).toBe(2)
       const second = workers[1]
       if (!second) throw new Error('replacement missing')
       await second.terminate()
@@ -244,7 +258,7 @@ describe('workspace worker supervisor', () => {
       await response
       await worker.terminate()
       await rejected
-      await expect.poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 }).toBe(8)
+      await expect.poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 }).toBe(2)
       const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
       expect(snapshot.runs).toMatchObject([{ id: 'flight-run', status: 'queued' }])
       const page = await Effect.runPromise(store.pageEvents(0, 100))
@@ -330,7 +344,7 @@ describe('workspace worker supervisor', () => {
       expect(firstReplacement).toBeDefined()
       expect(secondReplacement).toBeDefined()
       expect(Number(secondReplacement) - Number(firstReplacement)).toBeGreaterThanOrEqual(35)
-      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(7)
+      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(1)
       await expect(Effect.runPromise(supervisor.store.pageEvents(0, 10))).rejects.toMatchObject({
         code: 'database-unavailable',
       })
@@ -429,7 +443,7 @@ describe('workspace worker supervisor', () => {
       await initial.terminate()
       await expect
         .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 12_000 })
-        .toBe(8)
+        .toBe(2)
       expect(await Effect.runPromise(SubscriptionRef.get(supervisor.status))).toEqual({
         state: 'ready',
         lastFailure: null,

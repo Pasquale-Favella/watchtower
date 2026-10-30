@@ -85,7 +85,17 @@ export const beginRunCommandSchema = Schema.Struct({
 })
 export type BeginRunCommand = Schema.Schema.Type<typeof beginRunCommandSchema>
 
-export const workerEpochSchema = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))
+export const workerEpochSchema = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+)
+
+export const ownerEpochAcquisitionSchema = Schema.Struct({
+  ownerEpoch: workerEpochSchema,
+  recoveredCount: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+})
+export type OwnerEpochAcquisition = Schema.Schema.Type<typeof ownerEpochAcquisitionSchema>
 
 export const commandReceiptSchema = Schema.Struct({
   commandId: text,
@@ -113,6 +123,14 @@ export const dispatchClaimSchema = Schema.Struct({
   nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
 })
 export type DispatchClaim = Schema.Schema.Type<typeof dispatchClaimSchema>
+
+export const nativeSessionBindingSchema = Schema.Struct({
+  ownerEpoch: workerEpochSchema,
+  nativeSessionId: text,
+  generation: beginRunCommandSchema.fields.generation,
+  recordedAt: timestamp,
+})
+export type NativeSessionBinding = Schema.Schema.Type<typeof nativeSessionBindingSchema>
 
 export const recordDriverEventCommandSchema = Schema.Struct({
   ownerEpoch: workerEpochSchema,

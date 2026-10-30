@@ -21,8 +21,6 @@ const UNAVAILABLE = 'Workspace storage is unavailable.'
 const CLEANUP_FAILED = 'Workspace worker cleanup did not complete.'
 
 export interface WorkspaceWorkerSupervisorOptions extends WorkspaceWorkerStoreOptions {
-  /** Epochs remain caller-owned, as in ExecutionService; this does not allocate a second local counter. */
-  readonly allocateOwnerEpoch: (previousEpoch: number | undefined) => Effect.Effect<number, WorkspaceStoreError>
   readonly maxReplacements?: number
   readonly restartWindowMs?: number
   readonly restartBackoffMs?: number
@@ -110,11 +108,7 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
         }),
       )
 
-      const openGeneration = Effect.fn('WorkspaceWorkerSupervisor.openGeneration')(function* (
-        previousEpoch: number | undefined,
-      ) {
-        const epoch = yield* options.allocateOwnerEpoch(previousEpoch)
-        if (!Number.isSafeInteger(epoch) || epoch <= (previousEpoch ?? 0)) return yield* Effect.fail(unavailable())
+      const openGeneration = Effect.fn('WorkspaceWorkerSupervisor.openGeneration')(function* () {
         const scope = yield* Scope.make()
         let fail!: () => void
         const failed = new Promise<void>(resolve => {
@@ -169,16 +163,13 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
           ),
         )
         generation.store = Context.get(context, WorkspaceStore)
-        // recoverWorker returns a recovered-intent count, never an owner epoch.
-        if (previousEpoch !== undefined) {
-          const recoveredAt = DateTime.formatIso(yield* DateTime.now)
-          yield* generation.store.recoverWorker(previousEpoch, recoveredAt)
-        }
+        const recoveredAt = DateTime.formatIso(yield* DateTime.now)
+        const acquisition = yield* generation.store.acquireOwnerEpoch(recoveredAt)
         yield* SubscriptionRef.set(status, { state: 'ready', lastFailure: null })
-        yield* SubscriptionRef.set(ownerEpoch, epoch)
+        yield* SubscriptionRef.set(ownerEpoch, acquisition.ownerEpoch)
       })
 
-      const opened = yield* Effect.exit(openGeneration(undefined))
+      const opened = yield* Effect.exit(openGeneration())
       if (Exit.isFailure(opened)) {
         if (current) yield* closeGeneration(current)
         current = undefined
@@ -218,7 +209,6 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
               yield* Effect.promise(() => generation.failed)
               if (stopping) return
               yield* SubscriptionRef.set(status, { state: 'replacing', lastFailure: UNAVAILABLE })
-              const previousEpoch = yield* SubscriptionRef.get(ownerEpoch)
               const closed = yield* Effect.exit(closeGeneration(current))
               if (Exit.isFailure(closed)) {
                 yield* SubscriptionRef.set(status, { state: 'unavailable', lastFailure: CLEANUP_FAILED })
@@ -234,7 +224,7 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
                 }
                 attempts.push(now)
                 yield* Effect.sleep(restartBackoffMs)
-                const replacement = yield* Effect.exit(openGeneration(previousEpoch))
+                const replacement = yield* Effect.exit(openGeneration())
                 if (Exit.isSuccess(replacement)) break
                 if (current) {
                   const cleanup = yield* Effect.exit(closeGeneration(current))

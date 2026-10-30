@@ -314,6 +314,12 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:claimDispatch'](payload),
           )
         },
+        bindNativeSession: (runId, binding) => {
+          const payload = { runId, binding }
+          return invoke('workspace-worker:bindNativeSession', payload, () =>
+            rawClient['workspace-worker:bindNativeSession'](payload),
+          )
+        },
         acknowledgeDispatch: (runId, acknowledgement: NativeTurnAcknowledgement) => {
           const payload = { runId, acknowledgement }
           return invoke('workspace-worker:acknowledgeDispatch', payload, () =>
@@ -394,6 +400,12 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           const payload = { replacedEpoch, recoveredAt }
           return invoke('workspace-worker:recoverWorker', payload, () =>
             rawClient['workspace-worker:recoverWorker'](payload),
+          )
+        },
+        acquireOwnerEpoch: recoveredAt => {
+          const payload = { recoveredAt }
+          return invoke('workspace-worker:acquireOwnerEpoch', payload, () =>
+            rawClient['workspace-worker:acquireOwnerEpoch'](payload),
           )
         },
         pageEvents: (afterSequence, limit): Effect.Effect<WorkspaceEventPage, WorkspaceStoreError> => {
