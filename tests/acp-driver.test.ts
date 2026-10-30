@@ -7,12 +7,17 @@ import {
 } from '@agentclientprotocol/sdk'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
+import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
-import { AgentDriverError } from '../src/core/ports/agent-driver.js'
-import { makeAcpDriver } from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
+import { AgentDriver, AgentDriverError } from '../src/core/ports/agent-driver.js'
+import {
+  acpSpawnEnvironment,
+  layerAcpAgentDriver,
+  makeAcpDriver,
+} from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
 import type { JsonRpcTransport } from '../src/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import type { AgentRunId } from '../src/shared/schemas/workspace.js'
 import {
@@ -219,6 +224,115 @@ const context = {
 } as const
 
 describe('generic ACP driver', () => {
+  it('sets Electron Node mode only for bundled ACP entries and clears inherited mode for PATH tools', () => {
+    const scrubbed = acpSpawnEnvironment(['OPENAI_API_KEY'])
+    const bundled = acpSpawnEnvironment(['OPENAI_API_KEY'], 'electron')
+
+    expect(scrubbed.OPENAI_API_KEY).toBeUndefined()
+    expect(Object.hasOwn(scrubbed, 'ELECTRON_RUN_AS_NODE')).toBe(true)
+    expect(scrubbed.ELECTRON_RUN_AS_NODE).toBeUndefined()
+    expect(bundled.OPENAI_API_KEY).toBeUndefined()
+    expect(bundled.ELECTRON_RUN_AS_NODE).toBe('1')
+  })
+
+  it('keeps the default secret policy when enabling Electron Node mode', () => {
+    const env = acpSpawnEnvironment(undefined, 'electron')
+    const secretNames = [
+      'ANTHROPIC_API_KEY',
+      'OPENAI_API_KEY',
+      'GEMINI_API_KEY',
+      'GOOGLE_API_KEY',
+      'GITHUB_TOKEN',
+      'GH_TOKEN',
+      'XAI_API_KEY',
+      'MOONSHOT_API_KEY',
+      'DASHSCOPE_API_KEY',
+      'QWEN_API_KEY',
+      'PI_API_KEY',
+    ]
+    for (const name of secretNames) {
+      expect(Object.hasOwn(env, name)).toBe(true)
+      expect(env[name]).toBeUndefined()
+    }
+    expect(env.ELECTRON_RUN_AS_NODE).toBe('1')
+  })
+
+  it.each([undefined, 'C:/app/electron.exe'])(
+    'rejects untrusted Electron Node mode before spawn with runtime %s',
+    async runtimeExecutable => {
+      const spawned: ChildProcess.Command[] = []
+      const spawner = ChildProcessSpawner.make(command => {
+        spawned.push(command)
+        return Effect.die(new Error('Untrusted runtime must not spawn'))
+      })
+      await expect(
+        Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const driver = yield* AgentDriver
+              return yield* driver.connect({
+                connectionId: 'untrusted',
+                configuration: { command: 'arbitrary-binary', argsJson: '[]', nodeRuntime: 'electron' },
+              })
+            }).pipe(
+              Effect.provide(layerAcpAgentDriver(runtimeExecutable ? { runtimeExecutable } : {})),
+              Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+            ),
+          ),
+        ),
+      ).rejects.toMatchObject({ _tag: 'AgentDriverError', code: 'invalid-state' })
+      expect(spawned).toEqual([])
+    },
+  )
+
+  it('spawns the trusted Electron runtime with ordered arguments and the default secret policy', async () => {
+    const spawned: ChildProcess.Command[] = []
+    const spawner = ChildProcessSpawner.make(command => {
+      spawned.push(command)
+      return Effect.die(new Error('Stop at the external process boundary'))
+    })
+    await Effect.runPromiseExit(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          return yield* driver.connect({
+            connectionId: 'bundled',
+            configuration: {
+              command: 'C:/app/electron.exe',
+              argsJson: '["C:/app/server.js","--stdio"]',
+              nodeRuntime: 'electron',
+            },
+          })
+        }).pipe(
+          Effect.provide(layerAcpAgentDriver({ runtimeExecutable: 'C:/app/electron.exe' })),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      ),
+    )
+
+    expect(spawned).toHaveLength(1)
+    const command = spawned[0]
+    expect(command?._tag).toBe('StandardCommand')
+    if (command?._tag !== 'StandardCommand') throw new Error('Expected standard spawn command')
+    expect(command.command).toBe('C:/app/electron.exe')
+    expect(command.args).toEqual(['C:/app/server.js', '--stdio'])
+    expect(command.options.env).toEqual({
+      ANTHROPIC_API_KEY: undefined,
+      OPENAI_API_KEY: undefined,
+      GEMINI_API_KEY: undefined,
+      GOOGLE_API_KEY: undefined,
+      GITHUB_TOKEN: undefined,
+      GH_TOKEN: undefined,
+      XAI_API_KEY: undefined,
+      MOONSHOT_API_KEY: undefined,
+      DASHSCOPE_API_KEY: undefined,
+      QWEN_API_KEY: undefined,
+      PI_API_KEY: undefined,
+      ELECTRON_RUN_AS_NODE: '1',
+    })
+    expect(command.options.extendEnv).toBe(true)
+  })
+
   it('uses the official SDK lifecycle, streams events while prompt waits, and never treats unsupported inputs as text', async () => {
     const fake = makeFakeAcp()
     const result = await Effect.runPromise(

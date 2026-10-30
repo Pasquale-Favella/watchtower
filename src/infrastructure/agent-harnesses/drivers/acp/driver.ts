@@ -68,6 +68,7 @@ const defaultScrubbedEnvironment = Object.freeze([
   'DASHSCOPE_API_KEY',
   'QWEN_API_KEY',
   'PI_API_KEY',
+  'ELECTRON_RUN_AS_NODE',
 ])
 
 const nonBlank = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1))
@@ -81,9 +82,12 @@ const jsonStringArray = Schema.decodeTo(Schema.Array(Schema.String))(parsedJson)
 const driverConfigurationSchema = Schema.Struct({
   command: nonBlank,
   argsJson: Schema.optional(jsonStringArray),
+  nodeRuntime: Schema.optional(Schema.Literal('electron')),
 })
 
 export interface AcpDriverFactoryOptions {
+  /** Trusted Electron executable for bundled ACP entries; Node mode is rejected when absent. */
+  readonly runtimeExecutable?: string
   /** Immutable variable-name policy. Values are inherited from the parent process, never copied here. */
   readonly scrubEnvironment?: ReadonlyArray<string>
   /** Explicitly retain named inherited API-key variables that are scrubbed by default. */
@@ -1256,9 +1260,18 @@ export function makeAcpDriver(dependencies: AcpDriverDependencies): AgentDriver[
 function defaultTransportFactory(
   spawner: Context.Service.Shape<typeof ChildProcessSpawner.ChildProcessSpawner>,
   scrubEnvironment: ReadonlyArray<string>,
+  runtimeExecutable?: string,
 ): AcpTransportFactory {
+  const schema = driverConfigurationSchema.check(
+    Schema.makeFilter(
+      configuration =>
+        configuration.nodeRuntime === undefined ||
+        configuration.command === runtimeExecutable ||
+        'Electron Node mode requires the trusted runtime executable.',
+    ),
+  )
   return options => {
-    const configuration = Schema.decodeUnknownResult(driverConfigurationSchema)(options.configuration ?? {})
+    const configuration = Schema.decodeUnknownResult(schema)(options.configuration ?? {})
     if (configuration._tag === 'Failure') {
       return Effect.fail(
         new AgentDriverError({
@@ -1267,11 +1280,8 @@ function defaultTransportFactory(
         }),
       )
     }
-    const { command, argsJson = [] } = configuration.success
-    const env = Object.fromEntries(Array.from(scrubEnvironment, name => [name, undefined])) as unknown as Record<
-      string,
-      string
-    >
+    const { command, argsJson = [], nodeRuntime } = configuration.success
+    const env = acpSpawnEnvironment(scrubEnvironment, nodeRuntime)
     return spawnJsonRpcStdio(command, argsJson, { env, extendEnv: true }).pipe(
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
       Effect.mapError(
@@ -1285,6 +1295,20 @@ function defaultTransportFactory(
   }
 }
 
+/** Apply the fixed inherited-environment policy and the one supported bundled-runtime setting. */
+export function acpSpawnEnvironment(
+  scrubEnvironment: ReadonlyArray<string> = defaultScrubbedEnvironment,
+  nodeRuntime?: 'electron',
+): Record<string, string> {
+  const env = Object.fromEntries(Array.from(scrubEnvironment, name => [name, undefined])) as unknown as Record<
+    string,
+    string
+  >
+  env.ELECTRON_RUN_AS_NODE = undefined as unknown as string
+  if (nodeRuntime === 'electron') env.ELECTRON_RUN_AS_NODE = '1'
+  return env
+}
+
 export const layerAcpAgentDriver = (factoryOptions: AcpDriverFactoryOptions = {}) =>
   Layer.effect(
     AgentDriver,
@@ -1292,7 +1316,9 @@ export const layerAcpAgentDriver = (factoryOptions: AcpDriverFactoryOptions = {}
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
       const scrub = new Set(factoryOptions.scrubEnvironment ?? defaultScrubbedEnvironment)
       for (const name of factoryOptions.preserveEnvironment ?? []) scrub.delete(name)
-      return makeAcpDriver({ transportFactory: defaultTransportFactory(spawner, [...scrub]) })
+      return makeAcpDriver({
+        transportFactory: defaultTransportFactory(spawner, [...scrub], factoryOptions.runtimeExecutable),
+      })
     }),
   )
 

@@ -4,12 +4,17 @@ import { describe, expect, it } from 'vitest'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
 
-const resolve = (definitions: ReadonlyArray<HarnessConnection>, id: string, driverId: string) =>
+const resolve = (
+  definitions: ReadonlyArray<HarnessConnection>,
+  id: string,
+  driverId: string,
+  options?: { readonly runtimeExecutable?: string },
+) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const resolver = yield* HarnessConnectionResolver
       return yield* resolver.resolve(id, driverId)
-    }).pipe(Effect.provide(HarnessConnectionResolver.layer(definitions))),
+    }).pipe(Effect.provide(HarnessConnectionResolver.layer(definitions, options))),
   )
 
 const acquireResolver = (layer: ReturnType<typeof HarnessConnectionResolver.layer>) =>
@@ -31,6 +36,55 @@ describe('HarnessConnectionResolver', () => {
       connectionId: 'work-acp',
       configuration: { command: 'custom-acp', argsJson: '["--mode","stdio","two words"]' },
     })
+  })
+
+  it('forwards the constrained Electron Node runtime flag for bundled ACP entries', async () => {
+    await expect(
+      resolve(
+        [
+          {
+            id: 'bundled-acp',
+            driverId: 'acp',
+            command: 'C:/app/electron.exe',
+            args: ['/app/server.js', '--stdio'],
+            nodeRuntime: 'electron',
+          },
+        ],
+        'bundled-acp',
+        'acp',
+        { runtimeExecutable: 'C:/app/electron.exe' },
+      ),
+    ).resolves.toEqual({
+      connectionId: 'bundled-acp',
+      configuration: {
+        command: 'C:/app/electron.exe',
+        argsJson: '["/app/server.js","--stdio"]',
+        nodeRuntime: 'electron',
+      },
+    })
+  })
+
+  it('rejects Electron Node mode without an exact trusted runtime command', async () => {
+    const connection: HarnessConnection = {
+      id: 'untrusted-runtime',
+      driverId: 'acp',
+      command: 'arbitrary-binary',
+      args: ['server.js'],
+      nodeRuntime: 'electron',
+    }
+    for (const options of [undefined, { runtimeExecutable: 'C:/app/electron.exe' }]) {
+      await expect(resolve([connection], connection.id, 'acp', options)).rejects.toMatchObject({
+        _tag: 'HarnessConnectionResolutionError',
+        code: 'invalid-definition',
+      })
+    }
+  })
+
+  it.each(['claude-agent-sdk', 'codex-app-server'])('rejects Electron Node mode for %s', async driverId => {
+    const connection = { id: 'wrong-driver', driverId, command: 'C:/app/electron.exe', nodeRuntime: 'electron' }
+    await expect(
+      resolve([connection as HarnessConnection], connection.id, driverId, { runtimeExecutable: connection.command }),
+    ).rejects.toMatchObject({ _tag: 'HarnessConnectionResolutionError', code: 'invalid-definition' })
   })
 
   it('keeps the requested connection and exact driver identity', async () => {

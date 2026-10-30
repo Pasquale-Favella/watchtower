@@ -7,12 +7,18 @@ import { layerAcpAgentDriver } from '@/infrastructure/agent-harnesses/drivers/ac
 import { ClaudeAgentDriverLive } from '@/infrastructure/agent-harnesses/drivers/claude/driver.js'
 import { codexAgentDriverLayer } from '@/infrastructure/agent-harnesses/drivers/codex/driver.js'
 
-export const AgentDriverRegistryLive = Layer.effect(
-  AgentDriverRegistry,
-  Effect.gen(function* () {
-    const codex = yield* Effect.provide(AgentDriver, codexAgentDriverLayer)
-    const claude = yield* Effect.provide(AgentDriver, ClaudeAgentDriverLive)
-    const acp = yield* Effect.provide(AgentDriver, layerAcpAgentDriver())
-    return AgentDriverRegistry.fromDrivers([codex, claude, acp])
-  }),
-)
+export const agentDriverRegistryLayer = (options: { readonly runtimeExecutable?: string } = {}) =>
+  Layer.effect(
+    AgentDriverRegistry,
+    Effect.gen(function* () {
+      const codex = yield* Effect.provide(AgentDriver, codexAgentDriverLayer)
+      const claude = yield* Effect.provide(AgentDriver, ClaudeAgentDriverLive)
+      const acp = yield* Effect.provide(
+        AgentDriver,
+        layerAcpAgentDriver({ runtimeExecutable: options.runtimeExecutable }),
+      )
+      return AgentDriverRegistry.fromDrivers([codex, claude, acp])
+    }),
+  )
+
+export const AgentDriverRegistryLive = agentDriverRegistryLayer()

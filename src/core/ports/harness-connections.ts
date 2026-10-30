@@ -20,6 +20,11 @@ export class HarnessConnectionResolutionError extends Schema.TaggedError<Harness
   },
 ) {}
 
+export interface HarnessConnectionResolverOptions {
+  /** Only this executable may receive Electron's Node runtime flag. */
+  readonly runtimeExecutable?: string
+}
+
 export type HarnessConnectionResolverService = {
   readonly resolve: (
     connectionId: string,
@@ -42,6 +47,7 @@ function immutableOptions(connection: HarnessConnection): AgentDriverConnectOpti
       configuration = Object.freeze({
         command: connection.command,
         argsJson: JSON.stringify(connection.args),
+        ...(connection.nodeRuntime ? { nodeRuntime: connection.nodeRuntime } : {}),
       })
       break
     case 'codex-app-server':
@@ -59,13 +65,25 @@ function immutableOptions(connection: HarnessConnection): AgentDriverConnectOpti
   return Object.freeze(options)
 }
 
-function makeResolver(definitions: ReadonlyArray<HarnessConnection>): HarnessConnectionResolverService {
+function makeResolver(
+  definitions: ReadonlyArray<HarnessConnection>,
+  options: HarnessConnectionResolverOptions,
+): HarnessConnectionResolverService {
   const byId = new Map<string, HarnessConnection>()
+  const schema = harnessConnectionSchema.check(
+    Schema.makeFilter(
+      connection =>
+        connection.driverId !== 'acp' ||
+        connection.nodeRuntime === undefined ||
+        connection.command === options.runtimeExecutable ||
+        'Electron Node mode requires the trusted runtime executable.',
+    ),
+  )
 
   for (const input of definitions) {
     let connection: HarnessConnection
     try {
-      connection = Schema.decodeUnknownSync(harnessConnectionSchema, { onExcessProperty: 'error' })(input)
+      connection = Schema.decodeUnknownSync(schema, { onExcessProperty: 'error' })(input)
     } catch {
       throw invalidDefinition()
     }
@@ -115,9 +133,12 @@ export class HarnessConnectionResolver extends Context.Service<
   HarnessConnectionResolverService
 >()('watchtower/core/HarnessConnectionResolver') {
   /** Construct from the volatile application catalog. Definitions are validated and copied. */
-  static readonly layer = (definitions: ReadonlyArray<HarnessConnection>) => {
+  static readonly layer = (
+    definitions: ReadonlyArray<HarnessConnection>,
+    options: HarnessConnectionResolverOptions = {},
+  ) => {
     try {
-      const resolver = makeResolver(definitions)
+      const resolver = makeResolver(definitions, options)
       return Layer.succeed(HarnessConnectionResolver, HarnessConnectionResolver.of(resolver))
     } catch (error) {
       return Layer.effect(

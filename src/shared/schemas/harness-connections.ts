@@ -47,6 +47,8 @@ export const acpHarnessConnectionSchema = Schema.Struct({
   driverId: Schema.Literal('acp'),
   command: commandSchema,
   args: argumentsSchema,
+  /** Bundled ACP only; the resolver requires command to match its injected trusted runtime executable. */
+  nodeRuntime: Schema.optional(Schema.Literal('electron')),
   secretReferences: Schema.optional(secretReferencesSchema),
 })
 

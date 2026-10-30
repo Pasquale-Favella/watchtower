@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 
 import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
-import { AgentDriverRegistryLive } from '@/infrastructure/agent-harnesses/drivers/registry.js'
+import { agentDriverRegistryLayer, AgentDriverRegistryLive } from '@/infrastructure/agent-harnesses/drivers/registry.js'
 
 const makeDriver = (driverId: string): AgentDriver['Service'] =>
   AgentDriver.of({
@@ -42,24 +42,60 @@ describe('AgentDriverRegistry', () => {
 })
 
 describe('AgentDriverRegistryLive', () => {
-  it('exposes all three production drivers without starting native resources', async () => {
+  it.each(['default', 'trusted Electron'])(
+    'exposes all three production drivers without spawning with the %s catalog',
+    async configuration => {
+      let spawnCalls = 0
+      const spawner = ChildProcessSpawner.make(() => {
+        spawnCalls += 1
+        return Effect.die(new Error('Building the registry must not spawn a process'))
+      })
+      const registryLayer =
+        configuration === 'default'
+          ? AgentDriverRegistryLive
+          : agentDriverRegistryLayer({ runtimeExecutable: 'C:/app/electron.exe' })
+      const layer = registryLayer.pipe(Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)))
+      const driverIds = await Effect.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* AgentDriverRegistry
+          const drivers = yield* Effect.forEach(registry.driverIds, registry.resolve)
+          return drivers.map(driver => driver.driverId)
+        }).pipe(Effect.provide(layer)),
+      )
+
+      expect(driverIds).toEqual(['codex-app-server', 'claude-agent-sdk', 'acp'])
+      expect(spawnCalls).toBe(0)
+    },
+  )
+})
+
+describe('agentDriverRegistryLayer', () => {
+  it('forwards the trusted runtime to the registered ACP driver', async () => {
     let spawnCalls = 0
     const spawner = ChildProcessSpawner.make(() => {
       spawnCalls += 1
-      return Effect.die(new Error('Building the registry must not spawn a process'))
+      return Effect.die(new Error('Stop at the external process boundary'))
     })
-    const layer = AgentDriverRegistryLive.pipe(
-      Layer.provide(Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner)),
-    )
-    const driverIds = await Effect.runPromise(
-      Effect.gen(function* () {
-        const registry = yield* AgentDriverRegistry
-        const drivers = yield* Effect.forEach(registry.driverIds, registry.resolve)
-        return drivers.map(driver => driver.driverId)
-      }).pipe(Effect.provide(layer)),
+    await Effect.runPromiseExit(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* AgentDriverRegistry
+          const driver = yield* registry.resolve('acp')
+          return yield* driver.connect({
+            connectionId: 'bundled',
+            configuration: {
+              command: 'C:/app/electron.exe',
+              argsJson: '["C:/app/server.js"]',
+              nodeRuntime: 'electron',
+            },
+          })
+        }).pipe(
+          Effect.provide(agentDriverRegistryLayer({ runtimeExecutable: 'C:/app/electron.exe' })),
+          Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        ),
+      ),
     )
 
-    expect(driverIds).toEqual(['codex-app-server', 'claude-agent-sdk', 'acp'])
-    expect(spawnCalls).toBe(0)
+    expect(spawnCalls).toBe(1)
   })
 })
