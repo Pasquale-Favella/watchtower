@@ -2,6 +2,7 @@ import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as Stream from 'effect/Stream'
@@ -16,13 +17,21 @@ import {
   type AgentSessionContext,
 } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
+import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import type { AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
+import type { AgentSessionId } from '@/shared/schemas/workspace.js'
 import { type BeginRunCommand, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 type RunEffect = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 type DriverConnect = AgentDriver['Service']['connect']
+
+const fakeResolverLayer = (
+  service: HarnessConnectionResolver['Service'] = HarnessConnectionResolver.of({
+    resolve: connectionId => Effect.succeed({ connectionId }),
+  }),
+) => Layer.succeed(HarnessConnectionResolver, service)
 
 const project = {
   id: 'project-1' as never,
@@ -101,16 +110,23 @@ const makeRuntime = (
   options: Partial<ExecutionServiceOptions> = {},
   storeService?: WorkspaceStore['Service'],
   additionalDrivers: ReadonlyArray<AgentDriver['Service']> = [],
+  resolverLayer = fakeResolverLayer(),
 ) =>
   ManagedRuntime.make(
     Layer.provideMerge(
       ExecutionService.layer({ ownerEpoch: 7, ...options }),
       Layer.merge(
-        storeService ? Layer.succeed(WorkspaceStore, storeService) : WorkspaceStoreLive({ filename: ':memory:' }),
-        Layer.succeed(
-          AgentDriverRegistry,
-          AgentDriverRegistry.fromDrivers([AgentDriver.of({ driverId: 'test-driver', connect }), ...additionalDrivers]),
+        Layer.merge(
+          storeService ? Layer.succeed(WorkspaceStore, storeService) : WorkspaceStoreLive({ filename: ':memory:' }),
+          Layer.succeed(
+            AgentDriverRegistry,
+            AgentDriverRegistry.fromDrivers([
+              AgentDriver.of({ driverId: 'test-driver', connect }),
+              ...additionalDrivers,
+            ]),
+          ),
         ),
+        resolverLayer,
       ),
     ),
   )
@@ -121,6 +137,652 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
 }
 
 describe('ExecutionService', () => {
+  it('coalesces adjacent text and flushes it on the age deadline before a request event', async () => {
+    const textCommitted = await Effect.runPromise(Deferred.make<undefined>())
+    const allowRequest = await Effect.runPromise(Deferred.make<undefined>())
+    const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())
+    const responseDelivered = await Effect.runPromise(Deferred.make<undefined>())
+    const request = {
+      requestId: 'request-after-text',
+      runId: command.runId,
+      sessionId: 'session-1' as AgentSessionId,
+      generation: 1,
+      kind: 'approval' as const,
+      prompt: 'Allow this action?',
+      questions: [],
+    }
+    const committed: Array<{ kind: string; text?: string }> = []
+    const session = makeSession({
+      submit: () =>
+        Effect.gen(function* () {
+          yield* Deferred.await(responseDelivered)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+      respond: () => Effect.as(Deferred.succeed(responseDelivered, undefined), { outcome: 'accepted' as const }),
+      events: () =>
+        Stream.concat(
+          Stream.make(
+            { kind: 'textDelta', text: 'hello ', itemId: 'item-1' } as const,
+            { kind: 'textDelta', text: 'world', itemId: 'item-1' } as const,
+          ),
+          Stream.fromEffect(Deferred.await(allowRequest)).pipe(
+            Stream.as({ kind: 'requestPending', request } as const),
+            Stream.concat(
+              Stream.fromEffect(Deferred.await(responseDelivered)).pipe(
+                Stream.map(
+                  () =>
+                    ({ kind: 'requestResolved', requestId: request.requestId, decision: { kind: 'approve' } }) as const,
+                ),
+                Stream.concat(Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const)),
+              ),
+            ),
+          ),
+        ),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), {
+      publishCommittedEvent: event =>
+        Effect.gen(function* () {
+          if (event.kind !== 'driverEvent') return
+          const driverEvent = (event.data as { event: AgentDriverEvent }).event
+          committed.push({
+            kind: driverEvent.kind,
+            ...(driverEvent.kind === 'textDelta' ? { text: driverEvent.text } : {}),
+          })
+          if (driverEvent.kind === 'textDelta') yield* Deferred.succeed(textCommitted, undefined)
+          if (driverEvent.kind === 'requestPending') yield* Deferred.succeed(requestCommitted, undefined)
+        }),
+    })
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'coalesce-before-request' }))
+      await run(Deferred.await(textCommitted))
+      expect(committed).toEqual([{ kind: 'textDelta', text: 'hello world' }])
+      await run(Deferred.succeed(allowRequest, undefined))
+      await run(Deferred.await(requestCommitted))
+      expect(committed.map(item => item.kind)).toEqual(['textDelta', 'requestPending'])
+      await run(
+        service.respond({
+          commandId: 'answer-after-text',
+          issuedAt: '2026-10-29T10:00:02Z',
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          requestId: request.requestId,
+          decision: { kind: 'approve' },
+        }),
+      )
+      await run(service.stopAll())
+    } finally {
+      await Effect.runPromise(Deferred.succeed(allowRequest, undefined))
+      await Effect.runPromise(Deferred.succeed(responseDelivered, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('closes a Run when durable event ingestion fails while submit is still pending', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const baseStore = await storeRuntime.runPromise(WorkspaceStore)
+    const closeObserved = await Effect.runPromise(Deferred.make<undefined>())
+    const writeError = new WorkspaceStoreError({ code: 'database-unavailable', message: 'event write failed' })
+    const failingStore = WorkspaceStore.of({
+      ...baseStore,
+      recordDriverEvent: () => Effect.fail(writeError),
+    })
+    const request = {
+      requestId: 'request-write-failure',
+      runId: command.runId,
+      sessionId: 'session-1' as AgentSessionId,
+      generation: 1,
+      kind: 'approval' as const,
+      prompt: 'Allow this action?',
+      questions: [],
+    }
+    const session = makeSession({
+      submit: () => Effect.never,
+      events: () => Stream.succeed({ kind: 'requestPending', request } as const),
+    })
+    const connection = makeConnection(session, {
+      close: () => Deferred.succeed(closeObserved, undefined),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(connection), {}, failingStore)
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'ingestion-failure-pending-submit' }))
+      await run(Deferred.await(closeObserved))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('uncertain')
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.failure).toBe('dispatch-uncertain')
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
+  it('settles an event stream that reaches EOF before submit acceptance as uncertain', async () => {
+    const closeObserved = await Effect.runPromise(Deferred.make<undefined>())
+    const connection = makeConnection(makeSession({ submit: () => Effect.never, events: () => Stream.empty }), {
+      close: () => Deferred.succeed(closeObserved, undefined),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(connection))
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'event-eof-pending-submit' }))
+      await run(Deferred.await(closeObserved))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('uncertain')
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.failure).toBe('dispatch-uncertain')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('keeps a persisted native interrupt alive after the caller fiber is interrupted', async () => {
+    const interruptStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const releaseInterrupt = await Effect.runPromise(Deferred.make<undefined>())
+    const interruptFinished = await Effect.runPromise(Deferred.make<undefined>())
+    let interruptCalls = 0
+    const session = makeSession({
+      interrupt: () =>
+        Effect.gen(function* () {
+          interruptCalls += 1
+          yield* Deferred.succeed(interruptStarted, undefined)
+          yield* Deferred.await(releaseInterrupt)
+          yield* Deferred.succeed(interruptFinished, undefined)
+          return { acknowledged: true, termination: 'stillRunning' as const }
+        }),
+      events: () =>
+        Stream.fromEffect(Deferred.await(interruptFinished)).pipe(
+          Stream.map(() => ({ kind: 'turnInterrupted', nativeTurnId: 'native-turn' }) as const),
+        ),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)))
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'owned-interrupt-control' }))
+      const caller = Effect.runFork(service.interrupt(command.runId))
+      await run(Deferred.await(interruptStarted))
+      await Effect.runPromise(Fiber.interrupt(caller))
+      await Effect.runPromise(Deferred.succeed(releaseInterrupt, undefined))
+      await run(Deferred.await(interruptFinished))
+      await expect
+        .poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+        .toBe('interrupted')
+      expect(interruptCalls).toBe(1)
+      await run(service.stopAll())
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseInterrupt, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('bounds stopAll when a native interrupt ignores cancellation', async () => {
+    const submitFinished = await Effect.runPromise(Deferred.make<undefined>())
+    const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())
+    const nativeResponseStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const request = {
+      requestId: 'request-stopall-response',
+      runId: command.runId,
+      sessionId: 'session-1' as AgentSessionId,
+      generation: 1,
+      kind: 'approval' as const,
+      prompt: 'Allow this action?',
+      questions: [],
+    }
+    const session = makeSession({
+      submit: () =>
+        Effect.as(Deferred.succeed(submitFinished, undefined), {
+          nativeSessionId: 'native-session',
+          nativeTurnId: 'native-turn',
+          generation: 1,
+        }),
+      interrupt: () => Effect.never,
+      respond: () => Effect.andThen(Deferred.succeed(nativeResponseStarted, undefined), Effect.never),
+      events: () => Stream.concat(Stream.succeed({ kind: 'requestPending', request } as const), Stream.never),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), {
+      closeDeadlineMs: 90,
+      publishCommittedEvent: event =>
+        event.kind === 'driverEvent' && (event.data as { event?: { kind?: string } }).event?.kind === 'requestPending'
+          ? Effect.as(Deferred.succeed(requestCommitted, undefined), undefined)
+          : Effect.void,
+    })
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'stopall-bounded-interrupt' }))
+      await run(Deferred.await(submitFinished))
+      await run(Deferred.await(requestCommitted))
+      const responseCaller = Effect.runFork(
+        service.respond({
+          commandId: 'response-stopall-bounded',
+          issuedAt: '2026-10-29T10:00:02Z',
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          requestId: request.requestId,
+          decision: { kind: 'approve' },
+        }),
+      )
+      await run(Deferred.await(nativeResponseStarted))
+      const startedAt = Date.now()
+      await expect(run(service.stopAll())).rejects.toMatchObject({
+        _tag: 'ExecutionServiceError',
+        reason: 'background-failure',
+        message: expect.stringContaining('Shutdown deadline expired'),
+      })
+      expect(Date.now() - startedAt).toBeLessThan(250)
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
+        status: 'uncertain',
+        failure: 'shutdown',
+      })
+      expect((await run(store.listRequestResponses(task.id))).items[0]).toMatchObject({
+        state: 'uncertain',
+        delivery: { outcome: 'uncertain' },
+      })
+      await Effect.runPromise(Fiber.await(responseCaller))
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('ingests and answers a native request while submit is waiting for that answer', async () => {
+    const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())
+    const responseDelivered = await Effect.runPromise(Deferred.make<undefined>())
+    const nativeRequest = {
+      requestId: 'request-early',
+      runId: command.runId,
+      sessionId: 'session-1' as AgentSessionId,
+      generation: 1,
+      kind: 'approval' as const,
+      prompt: 'Allow this action?',
+      questions: [],
+    }
+    let submitCalls = 0
+    let responseCalls = 0
+    const session = makeSession({
+      submit: () =>
+        Effect.gen(function* () {
+          submitCalls += 1
+          yield* Deferred.await(responseDelivered)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+      respond: () =>
+        Effect.gen(function* () {
+          responseCalls += 1
+          yield* Deferred.succeed(responseDelivered, undefined)
+          return {
+            outcome: 'accepted' as const,
+            nativeConfirmation: 'unconfirmed' as const,
+            nativeRequestId: 'native-request-early',
+          }
+        }),
+      events: () =>
+        Stream.concat(
+          Stream.succeed({ kind: 'requestPending', request: nativeRequest } as const),
+          Stream.fromEffect(Deferred.await(responseDelivered)).pipe(
+            Stream.map(
+              () => ({ kind: 'requestResolved', requestId: 'request-early', decision: { kind: 'approve' } }) as const,
+            ),
+            Stream.concat(Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const)),
+          ),
+        ),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), {
+      publishCommittedEvent: event =>
+        event.kind === 'driverEvent' && (event.data as { event?: { kind?: string } }).event?.kind === 'requestPending'
+          ? Effect.as(Deferred.succeed(requestCommitted, undefined), undefined)
+          : Effect.void,
+    })
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'request-before-submit-ack' }))
+      await run(Deferred.await(requestCommitted))
+      expect(submitCalls).toBe(1)
+      expect((await run(store.pageEvents(0, 30))).events.some(event => event.kind === 'runStarted')).toBe(false)
+      const answer = {
+        commandId: 'answer-early-request',
+        issuedAt: '2026-10-29T10:00:02Z',
+        runId: command.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        requestId: 'request-early',
+        decision: { kind: 'approve' },
+      } as const
+      const receipts = await Promise.all([run(service.respond(answer)), run(service.respond(answer))])
+      expect(receipts.map(receipt => receipt.replayed).sort()).toEqual([false, true])
+      expect(responseCalls).toBe(1)
+      await run(service.stopAll())
+      expect((await run(store.pageEvents(0, 30))).events.some(event => event.kind === 'runStarted')).toBe(true)
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({ status: 'completed' })
+      expect((await run(store.listRequestResponses(task.id))).items[0]).toMatchObject({
+        state: 'resolved',
+        delivery: {
+          outcome: 'accepted',
+          nativeConfirmation: 'unconfirmed',
+          nativeRequestId: 'native-request-early',
+        },
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('keeps a durable response delivery alive after its caller fiber is interrupted', async () => {
+    const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())
+    const nativeResponseStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const releaseNativeResponse = await Effect.runPromise(Deferred.make<undefined>())
+    const responseDelivered = await Effect.runPromise(Deferred.make<undefined>())
+    const nativeRequest = {
+      requestId: 'request-detached-response',
+      runId: command.runId,
+      sessionId: 'session-1' as AgentSessionId,
+      generation: 1,
+      kind: 'approval' as const,
+      prompt: 'Allow this action?',
+      questions: [],
+    }
+    const session = makeSession({
+      submit: () =>
+        Effect.gen(function* () {
+          yield* Deferred.await(responseDelivered)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+      respond: () =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(nativeResponseStarted, undefined)
+          yield* Deferred.await(releaseNativeResponse)
+          yield* Deferred.succeed(responseDelivered, undefined)
+          return { outcome: 'accepted' as const }
+        }),
+      events: () =>
+        Stream.concat(
+          Stream.succeed({ kind: 'requestPending', request: nativeRequest } as const),
+          Stream.fromEffect(Deferred.await(responseDelivered)).pipe(
+            Stream.map(
+              () =>
+                ({
+                  kind: 'requestResolved',
+                  requestId: nativeRequest.requestId,
+                  decision: { kind: 'approve' },
+                }) as const,
+            ),
+            Stream.concat(Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const)),
+          ),
+        ),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), {
+      publishCommittedEvent: event =>
+        event.kind === 'driverEvent' && (event.data as { event?: { kind?: string } }).event?.kind === 'requestPending'
+          ? Effect.as(Deferred.succeed(requestCommitted, undefined), undefined)
+          : Effect.void,
+    })
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'response-caller-cancelled' }))
+      await run(Deferred.await(requestCommitted))
+      const caller = Effect.runFork(
+        service.respond({
+          commandId: 'response-survives-caller',
+          issuedAt: '2026-10-29T10:00:02Z',
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          requestId: nativeRequest.requestId,
+          decision: { kind: 'approve' },
+        }),
+      )
+      await run(Deferred.await(nativeResponseStarted))
+      await Effect.runPromise(Fiber.interrupt(caller))
+      await Effect.runPromise(Deferred.succeed(releaseNativeResponse, undefined))
+      await run(Deferred.await(responseDelivered))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('completed')
+      expect((await run(store.listRequestResponses(task.id))).items[0]).toMatchObject({
+        state: 'resolved',
+        delivery: { outcome: 'accepted' },
+      })
+      await run(service.stopAll())
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseNativeResponse, undefined))
+      await Effect.runPromise(Deferred.succeed(responseDelivered, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('does not acknowledge a bound session when submit acceptance contradicts its native identity', async () => {
+    const session = makeSession({
+      submit: () =>
+        Effect.succeed({ nativeSessionId: 'different-native-session', nativeTurnId: 'bad-turn', generation: 1 }),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)))
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'contradictory-native-acceptance' }))
+      await run(service.stopAll())
+
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
+        status: 'uncertain',
+        failure: 'dispatch-uncertain',
+      })
+      expect((await run(store.pageEvents(0, 30))).events.some(event => event.kind === 'runStarted')).toBe(false)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('forwards the resolved ACP command and serialized arguments to the driver', async () => {
+    let receivedOptions: Parameters<DriverConnect>[0] | undefined
+    const connectionOptions = {
+      connectionId: 'acp-connection',
+      configuration: { command: 'acp-agent', argsJson: '["--mode","safe"]' },
+    }
+    const resolver = HarnessConnectionResolver.of({
+      resolve: () => Effect.succeed(connectionOptions),
+    })
+    const connection = makeConnection(makeSession())
+    const connect: DriverConnect = options =>
+      Effect.sync(() => {
+        receivedOptions = options
+        return connection
+      })
+    const runtime = makeRuntime(
+      () => Effect.die(new Error('The test-driver connection must not be used')),
+      {},
+      undefined,
+      [AgentDriver.of({ driverId: 'acp', connect })],
+      fakeResolverLayer(resolver),
+    )
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(
+        service.start({
+          ...command,
+          commandId: 'acp-config-forwarding',
+          driverId: 'acp',
+          connectionId: 'acp-connection',
+        }),
+      )
+      await run(service.stopAll())
+      expect(receivedOptions).toEqual(connectionOptions)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('settles a missing harness connection before calling the driver', async () => {
+    let connectCalls = 0
+    const resolver = HarnessConnectionResolver.of({
+      resolve: () =>
+        Effect.fail(new HarnessConnectionResolutionError({ code: 'not-found', message: 'connection is missing' })),
+    })
+    const runtime = makeRuntime(
+      () =>
+        Effect.sync(() => {
+          connectCalls += 1
+          return makeConnection(makeSession())
+        }),
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(resolver),
+    )
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'missing-harness-connection' }))
+      await run(service.stopAll())
+      expect(connectCalls).toBe(0)
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
+        status: 'failed',
+        failure: 'launch-failed',
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('persists steering before delivery and uses the expected native turn on receipt replay', async () => {
+    const turnStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const finishTurn = await Effect.runPromise(Deferred.make<undefined>())
+    const expectedTurns: Array<string | undefined> = []
+    let steerCalls = 0
+    const session = makeSession({
+      events: () =>
+        Stream.concat(
+          Stream.succeed({ kind: 'turnStarted', nativeTurnId: 'native-turn' } as const),
+          Stream.fromEffect(Deferred.await(finishTurn)).pipe(
+            Stream.map(() => ({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }) as const),
+          ),
+        ),
+      steer: (_runId, expectedNativeTurnId) =>
+        Effect.sync(() => {
+          steerCalls += 1
+          expectedTurns.push(expectedNativeTurnId)
+          return { outcome: 'accepted' as const }
+        }),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), {
+      publishCommittedEvent: event =>
+        event.kind === 'driverEvent' && (event.data as { event?: { kind?: string } }).event?.kind === 'turnStarted'
+          ? Effect.as(Deferred.succeed(turnStarted, undefined), undefined)
+          : Effect.void,
+    })
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'steer-run' }))
+      await run(Deferred.await(turnStarted))
+      const steering = {
+        commandId: 'steer-once',
+        issuedAt: '2026-10-29T10:00:02Z',
+        runId: command.runId,
+        ownerEpoch: 7,
+        generation: 1,
+        expectedNativeTurnId: 'native-turn',
+        message: 'Use the smaller function',
+      } as const
+      const receipts = await Promise.all([run(service.steer(steering)), run(service.steer(steering))])
+      expect(receipts.map(receipt => receipt.replayed).sort()).toEqual([false, true])
+      expect(steerCalls).toBe(1)
+      expect(expectedTurns).toEqual(['native-turn'])
+      await run(Deferred.succeed(finishTurn, undefined))
+      await run(service.stopAll())
+    } finally {
+      await Effect.runPromise(Deferred.succeed(finishTurn, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('promotes a queued follow-up into one dispatch claim', async () => {
+    let submittedPrompt: string | undefined
+    let submitCalls = 0
+    const finishTurn = await Effect.runPromise(Deferred.make<undefined>())
+    const session = makeSession({
+      submit: input =>
+        Effect.sync(() => {
+          submitCalls += 1
+          submittedPrompt = input.messages[0]?.content
+          return { nativeSessionId: 'native-session', nativeTurnId: 'queued-turn', generation: 1 }
+        }),
+      events: () =>
+        Stream.fromEffect(Deferred.await(finishTurn)).pipe(
+          Stream.map(() => ({ kind: 'turnCompleted', nativeTurnId: 'queued-turn' }) as const),
+        ),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)))
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(
+        service.enqueueFollowUp({
+          commandId: 'queue-1',
+          issuedAt: '2026-10-29T10:00:02Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Follow up from the queue',
+        }),
+      )
+      const promotion = {
+        ...command,
+        commandId: 'promote-queue-1',
+        runId: 'queued-run-1' as never,
+        provisionalAgentSessionId: 'queued-session-1',
+      }
+      const promoted = await run(service.promoteQueuedFollowUp(conversation.id, promotion))
+      const replay = await run(service.promoteQueuedFollowUp(conversation.id, promotion))
+      expect(promoted?.receipt).toMatchObject({ runId: 'queued-run-1', replayed: false })
+      expect(replay).toBeNull()
+      await run(Deferred.succeed(finishTurn, undefined))
+      await run(service.stopAll())
+      expect(submittedPrompt).toBe('Follow up from the queue')
+      expect(submitCalls).toBe(1)
+    } finally {
+      await Effect.runPromise(Deferred.succeed(finishTurn, undefined))
+      await runtime.dispose()
+    }
+  })
+
   it('routes runs to their own drivers and isolates cancellation and connection cleanup', async () => {
     const firstStarted = await Effect.runPromise(Deferred.make<undefined>())
     const secondStarted = await Effect.runPromise(Deferred.make<undefined>())
