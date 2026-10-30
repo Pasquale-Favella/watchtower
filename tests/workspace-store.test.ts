@@ -92,6 +92,174 @@ const legacyFingerprint = (value: unknown): string => {
 }
 
 describe('WorkspaceStore', () => {
+  it('durably replays registration and task creation while rejecting changed intent', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-registration-receipt-'))
+    const filename = join(directory, 'workspace.db')
+    let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    try {
+      let store = await runtime.runPromise(WorkspaceStore)
+      const registered = await runtime.runPromise(
+        store.registerProject({ commandId: 'register', project, mainCheckout: checkout }),
+      )
+      const created = await runtime.runPromise(store.createTask({ commandId: 'create', task, conversation }))
+      expect(registered).toMatchObject({ commandId: 'register', replayed: false, reused: false, project })
+      expect(created).toEqual({
+        commandId: 'create',
+        taskId: task.id,
+        conversationId: conversation.id,
+        replayed: false,
+      })
+      await runtime.dispose()
+      runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      store = await runtime.runPromise(WorkspaceStore)
+      expect(
+        await runtime.runPromise(
+          store.registerProject({
+            commandId: 'register',
+            project: { ...project, id: 'regenerated' as never, createdAt: '2026-10-30T00:00:00Z' },
+            mainCheckout: { ...checkout, id: 'regenerated-checkout' as never },
+          }),
+        ),
+      ).toEqual({ ...registered, replayed: true })
+      expect(
+        await runtime.runPromise(
+          store.createTask({
+            commandId: 'create',
+            task: { ...task, id: 'regenerated-task' as never, createdAt: '2026-10-30T00:00:00Z' },
+            conversation: { ...conversation, id: 'regenerated-conversation' as never },
+          }),
+        ),
+      ).toEqual({ ...created, replayed: true })
+      for (const effect of [
+        store.registerProject({
+          commandId: 'register',
+          project: { ...project, name: 'Different' },
+          mainCheckout: checkout,
+        }),
+        store.createTask({ commandId: 'create', task: { ...task, title: 'Different' }, conversation }),
+      ].map(effect => effect as Effect.Effect<unknown, WorkspaceStoreError>)) {
+        expect(await runtime.runPromise(effect.pipe(Effect.flip))).toMatchObject({ code: 'command-conflict' })
+      }
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('reuses one active repository under concurrent registrations and refuses implicit relocation', async () => {
+    await withStore(async (store, run) => {
+      const registrations = await Promise.all(
+        ['one', 'two'].map(suffix =>
+          run(
+            store.registerProject({
+              commandId: `register-${suffix}`,
+              project: { ...project, id: `project-${suffix}` as never },
+              mainCheckout: { ...checkout, id: `checkout-${suffix}` as never },
+            }),
+          ),
+        ),
+      )
+      expect(registrations.map(result => result.reused).sort()).toEqual([false, true])
+      expect(registrations[0].project).toEqual(registrations[1].project)
+      expect(registrations[0].mainCheckout).toEqual(registrations[1].mainCheckout)
+      expect((await run(store.listProjects())).total).toBe(1)
+      expect(
+        await run(
+          store.registerProject({
+            commandId: 'register-two',
+            project: { ...project, id: 'new-id' as never },
+            mainCheckout: { ...checkout, id: 'new-checkout' as never },
+          }),
+        ),
+      ).toEqual({ ...registrations[1], replayed: true })
+      expect(
+        await run(
+          store
+            .registerProject({
+              commandId: 'moved',
+              project: { ...project, id: 'moved-project' as never },
+              mainCheckout: { ...checkout, path: 'C:/moved' },
+            })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'membership-conflict' })
+      expect(await run(store.registerProject({ commandId: 'moved', project, mainCheckout: checkout }))).toMatchObject({
+        reused: true,
+        replayed: false,
+      })
+      expect(
+        await run(
+          store
+            .createTask({
+              commandId: 'register-one',
+              task: { ...task, projectId: registrations[0].project.id },
+              conversation,
+            })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'command-conflict' })
+    })
+  })
+
+  it('does not retain a task receipt when its transaction fails', async () => {
+    await withStore(async (store, run) => {
+      expect(await run(store.createTask({ commandId: 'create', task, conversation }).pipe(Effect.flip))).toMatchObject({
+        code: 'not-found',
+      })
+      await run(store.registerProject({ commandId: 'register', project, mainCheckout: checkout }))
+      expect(await run(store.createTask({ commandId: 'create', task, conversation }))).toMatchObject({
+        replayed: false,
+      })
+      expect(
+        await run(
+          store
+            .createTask({ commandId: 'create', task, conversation: { ...conversation, title: 'Changed' } })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'command-conflict' })
+    })
+  })
+
+  it('keeps new receipt keys distinct from legacy IDs and preserves lone surrogates', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-receipt-keys-'))
+    const filename = join(directory, 'workspace.db')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const legacyCommand = { ...command, commandId: 'command:"register"' }
+      const legacyReceipt = {
+        commandId: legacyCommand.commandId,
+        runId: command.runId,
+        acceptedAt: command.issuedAt,
+        replayed: false,
+      }
+      const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+      try {
+        await writer.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${legacyCommand.commandId}, ${legacyFingerprint(legacyCommand)}, ${JSON.stringify(legacyReceipt)})`
+          }),
+        )
+      } finally {
+        await writer.dispose()
+      }
+      const registration = { commandId: 'register', project, mainCheckout: checkout }
+      const registered = await runtime.runPromise(store.registerProject(registration))
+      expect(await runtime.runPromise(store.registerProject(registration))).toEqual({ ...registered, replayed: true })
+      expect(await runtime.runPromise(store.beginRun(legacyCommand))).toEqual({ ...legacyReceipt, replayed: true })
+      for (const commandId of ['\ud800', '\ud801', 'command:"register":1']) {
+        const request = { ...registration, commandId }
+        const receipt = await runtime.runPromise(store.registerProject(request))
+        expect(receipt).toMatchObject({ commandId, replayed: false, reused: true })
+        expect(await runtime.runPromise(store.registerProject(request))).toEqual({ ...receipt, replayed: true })
+      }
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it.each(['beginRun', 'enqueueFollowUp', 'recordRequestResponse', 'recordSteer'] as const)(
     'preserves whole-command replay and conflict semantics for legacy %s receipts',
     async kind => {

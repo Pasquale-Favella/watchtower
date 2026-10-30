@@ -52,6 +52,7 @@ function fixture(resolve: CheckoutResolver['Service']['resolve']) {
 
 function request(suffix = '1', path = '/alias/project') {
   return Schema.decodeUnknownSync(registerWorkspaceProjectSchema)({
+    commandId: `register-${suffix}`,
     projectId: `project-${suffix}`,
     checkoutId: `checkout-${suffix}`,
     name: 'Project',
@@ -72,6 +73,9 @@ describe('workspace project registration', () => {
       const projects = await runtime.runPromise(WorkspaceProjects)
       const registered = await runtime.runPromise(projects.register(request()))
       expect(seen).toEqual(['/alias/project'])
+      expect(
+        await runtime.runPromise(projects.register({ ...request('new-identities'), commandId: request().commandId })),
+      ).toEqual({ ...registered, replayed: true })
       expect(registered.project.repositoryIdentity).toBe('/canonical/project/.git')
       expect(registered.mainCheckout.path).toBe('/canonical/project')
       const store = await runtime.runPromise(WorkspaceStore)
@@ -179,6 +183,33 @@ describe('workspace project registration', () => {
       expect(a.project.repositoryIdentity).not.toBe(b.project.repositoryIdentity)
       expect(linked.project.repositoryIdentity).toBe(a.project.repositoryIdentity)
       expect(linked.mainCheckout.path).toBe(realpathSync.native(first))
+      expect(linked).toMatchObject({ project: a.project, mainCheckout: a.mainCheckout, reused: true, replayed: false })
+      expect(await runtime.runPromise(projects.register(request('3', alias)))).toEqual({ ...linked, replayed: true })
+      execFileSync(
+        'git',
+        [
+          '-C',
+          first,
+          '-c',
+          'user.name=Workspace Test',
+          '-c',
+          'user.email=workspace@example.test',
+          'commit',
+          '--quiet',
+          '--allow-empty',
+          '-m',
+          'Initial',
+        ],
+        { windowsHide: true, stdio: 'pipe' },
+      )
+      const worktree = join(directory, 'linked-worktree')
+      execFileSync('git', ['-C', first, 'worktree', 'add', '--quiet', '--detach', worktree, 'HEAD'], {
+        windowsHide: true,
+        stdio: 'pipe',
+      })
+      const reused = await runtime.runPromise(projects.register(request('4', worktree)))
+      expect(reused).toMatchObject({ project: a.project, mainCheckout: a.mainCheckout, reused: true, replayed: false })
+      expect((await runtime.runPromise((await runtime.runPromise(WorkspaceStore)).listProjects())).total).toBe(2)
       const store = await runtime.runPromise(WorkspaceStore)
       const run = (suffix: string) =>
         Schema.decodeUnknownSync(beginRunCommandSchema)({
@@ -187,7 +218,7 @@ describe('workspace project registration', () => {
           runId: `run-${suffix}`,
           taskId: `task-${suffix}`,
           conversationId: `conversation-${suffix}`,
-          checkoutId: `checkout-${suffix}`,
+          checkoutId: a.mainCheckout.id,
           provisionalAgentSessionId: `session-${suffix}`,
           generation: 1,
           driverId: 'acp',
@@ -200,7 +231,7 @@ describe('workspace project registration', () => {
             Schema.decodeUnknownSync(createTaskCommandSchema)({
               task: {
                 id: `task-${suffix}`,
-                projectId: `project-${suffix}`,
+                projectId: a.project.id,
                 title: 'Task',
                 description: '',
                 createdAt: at,

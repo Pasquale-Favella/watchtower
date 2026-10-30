@@ -12,6 +12,7 @@ import {
   followUpReceiptSchema,
   nativeSessionBindingSchema,
   ownerEpochAcquisitionSchema,
+  projectRegistrationReceiptSchema,
   promotedFollowUpSchema,
   queuedFollowUpPageSchema,
   recordDriverEventCommandSchema,
@@ -21,6 +22,7 @@ import {
   requestResponsePageSchema,
   settleDeliveryCommandSchema,
   steerIntentPageSchema,
+  taskCreationReceiptSchema,
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   workspaceCheckoutPageOptionsSchema,
@@ -44,7 +46,7 @@ import {
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 6
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 7
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -72,12 +74,12 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:ready', { success: workspaceWorkerReadySchema, error }),
   Rpc.make('workspace-worker:registerProject', {
     payload: registerProjectCommandSchema,
-    success: Schema.Void,
+    success: projectRegistrationReceiptSchema,
     error,
   }),
   Rpc.make('workspace-worker:createTask', {
     payload: createTaskCommandSchema,
-    success: Schema.Void,
+    success: taskCreationReceiptSchema,
     error,
   }),
   Rpc.make('workspace-worker:beginRun', {

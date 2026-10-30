@@ -141,11 +141,11 @@ parentPort.on = (event, listener) => on(event, event === 'message'
   : listener)
 
 const group = RpcGroup.make(
-  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(6) }) }),
+  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(7) }) }),
   Rpc.make('workspace-worker:shutdown', { success: Schema.Void }),
 )
 const handlers = group.toLayer({
-  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 6 }),
+  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 7 }),
   'workspace-worker:shutdown': () => Effect.succeed(undefined),
 })
 const program = Effect.scoped(Effect.gen(function* () {
@@ -173,6 +173,52 @@ afterAll(async () => {
 })
 
 describe('workspace worker RPC client', () => {
+  it('persists registration and task receipts across real worker replacement', async () => {
+    const filename = join(fixtureDirectory, 'registration-receipts.db')
+    const registration = { commandId: 'register-worker', project, mainCheckout: checkout }
+    const creation = { commandId: 'create-worker', task, conversation }
+    await withStore(filename, async store => {
+      expect(await Effect.runPromise(store.registerProject(registration))).toMatchObject({
+        replayed: false,
+        reused: false,
+      })
+      expect(await Effect.runPromise(store.createTask(creation))).toMatchObject({ replayed: false })
+    })
+    await withStore(filename, async store => {
+      expect(
+        await Effect.runPromise(
+          store.registerProject({ ...registration, project: { ...project, id: 'new-project-id' as never } }),
+        ),
+      ).toMatchObject({ project, replayed: true, reused: false })
+      expect(
+        await Effect.runPromise(store.createTask({ ...creation, task: { ...task, id: 'new-task-id' as never } })),
+      ).toMatchObject({ taskId: task.id, conversationId: conversation.id, replayed: true })
+      const registrations = await Promise.all(
+        ['a', 'b'].map(suffix =>
+          Effect.runPromise(
+            store.registerProject({
+              ...registration,
+              commandId: `reuse-${suffix}`,
+              project: { ...project, id: `unused-${suffix}` as never },
+            }),
+          ),
+        ),
+      )
+      expect(registrations.every(result => result.reused && !result.replayed)).toBe(true)
+      expect((await Effect.runPromise(store.listProjects())).total).toBe(1)
+      expect(
+        await Effect.runPromise(
+          store.registerProject({ ...registration, project: { ...project, name: 'Different' } }).pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'command-conflict' })
+      expect(
+        await Effect.runPromise(
+          store.createTask({ ...creation, task: { ...task, title: 'Different' } }).pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'command-conflict' })
+    })
+  })
+
   it('retrieves oversized pre-existing event and message bodies through bounded lossless payload chunks', async () => {
     const filename = join(fixtureDirectory, 'oversized-records.db')
     const seed = ManagedRuntime.make(WorkspaceStoreLive({ filename }))

@@ -40,6 +40,46 @@ import {
 } from '../src/shared/schemas/workspace-store.js'
 
 describe('agent workspace domain schemas', () => {
+  it('requires durable registration and task receipt results on worker RPC', () => {
+    const at = '2026-10-30T08:00:00Z'
+    const registration = WorkspaceWorkerRpcGroup.requests.get('workspace-worker:registerProject')
+    if (!registration) throw new Error('Missing registration RPC')
+    const receipt = {
+      commandId: 'register',
+      project: { id: 'project', name: 'Project', repositoryIdentity: 'repo:one', createdAt: at, updatedAt: at },
+      mainCheckout: { id: 'checkout', projectId: 'project', kind: 'main', path: 'C:/repo', createdAt: at },
+      replayed: false,
+      reused: true,
+    }
+    expect(Result.isSuccess(Schema.decodeUnknownResult(registration.successSchema)(receipt))).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(registration.successSchema)(undefined))).toBe(true)
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(registration.successSchema)({ ...receipt, reused: undefined })),
+    ).toBe(true)
+    const creation = WorkspaceWorkerRpcGroup.requests.get('workspace-worker:createTask')
+    if (!creation) throw new Error('Missing task creation RPC')
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(creation.successSchema)({
+          commandId: 'create',
+          taskId: 'task',
+          conversationId: 'conversation',
+          replayed: true,
+        }),
+      ),
+    ).toBe(true)
+    expect(Result.isFailure(Schema.decodeUnknownResult(creation.successSchema)(undefined))).toBe(true)
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(registration.payloadSchema)({
+          commandId: '',
+          project: receipt.project,
+          mainCheckout: receipt.mainCheckout,
+        }),
+      ),
+    ).toBe(true)
+  })
+
   it('validates every read limit, safe sequence range and bounded payload chunk cursor', () => {
     for (const schema of [workspaceEventPageOptionsSchema, workspaceConversationPageOptionsSchema]) {
       expect(

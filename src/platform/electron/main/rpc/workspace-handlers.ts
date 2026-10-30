@@ -12,7 +12,6 @@ import * as SubscriptionRef from 'effect/SubscriptionRef'
 import { ExecutionServiceError } from '@/core/application/commands/execution-service.js'
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
-import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
 import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
 import {
@@ -97,7 +96,7 @@ const EVENT_FRAME_CAPACITY = 8
 const MAX_FRAME_BYTES = Store.WORKSPACE_STORE_READ_BYTE_CAPACITY + 1024
 const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 
-/** Build in the application runtime, with WorkspaceHost, WorkspaceProjects and CheckoutResolver.
+/** Build in the application runtime, with WorkspaceHost and WorkspaceProjects.
  * Streams own only their bounded reader fiber, never the application's execution scope.
  */
 export function workspaceHandlers() {
@@ -105,7 +104,6 @@ export function workspaceHandlers() {
     Effect.gen(function* () {
       const host = yield* WorkspaceHost
       const projects = yield* WorkspaceProjects
-      const resolver = yield* CheckoutResolver
       const store = host.store
       const read = <A, E, R>(use: () => Effect.Effect<A, E, R>) =>
         safe(Effect.andThen(host.ensureOpen, Effect.suspend(use)))
@@ -141,26 +139,13 @@ export function workspaceHandlers() {
               const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(
                 entityId('checkout', request.commandId),
               )
-              const attempt = yield* Effect.exit(
-                projects.register({ projectId, checkoutId, name: request.name, path: request.path }),
-              )
-              if (attempt._tag === 'Success') return { ...attempt.value, commandId: request.commandId, replayed: false }
-              const existing = yield* Effect.exit(store.getProject(projectId))
-              if (existing._tag === 'Failure') return yield* Effect.failCause(attempt.cause)
-              const selected = yield* resolver.resolve(request.path)
-              const saved = existing.value
-              if (
-                saved.project.name !== request.name ||
-                saved.project.repositoryIdentity !== selected.repositoryIdentity ||
-                saved.mainCheckout.id !== checkoutId
-              )
-                return yield* failure('conflict')
-              return {
-                project: saved.project,
-                mainCheckout: saved.mainCheckout,
+              return yield* projects.register({
                 commandId: request.commandId,
-                replayed: true,
-              }
+                projectId,
+                checkoutId,
+                name: request.name,
+                path: request.path,
+              })
             }),
           ),
         'workspace:createTask': request =>
@@ -171,35 +156,17 @@ export function workspaceHandlers() {
                 entityId('conversation', request.commandId),
               )
               const at = yield* timestamp
-              const attempt = yield* Effect.exit(
-                store.createTask({
-                  task: {
-                    id: taskId,
-                    projectId: request.projectId,
-                    title: request.title,
-                    description: request.description,
-                    createdAt: at,
-                  },
-                  conversation: { id: conversationId, createdAt: at },
-                }),
-              )
-              if (attempt._tag === 'Success')
-                return { commandId: request.commandId, taskId, conversationId, replayed: false }
-              const existing = yield* Effect.exit(store.readTaskDetail(taskId))
-              if (existing._tag === 'Failure') return yield* Effect.failCause(attempt.cause)
-              const saved = existing.value
-              if (
-                saved.task.projectId !== request.projectId ||
-                saved.task.title !== request.title ||
-                saved.task.description !== request.description
-              )
-                return yield* failure('conflict')
-              let page = saved
-              while (!page.conversations.some(conversation => conversation.id === conversationId)) {
-                if (page.nextAfterConversationId === null) return yield* failure('conflict')
-                page = yield* store.readTaskDetail(taskId, { afterId: page.nextAfterConversationId, limit: 50 })
-              }
-              return { commandId: request.commandId, taskId, conversationId, replayed: true }
+              return yield* store.createTask({
+                commandId: request.commandId,
+                task: {
+                  id: taskId,
+                  projectId: request.projectId,
+                  title: request.title,
+                  description: request.description,
+                  createdAt: at,
+                },
+                conversation: { id: conversationId, createdAt: at },
+              })
             }),
           ),
         'workspace:listProjects': ({ options }) => read(() => store.listProjects(options)),

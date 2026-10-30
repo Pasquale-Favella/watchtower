@@ -12,6 +12,7 @@ import type {
   FollowUpReceipt,
   NativeSessionBinding,
   OwnerEpochAcquisition,
+  ProjectRegistrationReceipt,
   PromotedFollowUp,
   QueuedFollowUpPage,
   RecordDriverEventCommand,
@@ -21,6 +22,7 @@ import type {
   RequestResponsePage,
   SettleDeliveryCommand,
   SteerIntentPage,
+  TaskCreationReceipt,
   WorkspaceCheckoutPageOptions,
   WorkspaceConversationPage,
   WorkspaceEntityPageOptions,
@@ -49,8 +51,10 @@ export interface NativeTurnAcknowledgement {
 export class WorkspaceStore extends Context.Service<
   WorkspaceStore,
   {
-    readonly registerProject: (command: RegisterProjectCommand) => Effect.Effect<void, WorkspaceStoreError>
-    readonly createTask: (command: CreateTaskCommand) => Effect.Effect<void, WorkspaceStoreError>
+    readonly registerProject: (
+      command: RegisterProjectCommand,
+    ) => Effect.Effect<ProjectRegistrationReceipt, WorkspaceStoreError>
+    readonly createTask: (command: CreateTaskCommand) => Effect.Effect<TaskCreationReceipt, WorkspaceStoreError>
     readonly beginRun: (command: BeginRunCommand) => Effect.Effect<CommandReceipt, WorkspaceStoreError>
     readonly claimDispatch: (
       runId: AgentRunId,

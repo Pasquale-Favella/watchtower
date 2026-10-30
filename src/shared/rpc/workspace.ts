@@ -70,7 +70,9 @@ export const workspaceStartRunRequestSchema = Schema.Struct({
 const error = WorkspaceRpcError
 /** Command IDs bind durable client intent, not regenerated server timestamps/epochs/Run IDs.
  * Start/respond/steer/enqueue/promote return the original store receipt on replay.
- * Registration/task creation reconstruct their result from deterministic IDs, not stored receipts.
+ * Registration/task creation return durable receipts. Registration reuses an active repository's
+ * original Project/main checkout without renaming or relocating it; reused is independent of replayed.
+ * A different canonical main path for the same repository conflicts instead of silently relocating it.
  * Interrupt is a no-op while already pending; a failed native interrupt may be retried.
  * Cancellation reports removed for both cancelled and already removed/promoted entries; it never stops a promoted Run.
  */
@@ -82,7 +84,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       path: registerWorkspaceProjectSchema.fields.path,
       name: registerWorkspaceProjectSchema.fields.name,
     }),
-    success: Schema.Struct({ ...workspaceProjectRegistrationSchema.fields, commandId, replayed: Schema.Boolean }),
+    success: workspaceProjectRegistrationSchema,
     error,
   }),
   Rpc.make('workspace:createTask', {

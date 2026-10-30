@@ -65,8 +65,7 @@ export const WorkspaceProjectsLive = Layer.effect(
         branch: main.branch ?? undefined,
         createdAt: at,
       }
-      yield* store.registerProject({ project, mainCheckout })
-      return { project, mainCheckout }
+      return yield* store.registerProject({ commandId: request.commandId, project, mainCheckout })
     })
     return WorkspaceProjects.of({ register })
   }),

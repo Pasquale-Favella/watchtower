@@ -1,13 +1,10 @@
 import * as Schema from 'effect/Schema'
 
-import {
-  projectIdSchema,
-  projectSchema,
-  workspaceCheckoutIdSchema,
-  workspaceCheckoutSchema,
-} from '@/shared/schemas/workspace.js'
+import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
+import { projectRegistrationReceiptSchema } from '@/shared/schemas/workspace-store.js'
 
 export const registerWorkspaceProjectSchema = Schema.Struct({
+  commandId: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1)),
   projectId: projectIdSchema,
   checkoutId: workspaceCheckoutIdSchema,
   name: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1), Schema.isMaxLength(512)),
@@ -15,8 +12,5 @@ export const registerWorkspaceProjectSchema = Schema.Struct({
 })
 export type RegisterWorkspaceProject = Schema.Schema.Type<typeof registerWorkspaceProjectSchema>
 
-export const workspaceProjectRegistrationSchema = Schema.Struct({
-  project: projectSchema,
-  mainCheckout: workspaceCheckoutSchema,
-})
+export const workspaceProjectRegistrationSchema = projectRegistrationReceiptSchema
 export type WorkspaceProjectRegistration = Schema.Schema.Type<typeof workspaceProjectRegistrationSchema>

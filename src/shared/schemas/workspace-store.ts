@@ -42,7 +42,26 @@ export class WorkspaceStoreError extends Schema.TaggedError<WorkspaceStoreError>
   message: Schema.String,
 }) {}
 
+export const projectRegistrationReceiptSchema = Schema.Struct({
+  commandId: text,
+  project: projectSchema,
+  mainCheckout: workspaceCheckoutSchema,
+  replayed: Schema.Boolean,
+  reused: Schema.Boolean,
+})
+export type ProjectRegistrationReceipt = Schema.Schema.Type<typeof projectRegistrationReceiptSchema>
+
+export const taskCreationReceiptSchema = Schema.Struct({
+  commandId: text,
+  taskId: taskIdSchema,
+  conversationId: conversationIdSchema,
+  replayed: Schema.Boolean,
+})
+export type TaskCreationReceipt = Schema.Schema.Type<typeof taskCreationReceiptSchema>
+
 export const registerProjectCommandSchema = Schema.Struct({
+  // Optional only for existing internal callers; renderer commands always provide an ID.
+  commandId: Schema.optional(text),
   project: Schema.Struct({
     id: projectIdSchema,
     name: text,
@@ -54,12 +73,14 @@ export const registerProjectCommandSchema = Schema.Struct({
     id: workspaceCheckoutIdSchema,
     kind: Schema.Literal('main'),
     path: text,
+    branch: optionalText,
     createdAt: timestamp,
   }),
 })
 export type RegisterProjectCommand = Schema.Schema.Type<typeof registerProjectCommandSchema>
 
 export const createTaskCommandSchema = Schema.Struct({
+  commandId: Schema.optional(text),
   task: Schema.Struct({
     id: taskIdSchema,
     projectId: projectIdSchema,

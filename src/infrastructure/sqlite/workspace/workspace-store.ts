@@ -31,6 +31,7 @@ import {
   beginRunCommandSchema,
   type CommandReceipt,
   commandReceiptSchema,
+  type CreateTaskCommand,
   createTaskCommandSchema,
   type DispatchClaim,
   dispatchFailureCommandSchema,
@@ -38,11 +39,13 @@ import {
   followUpReceiptSchema,
   nativeSessionBindingSchema,
   ownerEpochAcquisitionSchema,
+  projectRegistrationReceiptSchema,
   promotedFollowUpSchema,
   queuedFollowUpSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
+  type RegisterProjectCommand,
   registerProjectCommandSchema,
   requestResponseHistoryItemSchema,
   requestResponseIntentSchema,
@@ -50,6 +53,7 @@ import {
   settleDeliveryCommandSchema,
   steerHistoryItemSchema,
   steerIntentSchema,
+  taskCreationReceiptSchema,
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   WORKSPACE_STORE_READ_BYTE_CAPACITY,
@@ -263,6 +267,8 @@ const fingerprint = (value: unknown): string => {
 }
 
 const receiptServerFields = {
+  registerProject: [],
+  createTask: [],
   beginRun: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
   promoteFollowUp: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
   enqueueFollowUp: ['issuedAt'],
@@ -274,9 +280,27 @@ type ReceiptKind = keyof typeof receiptServerFields
 
 const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
   const excluded: ReadonlyArray<string> = receiptServerFields[kind]
-  const intent = Object.fromEntries(Object.entries(command).filter(([field]) => !excluded.includes(field)))
+  let intent = Object.fromEntries(Object.entries(command).filter(([field]) => !excluded.includes(field)))
+  if (kind === 'registerProject') {
+    const registration = command as RegisterProjectCommand
+    intent = {
+      commandId: registration.commandId,
+      project: { name: registration.project.name, repositoryIdentity: registration.project.repositoryIdentity },
+      mainCheckout: { path: registration.mainCheckout.path },
+    }
+  } else if (kind === 'createTask') {
+    const creation = command as CreateTaskCommand
+    intent = {
+      commandId: creation.commandId,
+      task: { projectId: creation.task.projectId, title: creation.task.title, description: creation.task.description },
+      conversation: { title: creation.conversation.title },
+    }
+  }
   return `v2:${fingerprint({ kind, intent })}`
 }
+
+// SQLite text bindings normalize lone surrogates; JSON keeps distinct client command IDs losslessly.
+const receiptKey = (commandId: string): string => `command:${JSON.stringify(commandId)}`
 
 const matchesReceipt = (saved: string, kind: ReceiptKind, command: object): boolean =>
   saved === (saved.startsWith('v2:') ? receiptFingerprint(kind, command) : fingerprint(command))
@@ -344,16 +368,70 @@ const makeService = Effect.gen(function* () {
       ),
     ) as Effect.Effect<A, WorkspaceStoreError>
 
+  const lookupReceipt = Effect.fnUntraced(function* (commandId: string) {
+    const baseKey = receiptKey(commandId)
+    let rows =
+      yield* sql`SELECT command_id, fingerprint, payload, promotion_payload FROM workspace_command_receipt WHERE command_id IN (${baseKey}, ${commandId})`
+    let key = baseKey
+    let suffix = 0
+    while (true) {
+      for (const row of rows) {
+        const identity = yield* decodeJson(Schema.Struct({ commandId: Schema.String }))(String(row.payload))
+        if (identity.commandId === commandId) return { key: String(row.command_id), prior: [row] }
+      }
+      if (!rows.some(row => row.command_id === key)) return { key, prior: [] }
+      // A legacy raw ID can equal a new encoded key; keep both commands independently addressable.
+      key = `${baseKey}:${++suffix}`
+      rows =
+        yield* sql`SELECT command_id, fingerprint, payload, promotion_payload FROM workspace_command_receipt WHERE command_id = ${key}`
+    }
+  })
+
   const registerProject = (command: Parameters<WorkspaceStore['Service']['registerProject']>[0]) =>
     guard(
       Effect.gen(function* () {
         yield* Schema.decodeUnknownEffect(registerProjectCommandSchema)(command).pipe(
           Effect.mapError(() => safeError('invalid-data', 'Project registration data is invalid')),
         )
-        yield* sql.withTransaction(
+        return yield* sql.withTransaction(
           Effect.gen(function* () {
-            yield* sql`INSERT INTO workspace_project (id, payload) VALUES (${command.project.id}, ${encode(command.project)})`
-            yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${command.mainCheckout.id}, ${command.project.id}, ${encode({ ...command.mainCheckout, projectId: command.project.id })})`
+            const commandId = command.commandId ?? `internal:registerProject:${command.project.id}`
+            const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'registerProject', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return {
+                ...(yield* decodeJson(projectRegistrationReceiptSchema)(String(prior[0].payload))),
+                replayed: true,
+              }
+            }
+            const existing =
+              yield* sql`SELECT id, payload FROM workspace_project WHERE json_extract(payload, '$.repositoryIdentity') = ${command.project.repositoryIdentity} AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 1`
+            let project = yield* Schema.decodeUnknownEffect(projectSchema)(command.project)
+            let mainCheckout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)({
+              ...command.mainCheckout,
+              projectId: project.id,
+            })
+            if (existing[0]) {
+              project = yield* decodeJson(projectSchema)(String(existing[0].payload))
+              const checkouts =
+                yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') = 'main' AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
+              if (checkouts.length !== 1)
+                return yield* safeError('membership-conflict', 'Repository has no unambiguous active main checkout')
+              mainCheckout = yield* decodeJson(workspaceCheckoutSchema)(String(checkouts[0].payload))
+              // Never relocate an existing project implicitly; active sessions may still own its old path.
+              if (mainCheckout.path !== command.mainCheckout.path)
+                return yield* safeError(
+                  'membership-conflict',
+                  'Repository main checkout path differs from its registration',
+                )
+            } else {
+              yield* sql`INSERT INTO workspace_project (id, payload) VALUES (${project.id}, ${encode(project)})`
+              yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${mainCheckout.id}, ${project.id}, ${encode(mainCheckout)})`
+            }
+            const result = { commandId, project, mainCheckout, replayed: false, reused: existing.length > 0 }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('registerProject', command)}, ${encode(result)})`
+            return result
           }),
         )
       }),
@@ -365,12 +443,27 @@ const makeService = Effect.gen(function* () {
         yield* Schema.decodeUnknownEffect(createTaskCommandSchema)(command).pipe(
           Effect.mapError(() => safeError('invalid-data', 'Task creation data is invalid')),
         )
-        yield* sql.withTransaction(
+        return yield* sql.withTransaction(
           Effect.gen(function* () {
+            const commandId = command.commandId ?? `internal:createTask:${command.task.id}`
+            const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'createTask', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return { ...(yield* decodeJson(taskCreationReceiptSchema)(String(prior[0].payload))), replayed: true }
+            }
             const projects = yield* sql`SELECT id FROM workspace_project WHERE id = ${command.task.projectId}`
             if (projects.length === 0) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
             yield* sql`INSERT INTO workspace_task (id, project_id, archived, payload) VALUES (${command.task.id}, ${command.task.projectId}, 0, ${encode({ ...command.task, status: 'open', updatedAt: command.task.createdAt })})`
             yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${command.task.id}, ${encode({ ...command.conversation, taskId: command.task.id })})`
+            const result = {
+              commandId,
+              taskId: command.task.id,
+              conversationId: command.conversation.id,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('createTask', command)}, ${encode(result)})`
+            return result
           }),
         )
       }),
@@ -385,8 +478,7 @@ const makeService = Effect.gen(function* () {
         const receipt = yield* sql.withTransaction(
           Effect.gen(function* () {
             const commandFingerprint = receiptFingerprint('beginRun', command)
-            const prior =
-              yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
             if (prior[0]) {
               if (!matchesReceipt(String(prior[0].fingerprint), 'beginRun', command))
                 return yield* Effect.fail(
@@ -513,7 +605,7 @@ const makeService = Effect.gen(function* () {
               acceptedAt: command.issuedAt,
               replayed: false,
             }
-            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${commandFingerprint}, ${encode(result)})`
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${commandFingerprint}, ${encode(result)})`
             return result
           }),
         )
@@ -1149,8 +1241,7 @@ const makeService = Effect.gen(function* () {
   }
 
   const replayReceipt = Effect.fnUntraced(function* (kind: ReceiptKind, command: { readonly commandId: string }) {
-    const prior =
-      yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+    const { prior } = yield* lookupReceipt(command.commandId)
     if (!prior[0]) return undefined
     if (!matchesReceipt(String(prior[0].fingerprint), kind, command))
       return yield* Effect.fail(safeError('command-conflict', 'Command ID was already used with different input'))
@@ -1172,7 +1263,8 @@ const makeService = Effect.gen(function* () {
       acceptedAt: command.issuedAt,
       replayed: false,
     }
-    yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${receiptFingerprint(kind, command)}, ${encode(receipt)})`
+    const { key: commandKey } = yield* lookupReceipt(command.commandId)
+    yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint(kind, command)}, ${encode(receipt)})`
     return receipt
   })
 
@@ -1302,8 +1394,7 @@ const makeService = Effect.gen(function* () {
         yield* validateCommandBytes(command)
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const prior =
-              yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
             if (prior[0]) {
               if (!matchesReceipt(String(prior[0].fingerprint), 'enqueueFollowUp', command))
                 return yield* Effect.fail(
@@ -1326,7 +1417,7 @@ const makeService = Effect.gen(function* () {
               acceptedAt: command.issuedAt,
               replayed: false,
             }
-            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${receiptFingerprint('enqueueFollowUp', command)}, ${encode(receipt)})`
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('enqueueFollowUp', command)}, ${encode(receipt)})`
             return receipt
           }),
         )
@@ -1458,8 +1549,7 @@ const makeService = Effect.gen(function* () {
           return yield* Effect.fail(safeError('membership-conflict', 'Promotion Conversation does not match the Run'))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const prior =
-              yield* sql`SELECT fingerprint, promotion_payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
             if (prior[0]) {
               if (
                 !matchesReceipt(String(prior[0].fingerprint), 'promoteFollowUp', command) ||
@@ -1494,7 +1584,7 @@ const makeService = Effect.gen(function* () {
             if (receipt.replayed)
               return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
             const promoted = { followUp, receipt }
-            yield* sql`UPDATE workspace_command_receipt SET fingerprint = ${receiptFingerprint('promoteFollowUp', command)}, promotion_payload = ${encode(promoted)} WHERE command_id = ${command.commandId}`
+            yield* sql`UPDATE workspace_command_receipt SET fingerprint = ${receiptFingerprint('promoteFollowUp', command)}, promotion_payload = ${encode(promoted)} WHERE command_id = ${commandKey}`
             yield* sql`DELETE FROM workspace_follow_up_queue WHERE position = ${followUp.position}`
             return promoted
           }),

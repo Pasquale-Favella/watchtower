@@ -56,6 +56,48 @@ const failingHost = (mode: 'typed' | 'failure' | 'defect' | 'throw') =>
 const failingProjects = Layer.succeed(WorkspaceProjects, { register: () => Effect.fail(failure) })
 
 describe('Workspace renderer RPC', () => {
+  it('returns durable repository reuse across new commands without duplicating projects', async () => {
+    const workspace = makeWorkspace()
+    try {
+      const result = await workspace.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            const first = yield* client['workspace:registerProject']({
+              commandId: 'register',
+              name: 'Project',
+              path: 'C:/repo',
+            })
+            const reused = yield* client['workspace:registerProject']({
+              commandId: 'reuse',
+              name: 'Another display name',
+              path: 'C:/repo',
+            })
+            const replay = yield* client['workspace:registerProject']({
+              commandId: 'reuse',
+              name: 'Another display name',
+              path: 'C:/repo',
+            })
+            const conflict = yield* client['workspace:registerProject']({
+              commandId: 'reuse',
+              name: 'Changed',
+              path: 'C:/repo',
+            }).pipe(Effect.flip)
+            const listed = yield* client['workspace:listProjects']({})
+            return { first, reused, replay, conflict, listed }
+          }),
+        ),
+      )
+      expect(result.first).toMatchObject({ reused: false, replayed: false })
+      expect(result.reused).toEqual({ ...result.first, commandId: 'reuse', reused: true })
+      expect(result.replay).toEqual({ ...result.reused, replayed: true })
+      expect(result.conflict).toMatchObject({ code: 'conflict' })
+      expect(result.listed.total).toBe(1)
+    } finally {
+      await workspace.runtime.dispose()
+    }
+  })
+
   it.each(['typed', 'failure', 'defect', 'throw'] as const)(
     'sanitizes %s failures before they cross the renderer boundary',
     async mode => {

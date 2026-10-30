@@ -63,6 +63,37 @@ const withWorkspaceStore = <A, E, R>(
   )
 
 describe('workspace worker RPC server', () => {
+  it('round-trips registration reuse and task receipts with command conflicts', async () => {
+    const result = await Effect.runPromise(
+      withWorkspaceStore((store, sqlScope) =>
+        Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(WorkspaceWorkerRpcGroup)
+          const registration = { commandId: 'register', project, mainCheckout: checkout }
+          const created = { commandId: 'create', task, conversation }
+          const first = yield* client['workspace-worker:registerProject'](registration)
+          const replay = yield* client['workspace-worker:registerProject'](registration)
+          const reused = yield* client['workspace-worker:registerProject']({
+            ...registration,
+            commandId: 'reuse',
+            project: { ...project, id: 'unused-project' as never },
+            mainCheckout: { ...checkout, id: 'unused-checkout' as never },
+          })
+          const taskReceipt = yield* client['workspace-worker:createTask'](created)
+          const taskReplay = yield* client['workspace-worker:createTask'](created)
+          const conflict = yield* client['workspace-worker:createTask']({
+            ...created,
+            task: { ...task, description: 'Different' },
+          }).pipe(Effect.flip)
+          return { first, replay, reused, taskReceipt, taskReplay, conflict }
+        }).pipe(Effect.provide(workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) }))),
+      ),
+    )
+    expect(result.replay).toEqual({ ...result.first, replayed: true })
+    expect(result.reused).toEqual({ ...result.first, commandId: 'reuse', reused: true })
+    expect(result.taskReplay).toEqual({ ...result.taskReceipt, replayed: true })
+    expect(result.conflict).toMatchObject({ code: 'command-conflict' })
+  })
+
   it('round-trips durable delivery intents and follow-up queue operations', async () => {
     const result = await Effect.runPromise(
       withWorkspaceStore((store, sqlScope) => {
@@ -288,7 +319,7 @@ describe('workspace worker RPC server', () => {
       }),
     )
 
-    expect(result.ready).toEqual({ protocolVersion: 6 })
+    expect(result.ready).toEqual({ protocolVersion: 7 })
     expect(result.receipt).toMatchObject({ commandId: command.commandId, runId: command.runId, replayed: false })
     expect(result.claim).toMatchObject({ runId: command.runId, ownerEpoch: 7, workspacePath: checkout.path })
     expect(result.event).toMatchObject({ kind: 'driverEvent', runId: command.runId })
