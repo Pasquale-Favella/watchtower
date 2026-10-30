@@ -332,6 +332,9 @@ before marking the parent issue complete.
 
 ## Workspace interaction research
 
+The concrete target and implementation gates are recorded in
+[the workspace interaction plan](workspace-interaction.md).
+
 The requested product experience is an agent coding workspace. The initial
 Project/Task forms and event reader are implementation groundwork, not the final
 interaction design. Before extending them, inspect the reference applications'
