@@ -1,7 +1,7 @@
-import type { ChildProcess } from 'node:child_process'
+import { type ChildProcess, execFileSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, dirname, join } from 'node:path'
 
 import {
   _electron as electron,
@@ -21,7 +21,8 @@ import { prepareProviderFixture } from '../scripts/fixtures/provider.cjs'
  * root, so the suite never touches the developer's real Watchtower data and
  * always exercises the first-launch path (Splash → onboarding). A controlled
  * Codex history lives in that profile; provider discovery does not read the
- * developer's real assistant history.
+ * developer's real assistant history. On Windows, PATH also excludes the
+ * developer's agent launchers while retaining Node, Git and system tools.
  *
  * Rules for new specs:
  * - use fixture data for content checks; routing uses memory history;
@@ -180,7 +181,23 @@ export async function launchApp(): Promise<LaunchedApp> {
   let state: ElectronProcessState | undefined
   try {
     const fixture = prepareProviderFixture(userDataDir)
-    const launchedApp = await electron.launch({ args, env: fixture.env, timeout: 60_000 })
+    const env =
+      process.platform === 'win32'
+        ? Object.fromEntries(Object.entries(fixture.env).filter(([key]) => key.toLowerCase() !== 'path'))
+        : fixture.env
+    if (process.platform === 'win32') {
+      // Host ACP launchers can outlive their probe and inherit Electron's CDP
+      // socket. Smoke fixtures need system tools and Git, not installed agents.
+      const systemDirectory = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+      const git = execFileSync(join(systemDirectory, 'where.exe'), ['git.exe'], {
+        encoding: 'utf8',
+        windowsHide: true,
+      })
+        .trim()
+        .split(/\r?\n/)[0]
+      env.PATH = [systemDirectory, dirname(process.execPath), dirname(git)].join(delimiter)
+    }
+    const launchedApp = await electron.launch({ args, env, timeout: 60_000 })
     app = launchedApp
     state = { child: launchedApp.process(), closeCompleted: false }
     const window = await launchedApp.firstWindow({ timeout: 60_000 })
