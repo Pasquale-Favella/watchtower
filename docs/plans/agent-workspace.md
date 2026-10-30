@@ -201,17 +201,60 @@ packaging and the packaged-application verifier pass on `76af12b`; that verifier
 does not exercise the workspace yet. No native agent
 run or paid inference is exercised.
 
-This does not complete M0.2, M0.3, M1.1, M1.2, M1.3 or M2.4. Production teardown
-of harness probe process trees, packaged workspace verification, the renderer
-workspace UI (M3.1), native Codex/Claude executable discovery, durable
-registration receipts, fault injection, streaming/load measurements and Coach
-migration remain open. A
+This does not complete M0.2, M0.3, M1.1, M1.2, M1.3 or M2.4. Wave C, below,
+addresses probe teardown, packaged workspace verification, native Codex discovery,
+registration receipts and checkout revalidation. The renderer workspace UI (M3.1), fault injection,
+streaming/load measurements and Coach migration remain open. A
 reported shutdown timeout retains uncertainty; it does not establish that an
 uncooperative native process was terminated.
 Worktrees and the resolver do not provide filesystem sandboxing or exclude
 external writers. Authenticated native
 turns, permitted Claude distribution and packaged-driver/cross-platform checks
 remain release gates. Ordinary tests make no paid inference calls.
+
+## Wave C checkpoint, 2026-10-30
+
+Six reviewed commits build on `669c994`:
+
+- `02c221d` awaits harness probe teardown. Windows trees and POSIX process
+  groups are terminated with confirmation within 2 seconds; unconfirmed
+  termination is a typed, logged outcome. The snapshot scope interrupts in-flight
+  probes at quit. This is the production cause behind the earlier e2e close
+  flake. POSIX execution remains unverified locally.
+- `fc8a15e` discovers Codex lazily from PATH as an absolute real path. A native
+  header check and a shellless, bounded `--version` probe must succeed before a
+  `codex-app-server` connection is admitted. IDs exclude the path and version.
+  Claude remains release-gated: its driver uses the SDK-bundled CLI, and
+  authentication and distribution are unresolved.
+- `bf763d5` records registration and Task receipts in the entity transaction.
+  Registering a known repository, including through aliases or linked worktrees,
+  returns the existing project with `reused` set. A different canonical main path
+  is a membership conflict. Worker protocol version 7.
+- `6b7bf2e` revalidates the canonical path, repository identity, checkout kind
+  and worktree mapping before any native call. Failures settle as launch
+  failures. Validation runs in interruptible dispatch work, so shutdown stays
+  bounded. Uncommitted changes remain allowed; a gap between check and spawn
+  remains.
+- `03e5ea4` adds the renderer data layer: query and command hooks with stable
+  command IDs across reconnect retries, and a window-owned events projection
+  with gap detection, resume, bounded retention and attention flags. Fallback
+  polling covers only mounted, visible consumers. No routes or UI yet.
+- `4ca5b74` makes the packaged verifier prove lazy boot, the ASAR worker, real
+  Git registration with replay, Task reads, the events snapshot and a confirmed
+  workspace close.
+
+Review blockers fixed before commit: revalidation under the admission permit
+broke the shutdown deadline, and fallback polling continued after unmount.
+
+Full Vitest passes 333 files, 3,822 tests, with 5 skipped. All four TypeScript
+projects, Effect diagnostics, Prettier and the build pass; ESLint has zero errors
+and 1,403 existing warnings. All 12 Playwright specs pass. Windows NSIS packaging
+and the extended packaged verifier passed twice. No native agent run or paid
+inference is exercised.
+
+The workspace UI (M3.1), fault injection, real Electron worker replacement and
+load measurements, Coach migration, authenticated driver conformance and
+permitted Claude distribution remain open.
 
 ## Constraints for these slices
 
