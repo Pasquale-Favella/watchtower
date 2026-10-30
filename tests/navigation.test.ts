@@ -27,6 +27,7 @@ describe('navigation (ADR 0014)', () => {
       'models',
       'compare',
       'coachSkills',
+      'workspace',
       'settings',
     ])
   })

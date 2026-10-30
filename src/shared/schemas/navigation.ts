@@ -21,6 +21,7 @@ export const SECTIONS = [
   // Coach & Skills (ADR 0017): one unified surface where every harness run is
   // a free-form coach prompt (coaching or skill authoring, same agent).
   'coachSkills',
+  'workspace',
   'settings',
 ] as const
 
@@ -39,5 +40,6 @@ export const ROUTES = {
   models: '/models',
   compare: '/compare',
   coachSkills: '/coach-skills',
+  workspace: '/workspace',
   settings: '/settings',
 } as const satisfies Record<Section, string> & { sessionDetail: (id: string) => string }

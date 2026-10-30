@@ -98,6 +98,18 @@ test('workspace stays lazy, persists project and task across reload, and closes 
       ok: true,
       value: { commandId: registration.commandId, replayed: true, project: { id: project.id } },
     })
+    await window.getByRole('button', { name: 'Workspace', exact: true }).click()
+    await expect(window.getByRole('main', { name: 'Agent workspace' })).toBeVisible()
+    await window.getByRole('button', { name: /Workspace fixture/ }).click()
+    await window.getByRole('button', { name: /Verify workspace composition/ }).click()
+    await expect(window.getByRole('heading', { name: task.title, exact: true })).toBeVisible()
+    await expect(window.getByText('No conversation activity yet.', { exact: true })).toBeVisible()
+    await window.getByLabel('Task title', { exact: true }).fill('Created from the workspace')
+    await window.getByLabel('Task description', { exact: true }).fill('Created through the renderer')
+    await window.getByRole('button', { name: 'Create Task', exact: true }).click()
+    await expect(window.getByRole('heading', { name: 'Created from the workspace', exact: true })).toBeVisible()
+    await expect(window.getByRole('button', { name: /Created from the workspace/ })).toBeVisible()
+    await window.screenshot({ path: test.info().outputPath('workspace.png'), fullPage: true })
     expect(pageErrors).toEqual([])
     const closeStarted = performance.now()
     await launched.close()

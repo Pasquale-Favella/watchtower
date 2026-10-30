@@ -19,6 +19,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { action: 'models', hotkey: 'Mod+6', label: 'Models' },
   { action: 'compare', hotkey: 'Mod+7', label: 'Compare' },
   { action: 'coachSkills', hotkey: 'Mod+8', label: 'Coach & Skills' },
+  { action: 'workspace', hotkey: 'Mod+9', label: 'Workspace' },
   { action: 'settings', hotkey: 'Mod+,', label: 'Settings' },
   { action: 'refresh', hotkey: 'Mod+R', label: 'Refresh' },
   { action: 'toggleSidebar', hotkey: 'Mod+B', label: 'Toggle sidebar' },

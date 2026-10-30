@@ -2,10 +2,10 @@ import { detectPlatform, formatForDisplay, type Hotkey } from '@tanstack/react-h
 
 import { SHORTCUTS } from '@/shared/lib/shortcuts.js'
 import type { Section } from '@/shared/schemas/navigation.js'
-import type { ShortcutAction, ShortcutDef, Platform } from '@/shared/schemas/renderer.js'
-export type { Section, ShortcutAction, ShortcutDef, Platform }
+import type { Platform, ShortcutAction, ShortcutDef } from '@/shared/schemas/renderer.js'
+export type { Platform, Section, ShortcutAction, ShortcutDef }
 
-/** Sections in sidebar/nav order. `Mod+1`–`Mod+7` map to the first seven. */
+/** Sections in sidebar/nav order. Existing numbered shortcuts retain their assignments; Workspace uses `Mod+9`. */
 export const NAV_SECTIONS: readonly Section[] = [
   'overview',
   'sessions',
@@ -15,6 +15,7 @@ export const NAV_SECTIONS: readonly Section[] = [
   'models',
   'compare',
   'coachSkills',
+  'workspace',
   'settings',
 ]
 

@@ -1,6 +1,9 @@
 import { createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import * as Schema from 'effect/Schema'
 
+import { AppRoot } from '@/renderer/app/AppRoot'
+import { setRouter } from '@/renderer/app/navigation'
+import { DashboardLayout } from '@/renderer/components/shell/dashboard-layout'
 import { CoachSkillsView } from '@/renderer/features/coach-skills/CoachSkillsView'
 import { CompareView } from '@/renderer/features/compare/CompareView'
 import { ModelsView } from '@/renderer/features/models/ModelsView'
@@ -11,11 +14,8 @@ import { SessionsView } from '@/renderer/features/sessions/SessionsView'
 import { SessionView } from '@/renderer/features/sessions/SessionView'
 import { SettingsView } from '@/renderer/features/settings/SettingsView'
 import { SpendView } from '@/renderer/features/spend/SpendView'
-
+import { WorkspaceView } from '@/renderer/features/workspace/WorkspaceView'
 import { sessionDetailSearchSchema } from '@/shared/schemas/views.js'
-import { AppRoot } from '@/renderer/app/AppRoot'
-import { DashboardLayout } from '@/renderer/components/shell/dashboard-layout'
-import { setRouter } from '@/renderer/app/navigation'
 
 // Code-based route tree on memory history (ADR 0014): created once at module
 // scope so StrictMode's double-render shares one router. The root route is
@@ -53,6 +53,8 @@ const coachSkillsRoute = createRoute({
 
 const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsView })
 
+const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspaceView })
+
 const routeTree = rootRoute.addChildren([
   dashboardRoute.addChildren([
     overviewRoute,
@@ -66,6 +68,7 @@ const routeTree = rootRoute.addChildren([
     coachSkillsRoute,
   ]),
   settingsRoute,
+  workspaceRoute,
 ])
 
 export const router = createRouter({
