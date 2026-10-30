@@ -1,8 +1,8 @@
 # Agent workspace implementation
 
-Status: implementation in progress. Application service, driver, operational
-store, worker, supervisor and checkout-resolver prototypes are under test, but
-are not connected to production execution. No workspace release or native protocol certification is
+Status: implementation in progress. The workspace host, worker, store,
+execution service and renderer RPC run in the Electron main process and open on
+first use. No renderer UI or native agent run uses them yet. No workspace release or native protocol certification is
 complete on this branch yet.
 
 [Issue #178](https://github.com/Pasquale-Favella/watchtower/issues/178) owns the
@@ -150,16 +150,61 @@ fixtures, Prettier and the production Electron build pass. ESLint has zero
 errors and the unchanged 1,409 existing warnings. Native turns remain opt-in;
 these checks make no paid inference calls.
 
-The subsequent three-test Electron check is not green. Its Operational log
-scenario reaches a successful process exit, but the Playwright close request
-does not settle within the existing cleanup deadline. Diagnosis is in progress;
-the assertion and timeout have not been weakened. This checkpoint does not
-replace the historical successful Electron and packaging evidence at `2de0a02`.
+The subsequent three-test Electron check was not green at this checkpoint; its
+diagnosis and fix are recorded in the next section.
 
-This does not complete M0.2, M0.3, M1.1, M1.2 or M1.3. Production composition of
-the supervisor, connection catalog, registry and service, replacement ordering
-with active native work, byte-aware event pagination, project/task read
-contracts, workspace RPC, fault injection, streaming/load measurements and Coach
+## Main-process checkpoint, 2026-10-30
+
+Eight reviewed commits build on `ea29e7c`:
+
+- `ac57975` adds read-only project, task, task-detail, conversation,
+  native-session and pending-request pages. Counts are validated, pages stay
+  under a 3 MiB serialized budget and cursors are stable. Event and conversation
+  pages accept an upper sequence bound for snapshot and replay handoff. Oversized
+  records are summarized with digest-pinned references and retrieved losslessly
+  in bounded chunks. Worker protocol version 6 exposes every port method.
+- `2ab6066` derives connection definitions from the live harness snapshot.
+  Bundled ACP entries run under Electron's Node runtime; only the trusted runtime
+  executable may receive `ELECTRON_RUN_AS_NODE`. Identities exclude install paths
+  so updates do not orphan sessions. Native Codex and Claude discovery remain
+  unavailable.
+- `f883e5e` adds WorkspaceHost: the supervisor opens on demand and one
+  ExecutionService exists per owner epoch. The execution gate covers admission
+  only; callers hold interruptible epoch leases. Active native work is stopped
+  before a failed worker closes, and unconfirmed cleanup makes the host
+  unavailable instead of starting another writer.
+- `08f70c3` fingerprints receipts on client intent, excluding server-owned
+  timestamps, epochs, Run IDs and provisional session IDs, so retries after
+  reconnect replay the original receipt. Promotion replays first without
+  dequeuing; migration 8 stores the promotion snapshot.
+- `368dd17` adds the renderer-facing WorkspaceRpcGroup: sanitized errors, bounded
+  reads, receipted mutations, deterministic registration and Task IDs, and an
+  events stream of snapshot pages followed by live pages. Frames and buffering are
+  bounded; overflow ends the stream with a typed error, and cancelling a
+  subscription never cancels execution.
+- `76af12b` composes the host, resolver and projects in the main runtime and
+  serves the group to the app window only. Boot acquires an inert host; the
+  worker, `workspace.db` and driver SDKs start on the first request. Shutdown
+  stays within the quit budget and logs whether cleanup was confirmed.
+- `71ff4d4` and `a5837d1` fix the Electron close flake. The harness now destroys
+  every stdio pipe, and Windows fixtures no longer inherit the developer's PATH.
+  Host ACP launchers started by harness detection could outlive their probe and
+  keep Playwright's CDP socket open. A clean `368dd17` tree reproduced it.
+
+Full Vitest passes 327 files, 3,735 tests, with 5 skipped. All four TypeScript
+projects, Effect diagnostics, Prettier and the production build pass; ESLint has
+zero errors and 1,405 existing warnings. The full Playwright suite of 12 specs
+passed in four consecutive runs and again on `76af12b`, including the workspace
+spec: lazy boot, registration of a real Git repository, task creation, event
+snapshot, persistence and replay across reload, and clean quit. Windows NSIS
+packaging and the packaged-application verifier pass on `76af12b`; that verifier
+does not exercise the workspace yet. No native agent
+run or paid inference is exercised.
+
+This does not complete M0.2, M0.3, M1.1, M1.2, M1.3 or M2.4. Production teardown
+of harness probe process trees, packaged workspace verification, the renderer
+workspace UI (M3.1), native Codex/Claude executable discovery, durable
+registration receipts, fault injection, streaming/load measurements and Coach
 migration remain open. A
 reported shutdown timeout retains uncertainty; it does not establish that an
 uncooperative native process was terminated.
