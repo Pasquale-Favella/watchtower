@@ -9,7 +9,7 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
-import type { ProbeResult } from '../src/infrastructure/agent-harnesses/probe.js'
+import { probeHarness, type ProbeResult } from '../src/infrastructure/agent-harnesses/probe.js'
 import {
   type HarnessInstance,
   HarnessProbe,
@@ -26,6 +26,7 @@ import {
   PROBE_OUTCOME_COUNTER,
 } from '../src/infrastructure/logging/operational-log.js'
 import type { CoachHarnessRow } from '../src/shared/schemas/agents.js'
+import { probeProcessTree, processIsRunning } from './agents-probe-process-fixture.js'
 
 const infos: HarnessInfo[] = [
   {
@@ -209,6 +210,33 @@ describe('createHarnessSnapshotStore', () => {
     await vi.waitFor(() => expect(started).toBe(true))
     await store.dispose()
     expect(finalized).toBe(1)
+  })
+
+  it('awaits real probe tree termination when the snapshot scope closes during initialization', async () => {
+    const tree = probeProcessTree()
+    const changes: CoachHarnessRow[][] = []
+    const store = makeStore(
+      async () => infos.slice(0, 1),
+      info =>
+        probeHarness(info, {
+          spawn: tree.spawn,
+          connectionFactory: () => ({ initialize: () => new Promise(() => {}) }),
+          timeoutMs: 30_000,
+        }),
+      rows => changes.push(rows),
+    )
+    try {
+      await store.list()
+      const pid = await tree.ready
+      expect(processIsRunning(pid)).toBe(true)
+      const started = Date.now()
+      await store.dispose()
+      expect(Date.now() - started).toBeLessThan(2500)
+      expect(processIsRunning(pid)).toBe(false)
+      expect(changes).toHaveLength(1)
+    } finally {
+      await tree.dispose()
+    }
   })
 
   it('replaces settled metadata so an old message does not leak into a refresh', async () => {

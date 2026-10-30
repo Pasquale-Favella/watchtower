@@ -10,7 +10,7 @@ import {
 
 describe('command palette rows (ADR 0028)', () => {
   it('lists every section plus refresh/toggleSidebar — and never itself', () => {
-    expect(PALETTE_SECTIONS).toHaveLength(9)
+    expect(PALETTE_SECTIONS).toHaveLength(10)
     expect([...PALETTE_ACTIONS]).toEqual(['refresh', 'toggleSidebar'])
     expect([...PALETTE_SECTIONS, ...PALETTE_ACTIONS]).not.toContain('commandPalette')
   })

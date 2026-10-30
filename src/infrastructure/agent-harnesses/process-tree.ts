@@ -1,44 +1,69 @@
 import { execFile, execFileSync } from 'node:child_process'
 
-import * as Effect from 'effect/Effect'
+export const PROBE_TEARDOWN_TIMEOUT_MS = 2_000
 
-/** win32 `taskkill` as a never-fails Effect (the teardown exemplar): the
- *  callback `execFile` is wrapped in `Effect.tryPromise` and `ignore`d, so
- *  already-exited processes, missing taskkill, and callback errors all
- *  resolve — never reject. `run*` stays at this spawn-function boundary;
- *  callers keep the `Promise<void>` seam.
- *  Removal: raw `new Promise(resolve => ...)` callback juggling removed when
- *  the win32 kill rides this Effect. */
-const taskkillTreeEffect = Effect.fnUntraced(function* (pid: number, run: typeof execFile): Effect.fn.Return<void> {
-  yield* Effect.tryPromise({
-    try: () =>
-      new Promise<void>(resolve => {
-        try {
-          run('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => resolve())
-        } catch {
-          resolve()
-        }
-      }),
-    catch: error => error,
-  }).pipe(Effect.ignore)
-})
+export type ProcessTreeTermination =
+  { readonly status: 'confirmed' } | { readonly status: 'unconfirmed'; readonly reason: 'deadline' | 'failed' }
 
-/** Best-effort termination for a harness process and its descendants. */
-export function killProcessTree(
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+/** Probe leaders must be spawned detached on POSIX to own their process group. */
+export async function killProcessTree(
   pid: number,
   platform: NodeJS.Platform = process.platform,
   run: typeof execFile = execFile,
-): Promise<void> {
+  timeoutMs = PROBE_TEARDOWN_TIMEOUT_MS,
+): Promise<ProcessTreeTermination> {
+  const deadline = performance.now() + timeoutMs
+  const target = platform === 'win32' ? pid : -pid
   if (platform === 'win32') {
-    return Effect.runPromise(taskkillTreeEffect(pid, run) as Effect.Effect<void>)
+    const result = await new Promise<ProcessTreeTermination>(resolve => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => {
+        resolve({ status: 'unconfirmed', reason: 'deadline' })
+        controller.abort()
+      }, timeoutMs)
+      try {
+        run(
+          'taskkill',
+          ['/pid', String(pid), '/T', '/F'],
+          {
+            windowsHide: true,
+            timeout: timeoutMs,
+            signal: controller.signal,
+          },
+          error => {
+            clearTimeout(timer)
+            resolve(error ? { status: 'unconfirmed', reason: 'failed' } : { status: 'confirmed' })
+          },
+        )
+      } catch {
+        clearTimeout(timer)
+        resolve({ status: 'unconfirmed', reason: 'failed' })
+      }
+    })
+    // A vanished leader alone cannot confirm that Windows killed its descendants.
+    if (result.status === 'unconfirmed') return result
+  } else {
+    try {
+      process.kill(target, 'SIGKILL')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') return { status: 'unconfirmed', reason: 'failed' }
+    }
   }
-
-  try {
-    process.kill(pid, 'SIGTERM')
-  } catch {
-    // The process may already have exited.
+  while (processExists(target)) {
+    const remaining = deadline - performance.now()
+    if (remaining <= 0) return { status: 'unconfirmed', reason: 'deadline' }
+    await new Promise<void>(resolve => setTimeout(resolve, Math.min(10, remaining)))
   }
-  return Promise.resolve()
+  return { status: 'confirmed' }
 }
 
 /** win32 tree kill that returns only once the tree is gone — for callers that

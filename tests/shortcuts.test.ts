@@ -25,9 +25,9 @@ describe('shortcut registry', () => {
     expect(shortcutForAction('commandPalette')?.hotkey).toBe('Mod+K')
   })
 
-  it('registers nothing for digits beyond the numbered sections (Mod+9/Mod+10 no-op)', () => {
+  it('registers nothing for digits beyond the numbered sections (Mod+10 no-op)', () => {
     const hotkeys = new Set<string>(SHORTCUTS.map(def => def.hotkey))
-    expect(hotkeys.has('Mod+9')).toBe(false)
+    expect(hotkeys.has('Mod+9')).toBe(true)
     expect([...hotkeys].some(hotkey => hotkey === 'Mod+10')).toBe(false)
     expect(NUMBERED_SECTION_SHORTCUTS).toHaveLength(NAV_SECTIONS.length - 1)
     expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.action === 'commandPalette')).toBe(false)
@@ -51,9 +51,9 @@ describe('shortcut registry', () => {
   })
 
   it('derives the footer range from the registry, per platform', () => {
-    expect(sectionsRangeLabel('mac')).toBe('⌘1–⌘8')
-    expect(sectionsRangeLabel('windows')).toBe('Ctrl+1–Ctrl+8')
-    expect(sectionsRangeLabel('linux')).toBe('Ctrl+1–Ctrl+8')
+    expect(sectionsRangeLabel('mac')).toBe('⌘1–⌘9')
+    expect(sectionsRangeLabel('windows')).toBe('Ctrl+1–Ctrl+9')
+    expect(sectionsRangeLabel('linux')).toBe('Ctrl+1–Ctrl+9')
   })
 
   it('declares the orb summon as the one OS-global shortcut, outside the numbered range', () => {

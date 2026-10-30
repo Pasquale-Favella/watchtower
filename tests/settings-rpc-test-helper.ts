@@ -10,9 +10,13 @@ import { lifecycleHandlers, lifecycleLayer } from '../src/platform/electron/main
 import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { nativeHandlers } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { ApplicationClient } from '../src/renderer/shared/lib/application-rpc.js'
-import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
-import { unexpectedCoachHandlers, unexpectedShellRpcs } from './fixtures/unexpected-native-rpc.js'
+import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
+import {
+  unexpectedCoachHandlers,
+  unexpectedShellRpcs,
+  unexpectedWorkspaceHandlers,
+} from './fixtures/unexpected-native-rpc.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native operation in a settings RPC test'))
 
@@ -57,6 +61,7 @@ export function makeSettingsRpcTestClient(
   })
   const handlers = Layer.mergeAll(
     unexpectedCoachHandlers,
+    unexpectedWorkspaceHandlers,
     ShellRpcGroup.toLayer({ ...unexpectedShellRpcs, 'shell:open-settings': shellOverrides.openSettings ?? unexpected }),
     analyticsHandlers({ request }),
     configHandlers(

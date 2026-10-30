@@ -42,7 +42,7 @@ _Avoid_: filter settings, date range
 
 **Section**:
 The app's top-level screens — overview, sessions, pull requests, spend, optimize,
-models, compare, coach & skills, settings. The sidebar and the numbered shortcuts
+models, compare, coach & skills, workspace, settings. The sidebar and the numbered shortcuts
 navigate between them.
 _Avoid_: page, tab
 
@@ -63,11 +63,56 @@ crafting is conversational; the detected-pattern chips on the welcome screen
 are plain chat-starters (ADR 0021).
 _Avoid_: coach section, skills section
 
+**Project**:
+A registered local work context with a stable repository identity. Its name,
+path leaf or remote URL alone does not identify it.
+_Avoid_: repository name
+
+**Workspace Checkout**:
+A concrete working tree or directory for a Project. A main checkout and a
+worktree are distinct checkouts.
+_Avoid_: workspace folder
+
+**Task**:
+The user's objective and its delivery lifecycle, independent of any one agent
+attempt. Completing an attempt does not complete the Task.
+_Avoid_: run, prompt
+
+**Conversation**:
+An ordered discussion associated with a Task. A Task may have multiple
+Conversations, including forks.
+_Avoid_: session
+
 **Harness**:
-A user-installed coding-agent CLI the app drives over the Agent Client Protocol
-(ADR 0016) — e.g. Claude Code, Codex, OpenCode. One harness = one agent = one
-language model; the harness picker selects which one the Coach chat drives.
+A coding-agent tool the app drives through a supported integration. A Harness
+may expose multiple models and interaction modes; its integration protocol is
+distinct from a telemetry Provider.
 _Avoid_: provider (a provider is a telemetry source in the pipeline)
+
+**Harness Connection**:
+A named installation and authentication context for a Harness. It contains no
+plaintext credential.
+_Avoid_: Harness session
+
+**Agent Session**:
+A durable association to one native agent conversation and its driver,
+connection and checkout context. It is not a process.
+_Avoid_: run, subprocess
+
+**Driver Connection**:
+A scoped runtime resource for protocol IO and process resources. Its lifetime
+may serve one or more native Agent Sessions when the driver supports it.
+_Avoid_: Agent Session
+
+**Agent Run**:
+One attempt to submit work through an Agent Session. A retry is a new Run;
+finishing a Run does not establish Task delivery.
+_Avoid_: session, conversation
+
+**Work Artifact**:
+An output of managed work, such as a patch, report or handoff package. It is
+distinct from an Artifact, which remains a packaged installer.
+_Avoid_: Artifact
 
 **Alias**:
 A custom price that copies another model's prices: calls of an unrecognized

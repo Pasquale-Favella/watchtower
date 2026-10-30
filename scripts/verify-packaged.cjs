@@ -1,6 +1,7 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
-const os = require('node:os')
+const { execFileSync } = require('node:child_process')
+const { randomUUID } = require('node:crypto')
 const path = require('node:path')
 const { prepareProviderFixture } = require('./fixtures/provider.cjs')
 const { createRequire } = require('node:module')
@@ -192,7 +193,7 @@ async function installRendererRpcProbe(window) {
     let sequence = 0
     let disposed = false
     const prefix = `watchtower-packaged-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const call = (tag, payload = null, timeoutMs = 10000) =>
+    const call = (tag, payload = null, timeoutMs = 10000, stream = false) =>
       new Promise((resolve, reject) => {
         if (disposed) return reject(new Error('Packaged RPC probe is disposed'))
         const id = `${prefix}-${++sequence}`
@@ -202,6 +203,10 @@ async function installRendererRpcProbe(window) {
           if (settled) return
           settled = true
           clearTimeout(timeout)
+          if (stream)
+            void bridge
+              .send(JSON.stringify({ _tag: 'Interrupt', requestId: id }), connection.generation)
+              .catch(() => {})
           unsubscribe()
           if (error) reject(error)
           else resolve(value)
@@ -219,6 +224,10 @@ async function installRendererRpcProbe(window) {
             return finish(new Error('Malformed packaged RPC response'))
           }
           if (!frame || frame.requestId !== id) return
+          if (stream && frame._tag === 'Chunk' && Array.isArray(frame.values) && frame.values.length) {
+            void bridge.send(JSON.stringify({ _tag: 'Ack', requestId: id }), connection.generation).catch(() => {})
+            return finish(undefined, frame.values[0])
+          }
           if (frame._tag === 'Defect') return finish(new Error('Packaged RPC server failure'))
           if (frame._tag !== 'Exit' || !frame.exit || typeof frame.exit !== 'object')
             return finish(new Error('Malformed packaged RPC response'))
@@ -248,6 +257,7 @@ async function installRendererRpcProbe(window) {
       })
     window.rpcProbe = {
       call,
+      streamFirst: (tag, payload) => call(tag, payload, 10000, true),
       dispose: () => {
         if (disposed) return
         disposed = true
@@ -279,6 +289,143 @@ async function checkRendererRpc(window) {
     outputPricePerMillion: 2,
   })
   console.log('Packaged sandbox RPC query and admitted configuration write passed over MessagePort.')
+}
+
+// Workspace acceptance is metadata-only: never start a native agent Run.
+function isolatedLaunchEnvironment(env) {
+  if (process.platform !== 'win32') return env
+  const isolated = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== 'path'))
+  const systemDirectory = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+  const git = execFileSync(path.join(systemDirectory, 'where.exe'), ['git.exe'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+    .trim()
+    .split(/\r?\n/)[0]
+  isolated.PATH = [systemDirectory, path.dirname(process.execPath), path.dirname(git)].join(path.delimiter)
+  return isolated
+}
+
+function readOperationalRecords(profile) {
+  const logDirectory = path.join(profile, 'logs')
+  return fs
+    .readdirSync(logDirectory)
+    .filter(name => name.startsWith('operational'))
+    .flatMap(name =>
+      fs
+        .readFileSync(path.join(logDirectory, name), 'utf8')
+        .split('\n')
+        .filter(line => line.trim()),
+    )
+    .map(line => JSON.parse(line))
+}
+
+async function checkWorkspaceNotStarted(window, profile) {
+  assert.equal(fs.existsSync(path.join(profile, 'workspace.db')), false)
+  assert.deepEqual(await window.evaluate(() => window.rpcProbe.call('workspace:status')), {
+    protocolVersion: 1,
+    state: 'not-started',
+    ownerEpoch: null,
+    highWatermark: 0,
+  })
+  assert.equal(fs.existsSync(path.join(profile, 'workspace.db')), false, 'Status must not start the workspace')
+}
+
+async function checkWorkspace(app, window, profile, repository) {
+  await checkWorkspaceNotStarted(window, profile)
+  const packagedLayout = await app.evaluate(({ app: electronApp }) => {
+    const fs = process.getBuiltinModule('fs')
+    const path = process.getBuiltinModule('path')
+    const archive = electronApp.getAppPath()
+    return { archive, workerExists: fs.statSync(path.join(archive, 'out', 'main', 'workspace-worker.js')).isFile() }
+  })
+  assert.equal(path.basename(packagedLayout.archive), 'app.asar')
+  assert.equal(packagedLayout.workerExists, true)
+  const registration = { commandId: randomUUID(), path: repository, name: 'Packaged workspace fixture' }
+  const task = { commandId: randomUUID(), title: 'Verify packaged workspace', description: 'No inference required.' }
+  const result = await window.evaluate(
+    async ({ registration, task }) => {
+      const call = window.rpcProbe.call
+      const registered = await call('workspace:registerProject', registration)
+      const created = await call('workspace:createTask', { ...task, projectId: registered.project.id })
+      return {
+        registered,
+        created,
+        replayed: await call('workspace:registerProject', registration),
+        projects: await call('workspace:listProjects', {}),
+        tasks: await call('workspace:listTasks', { projectId: registered.project.id }),
+        detail: await call('workspace:readTaskDetail', { taskId: created.taskId }),
+        snapshot: await window.rpcProbe.streamFirst('workspace:events', { afterSequence: 0 }),
+        status: await call('workspace:status'),
+      }
+    },
+    { registration, task },
+  )
+  assert.equal(result.registered.commandId, registration.commandId)
+  assert.equal(result.registered.replayed, false)
+  assert.equal(result.registered.project.name, registration.name)
+  assert.equal(result.replayed.commandId, registration.commandId)
+  assert.equal(result.replayed.replayed, true)
+  assert.deepEqual(result.replayed.project, result.registered.project)
+  assert.equal(result.replayed.mainCheckout.id, result.registered.mainCheckout.id)
+  assert.equal(result.created.commandId, task.commandId)
+  assert.equal(result.created.replayed, false)
+  assert.equal(result.projects.total, 1)
+  assert.deepEqual(
+    result.projects.items.map(project => project.id),
+    [result.registered.project.id],
+  )
+  assert.equal(result.tasks.total, 1)
+  assert.deepEqual(
+    result.tasks.items.map(item => [item.id, item.title]),
+    [[result.created.taskId, task.title]],
+  )
+  assert.equal(result.detail.task.id, result.created.taskId)
+  assert.equal(result.detail.task.description, task.description)
+  assert.equal(result.detail.totalConversations, 1)
+  assert.equal(result.detail.conversations[0].id, result.created.conversationId)
+  assert.deepEqual(result.snapshot, {
+    protocolVersion: 1,
+    _tag: 'Snapshot',
+    throughSequence: 0,
+    page: { events: [], highWatermark: 0, hasMore: false, nextAfterSequence: null },
+  })
+  assert.equal(fs.statSync(path.join(profile, 'workspace.db')).isFile(), true)
+  assert.equal(result.status.protocolVersion, 1)
+  assert.equal(result.status.state, 'ready')
+  assert.ok(Number.isSafeInteger(result.status.ownerEpoch) && result.status.ownerEpoch >= 1)
+  assert.equal(result.status.highWatermark, 0, 'Metadata-only acceptance must not start an agent Run')
+  console.log(
+    'Packaged workspace lazy boot, ASAR worker, project/task creation and reads, detail, command replay and event snapshot passed.',
+  )
+}
+
+async function closePackagedApp(app) {
+  const child = app.process()
+  const started = performance.now()
+  let timer
+  // Electron can exit while inherited Playwright pipes remain open on Windows.
+  child.once('exit', () => {
+    for (const stream of child.stdio) stream?.destroy()
+  })
+  try {
+    await Promise.race([
+      app.close(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Packaged close exceeded 15000ms')), 15000)
+      }),
+    ])
+    assert.equal(child.exitCode, 0)
+    assert.equal(child.signalCode, null)
+    const elapsedMs = Math.round(performance.now() - started)
+    assert.ok(elapsedMs < 15000)
+    return elapsedMs
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function basenameFromUrl(url) {
@@ -432,13 +579,40 @@ async function main() {
   }
   const executablePath = resolveExecutablePath(options)
   const profilePrefix = 'watchtower-packaged-'
-  const tempRoot = fs.realpathSync(os.tmpdir())
-  const profile = fs.mkdtempSync(path.join(tempRoot, profilePrefix))
+  const fixtureRoot = fs.mkdtempSync(path.join(process.cwd(), '.watchtower-packaged-'))
+  const profile = path.join(fixtureRoot, `${profilePrefix}profile`)
+  const repository = path.join(fixtureRoot, 'repository')
+  fs.mkdirSync(profile)
   try {
+    execFileSync('git', ['init', repository], { stdio: 'pipe', windowsHide: true })
+    fs.writeFileSync(path.join(repository, 'README.md'), 'Packaged workspace fixture\n')
+    execFileSync('git', ['add', '.'], { cwd: repository, stdio: 'pipe', windowsHide: true })
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Workspace Test',
+        '-c',
+        'user.email=workspace@example.invalid',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '-m',
+        'Initial fixture',
+      ],
+      { cwd: repository, stdio: 'pipe', windowsHide: true },
+    )
     const providerFixture = prepareProviderFixture(profile)
     const args = [`--user-data-dir=${profile}`]
     if (process.platform === 'linux') args.unshift('--no-sandbox')
-    const app = await electron.launch({ executablePath, args, env: providerFixture.env, timeout: 60000 })
+    const bootStarted = performance.now()
+    const app = await electron.launch({
+      executablePath,
+      args,
+      env: isolatedLaunchEnvironment(providerFixture.env),
+      timeout: 60000,
+    })
+    let workspaceChecked = false
     try {
       const pageErrors = []
       const capturedPages = new WeakSet()
@@ -455,6 +629,7 @@ async function main() {
       capturePageErrors(window)
       await expect(window).toHaveTitle(/Watchtower/)
       await installRendererRpcProbe(window)
+      await checkWorkspaceNotStarted(window, profile)
       await window.evaluate(() => window.rpcProbe.call('cadence:set', { value: 'manual' }))
       const skip = window.getByRole('button', { name: 'Skip' })
       const retry = window.getByRole('button', { name: 'Retry' })
@@ -464,6 +639,10 @@ async function main() {
       assert.equal(await retry.isVisible(), false)
       await skip.click()
       await expect(skip).toBeHidden()
+      await checkWorkspaceNotStarted(window, profile)
+      console.log(
+        `Packaged workspace-free boot passed: ${Math.round(performance.now() - bootStarted)}ms (existing launch/scan budgets unchanged).`,
+      )
       await checkRendererRpc(window)
       await window.getByRole('button', { name: 'Sessions', exact: true }).click()
       await expect(
@@ -756,6 +935,9 @@ async function main() {
         `Clear/reclaim and size measurement: ${cleared.clearElapsedMs}ms.`,
       )
 
+      await checkWorkspace(app, window, profile, repository)
+      workspaceChecked = true
+
       // Exercise the packaged background shell with its actual windows. A
       // renderer `window.close()` would destroy the page; closing the native
       // BrowserWindow follows the app's hide-and-float lifecycle.
@@ -828,14 +1010,22 @@ async function main() {
       for (const page of app.windows()) {
         await page.evaluate(() => globalThis.rpcProbe?.dispose()).catch(() => {})
       }
-      await app.close()
+      const closeMs = await closePackagedApp(app)
+      if (workspaceChecked) {
+        const records = readOperationalRecords(profile).filter(record => record.event === 'workspace.close')
+        assert.equal(records.length, 1)
+        assert.equal(records[0].level, 'info')
+        assert.equal(records[0].outcome, 'success')
+        assert.equal(records[0].code, 'cleanup-confirmed')
+        console.log(`Packaged workspace clean shutdown and operational log passed: ${closeMs}ms (15000ms budget).`)
+      }
     }
   } finally {
     const resolvedProfile = path.resolve(profile)
     assert.ok(path.basename(resolvedProfile).startsWith(profilePrefix))
-    assert.equal(path.dirname(resolvedProfile), tempRoot)
+    assert.equal(path.dirname(resolvedProfile), fixtureRoot)
     assert.notEqual(resolvedProfile, path.parse(resolvedProfile).root)
-    fs.rmSync(profile, { recursive: true, force: true })
+    fs.rmSync(fixtureRoot, { recursive: true, force: true })
   }
 }
 
