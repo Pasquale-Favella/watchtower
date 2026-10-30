@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
-import type { BeginRunCommand } from '@/shared/schemas/workspace-store.js'
+import type { BeginRunCommand, WorkspacePayloadPage, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 type RunEffect = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
 
@@ -1275,6 +1275,51 @@ describe('WorkspaceStore', () => {
     }
   })
 
+  it('rejects corrupted nested driver events without returning stored content', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-event-'))
+    const filename = join(directory, 'workspace.sqlite')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const secret = 'private event text that must not leak'
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'corrupted-event',
+          occurredAt: command.issuedAt,
+          event: { kind: 'textDelta', text: 'valid before corruption' },
+        }),
+      )
+      const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+      try {
+        await writer.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`UPDATE workspace_execution_event SET payload = ${JSON.stringify({ eventId: 'corrupted-event', event: { kind: 'unknownDriverEvent', private: secret } })} WHERE kind = 'driverEvent'`
+          }),
+        )
+      } finally {
+        await writer.dispose()
+      }
+      const corruptReads: ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>> = [
+        store.pageEvents(0, 50),
+        store.readConversationPage(conversation.id, 0, 50),
+      ]
+      for (const read of corruptReads) {
+        const error = await run(Effect.flip(read))
+        expect(error).toMatchObject({ code: 'invalid-data' })
+        expect(JSON.stringify(error)).not.toContain(secret)
+      }
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('recovers a claimed intent after reopening without allowing a resend or overlapping start', async () => {
     const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-store-'))
     const filename = join(directory, 'workspace.sqlite')
@@ -1820,6 +1865,427 @@ describe('WorkspaceStore', () => {
           provisionalAgentSessionId: 'session-after-pending-launch-failure',
         }),
       )
+    })
+  })
+
+  it('pages projects and project tasks by stable IDs and returns stored checkout identities', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(
+        store.registerProject({
+          project: { ...project, id: 'p-2' as never, repositoryIdentity: 'repo:two' },
+          mainCheckout: { ...checkout, id: 'co-2' as never, path: 'C:/other/Project' },
+        }),
+      )
+      await run(
+        store.createTask({
+          task: { ...task, id: 't-2' as never },
+          conversation: { ...conversation, id: 'c-2' as never },
+        }),
+      )
+      const page = await run(store.listProjects({ limit: 1 }))
+      expect(page).toMatchObject({ total: 2, nextAfterId: 'p-1', items: [{ repositoryIdentity: 'repo:one' }] })
+      await expect(run(store.listProjects({ afterId: page.nextAfterId ?? undefined }))).resolves.toMatchObject({
+        items: [{ id: 'p-2' }],
+      })
+      await expect(run(store.getProject(project.id))).resolves.toMatchObject({
+        project: { id: 'p-1' },
+        mainCheckout: { id: 'co-1', kind: 'main', path: 'C:/repo' },
+        otherCheckouts: [],
+      })
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [
+          { id: task.id, status: 'open' },
+          { id: 't-2', status: 'open' },
+        ],
+      })
+      await expect(run(store.readTaskDetail(task.id))).resolves.toMatchObject({
+        task: { id: task.id, projectId: project.id, status: 'open' },
+        conversations: [{ id: conversation.id, taskId: task.id }],
+      })
+      await expect(run(store.listTasks('missing-project' as never))).rejects.toMatchObject({ code: 'not-found' })
+    })
+  })
+
+  it('keeps event pages within the byte budget and continues through a stable high watermark', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      const text = 'x'.repeat(512 * 1024)
+      for (let index = 0; index < 8; index += 1)
+        await run(
+          store.recordDriverEvent(command.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: `large-${index}`,
+            occurredAt: command.issuedAt,
+            event: { kind: 'textDelta', text },
+          }),
+        )
+      let cursor = 0
+      let highWatermark: number | undefined
+      const sequences: Array<number> = []
+      let appended = false
+      while (true) {
+        const page = await run(store.pageEvents(cursor, 500, highWatermark))
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(3 * 1024 * 1024)
+        highWatermark ??= page.highWatermark
+        expect(page.highWatermark).toBe(highWatermark)
+        sequences.push(...page.events.map(event => event.sequence))
+        if (!page.hasMore) break
+        expect(page.nextAfterSequence).not.toBeNull()
+        cursor = page.nextAfterSequence ?? 0
+        if (!appended) {
+          appended = true
+          await run(
+            store.recordDriverEvent(command.runId, {
+              ownerEpoch: 7,
+              generation: 1,
+              eventId: 'append-after-snapshot',
+              occurredAt: command.issuedAt,
+              event: { kind: 'textDelta', text: 'arrived after the page watermark' },
+            }),
+          )
+        }
+      }
+      const transcript: Array<number> = []
+      let firstUserMessage: string | undefined
+      cursor = 0
+      while (true) {
+        const page = await run(store.readConversationPage(conversation.id, cursor, 500, highWatermark))
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(3 * 1024 * 1024)
+        transcript.push(...page.items.map(item => item.event.sequence))
+        firstUserMessage ??= page.items.find(item => item.userMessage)?.userMessage?.content
+        if (!page.hasMore) break
+        expect(page.nextAfterSequence).not.toBeNull()
+        cursor = page.nextAfterSequence ?? 0
+      }
+      expect(sequences).toHaveLength(11)
+      expect(new Set(sequences).size).toBe(11)
+      expect(sequences.at(-1)).toBe(highWatermark)
+      expect(transcript).toEqual(sequences)
+      expect(firstUserMessage).toBe(command.prompt)
+      await expect(run(store.pageEvents(highWatermark ?? 0, 500))).resolves.toMatchObject({
+        events: [{ data: { eventId: 'append-after-snapshot' } }],
+        hasMore: false,
+      })
+    })
+  })
+
+  it('returns exact native session IDs and complete pending request values from indexed state', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run, command, 7, 'native-exact-session')
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'pending-approval',
+          occurredAt: command.issuedAt,
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'approval-1',
+              runId: command.runId,
+              sessionId: 'session-1' as never,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Allow this exact operation?',
+              questions: [],
+              options: [{ id: 'allow-once', label: 'Allow once', scope: 'once', kind: 'allow' }],
+            },
+          },
+        }),
+      )
+      await expect(run(store.listNativeAgentSessions(task.id))).resolves.toMatchObject({
+        items: [
+          {
+            driverId: 'codex',
+            connectionId: 'conn-1',
+            nativeSessionId: 'native-exact-session',
+            generation: 1,
+            checkoutId: 'co-1',
+          },
+        ],
+        total: 1,
+        truncated: false,
+        nextAfterId: null,
+      })
+      await expect(run(store.listPendingRuntimeRequests(task.id, 0, 50))).resolves.toMatchObject({
+        total: 1,
+        hasMore: false,
+        items: [
+          {
+            runId: command.runId,
+            request: {
+              requestId: 'approval-1',
+              prompt: 'Allow this exact operation?',
+              options: [{ id: 'allow-once' }],
+            },
+          },
+        ],
+      })
+    })
+  })
+
+  it('rejects unknown read resources and invalid cursors without changing durable state', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      const before = await run(store.readTaskSnapshot(task.id, 10))
+      const reads: ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>> = [
+        store.getProject('missing' as never),
+        store.listTasks('missing' as never),
+        store.readTaskDetail('missing' as never),
+        store.listNativeAgentSessions('missing' as never),
+        store.listPendingRuntimeRequests('missing' as never, 0, 10),
+        store.readConversationPage('missing' as never, 0, 10),
+      ]
+      for (const read of reads) await expect(run(read)).rejects.toMatchObject({ code: 'not-found' })
+      const invalidReads: ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>> = [
+        store.listProjects({ limit: 51 }),
+        store.getProject(project.id, { limit: 0 }),
+        store.listTasks(project.id, { limit: 1.5 }),
+        store.readTaskDetail(task.id, { limit: 51 }),
+        store.listNativeAgentSessions(task.id, { limit: 0 }),
+        store.listPendingRuntimeRequests(task.id, -1, 10),
+        store.pageEvents(2, 10, 1),
+        store.readConversationPage(conversation.id, 2, 10, 1),
+      ]
+      for (const read of invalidReads) await expect(run(read)).rejects.toMatchObject({ code: 'invalid-data' })
+      await run(store.listProjects())
+      await run(store.getProject(project.id))
+      await run(store.listTasks(project.id))
+      await run(store.readTaskDetail(task.id))
+      await run(store.listNativeAgentSessions(task.id))
+      await run(store.listPendingRuntimeRequests(task.id, 0, 10))
+      await run(store.pageEvents(0, 10))
+      await run(store.readConversationPage(conversation.id, 0, 10))
+      expect(await run(store.readTaskSnapshot(task.id, 10))).toEqual(before)
+      expect((await run(store.acquireOwnerEpoch(command.issuedAt))).ownerEpoch).toBe(8)
+    })
+  })
+
+  it('summarizes an oversized event and offers bounded, lossless payload retrieval', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      const text = 'large\\\u754c'.repeat(600_000)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'oversized',
+          occurredAt: command.issuedAt,
+          event: { kind: 'textDelta', text },
+        }),
+      )
+      const page = await run(store.pageEvents(3, 10))
+      expect(page.events).toHaveLength(1)
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+      const event = page.events[0]
+      expect(event).toMatchObject({ payloadTruncated: true, payloadRef: { kind: 'event', id: '4' } })
+      if (!event?.payloadRef) throw new Error('Expected an oversized event payload reference')
+      let json = ''
+      let offset: number | null = 0
+      while (offset !== null) {
+        const chunk: WorkspacePayloadPage = await run(store.readWorkspacePayload(event.payloadRef, offset, 65536))
+        expect(Buffer.byteLength(JSON.stringify(chunk))).toBeLessThan(512 * 1024)
+        json += chunk.json
+        offset = chunk.nextAfterOffset
+      }
+      expect(JSON.parse(json)).toMatchObject({ data: { event: { kind: 'textDelta', text } } })
+      expect((await run(store.readConversationPage(conversation.id, 3, 10))).items[0]?.event).toMatchObject({
+        payloadRef: event.payloadRef,
+      })
+    })
+  })
+
+  it('traverses checkout and conversation details under both count and byte limits', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-detail-pages-'))
+    const filename = join(directory, 'workspace.sqlite')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const large = 'd'.repeat(650 * 1024)
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          for (let index = 0; index < 7; index += 1) {
+            const checkoutId = `other-${index}`
+            yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${checkoutId}, ${project.id}, ${JSON.stringify({ ...checkout, id: checkoutId, projectId: project.id, kind: 'worktree', path: large })})`
+            const conversationId = `other-conversation-${index}`
+            yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${conversationId}, ${task.id}, ${JSON.stringify({ ...conversation, id: conversationId, taskId: task.id, title: large })})`
+          }
+        }),
+      )
+      const before = await run(store.readTaskSnapshot(task.id, 10))
+      const checkoutIds: Array<string> = []
+      let checkoutCursor: string | undefined
+      let checkoutPages = 0
+      do {
+        const page = await run(store.getProject(project.id, { afterCheckoutId: checkoutCursor, limit: 50 }))
+        expect(page.totalOtherCheckouts).toBe(7)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        expect(page.otherCheckouts.length).toBeGreaterThan(0)
+        checkoutIds.push(...page.otherCheckouts.map(item => item.id))
+        checkoutCursor = page.nextAfterCheckoutId ?? undefined
+        checkoutPages += 1
+      } while (checkoutCursor)
+      expect(checkoutPages).toBeGreaterThan(1)
+      expect(checkoutIds).toEqual(['other-0', 'other-1', 'other-2', 'other-3', 'other-4', 'other-5', 'other-6'])
+      const conversationIds: Array<string> = []
+      let conversationCursor: string | undefined
+      let conversationPages = 0
+      do {
+        const page = await run(store.readTaskDetail(task.id, { afterId: conversationCursor, limit: 50 }))
+        expect(page.totalConversations).toBe(8)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        expect(page.conversations.length).toBeGreaterThan(0)
+        conversationIds.push(...page.conversations.map(item => item.id))
+        conversationCursor = page.nextAfterConversationId ?? undefined
+        conversationPages += 1
+      } while (conversationCursor)
+      expect(conversationPages).toBeGreaterThan(1)
+      expect(conversationIds).toEqual([
+        'c-1',
+        'other-conversation-0',
+        'other-conversation-1',
+        'other-conversation-2',
+        'other-conversation-3',
+        'other-conversation-4',
+        'other-conversation-5',
+        'other-conversation-6',
+      ])
+      expect((await run(store.getProject(project.id, { limit: 1 }))).otherCheckouts).toHaveLength(1)
+      expect((await run(store.readTaskDetail(task.id, { limit: 1 }))).conversations).toHaveLength(1)
+      expect(await run(store.readTaskSnapshot(task.id, 10))).toEqual(before)
+    } finally {
+      await writer.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('fails closed on corrupt read metadata and pending request state without exposing stored content', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-corrupt-reads-'))
+    const filename = join(directory, 'workspace.sqlite')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const secret = 'corrupt-private-content'
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_project SET payload = ${JSON.stringify({ secret })}`
+        }),
+      )
+      const projectReads: ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>> = [
+        store.listProjects(),
+        store.getProject(project.id),
+        store.listTasks(project.id),
+      ]
+      for (const read of projectReads) {
+        const error = await run(Effect.flip(read))
+        expect(error).toMatchObject({ code: 'invalid-data' })
+        expect(JSON.stringify(error)).not.toContain(secret)
+      }
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_project SET payload = ${JSON.stringify(project)}`
+          yield* sql`UPDATE workspace_conversation SET payload = '{'`
+        }),
+      )
+      for (const read of [
+        store.readTaskDetail(task.id),
+        store.readConversationPage(conversation.id, 0, 10),
+      ] as ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>>) {
+        await expect(run(read)).rejects.toMatchObject({ code: 'invalid-data' })
+      }
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_conversation SET payload = ${JSON.stringify({ ...conversation, taskId: task.id })}`
+          yield* sql`UPDATE workspace_checkout SET payload = '{'`
+        }),
+      )
+      await expect(run(store.getProject(project.id))).rejects.toMatchObject({ code: 'invalid-data' })
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_checkout SET payload = ${JSON.stringify({ ...checkout, projectId: project.id })}`
+        }),
+      )
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'pending',
+          occurredAt: command.issuedAt,
+          event: {
+            kind: 'requestPending',
+            request: {
+              runId: command.runId,
+              requestId: 'pending',
+              generation: 1,
+              kind: 'question',
+              prompt: 'Question',
+              questions: [],
+            },
+          },
+        }),
+      )
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_execution_event SET payload = '{' WHERE kind = 'driverEvent'`
+          yield* sql`UPDATE workspace_agent_session SET status = 'corrupt'`
+        }),
+      )
+      await expect(run(store.listPendingRuntimeRequests(task.id, 0, 10))).rejects.toMatchObject({
+        code: 'invalid-data',
+      })
+      await expect(run(store.listNativeAgentSessions(task.id))).rejects.toMatchObject({ code: 'invalid-data' })
+    } finally {
+      await writer.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses the global snapshot watermark even when a Conversation has no events', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(
+        store.createTask({
+          task: { ...task, id: 'other-task' as never },
+          conversation: { ...conversation, id: 'other-conversation' as never },
+        }),
+      )
+      await acceptRun(store, run, {
+        ...command,
+        taskId: 'other-task' as never,
+        conversationId: 'other-conversation' as never,
+      })
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.highWatermark).toBe(3)
+      await expect(run(store.readConversationPage(conversation.id, 0, 500, snapshot.highWatermark))).resolves.toEqual({
+        items: [],
+        highWatermark: 3,
+        nextAfterSequence: null,
+        hasMore: false,
+      })
+      await expect(run(store.readConversationPage(conversation.id, 0, 500, 4))).rejects.toMatchObject({
+        code: 'invalid-data',
+      })
     })
   })
 

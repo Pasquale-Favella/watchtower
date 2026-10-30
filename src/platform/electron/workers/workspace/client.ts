@@ -27,7 +27,17 @@ import type {
   RecordDriverEventCommand,
   WorkspaceEventPage,
   WorkspaceSnapshot,
+  WorkspaceEntityPageOptions,
+  WorkspaceProjectReadPage,
+  WorkspaceProjectDetail,
+  WorkspaceTaskReadPage,
+  WorkspaceNativeAgentSessionPage,
+  WorkspacePendingRuntimeRequestPage,
+  WorkspaceTaskDetail,
+  WorkspaceConversationPage,
+  WorkspaceCheckoutPageOptions,
 } from '@/shared/schemas/workspace-store.js'
+import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 const DEFAULT_INITIALIZATION_TIMEOUT_MS = 5_000
@@ -408,14 +418,79 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:acquireOwnerEpoch'](payload),
           )
         },
-        pageEvents: (afterSequence, limit): Effect.Effect<WorkspaceEventPage, WorkspaceStoreError> => {
-          const payload = { afterSequence, limit }
+        readWorkspacePayload: (reference, afterOffset, limit) => {
+          const payload = { reference, afterOffset, limit }
+          return invoke('workspace-worker:readWorkspacePayload', payload, () =>
+            rawClient['workspace-worker:readWorkspacePayload'](payload),
+          )
+        },
+        pageEvents: (afterSequence, limit, throughSequence): Effect.Effect<WorkspaceEventPage, WorkspaceStoreError> => {
+          const payload = { afterSequence, limit, throughSequence }
           return invoke('workspace-worker:pageEvents', payload, () => rawClient['workspace-worker:pageEvents'](payload))
         },
         readTaskSnapshot: (taskId, runLimit): Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError> => {
           const payload = { taskId, runLimit }
           return invoke('workspace-worker:readTaskSnapshot', payload, () =>
             rawClient['workspace-worker:readTaskSnapshot'](payload),
+          )
+        },
+        listProjects: (options): Effect.Effect<WorkspaceProjectReadPage, WorkspaceStoreError> => {
+          const payload = { options }
+          return invoke('workspace-worker:listProjects', payload, () =>
+            rawClient['workspace-worker:listProjects'](payload),
+          )
+        },
+        getProject: (
+          projectId: ProjectId,
+          options?: WorkspaceCheckoutPageOptions,
+        ): Effect.Effect<WorkspaceProjectDetail, WorkspaceStoreError> => {
+          const payload = { projectId, options }
+          return invoke('workspace-worker:getProject', payload, () => rawClient['workspace-worker:getProject'](payload))
+        },
+        readConversationPage: (
+          conversationId,
+          afterSequence,
+          limit,
+          throughSequence,
+        ): Effect.Effect<WorkspaceConversationPage, WorkspaceStoreError> => {
+          const payload = { conversationId, afterSequence, limit, throughSequence }
+          return invoke('workspace-worker:readConversationPage', payload, () =>
+            rawClient['workspace-worker:readConversationPage'](payload),
+          )
+        },
+        listTasks: (
+          projectId: ProjectId,
+          options?: WorkspaceEntityPageOptions,
+        ): Effect.Effect<WorkspaceTaskReadPage, WorkspaceStoreError> => {
+          const payload = { projectId, options }
+          return invoke('workspace-worker:listTasks', payload, () => rawClient['workspace-worker:listTasks'](payload))
+        },
+        readTaskDetail: (
+          taskId: TaskId,
+          options?: WorkspaceEntityPageOptions,
+        ): Effect.Effect<WorkspaceTaskDetail, WorkspaceStoreError> => {
+          const payload = { taskId, options }
+          return invoke('workspace-worker:readTaskDetail', payload, () =>
+            rawClient['workspace-worker:readTaskDetail'](payload),
+          )
+        },
+        listNativeAgentSessions: (
+          taskId: TaskId,
+          options?: WorkspaceEntityPageOptions,
+        ): Effect.Effect<WorkspaceNativeAgentSessionPage, WorkspaceStoreError> => {
+          const payload = { taskId, options }
+          return invoke('workspace-worker:listNativeAgentSessions', payload, () =>
+            rawClient['workspace-worker:listNativeAgentSessions'](payload),
+          )
+        },
+        listPendingRuntimeRequests: (
+          taskId: TaskId,
+          afterSequence: number,
+          limit: number,
+        ): Effect.Effect<WorkspacePendingRuntimeRequestPage, WorkspaceStoreError> => {
+          const payload = { taskId, afterSequence, limit }
+          return invoke('workspace-worker:listPendingRuntimeRequests', payload, () =>
+            rawClient['workspace-worker:listPendingRuntimeRequests'](payload),
           )
         },
       }

@@ -203,6 +203,10 @@ describe('workspace worker RPC server', () => {
           const ready = yield* client['workspace-worker:ready']()
           yield* client['workspace-worker:registerProject']({ project, mainCheckout: checkout })
           yield* client['workspace-worker:createTask']({ task, conversation })
+          const projects = yield* client['workspace-worker:listProjects']({ options: { limit: 1 } })
+          const projectDetail = yield* client['workspace-worker:getProject']({ projectId: project.id })
+          const tasks = yield* client['workspace-worker:listTasks']({ projectId: project.id })
+          const taskDetail = yield* client['workspace-worker:readTaskDetail']({ taskId: task.id })
           const receipt = yield* client['workspace-worker:beginRun'](command)
           const claim = yield* client['workspace-worker:claimDispatch']({
             runId: command.runId,
@@ -234,6 +238,12 @@ describe('workspace worker RPC server', () => {
             },
           })
           const page = yield* client['workspace-worker:pageEvents']({ afterSequence: 0, limit: 500 })
+          const conversationPage = yield* client['workspace-worker:readConversationPage']({
+            conversationId: conversation.id,
+            afterSequence: 0,
+            throughSequence: page.highWatermark,
+            limit: 500,
+          })
           const firstSnapshot = yield* client['workspace-worker:readTaskSnapshot']({ taskId: task.id, runLimit: 10 })
           const retry: BeginRunCommand = {
             ...command,
@@ -264,6 +274,11 @@ describe('workspace worker RPC server', () => {
             claim,
             event,
             page,
+            conversationPage,
+            projects,
+            projectDetail,
+            tasks,
+            taskDetail,
             firstSnapshot,
             recovered,
             sqlClosedAtAck: sqlScope.state._tag === 'Closed',
@@ -273,10 +288,18 @@ describe('workspace worker RPC server', () => {
       }),
     )
 
-    expect(result.ready).toEqual({ protocolVersion: 5 })
+    expect(result.ready).toEqual({ protocolVersion: 6 })
     expect(result.receipt).toMatchObject({ commandId: command.commandId, runId: command.runId, replayed: false })
     expect(result.claim).toMatchObject({ runId: command.runId, ownerEpoch: 7, workspacePath: checkout.path })
     expect(result.event).toMatchObject({ kind: 'driverEvent', runId: command.runId })
+    expect(result.projects).toMatchObject({ total: 1, items: [{ id: project.id }] })
+    expect(result.projectDetail.mainCheckout).toMatchObject({ id: checkout.id })
+    expect(result.tasks.items).toMatchObject([{ id: task.id }])
+    expect(result.taskDetail.task).toMatchObject({ id: task.id })
+    expect(result.conversationPage.items.find(item => item.userMessage)?.userMessage).toMatchObject({
+      id: `user:${command.runId}`,
+      content: command.prompt,
+    })
     expect(result.page.events.length).toBeGreaterThan(0)
     expect(result.firstSnapshot.runs[0]).toMatchObject({ id: command.runId, status: 'interrupted' })
     expect(result.recovered).toBe(0)
@@ -302,6 +325,8 @@ describe('workspace worker RPC server', () => {
             },
           ],
           highWatermark: 1,
+          nextAfterSequence: null,
+          hasMore: false,
         }
         const pageEvents = vi.fn<WorkspaceStore['Service']['pageEvents']>(() => Effect.succeed(largePage))
         const store = WorkspaceStore.of({ ...baseStore, beginRun, pageEvents })
@@ -391,7 +416,7 @@ describe('workspace worker RPC server', () => {
               Effect.gen(function* () {
                 yield* Deferred.succeed(readStarted, undefined)
                 yield* Deferred.await(releaseRead)
-                return { events: [], highWatermark: 0 }
+                return { events: [], highWatermark: 0, nextAfterSequence: null, hasMore: false }
               }),
           })
           const handlers = workspaceWorkerRpcServerLayer({

@@ -1,7 +1,7 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 
-import type { AgentRunId, ConversationId, TaskId } from '@/shared/schemas/workspace.js'
+import type { AgentRunId, ConversationId, ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type {
   BeginRunCommand,
   CommandReceipt,
@@ -21,10 +21,21 @@ import type {
   RequestResponsePage,
   SettleDeliveryCommand,
   SteerIntentPage,
+  WorkspaceCheckoutPageOptions,
+  WorkspaceConversationPage,
+  WorkspaceEntityPageOptions,
   WorkspaceEventPage,
   WorkspaceExecutionEvent,
+  WorkspaceNativeAgentSessionPage,
+  WorkspacePayloadPage,
+  WorkspacePayloadReference,
+  WorkspacePendingRuntimeRequestPage,
+  WorkspaceProjectDetail,
+  WorkspaceProjectReadPage,
   WorkspaceReadPageOptions,
   WorkspaceSnapshot,
+  WorkspaceTaskDetail,
+  WorkspaceTaskReadPage,
 } from '@/shared/schemas/workspace-store.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
@@ -107,7 +118,44 @@ export class WorkspaceStore extends Context.Service<
     readonly pageEvents: (
       afterSequence: number,
       limit: number,
+      throughSequence?: number,
     ) => Effect.Effect<WorkspaceEventPage, WorkspaceStoreError>
+    readonly listProjects: (
+      options?: WorkspaceEntityPageOptions,
+    ) => Effect.Effect<WorkspaceProjectReadPage, WorkspaceStoreError>
+    readonly getProject: (
+      projectId: ProjectId,
+      options?: WorkspaceCheckoutPageOptions,
+    ) => Effect.Effect<WorkspaceProjectDetail, WorkspaceStoreError>
+    readonly listTasks: (
+      projectId: ProjectId,
+      options?: WorkspaceEntityPageOptions,
+    ) => Effect.Effect<WorkspaceTaskReadPage, WorkspaceStoreError>
+    readonly readTaskDetail: (
+      taskId: TaskId,
+      options?: WorkspaceEntityPageOptions,
+    ) => Effect.Effect<WorkspaceTaskDetail, WorkspaceStoreError>
+    readonly listNativeAgentSessions: (
+      taskId: TaskId,
+      options?: WorkspaceEntityPageOptions,
+    ) => Effect.Effect<WorkspaceNativeAgentSessionPage, WorkspaceStoreError>
+    readonly listPendingRuntimeRequests: (
+      taskId: TaskId,
+      afterSequence: number,
+      limit: number,
+    ) => Effect.Effect<WorkspacePendingRuntimeRequestPage, WorkspaceStoreError>
+    readonly readConversationPage: (
+      conversationId: ConversationId,
+      afterSequence: number,
+      limit: number,
+      throughSequence?: number,
+    ) => Effect.Effect<WorkspaceConversationPage, WorkspaceStoreError>
+    /** Lossless serialized record chunks; offsets and limits count UTF-16 code units, not bytes. */
+    readonly readWorkspacePayload: (
+      reference: WorkspacePayloadReference,
+      afterOffset: number,
+      limit: number,
+    ) => Effect.Effect<WorkspacePayloadPage, WorkspaceStoreError>
     readonly readTaskSnapshot: (
       taskId: TaskId,
       runLimit: number,

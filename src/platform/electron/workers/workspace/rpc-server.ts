@@ -235,13 +235,43 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.acquireOwnerEpoch(recoveredAt),
         true,
       ),
-    'workspace-worker:pageEvents': ({ afterSequence, limit }) =>
-      execute('workspace-worker:pageEvents', { afterSequence, limit }, () =>
-        options.store.pageEvents(afterSequence, limit),
+    'workspace-worker:readWorkspacePayload': ({ reference, afterOffset, limit }) =>
+      execute('workspace-worker:readWorkspacePayload', { reference, afterOffset, limit }, () =>
+        options.store.readWorkspacePayload(reference, afterOffset, limit),
+      ),
+    'workspace-worker:pageEvents': ({ afterSequence, limit, throughSequence }) =>
+      execute('workspace-worker:pageEvents', { afterSequence, limit, throughSequence }, () =>
+        options.store.pageEvents(afterSequence, limit, throughSequence),
       ),
     'workspace-worker:readTaskSnapshot': ({ taskId, runLimit }) =>
       execute('workspace-worker:readTaskSnapshot', { taskId, runLimit }, () =>
         options.store.readTaskSnapshot(taskId, runLimit),
+      ),
+    'workspace-worker:listProjects': ({ options: pageOptions }) =>
+      execute('workspace-worker:listProjects', { options: pageOptions }, () => options.store.listProjects(pageOptions)),
+    'workspace-worker:getProject': ({ projectId, options: pageOptions }) =>
+      execute('workspace-worker:getProject', { projectId, options: pageOptions }, () =>
+        options.store.getProject(projectId, pageOptions),
+      ),
+    'workspace-worker:readConversationPage': ({ conversationId, afterSequence, limit, throughSequence }) =>
+      execute('workspace-worker:readConversationPage', { conversationId, afterSequence, limit, throughSequence }, () =>
+        options.store.readConversationPage(conversationId, afterSequence, limit, throughSequence),
+      ),
+    'workspace-worker:listTasks': ({ projectId, options: pageOptions }) =>
+      execute('workspace-worker:listTasks', { projectId, options: pageOptions }, () =>
+        options.store.listTasks(projectId, pageOptions),
+      ),
+    'workspace-worker:readTaskDetail': ({ taskId, options: pageOptions }) =>
+      execute('workspace-worker:readTaskDetail', { taskId, options: pageOptions }, () =>
+        options.store.readTaskDetail(taskId, pageOptions),
+      ),
+    'workspace-worker:listNativeAgentSessions': ({ taskId, options: pageOptions }) =>
+      execute('workspace-worker:listNativeAgentSessions', { taskId, options: pageOptions }, () =>
+        options.store.listNativeAgentSessions(taskId, pageOptions),
+      ),
+    'workspace-worker:listPendingRuntimeRequests': ({ taskId, afterSequence, limit }) =>
+      execute('workspace-worker:listPendingRuntimeRequests', { taskId, afterSequence, limit }, () =>
+        options.store.listPendingRuntimeRequests(taskId, afterSequence, limit),
       ),
     'workspace-worker:recordRequestResponse': command =>
       execute(

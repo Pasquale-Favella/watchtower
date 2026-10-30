@@ -1,12 +1,21 @@
 import * as Schema from 'effect/Schema'
 
-import { agentDriverEventSchema, agentRequestDecisionSchema, agentRunSchema } from '@/shared/schemas/execution.js'
+import {
+  agentDriverEventSchema,
+  agentRequestDecisionSchema,
+  agentRequestSchema,
+  agentRunSchema,
+} from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
+  agentSessionIdSchema,
   conversationIdSchema,
   projectIdSchema,
+  projectSchema,
   taskIdSchema,
+  taskSchema,
   workspaceCheckoutIdSchema,
+  workspaceCheckoutSchema,
 } from '@/shared/schemas/workspace.js'
 
 const text = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1))
@@ -242,6 +251,20 @@ export const workspaceReadPageOptionsSchema = Schema.Struct({
   ),
 })
 export type WorkspaceReadPageOptions = Schema.Schema.Type<typeof workspaceReadPageOptionsSchema>
+export const workspaceEntityPageOptionsSchema = Schema.Struct({
+  afterId: Schema.optional(text),
+  limit: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
+  ),
+})
+export type WorkspaceEntityPageOptions = Schema.Schema.Type<typeof workspaceEntityPageOptionsSchema>
+export const workspaceCheckoutPageOptionsSchema = Schema.Struct({
+  afterCheckoutId: Schema.optional(text),
+  limit: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
+  ),
+})
+export type WorkspaceCheckoutPageOptions = Schema.Schema.Type<typeof workspaceCheckoutPageOptionsSchema>
 
 const readPageFields = {
   total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
@@ -300,7 +323,39 @@ export const promotedFollowUpSchema = Schema.Struct({
 })
 export type PromotedFollowUp = Schema.Schema.Type<typeof promotedFollowUpSchema>
 
+export const WORKSPACE_STORE_READ_BYTE_CAPACITY = 3 * 1024 * 1024
+export const workspacePayloadReferenceSchema = Schema.Struct({
+  kind: Schema.Literals(['project', 'checkout', 'task', 'conversation', 'agentSession', 'event', 'message']),
+  id: text,
+  digest: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
+})
+export type WorkspacePayloadReference = Schema.Schema.Type<typeof workspacePayloadReferenceSchema>
+const payloadSummaryFields = {
+  payloadTruncated: Schema.optional(Schema.Literal(true)),
+  payloadRef: Schema.optional(workspacePayloadReferenceSchema),
+}
+export const workspacePayloadPageOptionsSchema = Schema.Struct({
+  reference: workspacePayloadReferenceSchema,
+  afterOffset: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isGreaterThanOrEqualTo(0),
+    Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+  ),
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(65536)),
+})
+export const workspacePayloadPageSchema = Schema.Struct({
+  json: Schema.String,
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterOffset: Schema.NullOr(workspacePayloadPageOptionsSchema.fields.afterOffset),
+  truncated: Schema.Boolean,
+})
+export type WorkspacePayloadPage = Schema.Schema.Type<typeof workspacePayloadPageSchema>
+export const workspaceProjectReadSchema = Schema.Struct({ ...projectSchema.fields, ...payloadSummaryFields })
+export const workspaceCheckoutReadSchema = Schema.Struct({ ...workspaceCheckoutSchema.fields, ...payloadSummaryFields })
+export const workspaceTaskReadSchema = Schema.Struct({ ...taskSchema.fields, ...payloadSummaryFields })
+
 export const workspaceExecutionEventSchema = Schema.Struct({
+  ...payloadSummaryFields,
   sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   schemaVersion: Schema.Literal(1),
   kind: Schema.Literals([
@@ -328,8 +383,126 @@ export type WorkspaceExecutionEvent = Schema.Schema.Type<typeof workspaceExecuti
 export const workspaceEventPageSchema = Schema.Struct({
   events: Schema.Array(workspaceExecutionEventSchema),
   highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterSequence: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  hasMore: Schema.Boolean,
 })
 export type WorkspaceEventPage = Schema.Schema.Type<typeof workspaceEventPageSchema>
+const sequenceCursor = Schema.Number.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(0),
+  Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+)
+export const workspaceEventPageOptionsSchema = Schema.Struct({
+  afterSequence: sequenceCursor,
+  throughSequence: Schema.optional(sequenceCursor),
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(500)),
+}).check(
+  Schema.makeFilter(value => value.throughSequence === undefined || value.afterSequence <= value.throughSequence),
+)
+export type WorkspaceEventPageOptions = Schema.Schema.Type<typeof workspaceEventPageOptionsSchema>
+export const workspacePendingRuntimeRequestPageOptionsSchema = Schema.Struct({
+  afterSequence: sequenceCursor,
+  limit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
+})
+
+export const workspaceProjectReadPageSchema = Schema.Struct({
+  items: Schema.Array(workspaceProjectReadSchema),
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterId: Schema.NullOr(projectIdSchema),
+})
+export type WorkspaceProjectReadPage = Schema.Schema.Type<typeof workspaceProjectReadPageSchema>
+
+export const workspaceProjectDetailSchema = Schema.Struct({
+  project: workspaceProjectReadSchema,
+  mainCheckout: workspaceCheckoutReadSchema,
+  otherCheckouts: Schema.Array(workspaceCheckoutReadSchema),
+  totalOtherCheckouts: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterCheckoutId: Schema.NullOr(workspaceCheckoutIdSchema),
+})
+export type WorkspaceProjectDetail = Schema.Schema.Type<typeof workspaceProjectDetailSchema>
+
+export const workspaceTaskReadPageSchema = Schema.Struct({
+  items: Schema.Array(workspaceTaskReadSchema),
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterId: Schema.NullOr(taskIdSchema),
+})
+export type WorkspaceTaskReadPage = Schema.Schema.Type<typeof workspaceTaskReadPageSchema>
+
+export const workspaceConversationReadSchema = Schema.Struct({
+  ...payloadSummaryFields,
+  id: conversationIdSchema,
+  taskId: taskIdSchema,
+  title: optionalText,
+  createdAt: timestamp,
+  forkedFromConversationId: Schema.optional(Schema.NullOr(conversationIdSchema)),
+  forkedAtMessageId: optionalText,
+})
+export type WorkspaceConversationRead = Schema.Schema.Type<typeof workspaceConversationReadSchema>
+export const workspaceTaskDetailSchema = Schema.Struct({
+  task: workspaceTaskReadSchema,
+  conversations: Schema.Array(workspaceConversationReadSchema),
+  totalConversations: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterConversationId: Schema.NullOr(conversationIdSchema),
+})
+export type WorkspaceTaskDetail = Schema.Schema.Type<typeof workspaceTaskDetailSchema>
+
+export const workspaceNativeAgentSessionSchema = Schema.Struct({
+  ...payloadSummaryFields,
+  id: agentSessionIdSchema,
+  taskId: taskIdSchema,
+  conversationId: conversationIdSchema,
+  checkoutId: workspaceCheckoutIdSchema,
+  driverId: text,
+  connectionId: text,
+  nativeSessionId: text,
+  generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+  status: Schema.Literals(['active', 'suspended', 'closed', 'unavailable']),
+})
+export type WorkspaceNativeAgentSession = Schema.Schema.Type<typeof workspaceNativeAgentSessionSchema>
+export const workspaceNativeAgentSessionPageSchema = Schema.Struct({
+  items: Schema.Array(workspaceNativeAgentSessionSchema),
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterId: Schema.NullOr(agentSessionIdSchema),
+  truncated: Schema.Boolean,
+})
+export type WorkspaceNativeAgentSessionPage = Schema.Schema.Type<typeof workspaceNativeAgentSessionPageSchema>
+
+export const workspacePendingRuntimeRequestSchema = Schema.Struct({
+  ...payloadSummaryFields,
+  runId: agentRunIdSchema,
+  taskId: taskIdSchema,
+  sequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+  request: agentRequestSchema,
+})
+export type WorkspacePendingRuntimeRequest = Schema.Schema.Type<typeof workspacePendingRuntimeRequestSchema>
+
+export const workspacePendingRuntimeRequestPageSchema = Schema.Struct({
+  items: Schema.Array(workspacePendingRuntimeRequestSchema),
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterSequence: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  hasMore: Schema.Boolean,
+})
+export type WorkspacePendingRuntimeRequestPage = Schema.Schema.Type<typeof workspacePendingRuntimeRequestPageSchema>
+
+export const workspaceConversationMessageSchema = Schema.Struct({
+  ...payloadSummaryFields,
+  id: text,
+  content: Schema.String,
+  createdAt: timestamp,
+})
+export const workspaceConversationPageItemSchema = Schema.Struct({
+  event: workspaceExecutionEventSchema,
+  userMessage: Schema.optional(workspaceConversationMessageSchema),
+})
+export type WorkspaceConversationPageItem = Schema.Schema.Type<typeof workspaceConversationPageItemSchema>
+export const workspaceConversationPageSchema = Schema.Struct({
+  items: Schema.Array(workspaceConversationPageItemSchema),
+  highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  nextAfterSequence: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  hasMore: Schema.Boolean,
+})
+export type WorkspaceConversationPage = Schema.Schema.Type<typeof workspaceConversationPageSchema>
+export const workspaceConversationPageOptionsSchema = workspaceEventPageOptionsSchema
 
 export const workspaceSnapshotSchema = Schema.Struct({
   task: Schema.Struct({ id: taskIdSchema, projectId: projectIdSchema, title: text, status: Schema.String }),

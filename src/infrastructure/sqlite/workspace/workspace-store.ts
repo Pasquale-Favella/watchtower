@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/sql/SqlClient'
 
@@ -14,8 +15,17 @@ import {
   UnsupportedLedgerSchemaVersion,
 } from '@/infrastructure/sqlite/sqlite-migrations.js'
 import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
-import { agentRunSchema } from '@/shared/schemas/execution.js'
-import { projectIdSchema, taskIdSchema, workspaceCheckoutSchema } from '@/shared/schemas/workspace.js'
+import { agentDriverEventSchema, agentRunSchema } from '@/shared/schemas/execution.js'
+import {
+  type Project,
+  projectIdSchema,
+  projectSchema,
+  type Task,
+  taskIdSchema,
+  taskSchema,
+  type WorkspaceCheckout,
+  workspaceCheckoutSchema,
+} from '@/shared/schemas/workspace.js'
 import {
   type BeginRunCommand,
   beginRunCommandSchema,
@@ -41,12 +51,33 @@ import {
   steerIntentSchema,
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
+  WORKSPACE_STORE_READ_BYTE_CAPACITY,
+  workspaceCheckoutPageOptionsSchema,
+  workspaceConversationMessageSchema,
+  type WorkspaceConversationPageItem,
+  workspaceConversationPageItemSchema,
+  workspaceConversationPageSchema,
+  type WorkspaceConversationRead,
+  workspaceConversationReadSchema,
   type WorkspaceDeliveryOutcome,
+  workspaceEntityPageOptionsSchema,
+  workspaceEventPageOptionsSchema,
   type WorkspaceExecutionEvent,
   workspaceExecutionEventSchema,
+  workspaceNativeAgentSessionSchema,
+  workspacePayloadPageOptionsSchema,
+  type WorkspacePayloadReference,
+  type WorkspacePendingRuntimeRequest,
+  workspacePendingRuntimeRequestPageOptionsSchema,
+  workspacePendingRuntimeRequestPageSchema,
+  workspacePendingRuntimeRequestSchema,
+  workspaceProjectDetailSchema,
+  workspaceProjectReadPageSchema,
   type WorkspaceReadPageOptions,
   workspaceReadPageOptionsSchema,
   WorkspaceStoreError,
+  workspaceTaskDetailSchema,
+  workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
 const migrations = [
@@ -751,9 +782,16 @@ const makeService = Effect.gen(function* () {
       return { row, run, checkout }
     })
 
+  const decodeEventData = (kind: unknown, payload: string) =>
+    kind === 'driverEvent'
+      ? decodeJson(
+          Schema.Struct({ eventId: recordDriverEventCommandSchema.fields.eventId, event: agentDriverEventSchema }),
+        )(payload)
+      : decodeJson(Schema.Record(Schema.String, Schema.Unknown))(payload)
+
   const decodeStoredEvent = (row: Record<string, unknown>) =>
     Effect.gen(function* () {
-      const data = yield* decodeJson(Schema.Record(Schema.String, Schema.Unknown))(String(row.payload))
+      const data = yield* decodeEventData(row.kind, String(row.payload))
       return yield* Schema.decodeUnknownEffect(workspaceExecutionEventSchema)({
         sequence: Number(row.sequence),
         schemaVersion: Number(row.schema_version),
@@ -1538,39 +1576,678 @@ const makeService = Effect.gen(function* () {
     )
   })
 
-  const pageEvents = (afterSequence: number, limit: number) =>
+  const requireTask = Effect.fnUntraced(function* (taskId: string) {
+    const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId} AND archived = 0`
+    if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
+    const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+    if (task.id !== taskId || task.projectId !== rows[0].project_id)
+      return yield* Effect.fail(safeError('invalid-data', 'Stored Task identity failed validation'))
+    return task
+  })
+
+  function preview(value: unknown, depth = 0): unknown {
+    if (Predicate.isString(value)) return value.slice(0, 256)
+    if (Array.isArray(value)) return depth < 6 ? value.slice(0, 4).map(item => preview(item, depth + 1)) : []
+    if (Predicate.isObject(value))
+      return depth < 6
+        ? Object.fromEntries(
+            Object.entries(value)
+              .slice(0, 16)
+              .map(([key, item]) => [key, preview(item, depth + 1)]),
+          )
+        : {}
+    return value
+  }
+
+  function summarize<A extends object>(
+    value: A,
+    kind: WorkspacePayloadReference['kind'],
+    id: string,
+    byteLimit = 1024 * 1024,
+  ): A & {
+    readonly payloadTruncated?: true
+    readonly payloadRef?: WorkspacePayloadReference
+  } {
+    if (Buffer.byteLength(encode(value), 'utf8') <= byteLimit) return value
+    return {
+      ...(preview(value) as A),
+      ...Object.fromEntries(
+        Object.entries(value).filter(([key]) =>
+          ['id', 'projectId', 'taskId', 'runId', 'conversationId', 'checkoutId'].includes(key),
+        ),
+      ),
+      payloadTruncated: true,
+      payloadRef: { kind, id, digest: fingerprint(value) },
+    }
+  }
+
+  const decodeNativeSession = (row: Record<string, unknown>) =>
+    Schema.decodeUnknownEffect(workspaceNativeAgentSessionSchema)({
+      id: row.id,
+      taskId: row.task_id,
+      conversationId: row.conversation_id,
+      checkoutId: row.checkout_id,
+      driverId: row.driver_id,
+      connectionId: row.connection_id,
+      nativeSessionId: row.native_session_id,
+      generation: Number(row.generation),
+      status: row.status,
+    }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored native Agent Session failed validation')))
+
+  const readWorkspacePayload: WorkspaceStore['Service']['readWorkspacePayload'] = (reference, afterOffset, limit) =>
     guard(
       Effect.gen(function* () {
-        if (
-          !Number.isInteger(afterSequence) ||
-          afterSequence < 0 ||
-          !Number.isInteger(limit) ||
-          limit < 1 ||
-          limit > 500
-        ) {
-          return yield* Effect.fail(safeError('invalid-data', 'Event cursor or page limit is invalid'))
-        }
+        yield* Schema.decodeUnknownEffect(workspacePayloadPageOptionsSchema)({ reference, afterOffset, limit }).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Workspace payload reference or cursor is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            let value: unknown
+            switch (reference.kind) {
+              case 'event': {
+                const rows =
+                  yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence = ${reference.id}`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Workspace event does not exist'))
+                value = yield* decodeStoredEvent(rows[0])
+                break
+              }
+              case 'message': {
+                const rows =
+                  yield* sql`SELECT id, content, created_at FROM workspace_message WHERE id = ${reference.id} AND role = 'user'`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Conversation message does not exist'))
+                value = yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)({
+                  id: rows[0].id,
+                  content: rows[0].content,
+                  createdAt: rows[0].created_at,
+                }).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')),
+                )
+                break
+              }
+              case 'agentSession': {
+                const rows =
+                  yield* sql`SELECT * FROM workspace_agent_session WHERE id = ${reference.id} AND native_session_id IS NOT NULL`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Agent Session does not exist'))
+                value = yield* decodeNativeSession(rows[0])
+                break
+              }
+              default: {
+                const tables = {
+                  project: 'workspace_project',
+                  checkout: 'workspace_checkout',
+                  task: 'workspace_task',
+                  conversation: 'workspace_conversation',
+                } as const
+                const rows =
+                  yield* sql`SELECT id, payload FROM ${sql(tables[reference.kind])} WHERE id = ${reference.id}`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Workspace entity does not exist'))
+                switch (reference.kind) {
+                  case 'project':
+                    value = yield* decodeJson(projectSchema)(String(rows[0].payload))
+                    break
+                  case 'checkout':
+                    value = yield* decodeJson(workspaceCheckoutSchema)(String(rows[0].payload))
+                    break
+                  case 'task':
+                    value = yield* decodeJson(taskSchema)(String(rows[0].payload))
+                    break
+                  case 'conversation':
+                    value = yield* decodeJson(workspaceConversationReadSchema)(String(rows[0].payload))
+                    break
+                }
+              }
+            }
+            if (fingerprint(value) !== reference.digest)
+              return yield* Effect.fail(safeError('invalid-data', 'Workspace payload reference is stale'))
+            const json = encode(value)
+            if (afterOffset > json.length)
+              return yield* Effect.fail(safeError('invalid-data', 'Workspace payload cursor is invalid'))
+            const end = Math.min(afterOffset + limit, json.length)
+            return {
+              json: json.slice(afterOffset, end),
+              total: json.length,
+              nextAfterOffset: end < json.length ? end : null,
+              truncated: end < json.length,
+            }
+          }),
+        )
+      }),
+    )
+
+  const pageEvents: WorkspaceStore['Service']['pageEvents'] = (afterSequence, limit, throughSequence) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspaceEventPageOptionsSchema)({
+          afterSequence,
+          limit,
+          throughSequence,
+        }).pipe(Effect.mapError(() => safeError('invalid-data', 'Event cursor or page limit is invalid')))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
-            const rows =
-              yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence > ${afterSequence} AND sequence <= ${Number(high[0]?.high ?? 0)} ORDER BY sequence LIMIT ${limit}`
-            const events = yield* Effect.forEach(rows as Array<Record<string, unknown>>, row =>
-              Effect.gen(function* () {
-                const data = yield* decodeJson(Schema.Record(Schema.String, Schema.Unknown))(String(row.payload))
-                return yield* Schema.decodeUnknownEffect(workspaceExecutionEventSchema)({
-                  sequence: Number(row.sequence),
-                  schemaVersion: Number(row.schema_version),
-                  kind: row.kind,
-                  runId: row.run_id,
-                  taskId: row.task_id,
-                  generation: Number(row.generation),
-                  occurredAt: row.occurred_at,
-                  data,
-                })
-              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored workspace event failed validation'))),
+            const latestSequence = Number(high[0]?.high ?? 0)
+            if (throughSequence !== undefined && throughSequence > latestSequence)
+              return yield* Effect.fail(safeError('invalid-data', 'Event high watermark is invalid'))
+            const highWatermark = throughSequence ?? latestSequence
+            const events: Array<WorkspaceExecutionEvent> = []
+            let cursor = afterSequence
+            let encodedBytes = 1024
+            let hasMore = false
+            for (let index = 0; index < limit; index += 1) {
+              const rows =
+                yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence > ${cursor} AND sequence <= ${highWatermark} ORDER BY sequence LIMIT 1`
+              const row = rows[0] as Record<string, unknown> | undefined
+              if (!row) break
+              const storedEvent = yield* decodeStoredEvent(row)
+              const event = summarize(storedEvent, 'event', String(storedEvent.sequence))
+              const nextBytes = Buffer.byteLength(JSON.stringify(event), 'utf8') + 1
+              if (encodedBytes + nextBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                if (events.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored workspace event exceeds the read page byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              events.push(event)
+              encodedBytes += nextBytes
+              cursor = event.sequence
+            }
+            if (!hasMore && cursor < highWatermark) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_execution_event WHERE sequence > ${cursor} AND sequence <= ${highWatermark} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return { events, highWatermark, nextAfterSequence: hasMore ? cursor : null, hasMore }
+          }),
+        )
+      }),
+    )
+
+  const decodeEntityPageOptions = (options: unknown) =>
+    Schema.decodeUnknownEffect(workspaceEntityPageOptionsSchema)(options ?? {}).pipe(
+      Effect.map(value => ({ afterId: value.afterId ?? '', limit: value.limit ?? 20 })),
+      Effect.mapError(() => safeError('invalid-data', 'Workspace entity cursor or limit is invalid')),
+    )
+
+  const appendEntityPageItem = Effect.fnUntraced(function* <A extends { readonly id: string }>(
+    items: Array<A>,
+    item: A,
+    total: number,
+    entity: 'Project' | 'Task',
+  ): Effect.fn.Return<boolean, WorkspaceStoreError> {
+    const candidate = [...items, item]
+    if (
+      Buffer.byteLength(JSON.stringify({ items: candidate, total, nextAfterId: item.id }), 'utf8') >
+      WORKSPACE_STORE_READ_BYTE_CAPACITY
+    ) {
+      if (items.length === 0)
+        return yield* Effect.fail(safeError('invalid-data', `Stored ${entity} exceeds the read page byte limit`))
+      return false
+    }
+    items.push(item)
+    return true
+  })
+
+  const listProjects: WorkspaceStore['Service']['listProjects'] = options =>
+    guard(
+      Effect.gen(function* () {
+        const { afterId, limit } = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts = yield* sql`SELECT COUNT(*) AS total FROM workspace_project`
+            const total = Number(counts[0]?.total ?? 0)
+            const items: Array<Project> = []
+            let cursor = afterId
+            let hasMore = false
+            for (let index = 0; index < limit; index += 1) {
+              const rows =
+                yield* sql`SELECT id, payload FROM workspace_project WHERE id > ${cursor} ORDER BY id LIMIT 1`
+              const row = rows[0]
+              if (!row) break
+              const project = summarize(
+                yield* decodeJson(projectSchema)(String(row.payload)),
+                'project',
+                String(row.id),
+              )
+              if (project.id !== row.id)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+              if (!(yield* appendEntityPageItem(items, project, total, 'Project'))) {
+                hasMore = true
+                break
+              }
+              cursor = project.id
+            }
+            if (!hasMore) {
+              const more = yield* sql`SELECT 1 AS found FROM workspace_project WHERE id > ${cursor} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceProjectReadPageSchema)({
+              items,
+              total,
+              nextAfterId: hasMore ? cursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored project page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const getProject: WorkspaceStore['Service']['getProject'] = (projectId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const page = yield* Schema.decodeUnknownEffect(workspaceCheckoutPageOptionsSchema)(options ?? {}).pipe(
+          Effect.map(value => ({ afterCheckoutId: value.afterCheckoutId ?? '', limit: value.limit ?? 20 })),
+          Effect.mapError(() => safeError('invalid-data', 'Checkout cursor or page limit is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const projectRows = yield* sql`SELECT id, payload FROM workspace_project WHERE id = ${projectId}`
+            if (!projectRows[0]) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const project = summarize(
+              yield* decodeJson(projectSchema)(String(projectRows[0].payload)),
+              'project',
+              String(projectRows[0].id),
+              128 * 1024,
             )
-            return { events, highWatermark: Number(high[0]?.high ?? 0) }
+            if (project.id !== projectRows[0].id)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+            const mainRows =
+              yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') = 'main' ELSE 0 END LIMIT 2`
+            if (mainRows.length !== 1)
+              return yield* Effect.fail(safeError('invalid-data', 'Project must have exactly one main checkout'))
+            const mainCheckout = summarize(
+              yield* decodeJson(workspaceCheckoutSchema)(String(mainRows[0].payload)),
+              'checkout',
+              String(mainRows[0].id),
+              128 * 1024,
+            )
+            if (
+              mainCheckout.id !== mainRows[0].id ||
+              mainCheckout.projectId !== projectId ||
+              mainCheckout.projectId !== mainRows[0].project_id ||
+              mainCheckout.kind !== 'main'
+            )
+              return yield* Effect.fail(safeError('invalid-data', 'Stored main checkout membership failed validation'))
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id}`
+            const totalOtherCheckouts = Number(counts[0]?.total ?? 0)
+            const otherCheckouts: Array<WorkspaceCheckout> = []
+            let checkoutCursor = page.afterCheckoutId
+            let hasMore = false
+            for (let index = 0; index < page.limit; index += 1) {
+              const checkouts =
+                yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} ORDER BY id LIMIT 1`
+              const row = checkouts[0]
+              if (!row) break
+              const checkout = summarize(
+                yield* decodeJson(workspaceCheckoutSchema)(String(row.payload)),
+                'checkout',
+                String(row.id),
+              )
+              if (checkout.id !== row.id || checkout.projectId !== projectId || checkout.projectId !== row.project_id)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored checkout membership failed validation'))
+              const candidate = [...otherCheckouts, checkout]
+              if (
+                Buffer.byteLength(
+                  JSON.stringify({
+                    project,
+                    mainCheckout,
+                    otherCheckouts: candidate,
+                    totalOtherCheckouts,
+                    nextAfterCheckoutId: checkout.id,
+                  }),
+                  'utf8',
+                ) > WORKSPACE_STORE_READ_BYTE_CAPACITY
+              ) {
+                if (otherCheckouts.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored checkout exceeds the project detail byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              otherCheckouts.push(checkout)
+              checkoutCursor = checkout.id
+            }
+            if (!hasMore) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceProjectDetailSchema)({
+              project,
+              mainCheckout,
+              otherCheckouts,
+              totalOtherCheckouts,
+              nextAfterCheckoutId: hasMore ? checkoutCursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored project detail failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const listTasks: WorkspaceStore['Service']['listTasks'] = (projectId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterId, limit } = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${projectId}`
+            if (!projects[0]) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
+            if (project.id !== projectId)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND archived = 0`
+            const total = Number(counts[0]?.total ?? 0)
+            const items: Array<Task> = []
+            let cursor = afterId
+            let hasMore = false
+            for (let index = 0; index < limit; index += 1) {
+              const rows =
+                yield* sql`SELECT id, payload FROM workspace_task WHERE project_id = ${projectId} AND archived = 0 AND id > ${cursor} ORDER BY id LIMIT 1`
+              const row = rows[0]
+              if (!row) break
+              const task = summarize(yield* decodeJson(taskSchema)(String(row.payload)), 'task', String(row.id))
+              if (task.id !== row.id || task.projectId !== projectId)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Task membership failed validation'))
+              if (!(yield* appendEntityPageItem(items, task, total, 'Task'))) {
+                hasMore = true
+                break
+              }
+              cursor = task.id
+            }
+            if (!hasMore) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_task WHERE project_id = ${projectId} AND archived = 0 AND id > ${cursor} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceTaskReadPageSchema)({
+              items,
+              total,
+              nextAfterId: hasMore ? cursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored task page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const listNativeAgentSessions: WorkspaceStore['Service']['listNativeAgentSessions'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterId, limit } = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* requireTask(taskId)
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_session WHERE task_id = ${taskId} AND native_session_id IS NOT NULL`
+            const rows =
+              yield* sql`SELECT * FROM workspace_agent_session WHERE task_id = ${taskId} AND native_session_id IS NOT NULL AND id > ${afterId} ORDER BY id LIMIT ${limit + 1}`
+            const items = []
+            let bytes = 1024
+            for (const row of rows.slice(0, limit)) {
+              const item = summarize(yield* decodeNativeSession(row), 'agentSession', String(row.id))
+              const size = Buffer.byteLength(encode(item), 'utf8') + 1
+              if (bytes + size > WORKSPACE_STORE_READ_BYTE_CAPACITY) break
+              items.push(item)
+              bytes += size
+            }
+            const truncated = rows.length > items.length
+            return {
+              items,
+              total: Number(counts[0]?.total ?? 0),
+              truncated,
+              nextAfterId: truncated ? (items.at(-1)?.id ?? null) : null,
+            }
+          }),
+        )
+      }),
+    )
+
+  const readTaskDetail: WorkspaceStore['Service']['readTaskDetail'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const page = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId} AND archived = 0`
+            const row = rows[0] as Record<string, unknown> | undefined
+            if (!row) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
+            const task = summarize(
+              yield* decodeJson(taskSchema)(String(row.payload)),
+              'task',
+              String(row.id),
+              128 * 1024,
+            )
+            if (task.id !== row.id || task.projectId !== row.project_id)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Task membership failed validation'))
+            const conversationCounts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_conversation WHERE task_id = ${taskId}`
+            const totalConversations = Number(conversationCounts[0]?.total ?? 0)
+            const conversations: Array<WorkspaceConversationRead> = []
+            let conversationCursor = page.afterId
+            let conversationsHaveMore = false
+            for (let index = 0; index < page.limit; index += 1) {
+              const conversationRows =
+                yield* sql`SELECT id, task_id, payload FROM workspace_conversation WHERE task_id = ${taskId} AND id > ${conversationCursor} ORDER BY id LIMIT 1`
+              const conversationRow = conversationRows[0]
+              if (!conversationRow) break
+              const conversation = summarize(
+                yield* decodeJson(workspaceConversationReadSchema)(String(conversationRow.payload)),
+                'conversation',
+                String(conversationRow.id),
+              )
+              if (
+                conversation.id !== conversationRow.id ||
+                conversation.taskId !== taskId ||
+                conversation.taskId !== conversationRow.task_id
+              )
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Conversation membership failed validation'))
+              const candidate = [...conversations, conversation]
+              if (
+                Buffer.byteLength(
+                  JSON.stringify({
+                    task,
+                    conversations: candidate,
+                    totalConversations,
+                    nextAfterConversationId: conversation.id,
+                  }),
+                  'utf8',
+                ) > WORKSPACE_STORE_READ_BYTE_CAPACITY
+              ) {
+                if (conversations.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored Conversation exceeds the Task detail byte limit'),
+                  )
+                conversationsHaveMore = true
+                break
+              }
+              conversations.push(conversation)
+              conversationCursor = conversation.id
+            }
+            if (!conversationsHaveMore) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_conversation WHERE task_id = ${taskId} AND id > ${conversationCursor} LIMIT 1`
+              conversationsHaveMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceTaskDetailSchema)({
+              task,
+              conversations,
+              totalConversations,
+              nextAfterConversationId: conversationsHaveMore ? conversationCursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Task detail failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const listPendingRuntimeRequests: WorkspaceStore['Service']['listPendingRuntimeRequests'] = (
+    taskId,
+    afterSequence,
+    limit,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspacePendingRuntimeRequestPageOptionsSchema)({
+          afterSequence,
+          limit,
+        }).pipe(Effect.mapError(() => safeError('invalid-data', 'Pending request cursor or limit is invalid')))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* requireTask(taskId)
+            let rows =
+              yield* sql`SELECT s.run_id, r.task_id, e.sequence, e.payload FROM workspace_driver_request_state s JOIN workspace_agent_run r ON r.id = s.run_id LEFT JOIN workspace_execution_event e ON e.sequence = (SELECT MAX(p.sequence) FROM workspace_execution_event p WHERE p.run_id = s.run_id AND p.kind = 'driverEvent' AND CASE WHEN json_valid(p.payload) THEN json_extract(p.payload, '$.event.kind') = 'requestPending' AND json_extract(p.payload, '$.event.request.requestId') = s.request_id ELSE 0 END) WHERE s.state = 'pending' AND r.task_id = ${taskId} AND (e.sequence > ${afterSequence} OR e.sequence IS NULL) ORDER BY e.sequence LIMIT 1`
+            const countRows =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_driver_request_state s JOIN workspace_agent_run r ON r.id = s.run_id WHERE s.state = 'pending' AND r.task_id = ${taskId}`
+            const total = Number(countRows[0]?.total ?? 0)
+            const items: Array<WorkspacePendingRuntimeRequest> = []
+            let cursor = afterSequence
+            let hasMore = false
+            let bytes = 512
+            for (let index = 0; index < limit && rows[0]; index += 1) {
+              const row = rows[0] as Record<string, unknown>
+              const data = yield* decodeEventData('driverEvent', String(row.payload))
+              const request = yield* Schema.decodeUnknownEffect(agentDriverEventSchema)(data.event).pipe(
+                Effect.flatMap(event =>
+                  event.kind === 'requestPending'
+                    ? Effect.succeed(event.request)
+                    : Effect.fail(safeError('invalid-data', 'Pending request event failed validation')),
+                ),
+                Effect.mapError(error =>
+                  error instanceof WorkspaceStoreError
+                    ? error
+                    : safeError('invalid-data', 'Pending request event failed validation'),
+                ),
+              )
+              if (request.runId !== row.run_id)
+                return yield* Effect.fail(
+                  safeError('invalid-data', 'Stored pending request membership failed validation'),
+                )
+              const storedItem = yield* Schema.decodeUnknownEffect(workspacePendingRuntimeRequestSchema)({
+                runId: row.run_id,
+                taskId: row.task_id,
+                sequence: Number(row.sequence),
+                request,
+              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored pending request failed validation')))
+              const eventRows =
+                yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence = ${storedItem.sequence}`
+              if (!eventRows[0])
+                return yield* Effect.fail(safeError('invalid-data', 'Stored pending request event is missing'))
+              const sourceEvent = yield* decodeStoredEvent(eventRows[0])
+              const summarizedRequest = summarize(storedItem.request, 'event', String(storedItem.sequence))
+              const item = summarizedRequest.payloadRef
+                ? {
+                    ...storedItem,
+                    request: summarizedRequest,
+                    payloadTruncated: true as const,
+                    payloadRef: { ...summarizedRequest.payloadRef, digest: fingerprint(sourceEvent) },
+                  }
+                : storedItem
+              const itemBytes = Buffer.byteLength(encode(item), 'utf8') + 1
+              if (bytes + itemBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                if (items.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored pending request exceeds the read page byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              items.push(item)
+              bytes += itemBytes
+              cursor = item.sequence
+              const nextRows =
+                yield* sql`SELECT s.run_id, r.task_id, e.sequence, e.payload FROM workspace_driver_request_state s JOIN workspace_agent_run r ON r.id = s.run_id LEFT JOIN workspace_execution_event e ON e.sequence = (SELECT MAX(p.sequence) FROM workspace_execution_event p WHERE p.run_id = s.run_id AND p.kind = 'driverEvent' AND CASE WHEN json_valid(p.payload) THEN json_extract(p.payload, '$.event.kind') = 'requestPending' AND json_extract(p.payload, '$.event.request.requestId') = s.request_id ELSE 0 END) WHERE s.state = 'pending' AND r.task_id = ${taskId} AND (e.sequence > ${cursor} OR e.sequence IS NULL) ORDER BY e.sequence LIMIT 1`
+              if (index + 1 >= limit || !nextRows[0]) {
+                hasMore = !!nextRows[0]
+                break
+              }
+              rows = nextRows
+            }
+            return yield* Schema.decodeUnknownEffect(workspacePendingRuntimeRequestPageSchema)({
+              items,
+              total,
+              nextAfterSequence: hasMore ? cursor : null,
+              hasMore,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Pending request page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const readConversationPage: WorkspaceStore['Service']['readConversationPage'] = (
+    conversationId,
+    afterSequence,
+    limit,
+    throughSequence,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspaceEventPageOptionsSchema)({
+          afterSequence,
+          limit,
+          throughSequence,
+        }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation cursor or page limit is invalid')))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const conversations =
+              yield* sql`SELECT id, task_id, payload FROM workspace_conversation WHERE id = ${conversationId}`
+            if (!conversations[0]) return yield* Effect.fail(safeError('not-found', 'Conversation does not exist'))
+            const conversation = yield* decodeJson(workspaceConversationReadSchema)(String(conversations[0].payload))
+            if (conversation.id !== conversationId || conversation.taskId !== conversations[0].task_id)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Conversation membership failed validation'))
+            const highs = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
+            const latestSequence = Number(highs[0]?.high ?? 0)
+            if (throughSequence !== undefined && throughSequence > latestSequence)
+              return yield* Effect.fail(safeError('invalid-data', 'Conversation high watermark is invalid'))
+            const highWatermark = throughSequence ?? latestSequence
+            const items: Array<WorkspaceConversationPageItem> = []
+            let cursor = afterSequence
+            let hasMore = false
+            let bytes = 1024
+            for (let index = 0; index < limit; index += 1) {
+              const rows =
+                yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
+              const row = rows[0] as Record<string, unknown> | undefined
+              if (!row) break
+              const storedEvent = yield* decodeStoredEvent(row)
+              const event = summarize(storedEvent, 'event', String(storedEvent.sequence))
+              const userMessage =
+                row.message_id === null || row.message_id === undefined
+                  ? undefined
+                  : {
+                      id: row.message_id,
+                      content: row.message_content,
+                      createdAt: row.message_created_at,
+                    }
+              const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
+                event,
+                ...(userMessage ? { userMessage: summarize(userMessage, 'message', String(userMessage.id)) } : {}),
+              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')))
+              const itemBytes = Buffer.byteLength(encode(item), 'utf8') + 1
+              if (bytes + itemBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                if (items.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored Conversation item exceeds the read page byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              items.push(item)
+              bytes += itemBytes
+              cursor = event.sequence
+            }
+            if (!hasMore && cursor < highWatermark) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceConversationPageSchema)({
+              items,
+              highWatermark,
+              nextAfterSequence: hasMore ? cursor : null,
+              hasMore,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation page failed validation')))
           }),
         )
       }),
@@ -1706,7 +2383,15 @@ const makeService = Effect.gen(function* () {
     promoteNextFollowUp,
     recoverWorker,
     acquireOwnerEpoch,
+    readWorkspacePayload,
     pageEvents,
+    listProjects,
+    getProject,
+    listTasks,
+    readTaskDetail,
+    listNativeAgentSessions,
+    listPendingRuntimeRequests,
+    readConversationPage,
     readTaskSnapshot,
   })
 })

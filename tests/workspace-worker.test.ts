@@ -8,8 +8,14 @@ import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import { WorkspaceWorkerStoreLive } from '@/platform/electron/workers/workspace/client.js'
-import { type BeginRunCommand, type QueuedFollowUpPage, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import {
+  type BeginRunCommand,
+  type QueuedFollowUpPage,
+  type WorkspacePayloadPage,
+  WorkspaceStoreError,
+} from '@/shared/schemas/workspace-store.js'
 
 const timestamp = '2026-10-29T10:00:00Z'
 const project = {
@@ -135,11 +141,11 @@ parentPort.on = (event, listener) => on(event, event === 'message'
   : listener)
 
 const group = RpcGroup.make(
-  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(5) }) }),
+  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(6) }) }),
   Rpc.make('workspace-worker:shutdown', { success: Schema.Void }),
 )
 const handlers = group.toLayer({
-  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 5 }),
+  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 6 }),
   'workspace-worker:shutdown': () => Effect.succeed(undefined),
 })
 const program = Effect.scoped(Effect.gen(function* () {
@@ -167,6 +173,255 @@ afterAll(async () => {
 })
 
 describe('workspace worker RPC client', () => {
+  it('retrieves oversized pre-existing event and message bodies through bounded lossless payload chunks', async () => {
+    const filename = join(fixtureDirectory, 'oversized-records.db')
+    const seed = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const text = '\u{1f600}'.repeat(1_100_000)
+    try {
+      const store = await seed.runPromise(WorkspaceStore)
+      await setup(store)
+      await Effect.runPromise(store.beginRun({ ...beginRun, prompt: text }))
+      await Effect.runPromise(store.claimDispatch(beginRun.runId, 7, timestamp))
+      await Effect.runPromise(
+        store.acknowledgeDispatch(beginRun.runId, {
+          ownerEpoch: 7,
+          nativeSessionId: 'native-oversized',
+          acknowledgedAt: timestamp,
+        }),
+      )
+      await Effect.runPromise(
+        store.recordDriverEvent(beginRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'oversized',
+          occurredAt: timestamp,
+          event: { kind: 'textDelta', text },
+        }),
+      )
+    } finally {
+      await seed.dispose()
+    }
+    await withStore(filename, async store => {
+      const events = await Effect.runPromise(store.pageEvents(3, 500))
+      expect(events.events).toHaveLength(1)
+      expect(events.events[0]).toMatchObject({ payloadTruncated: true, payloadRef: { kind: 'event', id: '4' } })
+      expect(Buffer.byteLength(JSON.stringify(events))).toBeLessThan(3 * 1024 * 1024)
+      const conversationPage = await Effect.runPromise(store.readConversationPage(conversation.id, 0, 500))
+      const message = conversationPage.items.find(item => item.userMessage)?.userMessage
+      expect(message).toMatchObject({ payloadTruncated: true, payloadRef: { kind: 'message' } })
+      for (const reference of [events.events[0]?.payloadRef, message?.payloadRef]) {
+        if (!reference) throw new Error('Expected an oversized record payload reference')
+        let json = ''
+        let cursor: number | null = 0
+        while (cursor !== null) {
+          const page: WorkspacePayloadPage = await Effect.runPromise(
+            store.readWorkspacePayload(reference, cursor, 65536),
+          )
+          expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(512 * 1024)
+          expect(page.json.length).toBeGreaterThan(0)
+          json += page.json
+          cursor = page.nextAfterOffset
+        }
+        expect(reference.kind === 'event' ? JSON.parse(json).data.event.text : JSON.parse(json).content).toBe(text)
+        await expect(
+          Effect.runPromise(store.readWorkspacePayload({ ...reference, digest: '0'.repeat(64) }, 0, 1)),
+        ).rejects.toMatchObject({ code: 'invalid-data' })
+        await expect(
+          Effect.runPromise(store.readWorkspacePayload(reference, json.length + 1, 1)),
+        ).rejects.toMatchObject({ code: 'invalid-data' })
+      }
+      await expect(
+        Effect.runPromise(store.readWorkspacePayload({ kind: 'event', id: '999999', digest: '0'.repeat(64) }, 0, 1)),
+      ).rejects.toMatchObject({ code: 'not-found' })
+    })
+  })
+
+  it('traverses byte-bounded project and task catalogs and fetches summarized detail payloads', async () => {
+    await withStore(join(fixtureDirectory, 'read-catalogs.db'), async store => {
+      await setup(store)
+      const large = 'catalog'.repeat(100_000)
+      const expectedProjects = [project.id as string]
+      const expectedTasks = [task.id as string]
+      for (let index = 0; index < 8; index += 1) {
+        const id = `project-byte-${index}`
+        expectedProjects.push(id)
+        await Effect.runPromise(
+          store.registerProject({
+            project: { ...project, id: id as never, name: large, repositoryIdentity: `repo:byte-${index}` },
+            mainCheckout: { ...checkout, id: `checkout-byte-${index}` as never, path: `C:/byte-${index}` },
+          }),
+        )
+        const taskId = `task-byte-${index}`
+        expectedTasks.push(taskId)
+        await Effect.runPromise(
+          store.createTask({
+            task: { ...task, id: taskId as never, description: large },
+            conversation: { ...conversation, id: `conversation-byte-${index}` as never },
+          }),
+        )
+      }
+      const projectIds: Array<string> = []
+      let projectCursor: string | undefined
+      let projectPages = 0
+      do {
+        const page = await Effect.runPromise(store.listProjects({ afterId: projectCursor, limit: 50 }))
+        expect(page.total).toBe(9)
+        expect(page.items.length).toBeGreaterThan(0)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        projectIds.push(...page.items.map(item => item.id))
+        projectCursor = page.nextAfterId ?? undefined
+        projectPages += 1
+      } while (projectCursor)
+      expect(projectPages).toBeGreaterThan(1)
+      expect(projectIds).toEqual(expectedProjects.sort())
+      const taskIds: Array<string> = []
+      let taskCursor: string | undefined
+      do {
+        const page = await Effect.runPromise(store.listTasks(project.id, { afterId: taskCursor, limit: 50 }))
+        expect(page.total).toBe(9)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        taskIds.push(...page.items.map(item => item.id))
+        taskCursor = page.nextAfterId ?? undefined
+      } while (taskCursor)
+      expect(taskIds).toEqual(expectedTasks.sort())
+      const detail = await Effect.runPromise(store.readTaskDetail('task-byte-0' as never))
+      expect(detail.task).toMatchObject({ payloadTruncated: true, payloadRef: { kind: 'task', id: 'task-byte-0' } })
+      if (!detail.task.payloadRef) throw new Error('Expected a summarized Task payload reference')
+      let json = ''
+      let cursor: number | null = 0
+      while (cursor !== null) {
+        const page: WorkspacePayloadPage = await Effect.runPromise(
+          store.readWorkspacePayload(detail.task.payloadRef, cursor, 65536),
+        )
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(512 * 1024)
+        json += page.json
+        cursor = page.nextAfterOffset
+      }
+      expect(JSON.parse(json)).toMatchObject({ id: 'task-byte-0', description: large })
+      expect((await Effect.runPromise(store.getProject('project-byte-0' as never))).project).toMatchObject({
+        payloadTruncated: true,
+      })
+      const missing: ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>> = [
+        store.getProject('missing' as never),
+        store.listTasks('missing' as never),
+        store.readTaskDetail('missing' as never),
+        store.listNativeAgentSessions('missing' as never),
+        store.listPendingRuntimeRequests('missing' as never, 0, 1),
+        store.readConversationPage('missing' as never, 0, 1),
+      ]
+      for (const read of missing) await expect(Effect.runPromise(read)).rejects.toMatchObject({ code: 'not-found' })
+      const invalid: ReadonlyArray<Effect.Effect<unknown, WorkspaceStoreError>> = [
+        store.listProjects({ limit: 51 }),
+        store.getProject(project.id, { limit: 0 }),
+        store.listTasks(project.id, { limit: 51 }),
+        store.readTaskDetail(task.id, { limit: 0 }),
+        store.listNativeAgentSessions(task.id, { limit: 51 }),
+        store.listPendingRuntimeRequests(task.id, 0, 51),
+        store.pageEvents(2, 1, 1),
+        store.readConversationPage(conversation.id, 2, 1, 1),
+      ]
+      for (const read of invalid) await expect(Effect.runPromise(read)).rejects.toMatchObject({ code: 'invalid-data' })
+    })
+  })
+
+  it('traverses bounded native sessions and large pending requests without mutating state', async () => {
+    await withStore(join(fixtureDirectory, 'native-requests-pages.db'), async store => {
+      await setup(store)
+      for (let index = 0; index < 7; index += 1) {
+        const command = {
+          ...beginRun,
+          commandId: `sessions-command-${index}`,
+          runId: `sessions-run-${index}` as never,
+          provisionalAgentSessionId: `sessions-${index}`,
+        }
+        await Effect.runPromise(store.beginRun(command))
+        await Effect.runPromise(store.claimDispatch(command.runId, 7, timestamp))
+        await Effect.runPromise(
+          store.acknowledgeDispatch(command.runId, {
+            ownerEpoch: 7,
+            nativeSessionId: `native-${index}-` + 'n'.repeat(650 * 1024),
+            acknowledgedAt: timestamp,
+          }),
+        )
+        if (index < 6)
+          await Effect.runPromise(
+            store.recordDriverEvent(command.runId, {
+              ownerEpoch: 7,
+              generation: 1,
+              eventId: `end-${index}`,
+              occurredAt: timestamp,
+              event: { kind: 'turnCompleted' },
+            }),
+          )
+      }
+      for (let index = 0; index < 8; index += 1)
+        await Effect.runPromise(
+          store.recordDriverEvent('sessions-run-6' as never, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: `request-${index}`,
+            occurredAt: timestamp,
+            event: {
+              kind: 'requestPending',
+              request: {
+                kind: 'question',
+                runId: 'sessions-run-6' as never,
+                generation: 1,
+                requestId: `request-${index}`,
+                prompt: 'p'.repeat(700 * 1024),
+                questions: [],
+              },
+            },
+          }),
+        )
+      const before = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
+      const sessions: Array<string> = []
+      let sessionCursor: string | undefined
+      let sessionPages = 0
+      do {
+        const page = await Effect.runPromise(
+          store.listNativeAgentSessions(task.id, { afterId: sessionCursor, limit: 50 }),
+        )
+        expect(page.total).toBe(7)
+        expect(page.items.length).toBeGreaterThan(0)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        expect(page.truncated).toBe(page.nextAfterId !== null)
+        sessions.push(...page.items.map(item => item.id))
+        sessionCursor = page.nextAfterId ?? undefined
+        sessionPages += 1
+      } while (sessionCursor)
+      expect(sessionPages).toBeGreaterThan(1)
+      expect(sessions).toEqual([
+        'sessions-0',
+        'sessions-1',
+        'sessions-2',
+        'sessions-3',
+        'sessions-4',
+        'sessions-5',
+        'sessions-6',
+      ])
+      const requests: Array<string> = []
+      let requestCursor = 0
+      let requestPages = 0
+      while (true) {
+        const page = await Effect.runPromise(store.listPendingRuntimeRequests(task.id, requestCursor, 50))
+        expect(page.total).toBe(8)
+        expect(page.items.length).toBeGreaterThan(0)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        requests.push(...page.items.map(item => item.request.requestId))
+        requestPages += 1
+        if (!page.hasMore) break
+        expect(page.nextAfterSequence).not.toBeNull()
+        requestCursor = page.nextAfterSequence ?? 0
+      }
+      expect(requestPages).toBeGreaterThan(1)
+      expect(requests).toEqual(Array.from({ length: 8 }, (_, index) => `request-${index}`))
+      expect((await Effect.runPromise(store.listNativeAgentSessions(task.id, { limit: 1 }))).items).toHaveLength(1)
+      expect((await Effect.runPromise(store.listPendingRuntimeRequests(task.id, 0, 1))).items).toHaveLength(1)
+      expect(await Effect.runPromise(store.readTaskSnapshot(task.id, 10))).toEqual(before)
+    })
+  })
+
   it('keeps large queued prompts and delivery histories readable through bounded cursor pages', async () => {
     await withStore(join(fixtureDirectory, 'bounded-history.db'), async store => {
       await setup(store)
@@ -232,6 +487,81 @@ describe('workspace worker RPC client', () => {
           }),
         )
       }
+      const transcriptText = 't'.repeat(700 * 1024)
+      for (let index = 0; index < 6; index += 1) {
+        await Effect.runPromise(
+          store.recordDriverEvent(beginRun.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: `transcript-${index}`,
+            occurredAt: timestamp,
+            event: { kind: 'textDelta', text: transcriptText },
+          }),
+        )
+      }
+      await expect(Effect.runPromise(store.listProjects({ limit: 1 }))).resolves.toMatchObject({
+        items: [{ id: project.id }],
+        total: 1,
+      })
+      await expect(Effect.runPromise(store.getProject(project.id))).resolves.toMatchObject({
+        project: { id: project.id },
+        mainCheckout: { id: checkout.id, path: checkout.path },
+      })
+      await expect(Effect.runPromise(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [{ id: task.id }],
+      })
+      await expect(Effect.runPromise(store.readTaskDetail(task.id))).resolves.toMatchObject({
+        task: { id: task.id },
+        conversations: [{ id: conversation.id }],
+      })
+      await expect(Effect.runPromise(store.listNativeAgentSessions(task.id))).resolves.toMatchObject({
+        items: [{ nativeSessionId: 'native-large', driverId: 'test-driver', connectionId: 'test-connection' }],
+        total: 1,
+        truncated: false,
+      })
+      await expect(Effect.runPromise(store.listPendingRuntimeRequests(task.id, 0, 50))).resolves.toMatchObject({
+        total: 8,
+        hasMore: false,
+      })
+      const pendingRequests = await Effect.runPromise(store.listPendingRuntimeRequests(task.id, 0, 50))
+      expect(pendingRequests.items[0]?.request).toMatchObject({ requestId: 'large-request-0', prompt: 'Answer?' })
+      let transcriptCursor = 0
+      let transcriptWatermark: number | undefined
+      const transcriptEvents: Array<number> = []
+      let transcriptUserPrompt: string | undefined
+      let transcriptBytes = 0
+      while (true) {
+        const page = await Effect.runPromise(
+          store.readConversationPage(conversation.id, transcriptCursor, 500, transcriptWatermark),
+        )
+        transcriptWatermark ??= page.highWatermark
+        expect(page.highWatermark).toBe(transcriptWatermark)
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(3 * 1024 * 1024)
+        transcriptBytes += Buffer.byteLength(JSON.stringify(page))
+        transcriptEvents.push(...page.items.map(item => item.event.sequence))
+        transcriptUserPrompt ??= page.items.find(item => item.userMessage)?.userMessage?.content
+        if (!page.hasMore) break
+        transcriptCursor = page.nextAfterSequence ?? transcriptCursor
+      }
+      expect(transcriptBytes).toBeGreaterThan(4 * 1024 * 1024)
+      const replayEvents: Array<number> = []
+      let replayBytes = 0
+      let replayCursor = 0
+      while (true) {
+        const page = await Effect.runPromise(store.pageEvents(replayCursor, 500, transcriptWatermark))
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(3 * 1024 * 1024)
+        replayBytes += Buffer.byteLength(JSON.stringify(page))
+        replayEvents.push(...page.events.map(event => event.sequence))
+        if (!page.hasMore) break
+        expect(page.events.length).toBeGreaterThan(0)
+        expect(page.nextAfterSequence).not.toBeNull()
+        replayCursor = page.nextAfterSequence ?? 0
+      }
+      expect(replayBytes).toBeGreaterThan(4 * 1024 * 1024)
+      expect(replayEvents).toEqual(transcriptEvents)
+      expect(transcriptEvents.length).toBeGreaterThan(6)
+      expect(new Set(transcriptEvents).size).toBe(transcriptEvents.length)
+      expect(transcriptUserPrompt).toBe(beginRun.prompt)
       const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
       expect(Buffer.byteLength(JSON.stringify(snapshot))).toBeLessThan(2 * 1024 * 1024)
       expect(snapshot.requestResponseSummary).toMatchObject({ total: 8, truncated: true, pendingCount: 8 })

@@ -1,7 +1,7 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import { agentRunIdSchema, conversationIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
+import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import {
   beginRunCommandSchema,
   commandReceiptSchema,
@@ -23,14 +23,28 @@ import {
   steerIntentPageSchema,
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
+  workspaceCheckoutPageOptionsSchema,
+  workspaceConversationPageOptionsSchema,
+  workspaceConversationPageSchema,
+  workspaceEntityPageOptionsSchema,
+  workspaceEventPageOptionsSchema,
   workspaceEventPageSchema,
   workspaceExecutionEventSchema,
+  workspaceNativeAgentSessionPageSchema,
+  workspacePayloadPageOptionsSchema,
+  workspacePayloadPageSchema,
+  workspacePendingRuntimeRequestPageOptionsSchema,
+  workspacePendingRuntimeRequestPageSchema,
+  workspaceProjectDetailSchema,
+  workspaceProjectReadPageSchema,
   workspaceReadPageOptionsSchema,
   workspaceSnapshotSchema,
   WorkspaceStoreError,
+  workspaceTaskDetailSchema,
+  workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 5
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 6
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -38,7 +52,6 @@ export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
 const text = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1))
 const timestamp = beginRunCommandSchema.fields.issuedAt
 const pageLimit = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(500))
-
 export const workspaceWorkerDataSchema = Schema.Struct({ filename: text })
 export type WorkspaceWorkerData = Schema.Schema.Type<typeof workspaceWorkerDataSchema>
 
@@ -113,16 +126,61 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
     error,
   }),
   Rpc.make('workspace-worker:pageEvents', {
-    payload: Schema.Struct({
-      afterSequence: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-      limit: pageLimit,
-    }),
+    payload: workspaceEventPageOptionsSchema,
     success: workspaceEventPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:readWorkspacePayload', {
+    payload: workspacePayloadPageOptionsSchema,
+    success: workspacePayloadPageSchema,
     error,
   }),
   Rpc.make('workspace-worker:readTaskSnapshot', {
     payload: Schema.Struct({ taskId: taskIdSchema, runLimit: pageLimit }),
     success: workspaceSnapshotSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listProjects', {
+    payload: Schema.Struct({ options: Schema.optional(workspaceEntityPageOptionsSchema) }),
+    success: workspaceProjectReadPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:getProject', {
+    payload: Schema.Struct({
+      projectId: projectIdSchema,
+      options: Schema.optional(workspaceCheckoutPageOptionsSchema),
+    }),
+    success: workspaceProjectDetailSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:readConversationPage', {
+    payload: Schema.Struct({
+      conversationId: conversationIdSchema,
+      ...workspaceConversationPageOptionsSchema.fields,
+    }).check(
+      Schema.makeFilter(value => value.throughSequence === undefined || value.afterSequence <= value.throughSequence),
+    ),
+    success: workspaceConversationPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listTasks', {
+    payload: Schema.Struct({ projectId: projectIdSchema, options: Schema.optional(workspaceEntityPageOptionsSchema) }),
+    success: workspaceTaskReadPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:readTaskDetail', {
+    payload: Schema.Struct({ taskId: taskIdSchema, options: Schema.optional(workspaceEntityPageOptionsSchema) }),
+    success: workspaceTaskDetailSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listNativeAgentSessions', {
+    payload: Schema.Struct({ taskId: taskIdSchema, options: Schema.optional(workspaceEntityPageOptionsSchema) }),
+    success: workspaceNativeAgentSessionPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listPendingRuntimeRequests', {
+    payload: Schema.Struct({ taskId: taskIdSchema, ...workspacePendingRuntimeRequestPageOptionsSchema.fields }),
+    success: workspacePendingRuntimeRequestPageSchema,
     error,
   }),
   Rpc.make('workspace-worker:recordRequestResponse', {

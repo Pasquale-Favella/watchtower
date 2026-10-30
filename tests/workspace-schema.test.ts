@@ -28,12 +28,57 @@ import {
   settleDeliveryCommandSchema,
   steerIntentPageSchema,
   steerIntentSchema,
+  workspaceCheckoutPageOptionsSchema,
+  workspaceConversationPageOptionsSchema,
+  workspaceEntityPageOptionsSchema,
+  workspaceEventPageOptionsSchema,
+  workspacePayloadPageOptionsSchema,
+  workspacePendingRuntimeRequestPageOptionsSchema,
   workspaceReadPageOptionsSchema,
   workspaceSnapshotSchema,
   WorkspaceStoreError,
 } from '../src/shared/schemas/workspace-store.js'
 
 describe('agent workspace domain schemas', () => {
+  it('validates every read limit, safe sequence range and bounded payload chunk cursor', () => {
+    for (const schema of [workspaceEventPageOptionsSchema, workspaceConversationPageOptionsSchema]) {
+      expect(
+        Result.isSuccess(Schema.decodeUnknownResult(schema)({ afterSequence: 4, throughSequence: 4, limit: 500 })),
+      ).toBe(true)
+      for (const options of [
+        { afterSequence: 5, throughSequence: 4, limit: 1 },
+        { afterSequence: 0, limit: 501 },
+        { afterSequence: -1, limit: 1 },
+        { afterSequence: Number.MAX_SAFE_INTEGER + 1, limit: 1 },
+        { afterSequence: 0, throughSequence: Number.MAX_SAFE_INTEGER + 1, limit: 1 },
+      ])
+        expect(Result.isFailure(Schema.decodeUnknownResult(schema)(options))).toBe(true)
+    }
+    for (const schema of [workspaceEntityPageOptionsSchema, workspaceCheckoutPageOptionsSchema]) {
+      expect(Result.isSuccess(Schema.decodeUnknownResult(schema)({ limit: 50 }))).toBe(true)
+      for (const limit of [0, 0.5, 51, Number.NaN])
+        expect(Result.isFailure(Schema.decodeUnknownResult(schema)({ limit }))).toBe(true)
+    }
+    expect(
+      Result.isFailure(
+        Schema.decodeUnknownResult(workspacePendingRuntimeRequestPageOptionsSchema)({ afterSequence: 0, limit: 51 }),
+      ),
+    ).toBe(true)
+    const reference = { kind: 'event', id: '1', digest: 'a'.repeat(64) }
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(workspacePayloadPageOptionsSchema)({ reference, afterOffset: 0, limit: 65536 }),
+      ),
+    ).toBe(true)
+    for (const options of [
+      { reference, afterOffset: -1, limit: 1 },
+      { reference, afterOffset: 0, limit: 65537 },
+      { reference: { ...reference, kind: 'dispatchIntent' }, afterOffset: 0, limit: 1 },
+      { reference: { ...reference, digest: 'invalid' }, afterOffset: 0, limit: 1 },
+    ])
+      expect(Result.isFailure(Schema.decodeUnknownResult(workspacePayloadPageOptionsSchema)(options))).toBe(true)
+  })
+
   it('validates bounded history cursors, page envelopes and compact queue previews', () => {
     for (const options of [{}, { afterPosition: 0, limit: 1 }, { afterPosition: 3, limit: 50 }]) {
       expect(Result.isSuccess(Schema.decodeUnknownResult(workspaceReadPageOptionsSchema)(options))).toBe(true)
@@ -384,7 +429,15 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:requestInterrupt',
         'workspace-worker:recoverWorker',
         'workspace-worker:pageEvents',
+        'workspace-worker:readWorkspacePayload',
         'workspace-worker:readTaskSnapshot',
+        'workspace-worker:listProjects',
+        'workspace-worker:getProject',
+        'workspace-worker:listTasks',
+        'workspace-worker:readTaskDetail',
+        'workspace-worker:readConversationPage',
+        'workspace-worker:listNativeAgentSessions',
+        'workspace-worker:listPendingRuntimeRequests',
         'workspace-worker:recordRequestResponse',
         'workspace-worker:settleRequestResponse',
         'workspace-worker:recordSteer',
