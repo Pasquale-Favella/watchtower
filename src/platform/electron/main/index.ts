@@ -18,7 +18,8 @@ import { join } from 'path'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
-import { loadDetectedHarnessConnections } from '@/infrastructure/agent-harnesses/connection-catalog.js'
+import { createDetectedHarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
+import { discoverNativeHarnessExecutables } from '@/infrastructure/agent-harnesses/native-executables.js'
 import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
 import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
@@ -136,8 +137,21 @@ const workspaceHostLayer = Layer.effect(
         // Leave headroom inside the 15-second quit ceiling for the worker and ledger drain.
         closeDeadlineMs: 3_000,
         closeTimeoutMs: 2_000,
-        loadConnections: () =>
-          loadDetectedHarnessConnections(snapshot, process.execPath).pipe(Effect.provide(NodePlatformLive)),
+        loadConnectionCatalog: () =>
+          Effect.gen(function* () {
+            const nativeExecutables = yield* discoverNativeHarnessExecutables()
+            const rows = yield* snapshot.list()
+            const instances = yield* Effect.forEach(rows, row => snapshot.get(row.instanceId))
+            return yield* Effect.try({
+              try: () =>
+                createDetectedHarnessConnectionCatalog({
+                  instances: instances.filter(instance => instance !== undefined),
+                  runtimeExecutable: process.execPath,
+                  nativeExecutables,
+                }),
+              catch: error => error,
+            })
+          }).pipe(Effect.provide(NodePlatformLive)),
       }),
       scope,
     )

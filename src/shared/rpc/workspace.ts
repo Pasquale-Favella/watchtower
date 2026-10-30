@@ -7,6 +7,7 @@ import {
   workspaceProjectRegistrationSchema,
 } from '@/shared/schemas/workspace-projects.js'
 import * as Store from '@/shared/schemas/workspace-store.js'
+import * as Connections from '@/shared/schemas/workspace-connections.js'
 
 export const WORKSPACE_RPC_PROTOCOL_VERSION = 1
 const beginRunFields = Store.beginRunCommandSchema.fields
@@ -78,6 +79,11 @@ const error = WorkspaceRpcError
  */
 export const WorkspaceRpcGroup = RpcGroup.make(
   Rpc.make('workspace:status', { success: workspaceStatusSchema, error }),
+  Rpc.make('workspace:listConnections', {
+    payload: Schema.Struct({}),
+    success: Connections.workspaceConnectionListSchema,
+    error,
+  }),
   Rpc.make('workspace:registerProject', {
     payload: Schema.Struct({
       commandId,

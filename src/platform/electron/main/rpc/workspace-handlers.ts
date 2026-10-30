@@ -132,6 +132,8 @@ export function workspaceHandlers() {
               }
             }),
           ),
+        'workspace:listConnections': () =>
+          safe(Effect.map(host.listConnections ?? Effect.succeed([]), items => ({ items }))),
         'workspace:registerProject': request =>
           mutation(
             Effect.gen(function* () {

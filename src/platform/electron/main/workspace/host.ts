@@ -25,7 +25,9 @@ import {
   WorkspaceWorkerSupervisorLive,
 } from '@/platform/electron/main/workspace/supervisor.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
+import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
 
 const UNAVAILABLE = 'Workspace execution is unavailable until owned resources are confirmed closed.'
 
@@ -35,7 +37,9 @@ export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()
 }) {}
 
 export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
-  readonly loadConnections: () => Effect.Effect<ReadonlyArray<HarnessConnection>, unknown>
+  readonly loadConnections?: () => Effect.Effect<ReadonlyArray<HarnessConnection>, unknown>
+  /** Loads the immutable execution definitions and their renderer-safe catalog rows together. */
+  readonly loadConnectionCatalog?: () => Effect.Effect<HarnessConnectionCatalog, unknown>
   readonly loadDrivers?: () => Effect.Effect<AgentDriverRegistry['Service'], unknown>
   readonly loadCheckoutResolver?: () => Effect.Effect<CheckoutResolver['Service'], unknown>
   readonly runtimeExecutable?: string
@@ -67,6 +71,8 @@ export class WorkspaceHost extends Context.Service<
       E | WorkspaceHostError | WorkspaceStoreError | ExecutionServiceError | HarnessConnectionResolutionError,
       R | ChildProcessSpawner.ChildProcessSpawner
     >
+    /** Lazy catalog read that does not open the workspace worker or acquire ExecutionService. */
+    readonly listConnections?: Effect.Effect<ReadonlyArray<WorkspaceConnection>, WorkspaceHostError>
     readonly eventHighWatermark: SubscriptionRef.SubscriptionRef<number>
     readonly status: SubscriptionRef.SubscriptionRef<WorkspaceHostStatus>
   }
@@ -217,6 +223,24 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         return yield* Deferred.await(pending)
       })
 
+      const catalogLoad = options.loadConnectionCatalog
+        ? options
+            .loadConnectionCatalog()
+            .pipe(
+              Effect.mapError(
+                cause => new WorkspaceHostError({ message: 'Harness connections could not be loaded.', cause }),
+              ),
+            )
+        : (options.loadConnections?.() ?? Effect.succeed([])).pipe(
+            Effect.map(connections => ({ connections, rows: [] })),
+            Effect.mapError(
+              cause => new WorkspaceHostError({ message: 'Harness connections could not be loaded.', cause }),
+            ),
+          )
+      // Constructing the cache is inert; the loader runs on first list or execution request.
+      // Effect.cached also coalesces concurrent callers and retries an interrupted first load.
+      const getConnectionCatalog = yield* Effect.cached(catalogLoad)
+
       const getExecution = Effect.fn('WorkspaceHost.getExecution')(function* () {
         const context = yield* getSupervisor()
         const owner = Context.get(context, WorkspaceWorkerSupervisor)
@@ -284,13 +308,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             checkoutResolver = Context.get(checkoutContext, CheckoutResolver)
           }
         }
-        const connections = yield* options
-          .loadConnections()
-          .pipe(
-            Effect.mapError(
-              cause => new WorkspaceHostError({ message: 'Harness connections could not be loaded.', cause }),
-            ),
-          )
+        const { connections } = yield* getConnectionCatalog
         if (!isCurrent(ownerEpoch)) return yield* closedExecution()
         const layers = Layer.mergeAll(
           Layer.succeed(WorkspaceStore, owner.store),
@@ -407,6 +425,13 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
           if (Exit.isFailure(closed)) return yield* Effect.failCause(closed.cause)
         }),
       )
-      return WorkspaceHost.of({ store, ensureOpen, withExecution, eventHighWatermark, status })
+      return WorkspaceHost.of({
+        store,
+        ensureOpen,
+        withExecution,
+        listConnections: getConnectionCatalog.pipe(Effect.map(catalog => catalog.rows)),
+        eventHighWatermark,
+        status,
+      })
     }),
   )
