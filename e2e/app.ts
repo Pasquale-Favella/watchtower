@@ -86,9 +86,9 @@ function waitForProcessExit(child: ChildProcess, timeoutMs: number): Promise<boo
 }
 
 function closeExitedProcessStreams(child: ChildProcess): void {
-  child.stdin?.destroy()
-  child.stdout?.destroy()
-  child.stderr?.destroy()
+  // Playwright also opens pipes 3 and 4; inherited handles can delay `close`
+  // after `exit` even when Electron has already shut down successfully.
+  for (const stream of child.stdio) stream?.destroy()
 }
 
 async function closeElectronApp(app: ElectronApplication, state: ElectronProcessState): Promise<void> {
