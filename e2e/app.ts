@@ -167,7 +167,10 @@ async function closeAndRemoveProfile(
   }
 }
 
-export async function launchApp(profileRoot = tmpdir()): Promise<LaunchedApp> {
+export async function launchApp(
+  profileRoot = tmpdir(),
+  beforeLaunch?: (profile: string) => Promise<void>,
+): Promise<LaunchedApp> {
   const userDataDir = mkdtempSync(join(profileRoot, 'watchtower-e2e-'))
   const args = [
     // Root-owned Linux CI (and Docker) needs the Chromium sandbox off;
@@ -181,6 +184,7 @@ export async function launchApp(profileRoot = tmpdir()): Promise<LaunchedApp> {
   let state: ElectronProcessState | undefined
   try {
     const fixture = prepareProviderFixture(userDataDir)
+    await beforeLaunch?.(userDataDir)
     const env =
       process.platform === 'win32'
         ? Object.fromEntries(Object.entries(fixture.env).filter(([key]) => key.toLowerCase() !== 'path'))
