@@ -3,53 +3,63 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
 import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as RpcServer from 'effect/rpc/RpcServer'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
-import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
-import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
-import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
-import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
+import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
+import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { loadDetectedHarnessConnections } from '@/infrastructure/agent-harnesses/connection-catalog.js'
 import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
-import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
-import { LedgerMcpPool } from '@/platform/mcp/pool.js'
-import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
-import {
-  BackgroundShell,
-  type BackgroundShellHandle,
-  backgroundShellLayer,
-} from '@/platform/electron/main/background-shell.js'
-import { DbWorkerClient } from '@/platform/electron/workers/client.js'
-import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
 import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
-import { makeMainRuntime, type MainServices } from '@/platform/electron/main/main-runtime.js'
+import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
 import {
   closeOperationalLog,
   initOperationalLog,
   logCodeFor,
   safeLogOperationalEvent,
 } from '@/infrastructure/logging/operational-log.js'
+import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
+import {
+  BackgroundShell,
+  type BackgroundShellHandle,
+  backgroundShellLayer,
+} from '@/platform/electron/main/background-shell.js'
+import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
+import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
+import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
 import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
 import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
 import { analyticsHandlers, configHandlers } from '@/platform/electron/main/rpc/handlers.js'
 import {
+  lifecycleHandlers,
   LifecycleHub,
   type LifecycleHubService,
-  lifecycleHandlers,
   lifecycleLayer,
   type LifecyclePublishEvent,
 } from '@/platform/electron/main/rpc/lifecycle.js'
-import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
-import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
 import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
+import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
+import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
+import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
+import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
+import { DbWorkerClient } from '@/platform/electron/workers/client.js'
+import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
+import { LedgerMcpPool } from '@/platform/mcp/pool.js'
+import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
+import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
+import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -99,6 +109,48 @@ const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
   },
 }).pipe(Layer.provideMerge(appUpdatesLayer))
 
+// Only the inert host is acquired at boot. Its worker, database and drivers stay lazy.
+const workspaceHostLayer = Layer.effect(
+  WorkspaceHost,
+  Effect.gen(function* () {
+    const snapshot = yield* HarnessSnapshot
+    const scope = yield* Effect.acquireRelease(Scope.make(), scope =>
+      Scope.close(scope, Exit.void).pipe(
+        Effect.onExit(exit =>
+          Effect.sync(() => {
+            const confirmed = Exit.isSuccess(exit)
+            safeLogOperationalEvent(confirmed ? 'info' : 'error', 'workspace.close', {
+              outcome: confirmed ? 'success' : 'failed',
+              code: confirmed ? 'cleanup-confirmed' : 'cleanup-unconfirmed',
+            })
+          }),
+        ),
+      ),
+    )
+    const context = yield* Layer.buildWithScope(
+      WorkspaceHostLive({
+        filename: join(app.getPath('userData'), 'workspace.db'),
+        workerPath: join(__dirname, 'workspace-worker.js'),
+        runtimeExecutable: process.execPath,
+        // Leave headroom inside the 15-second quit ceiling for the worker and ledger drain.
+        closeDeadlineMs: 3_000,
+        closeTimeoutMs: 2_000,
+        loadConnections: () => loadDetectedHarnessConnections(snapshot, process.execPath),
+      }),
+      scope,
+    )
+    return Context.get(context, WorkspaceHost)
+  }),
+)
+const workspaceStoreLayer = Layer.effect(
+  WorkspaceStore,
+  Effect.map(WorkspaceHost, host => host.store),
+)
+const workspaceLayer = WorkspaceProjectsLive.pipe(
+  Layer.provideMerge(Layer.merge(CheckoutResolverLive, workspaceStoreLayer)),
+  Layer.provideMerge(workspaceHostLayer),
+)
+
 const mainRuntime = makeMainRuntime(
   {
     clientVersion: app.getVersion(),
@@ -108,7 +160,8 @@ const mainRuntime = makeMainRuntime(
     },
   },
   {},
-  Layer.merge(
+  Layer.mergeAll(
+    workspaceLayer,
     backgroundShellLayer({
       onRendererWindow: (window, role) => rendererRoles.set(window.webContents, role),
       preloadPath: join(__dirname, '../preload/index.js'),
@@ -328,11 +381,21 @@ app.whenReady().then(async () => {
       const protocol = serverProtocolLayer(port)
       const options = { disableTracing: true, disableFatalDefects: true } as const
       const provideHandlers = Effect.provide(Layer.merge(handlers, protocol))
-      let program: Effect.Effect<never, never, LifecycleHub | MainServices | AppUpdates | BackgroundShell>
+      let program: Effect.Effect<
+        never,
+        never,
+        | LifecycleHub
+        | MainServices
+        | AppUpdates
+        | BackgroundShell
+        | WorkspaceHost
+        | WorkspaceProjects
+        | CheckoutResolver
+      >
       switch (role) {
         case 'app':
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
-            Effect.provide(coachHandlers(agents.native)),
+            Effect.provide(Layer.merge(coachHandlers(agents.native), workspaceHandlers())),
             provideHandlers,
           )
           break

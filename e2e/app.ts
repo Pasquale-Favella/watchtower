@@ -167,8 +167,8 @@ async function closeAndRemoveProfile(
   }
 }
 
-export async function launchApp(): Promise<LaunchedApp> {
-  const userDataDir = mkdtempSync(join(tmpdir(), 'watchtower-e2e-'))
+export async function launchApp(profileRoot = tmpdir()): Promise<LaunchedApp> {
+  const userDataDir = mkdtempSync(join(profileRoot, 'watchtower-e2e-'))
   const args = [
     // Root-owned Linux CI (and Docker) needs the Chromium sandbox off;
     // Windows and macOS run with the default sandbox.
@@ -305,7 +305,7 @@ export async function withApp(body: (ctx: { app: ElectronApplication; window: Pa
   let bodyFailed = false
   let bodyError: unknown
   try {
-    const appContext = await test.step('launch Electron app', launchApp)
+    const appContext = await test.step('launch Electron app', () => launchApp())
     launched = appContext
     await test.step('run scenario', async () => {
       await body({ app: appContext.app, window: appContext.window })
