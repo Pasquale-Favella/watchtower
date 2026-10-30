@@ -2450,6 +2450,9 @@ describe('WorkspaceStore', () => {
         store.listPendingRuntimeRequests(task.id, -1, 10),
         store.pageEvents(2, 10, 1),
         store.readConversationPage(conversation.id, 2, 10, 1),
+        store.readConversationPage(conversation.id, 1, 10, undefined, { direction: 'backward' }),
+        store.readConversationPage(conversation.id, 0, 10, 5, { direction: 'backward', beforeSequence: 6 }),
+        store.readConversationPage(conversation.id, 0, 10, undefined, { beforeSequence: 1 }),
       ]
       for (const read of invalidReads) await expect(run(read)).rejects.toMatchObject({ code: 'invalid-data' })
       await run(store.listProjects())
@@ -2495,6 +2498,12 @@ describe('WorkspaceStore', () => {
       }
       expect(JSON.parse(json)).toMatchObject({ data: { event: { kind: 'textDelta', text } } })
       expect((await run(store.readConversationPage(conversation.id, 3, 10))).items[0]?.event).toMatchObject({
+        payloadRef: event.payloadRef,
+      })
+      const backward = await run(
+        store.readConversationPage(conversation.id, 0, 10, undefined, { direction: 'backward' }),
+      )
+      expect(backward.items.find(item => item.event.sequence === event.sequence)?.event).toMatchObject({
         payloadRef: event.payloadRef,
       })
     })
@@ -2706,6 +2715,219 @@ describe('WorkspaceStore', () => {
       ).rejects.toMatchObject({
         code: 'not-found',
       })
+    })
+  })
+
+  it('returns authoritative run contexts, prioritizes unresolved Runs, and reports bounded snapshot coverage', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-run-snapshot-'))
+    const filename = join(directory, 'workspace.db')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+
+      const extraCheckout = (id: string, path: string) => ({
+        id: id as never,
+        projectId: project.id,
+        kind: 'worktree' as const,
+        path,
+        branch: id,
+        createdAt: '2026-10-29T10:00:00Z',
+      })
+      const additionalContexts = [
+        { conversationId: 'c-2', checkoutId: 'co-2' },
+        { conversationId: 'c-3', checkoutId: 'co-3' },
+      ]
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          for (const context of additionalContexts) {
+            const checkoutRecord = extraCheckout(context.checkoutId, `C:/repo/${context.checkoutId}`)
+            const conversationRecord = {
+              id: context.conversationId,
+              taskId: task.id,
+              title: context.conversationId,
+              createdAt: '2026-10-29T10:00:00Z',
+            }
+            yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${checkoutRecord.id}, ${project.id}, ${JSON.stringify(checkoutRecord)})`
+            yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${context.conversationId}, ${task.id}, ${JSON.stringify(conversationRecord)})`
+          }
+        }),
+      )
+
+      const activeOne: BeginRunCommand = {
+        ...command,
+        commandId: 'snapshot-active-one',
+        runId: 'snapshot-run-one' as never,
+        issuedAt: '2026-10-29T10:00:01Z',
+      }
+      const activeTwo: BeginRunCommand = {
+        ...command,
+        commandId: 'snapshot-active-two',
+        runId: 'snapshot-run-two' as never,
+        issuedAt: '2026-10-29T10:00:02Z',
+        conversationId: 'c-2' as never,
+        checkoutId: 'co-2' as never,
+        provisionalAgentSessionId: 'session-2',
+        driverId: 'other-driver',
+        connectionId: 'other-connection',
+      }
+      const terminal: BeginRunCommand = {
+        ...command,
+        commandId: 'snapshot-terminal',
+        runId: 'snapshot-run-terminal' as never,
+        issuedAt: '2026-10-29T10:00:03Z',
+        conversationId: 'c-3' as never,
+        checkoutId: 'co-3' as never,
+        provisionalAgentSessionId: 'session-3',
+      }
+      await run(store.beginRun(activeOne))
+      await run(store.beginRun(activeTwo))
+      await run(store.beginRun(terminal))
+      await run(
+        store.failDispatch(terminal.runId, {
+          ownerEpoch: 7,
+          occurredAt: terminal.issuedAt,
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const rows = yield* sql`SELECT payload FROM workspace_agent_run WHERE id = ${terminal.runId}`
+          const payload = JSON.parse(String(rows[0]?.payload)) as Record<string, unknown>
+          yield* sql`UPDATE workspace_agent_run SET payload = ${JSON.stringify({ ...payload, failure: 'x'.repeat(20_000) })} WHERE id = ${terminal.runId}`
+        }),
+      )
+
+      const limited = await run(store.readTaskSnapshot(task.id, 2))
+      expect(limited.runs.map(run => run.id)).toEqual([activeTwo.runId, activeOne.runId])
+      expect(limited.runContexts).toEqual([
+        {
+          runId: activeTwo.runId,
+          conversationId: activeTwo.conversationId,
+          checkoutId: activeTwo.checkoutId,
+          driverId: activeTwo.driverId,
+          connectionId: activeTwo.connectionId,
+        },
+        {
+          runId: activeOne.runId,
+          conversationId: activeOne.conversationId,
+          checkoutId: activeOne.checkoutId,
+          driverId: activeOne.driverId,
+          connectionId: activeOne.connectionId,
+        },
+      ])
+      expect(limited.runs.every(run => run.sessionId == null)).toBe(true)
+      expect(limited.runCoverage).toEqual({ total: 3, returned: 2, truncated: true })
+
+      const completeLimit = await run(store.readTaskSnapshot(task.id, 3))
+      expect(completeLimit.runs.at(-1)).toMatchObject({
+        id: terminal.runId,
+        status: 'failed',
+        failure: 'x'.repeat(1024),
+      })
+      expect(completeLimit.runCoverage).toEqual({ total: 3, returned: 3, truncated: true })
+      expect(Buffer.byteLength(JSON.stringify(completeLimit.runs), 'utf8')).toBeLessThanOrEqual(1024 * 1024)
+      expect(
+        Buffer.byteLength(JSON.stringify({ runs: completeLimit.runs, runContexts: completeLimit.runContexts }), 'utf8'),
+      ).toBeLessThanOrEqual(1024 * 1024)
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_dispatch_intent SET conversation_id = '' WHERE run_id = ${activeOne.runId}`
+        }),
+      )
+      await expect(run(store.readTaskSnapshot(task.id, 3))).rejects.toMatchObject({ code: 'invalid-data' })
+    } finally {
+      await writer.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('tails sparse Conversation history, pages backward without overlap, then resumes forward at the watermark', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const otherTask = {
+        ...task,
+        id: 'task-other-conversation' as never,
+        title: 'Other task',
+      }
+      const otherConversation = {
+        ...conversation,
+        id: 'conversation-other' as never,
+        title: 'Other conversation',
+      }
+      await run(store.createTask({ task: otherTask, conversation: otherConversation }))
+
+      const dispatch = async (index: number, other: boolean) => {
+        const minute = index * 2 + (other ? 1 : 0)
+        const issuedAt = new Date(Date.UTC(2026, 9, 29, 10, minute)).toISOString()
+        const intent: BeginRunCommand = {
+          ...command,
+          commandId: `tail-${other ? 'other' : 'target'}-${index}`,
+          runId: `tail-run-${other ? 'other' : 'target'}-${index}` as never,
+          provisionalAgentSessionId: `tail-session-${other ? 'other' : 'target'}-${index}`,
+          taskId: other ? otherTask.id : task.id,
+          conversationId: other ? otherConversation.id : conversation.id,
+          issuedAt,
+          prompt: `Prompt ${index}`,
+        }
+        await run(store.beginRun(intent))
+        await run(
+          store.failDispatch(intent.runId, {
+            ownerEpoch: 7,
+            occurredAt: issuedAt,
+            outcome: 'failed',
+            reason: 'launch-failed',
+          }),
+        )
+      }
+      for (let index = 0; index < 55; index += 1) {
+        await dispatch(index, false)
+        await dispatch(index, true)
+      }
+
+      const tail = await run(store.readConversationPage(conversation.id, 0, 17, undefined, { direction: 'backward' }))
+      expect(tail.items).toHaveLength(17)
+      expect(tail.items.at(-1)?.event.sequence).toBeLessThan(tail.highWatermark)
+      expect(tail.items.at(-1)?.event.runId).toBe('tail-run-target-54')
+      expect(tail.hasMore).toBe(true)
+      expect(tail.nextBeforeSequence).toBe((tail.items[0]?.event.sequence ?? 0) - 1)
+
+      const pages = [tail]
+      let beforeSequence = tail.nextBeforeSequence
+      while (pages.at(-1)?.hasMore) {
+        if (beforeSequence == null) throw new Error('Expected a backward Conversation cursor')
+        const page = await run(
+          store.readConversationPage(conversation.id, 0, 17, tail.highWatermark, {
+            direction: 'backward',
+            beforeSequence,
+          }),
+        )
+        expect(page.highWatermark).toBe(tail.highWatermark)
+        pages.push(page)
+        beforeSequence = page.nextBeforeSequence
+      }
+      const history = [...pages].reverse().flatMap(page => page.items)
+      const sequences = history.map(item => item.event.sequence)
+      expect(history).toHaveLength(110)
+      expect(new Set(sequences).size).toBe(110)
+      expect(sequences).toEqual([...sequences].sort((left, right) => left - right))
+      const messages = history.flatMap(item => (item.userMessage ? [item.userMessage.id] : []))
+      expect(messages).toHaveLength(55)
+      expect(new Set(messages).size).toBe(55)
+
+      const caughtUpBeforeNewWork = await run(store.readConversationPage(conversation.id, tail.highWatermark, 10))
+      expect(caughtUpBeforeNewWork).toMatchObject({ items: [], hasMore: false, nextAfterSequence: null })
+      await dispatch(55, false)
+      const catchUp = await run(store.readConversationPage(conversation.id, tail.highWatermark, 10))
+      expect(catchUp.items.map(item => item.event.kind)).toEqual(['runQueued', 'runFailed'])
+      expect(catchUp.items[0]?.userMessage).toMatchObject({ content: 'Prompt 55' })
     })
   })
 })

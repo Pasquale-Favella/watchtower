@@ -32,6 +32,8 @@ export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:getProject': unexpected,
   'workspace:listTasks': unexpected,
   'workspace:readTaskDetail': unexpected,
+  'workspace:readTaskSnapshot': unexpected,
+  'workspace:listNativeAgentSessions': unexpected,
   'workspace:readConversationPage': unexpected,
   'workspace:listPendingRuntimeRequests': unexpected,
   'workspace:readWorkspacePayload': unexpected,

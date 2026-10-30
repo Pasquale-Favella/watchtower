@@ -35,6 +35,7 @@ import type {
   WorkspacePendingRuntimeRequestPage,
   WorkspaceTaskDetail,
   WorkspaceConversationPage,
+  WorkspaceConversationPageReadOptions,
   WorkspaceCheckoutPageOptions,
 } from '@/shared/schemas/workspace-store.js'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
@@ -452,8 +453,9 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           afterSequence,
           limit,
           throughSequence,
+          paging?: WorkspaceConversationPageReadOptions,
         ): Effect.Effect<WorkspaceConversationPage, WorkspaceStoreError> => {
-          const payload = { conversationId, afterSequence, limit, throughSequence }
+          const payload = { conversationId, afterSequence, limit, throughSequence, ...(paging ?? {}) }
           return invoke('workspace-worker:readConversationPage', payload, () =>
             rawClient['workspace-worker:readConversationPage'](payload),
           )

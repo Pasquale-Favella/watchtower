@@ -58,6 +58,7 @@ import {
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   WORKSPACE_STORE_READ_BYTE_CAPACITY,
   workspaceCheckoutPageOptionsSchema,
+  workspaceConversationPageOptionsSchema,
   workspaceConversationMessageSchema,
   type WorkspaceConversationPageItem,
   workspaceConversationPageItemSchema,
@@ -70,6 +71,8 @@ import {
   type WorkspaceExecutionEvent,
   workspaceExecutionEventSchema,
   workspaceNativeAgentSessionSchema,
+  type WorkspaceRunContext,
+  workspaceRunContextSchema,
   workspacePayloadPageOptionsSchema,
   type WorkspacePayloadReference,
   type WorkspacePendingRuntimeRequest,
@@ -2315,13 +2318,15 @@ const makeService = Effect.gen(function* () {
     afterSequence,
     limit,
     throughSequence,
+    paging,
   ) =>
     guard(
       Effect.gen(function* () {
-        yield* Schema.decodeUnknownEffect(workspaceEventPageOptionsSchema)({
+        yield* Schema.decodeUnknownEffect(workspaceConversationPageOptionsSchema)({
           afterSequence,
           limit,
           throughSequence,
+          ...paging,
         }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation cursor or page limit is invalid')))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
@@ -2337,9 +2342,62 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(safeError('invalid-data', 'Conversation high watermark is invalid'))
             const highWatermark = throughSequence ?? latestSequence
             const items: Array<WorkspaceConversationPageItem> = []
-            let cursor = afterSequence
             let hasMore = false
             let bytes = 1024
+            if (paging?.direction === 'backward') {
+              let beforeSequence = paging.beforeSequence ?? highWatermark
+              for (let index = 0; index < limit; index += 1) {
+                if (beforeSequence < 1) break
+                const rows =
+                  yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${beforeSequence} AND e.sequence <= ${highWatermark} ORDER BY e.sequence DESC LIMIT 1`
+                const row = rows[0] as Record<string, unknown> | undefined
+                if (!row) break
+                const storedEvent = yield* decodeStoredEvent(row)
+                const event = summarize(storedEvent, 'event', String(storedEvent.sequence))
+                const userMessage =
+                  row.message_id === null || row.message_id === undefined
+                    ? undefined
+                    : {
+                        id: row.message_id,
+                        content: row.message_content,
+                        createdAt: row.message_created_at,
+                      }
+                const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
+                  event,
+                  ...(userMessage ? { userMessage: summarize(userMessage, 'message', String(userMessage.id)) } : {}),
+                }).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')),
+                )
+                const itemBytes = Buffer.byteLength(encode(item), 'utf8') + 1
+                if (bytes + itemBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                  if (items.length === 0)
+                    return yield* Effect.fail(
+                      safeError('invalid-data', 'Stored Conversation item exceeds the read page byte limit'),
+                    )
+                  hasMore = true
+                  break
+                }
+                items.push(item)
+                bytes += itemBytes
+                beforeSequence = event.sequence - 1
+              }
+              const nextBeforeSequence = items.length === 0 ? null : items.at(-1)!.event.sequence - 1
+              if (!hasMore && nextBeforeSequence !== null && nextBeforeSequence > 0) {
+                const more =
+                  yield* sql`SELECT 1 AS found FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${nextBeforeSequence} AND e.sequence <= ${highWatermark} LIMIT 1`
+                hasMore = more.length > 0
+              }
+              items.reverse()
+              return yield* Schema.decodeUnknownEffect(workspaceConversationPageSchema)({
+                items,
+                highWatermark,
+                nextAfterSequence: null,
+                nextBeforeSequence: hasMore ? nextBeforeSequence : null,
+                hasMore,
+              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation page failed validation')))
+            }
+
+            let cursor = afterSequence
             for (let index = 0; index < limit; index += 1) {
               const rows =
                 yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
@@ -2408,11 +2466,54 @@ const makeService = Effect.gen(function* () {
               }),
             )(String(taskRow.payload))
             const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
-            const runRows =
-              yield* sql`SELECT payload FROM workspace_agent_run WHERE task_id = ${taskId} ORDER BY submitted_at DESC, id DESC LIMIT ${runLimit}`
-            const runs = yield* Effect.forEach(runRows as Array<{ payload: unknown }>, row =>
-              decodeRun(String(row.payload)),
-            )
+            const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
+            const runRows = yield* sql`
+              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id
+              FROM workspace_agent_run r
+              LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              WHERE r.task_id = ${taskId}
+              ORDER BY CASE
+                WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
+                WHEN r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested') THEN 1
+                ELSE 2
+              END, r.submitted_at DESC, r.id DESC
+              LIMIT ${runLimit}
+            `
+            const RUN_SNAPSHOT_BYTE_CAPACITY = 1024 * 1024
+            const runs: AgentRun[] = []
+            const runContexts: WorkspaceRunContext[] = []
+            let runBytes = 0
+            let runPayloadTruncated = false
+            for (const row of runRows as Array<Record<string, unknown>>) {
+              const decoded = yield* decodeRun(String(row.payload))
+              const failureTruncated = typeof decoded.failure === 'string' && decoded.failure.length > 1024
+              const run = failureTruncated ? { ...decoded, failure: decoded.failure?.slice(0, 1024) } : decoded
+              const context =
+                row.intent_run_id !== null
+                  ? yield* Schema.decodeUnknownEffect(workspaceRunContextSchema)({
+                      runId: run.id,
+                      conversationId: row.conversation_id,
+                      checkoutId: row.checkout_id,
+                      driverId: row.driver_id,
+                      connectionId: row.connection_id,
+                    }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Run context failed validation')))
+                  : undefined
+              const bytes = Buffer.byteLength(encode([run, context ?? null]), 'utf8')
+              if (runBytes + bytes > RUN_SNAPSHOT_BYTE_CAPACITY) {
+                runPayloadTruncated = true
+                break
+              }
+              runs.push(run)
+              if (context) runContexts.push(context)
+              runBytes += bytes
+              runPayloadTruncated ||= failureTruncated
+            }
+            const totalRuns = Number(runCountRows[0]?.total ?? 0)
+            const runCoverage = {
+              total: totalRuns,
+              returned: runs.length,
+              truncated: totalRuns > runs.length || runPayloadTruncated,
+            }
             const deliveryLimit = Math.min(runLimit, 50)
             const responseCounts =
               yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(i.state = 'pending'), 0) AS pending, COALESCE(SUM(i.state = 'uncertain'), 0) AS uncertain FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
@@ -2483,6 +2584,8 @@ const makeService = Effect.gen(function* () {
             return {
               task: taskPayload,
               runs,
+              runContexts,
+              runCoverage,
               requestResponses,
               steerIntents,
               queuedFollowUps,

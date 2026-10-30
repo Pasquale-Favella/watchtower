@@ -30,6 +30,7 @@ import {
   steerIntentSchema,
   workspaceCheckoutPageOptionsSchema,
   workspaceConversationPageOptionsSchema,
+  workspaceConversationPageRequestSchema,
   workspaceEntityPageOptionsSchema,
   workspaceEventPageOptionsSchema,
   workspacePayloadPageOptionsSchema,
@@ -94,6 +95,35 @@ describe('agent workspace domain schemas', () => {
       ])
         expect(Result.isFailure(Schema.decodeUnknownResult(schema)(options))).toBe(true)
     }
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(workspaceConversationPageOptionsSchema)({
+          afterSequence: 0,
+          limit: 100,
+          direction: 'backward',
+          throughSequence: 500,
+        }),
+      ),
+    ).toBe(true)
+    expect(
+      Result.isSuccess(
+        Schema.decodeUnknownResult(workspaceConversationPageRequestSchema)({
+          conversationId: 'conversation-1',
+          afterSequence: 0,
+          limit: 100,
+          direction: 'backward',
+          beforeSequence: 100,
+          throughSequence: 500,
+        }),
+      ),
+    ).toBe(true)
+    for (const options of [
+      { afterSequence: 1, limit: 10, direction: 'backward' },
+      { afterSequence: 0, limit: 10, beforeSequence: 10 },
+      { afterSequence: 0, throughSequence: 10, limit: 10, direction: 'backward', beforeSequence: 11 },
+      { afterSequence: 0, limit: 10, direction: 'backward', beforeSequence: -1 },
+    ])
+      expect(Result.isFailure(Schema.decodeUnknownResult(workspaceConversationPageOptionsSchema)(options))).toBe(true)
     for (const schema of [workspaceEntityPageOptionsSchema, workspaceCheckoutPageOptionsSchema]) {
       expect(Result.isSuccess(Schema.decodeUnknownResult(schema)({ limit: 50 }))).toBe(true)
       for (const limit of [0, 0.5, 51, Number.NaN])

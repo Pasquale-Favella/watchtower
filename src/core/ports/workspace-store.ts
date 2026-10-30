@@ -25,6 +25,7 @@ import type {
   TaskCreationReceipt,
   WorkspaceCheckoutPageOptions,
   WorkspaceConversationPage,
+  WorkspaceConversationPageReadOptions,
   WorkspaceEntityPageOptions,
   WorkspaceEventPage,
   WorkspaceExecutionEvent,
@@ -153,6 +154,7 @@ export class WorkspaceStore extends Context.Service<
       afterSequence: number,
       limit: number,
       throughSequence?: number,
+      options?: WorkspaceConversationPageReadOptions,
     ) => Effect.Effect<WorkspaceConversationPage, WorkspaceStoreError>
     /** Lossless serialized record chunks; offsets and limits count UTF-16 code units, not bytes. */
     readonly readWorkspacePayload: (

@@ -134,13 +134,21 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     success: Store.workspaceTaskDetailSchema,
     error,
   }),
-  Rpc.make('workspace:readConversationPage', {
+  Rpc.make('workspace:readTaskSnapshot', {
     payload: Schema.Struct({
-      conversationId: conversationIdSchema,
-      ...Store.workspaceConversationPageOptionsSchema.fields,
-    }).check(
-      Schema.makeFilter(value => value.throughSequence === undefined || value.afterSequence <= value.throughSequence),
-    ),
+      taskId: taskIdSchema,
+      runLimit: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(500)),
+    }),
+    success: Store.workspaceSnapshotSchema,
+    error,
+  }),
+  Rpc.make('workspace:listNativeAgentSessions', {
+    payload: Schema.Struct({ taskId: taskIdSchema, options: Schema.optional(Store.workspaceEntityPageOptionsSchema) }),
+    success: Store.workspaceNativeAgentSessionPageSchema,
+    error,
+  }),
+  Rpc.make('workspace:readConversationPage', {
+    payload: Store.workspaceConversationPageRequestSchema,
     success: Store.workspaceConversationPageSchema,
     error,
   }),

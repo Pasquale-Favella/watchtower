@@ -274,6 +274,7 @@ describe('workspace worker RPC server', () => {
             afterSequence: 0,
             throughSequence: page.highWatermark,
             limit: 500,
+            direction: 'backward',
           })
           const firstSnapshot = yield* client['workspace-worker:readTaskSnapshot']({ taskId: task.id, runLimit: 10 })
           const retry: BeginRunCommand = {
@@ -331,6 +332,7 @@ describe('workspace worker RPC server', () => {
       id: `user:${command.runId}`,
       content: command.prompt,
     })
+    expect(result.conversationPage).toMatchObject({ hasMore: false, nextBeforeSequence: null })
     expect(result.page.events.length).toBeGreaterThan(0)
     expect(result.firstSnapshot.runs[0]).toMatchObject({ id: command.runId, status: 'interrupted' })
     expect(result.recovered).toBe(0)

@@ -253,9 +253,22 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       execute('workspace-worker:getProject', { projectId, options: pageOptions }, () =>
         options.store.getProject(projectId, pageOptions),
       ),
-    'workspace-worker:readConversationPage': ({ conversationId, afterSequence, limit, throughSequence }) =>
-      execute('workspace-worker:readConversationPage', { conversationId, afterSequence, limit, throughSequence }, () =>
-        options.store.readConversationPage(conversationId, afterSequence, limit, throughSequence),
+    'workspace-worker:readConversationPage': ({
+      conversationId,
+      afterSequence,
+      limit,
+      throughSequence,
+      direction,
+      beforeSequence,
+    }) =>
+      execute(
+        'workspace-worker:readConversationPage',
+        { conversationId, afterSequence, limit, throughSequence, direction, beforeSequence },
+        () =>
+          options.store.readConversationPage(conversationId, afterSequence, limit, throughSequence, {
+            direction,
+            beforeSequence,
+          }),
       ),
     'workspace-worker:listTasks': ({ projectId, options: pageOptions }) =>
       execute('workspace-worker:listTasks', { projectId, options: pageOptions }, () =>

@@ -36,6 +36,32 @@ describe('workspace page cursors', () => {
     ).toBe(30)
   })
 
+  it('pages backward from the tail with a fixed watermark and non-overlapping before cursor', () => {
+    const tailRequest = { ...conversation, direction: 'backward' as const }
+    const older = nextConversationRequest(tailRequest, {
+      items: [],
+      highWatermark: 900,
+      hasMore: true,
+      nextAfterSequence: null,
+      nextBeforeSequence: 400,
+    })
+    expect(older).toEqual({
+      ...tailRequest,
+      afterSequence: 0,
+      throughSequence: 900,
+      beforeSequence: 400,
+    })
+    expect(
+      nextConversationRequest(older!, {
+        items: [],
+        highWatermark: 900,
+        hasMore: false,
+        nextAfterSequence: null,
+        nextBeforeSequence: null,
+      }),
+    ).toBeNull()
+  })
+
   it('retrieves summarized JSON by offset without replacing its digest-pinned reference', () => {
     const request: WorkspaceRequest<'workspace:readWorkspacePayload'> = {
       reference: { kind: 'event', id: '1', digest: 'a'.repeat(64) },

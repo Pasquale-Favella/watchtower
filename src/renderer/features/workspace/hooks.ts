@@ -29,7 +29,11 @@ import {
   workspaceStreamStateAtom,
   workspaceSubscriptionAtom,
   workspaceTask,
+  workspaceTaskSnapshot,
+  workspaceNativeAgentSessions,
   workspaceTasks,
+  workspaceRequestResponses,
+  workspaceSteerIntents,
 } from './atoms.js'
 import { nextConversationRequest, nextPayloadRequest, workspaceQueryKey, type WorkspaceRequest } from './lib.js'
 
@@ -66,8 +70,17 @@ export const useWorkspaceTasks = (request: WorkspaceRequest<'workspace:listTasks
   useWorkspaceQuery(workspaceTasks, request)
 export const useWorkspaceTask = (request: WorkspaceRequest<'workspace:readTaskDetail'> | null) =>
   useWorkspaceQuery(workspaceTask, request)
+export const useWorkspaceTaskSnapshot = (request: WorkspaceRequest<'workspace:readTaskSnapshot'> | null) =>
+  useWorkspaceQuery(workspaceTaskSnapshot, request)
+export const useWorkspaceNativeAgentSessions = (
+  request: WorkspaceRequest<'workspace:listNativeAgentSessions'> | null,
+) => useWorkspaceQuery(workspaceNativeAgentSessions, request)
 export const useWorkspacePendingRequests = (request: WorkspaceRequest<'workspace:listPendingRuntimeRequests'> | null) =>
   useWorkspaceQuery(workspaceRequests, request)
+export const useWorkspaceRequestResponses = (request: WorkspaceRequest<'workspace:listRequestResponses'> | null) =>
+  useWorkspaceQuery(workspaceRequestResponses, request)
+export const useWorkspaceSteerIntents = (request: WorkspaceRequest<'workspace:listSteerIntents'> | null) =>
+  useWorkspaceQuery(workspaceSteerIntents, request)
 export const useWorkspaceQueuedFollowUps = (request: WorkspaceRequest<'workspace:listQueuedFollowUps'> | null) =>
   useWorkspaceQuery(workspaceFollowUps, request)
 

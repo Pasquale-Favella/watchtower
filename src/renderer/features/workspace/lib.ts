@@ -17,6 +17,15 @@ export function nextConversationRequest(
   request: WorkspaceRequest<'workspace:readConversationPage'>,
   page: WorkspaceConversationPage,
 ): WorkspaceRequest<'workspace:readConversationPage'> | null {
+  if (request.direction === 'backward') {
+    if (!page.hasMore || page.nextBeforeSequence == null) return null
+    return {
+      ...request,
+      afterSequence: 0,
+      throughSequence: request.throughSequence ?? page.highWatermark,
+      beforeSequence: page.nextBeforeSequence,
+    }
+  }
   if (!page.hasMore || page.nextAfterSequence === null) return null
   return {
     ...request,

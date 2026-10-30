@@ -175,6 +175,9 @@ export function workspaceHandlers() {
         'workspace:getProject': ({ projectId, options }) => read(() => store.getProject(projectId, options)),
         'workspace:listTasks': ({ projectId, options }) => read(() => store.listTasks(projectId, options)),
         'workspace:readTaskDetail': ({ taskId, options }) => read(() => store.readTaskDetail(taskId, options)),
+        'workspace:readTaskSnapshot': ({ taskId, runLimit }) => read(() => store.readTaskSnapshot(taskId, runLimit)),
+        'workspace:listNativeAgentSessions': ({ taskId, options }) =>
+          read(() => store.listNativeAgentSessions(taskId, options)),
         'workspace:readConversationPage': request =>
           read(() =>
             store.readConversationPage(
@@ -182,6 +185,7 @@ export function workspaceHandlers() {
               request.afterSequence,
               request.limit,
               request.throughSequence,
+              { direction: request.direction, beforeSequence: request.beforeSequence },
             ),
           ),
         'workspace:listPendingRuntimeRequests': request =>

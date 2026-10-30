@@ -66,6 +66,16 @@ export function createWorkspaceAtoms(
     query: (request: WorkspaceRequest<'workspace:readTaskDetail'>, id: string) =>
       client.query('workspace:readTaskDetail', request, queryOptions(id)),
   })
+  const workspaceTaskSnapshot = createRpcQuerySlot({
+    key: workspaceQueryKey,
+    query: (request: WorkspaceRequest<'workspace:readTaskSnapshot'>, id: string) =>
+      client.query('workspace:readTaskSnapshot', request, queryOptions(id)),
+  })
+  const workspaceNativeAgentSessions = createRpcQuerySlot({
+    key: workspaceQueryKey,
+    query: (request: WorkspaceRequest<'workspace:listNativeAgentSessions'>, id: string) =>
+      client.query('workspace:listNativeAgentSessions', request, queryOptions(id)),
+  })
   const workspaceConversation = createRpcQuerySlot({
     key: workspaceQueryKey,
     query: (request: WorkspaceRequest<'workspace:readConversationPage'>, id: string) =>
@@ -75,6 +85,16 @@ export function createWorkspaceAtoms(
     key: workspaceQueryKey,
     query: (request: WorkspaceRequest<'workspace:listPendingRuntimeRequests'>, id: string) =>
       client.query('workspace:listPendingRuntimeRequests', request, queryOptions(id)),
+  })
+  const workspaceRequestResponses = createRpcQuerySlot({
+    key: workspaceQueryKey,
+    query: (request: WorkspaceRequest<'workspace:listRequestResponses'>, id: string) =>
+      client.query('workspace:listRequestResponses', request, queryOptions(id)),
+  })
+  const workspaceSteerIntents = createRpcQuerySlot({
+    key: workspaceQueryKey,
+    query: (request: WorkspaceRequest<'workspace:listSteerIntents'>, id: string) =>
+      client.query('workspace:listSteerIntents', request, queryOptions(id)),
   })
   const workspaceFollowUps = createRpcQuerySlot({
     key: workspaceQueryKey,
@@ -99,7 +119,11 @@ export function createWorkspaceAtoms(
     workspaceProject,
     workspaceTasks,
     workspaceTask,
+    workspaceTaskSnapshot,
+    workspaceNativeAgentSessions,
     workspaceFollowUps,
+    workspaceRequestResponses,
+    workspaceSteerIntents,
   ]
   const queryPolling = createWorkspaceQueryPolling(
     (options.runtime ?? client.runtime.factory)(options.layer ?? ApplicationProtocolLayer),
@@ -109,7 +133,17 @@ export function createWorkspaceAtoms(
     const targets =
       source === 'command'
         ? [...fallbackTargets, workspaceRequests]
-        : [workspaceStatus, workspaceTasks, workspaceTask, workspaceRequests, workspaceFollowUps]
+        : [
+            workspaceStatus,
+            workspaceTasks,
+            workspaceTask,
+            workspaceTaskSnapshot,
+            workspaceNativeAgentSessions,
+            workspaceRequests,
+            workspaceFollowUps,
+            workspaceRequestResponses,
+            workspaceSteerIntents,
+          ]
     queryPolling.refresh(registry, targets)
     const conversation = registry.get(workspaceConversation.requestAtom)
     if (conversation && conversation.throughSequence === undefined)
@@ -211,8 +245,12 @@ export function createWorkspaceAtoms(
     workspaceProject,
     workspaceTasks,
     workspaceTask,
+    workspaceTaskSnapshot,
+    workspaceNativeAgentSessions,
     workspaceConversation,
     workspaceRequests,
+    workspaceRequestResponses,
+    workspaceSteerIntents,
     workspaceFollowUps,
     workspacePayload,
     workspaceProjectionAtom,
@@ -237,8 +275,12 @@ export const {
   workspaceProject,
   workspaceTasks,
   workspaceTask,
+  workspaceTaskSnapshot,
+  workspaceNativeAgentSessions,
   workspaceConversation,
   workspaceRequests,
+  workspaceRequestResponses,
+  workspaceSteerIntents,
   workspaceFollowUps,
   workspacePayload,
   workspaceProjectionAtom,

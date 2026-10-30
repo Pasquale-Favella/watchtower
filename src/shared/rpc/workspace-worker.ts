@@ -26,7 +26,7 @@ import {
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   workspaceCheckoutPageOptionsSchema,
-  workspaceConversationPageOptionsSchema,
+  workspaceConversationPageRequestSchema,
   workspaceConversationPageSchema,
   workspaceEntityPageOptionsSchema,
   workspaceEventPageOptionsSchema,
@@ -156,12 +156,7 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
     error,
   }),
   Rpc.make('workspace-worker:readConversationPage', {
-    payload: Schema.Struct({
-      conversationId: conversationIdSchema,
-      ...workspaceConversationPageOptionsSchema.fields,
-    }).check(
-      Schema.makeFilter(value => value.throughSequence === undefined || value.afterSequence <= value.throughSequence),
-    ),
+    payload: workspaceConversationPageRequestSchema,
     success: workspaceConversationPageSchema,
     error,
   }),

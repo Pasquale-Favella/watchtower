@@ -520,14 +520,69 @@ export const workspaceConversationPageSchema = Schema.Struct({
   items: Schema.Array(workspaceConversationPageItemSchema),
   highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   nextAfterSequence: Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+  nextBeforeSequence: Schema.optional(Schema.NullOr(sequenceCursor)),
   hasMore: Schema.Boolean,
 })
 export type WorkspaceConversationPage = Schema.Schema.Type<typeof workspaceConversationPageSchema>
-export const workspaceConversationPageOptionsSchema = workspaceEventPageOptionsSchema
+export const workspaceConversationPageOptionsSchema = Schema.Struct({
+  afterSequence: workspaceEventPageOptionsSchema.fields.afterSequence,
+  throughSequence: workspaceEventPageOptionsSchema.fields.throughSequence,
+  limit: workspaceEventPageOptionsSchema.fields.limit,
+  direction: Schema.optional(Schema.Literal('backward')),
+  beforeSequence: Schema.optional(sequenceCursor),
+}).check(
+  Schema.makeFilter(
+    value =>
+      (value.throughSequence === undefined || value.afterSequence <= value.throughSequence) &&
+      (value.direction === 'backward'
+        ? value.afterSequence === 0 &&
+          (value.throughSequence === undefined ||
+            value.beforeSequence === undefined ||
+            value.beforeSequence <= value.throughSequence)
+        : value.beforeSequence === undefined),
+  ),
+)
+export type WorkspaceConversationPageOptions = Schema.Schema.Type<typeof workspaceConversationPageOptionsSchema>
+export type WorkspaceConversationPageReadOptions = Pick<
+  WorkspaceConversationPageOptions,
+  'direction' | 'beforeSequence'
+>
+export const workspaceConversationPageRequestSchema = Schema.Struct({
+  conversationId: conversationIdSchema,
+  ...workspaceConversationPageOptionsSchema.fields,
+}).check(
+  Schema.makeFilter(
+    value =>
+      (value.throughSequence === undefined || value.afterSequence <= value.throughSequence) &&
+      (value.direction === 'backward'
+        ? value.afterSequence === 0 &&
+          (value.throughSequence === undefined ||
+            value.beforeSequence === undefined ||
+            value.beforeSequence <= value.throughSequence)
+        : value.beforeSequence === undefined),
+  ),
+)
+export type WorkspaceConversationPageRequest = Schema.Schema.Type<typeof workspaceConversationPageRequestSchema>
 
+export const workspaceRunContextSchema = Schema.Struct({
+  runId: agentRunIdSchema,
+  conversationId: conversationIdSchema,
+  checkoutId: workspaceCheckoutIdSchema,
+  driverId: text,
+  connectionId: text,
+})
+export type WorkspaceRunContext = Schema.Schema.Type<typeof workspaceRunContextSchema>
+export const workspaceRunCoverageSchema = Schema.Struct({
+  total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  returned: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  truncated: Schema.Boolean,
+})
+export type WorkspaceRunCoverage = Schema.Schema.Type<typeof workspaceRunCoverageSchema>
 export const workspaceSnapshotSchema = Schema.Struct({
   task: Schema.Struct({ id: taskIdSchema, projectId: projectIdSchema, title: text, status: Schema.String }),
   runs: Schema.Array(agentRunSchema),
+  runContexts: Schema.optional(Schema.Array(workspaceRunContextSchema)),
+  runCoverage: Schema.optional(workspaceRunCoverageSchema),
   requestResponses: Schema.optional(Schema.Array(requestResponseSnapshotSchema)),
   steerIntents: Schema.optional(Schema.Array(steerIntentSnapshotSchema)),
   queuedFollowUps: Schema.optional(Schema.Array(queuedFollowUpPreviewSchema)),
