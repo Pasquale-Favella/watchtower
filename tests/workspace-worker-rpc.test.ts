@@ -16,6 +16,7 @@ import { workspaceWorkerRpcServerLayer } from '@/platform/electron/workers/works
 import {
   WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY,
   WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY,
+  workspaceWorkerReadySchema,
   WorkspaceWorkerRpcGroup,
 } from '@/shared/rpc/workspace-worker.js'
 import type { BeginRunCommand } from '@/shared/schemas/workspace-store.js'
@@ -63,6 +64,10 @@ const withWorkspaceStore = <A, E, R>(
   )
 
 describe('workspace worker RPC server', () => {
+  it('rejects a worker without the conversation tail paging protocol', () => {
+    expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 7 })).toThrow()
+    expect(Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 8 })).toEqual({ protocolVersion: 8 })
+  })
   it('round-trips registration reuse and task receipts with command conflicts', async () => {
     const result = await Effect.runPromise(
       withWorkspaceStore((store, sqlScope) =>
@@ -320,7 +325,7 @@ describe('workspace worker RPC server', () => {
       }),
     )
 
-    expect(result.ready).toEqual({ protocolVersion: 7 })
+    expect(result.ready).toEqual({ protocolVersion: 8 })
     expect(result.receipt).toMatchObject({ commandId: command.commandId, runId: command.runId, replayed: false })
     expect(result.claim).toMatchObject({ runId: command.runId, ownerEpoch: 7, workspacePath: checkout.path })
     expect(result.event).toMatchObject({ kind: 'driverEvent', runId: command.runId })

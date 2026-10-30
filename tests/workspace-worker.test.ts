@@ -141,11 +141,11 @@ parentPort.on = (event, listener) => on(event, event === 'message'
   : listener)
 
 const group = RpcGroup.make(
-  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(7) }) }),
+  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(8) }) }),
   Rpc.make('workspace-worker:shutdown', { success: Schema.Void }),
 )
 const handlers = group.toLayer({
-  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 7 }),
+  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 8 }),
   'workspace-worker:shutdown': () => Effect.succeed(undefined),
 })
 const program = Effect.scoped(Effect.gen(function* () {
