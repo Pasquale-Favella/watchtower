@@ -106,11 +106,61 @@ below covers these prototypes, not a completed workspace release:
   install/uninstall acceptance requires a disposable hosted runner and was not
   run locally. macOS/Linux packaging and native-driver execution remain unverified.
 
-This does not complete M0.2, M0.3, M1.1, M1.2 or M1.3. Durable owner-epoch
-allocation, production composition of the supervisor, registry and service,
-service respond/steer/queue dispatch, coalescer integration with backpressure,
-ACP connection configuration, resolver-backed store admission, workspace RPC,
-fault injection, streaming/load measurements and Coach migration remain open. A
+## Integration checkpoint, 2026-10-30
+
+Five reviewed commits build on `937eb34`:
+
+- `c4ff6e2` adds store-issued increasing owner epochs and atomic recovery of prior
+  dispatch and delivery intents. Migration 7 persists the counter, and the
+  supervisor publishes only the epoch committed by its new worker. Legacy
+  stores that have never allocated an epoch retain the existing caller-number
+  compatibility path; after allocation, invented claim epochs are rejected.
+  Native session binding is separate from turn acceptance. Early requests can
+  be persisted and answered while `submit` waits, without recording an accepted
+  turn. Worker protocol version 5 exposes both operations.
+- `abe6299` adds an injected, immutable named connection catalog. The resolver
+  validates driver identity and forwards exact ACP command and argument
+  configuration. Invalid catalogs fail through the Layer error channel. Secret
+  references are explicitly unsupported until a driver can resolve them; they
+  cannot silently select ambient credentials. Discovery-backed catalog hydration
+  and persisted connection settings remain open.
+- `2611342` adds the application event consumer over the existing delta policy.
+  It awaits serial commits, keeps one upstream pull alive across deadline
+  waits, and flushes text before critical events, at the age limit, and on end
+  or failure. This bounds coalescer state; it does not guarantee a storage
+  latency under overload or replace native queue limits.
+- `6db3b2a` adds project registration through CheckoutResolver. Canonical main
+  checkout identity is persisted even when the selected directory is an alias
+  or linked worktree. Tests combine real Git and SQLite to distinguish same-name
+  repositories and exclude concurrent writes through aliases. This application
+  command is not connected to production RPC yet. Duplicate project reuse,
+  registration receipts and checkout revalidation before dispatch remain open.
+- `1066973` connects the consumer and connection resolver to ExecutionService.
+  Responses and steering are recorded before native delivery, and promoted
+  follow-ups go directly through claim and dispatch rather than `start`.
+  Application-owned control jobs survive caller cancellation. Both run and
+  waiting admission are bounded; shutdown includes control jobs in its deadline
+  and reports unresolved cleanup. Ingestion failure or EOF also stops a pending
+  native submission conservatively. Queue promotion is explicit; automatic
+  continuation and its identity allocation remain open.
+
+The nine focused test files pass 125 tests. The full suite passes 324 files,
+3,655 tests, with 5 skipped. All four TypeScript projects, Effect diagnostics and
+fixtures, Prettier and the production Electron build pass. ESLint has zero
+errors and the unchanged 1,409 existing warnings. Native turns remain opt-in;
+these checks make no paid inference calls.
+
+The subsequent three-test Electron check is not green. Its Operational log
+scenario reaches a successful process exit, but the Playwright close request
+does not settle within the existing cleanup deadline. Diagnosis is in progress;
+the assertion and timeout have not been weakened. This checkpoint does not
+replace the historical successful Electron and packaging evidence at `2de0a02`.
+
+This does not complete M0.2, M0.3, M1.1, M1.2 or M1.3. Production composition of
+the supervisor, connection catalog, registry and service, replacement ordering
+with active native work, byte-aware event pagination, project/task read
+contracts, workspace RPC, fault injection, streaming/load measurements and Coach
+migration remain open. A
 reported shutdown timeout retains uncertainty; it does not establish that an
 uncooperative native process was terminated.
 Worktrees and the resolver do not provide filesystem sandboxing or exclude
