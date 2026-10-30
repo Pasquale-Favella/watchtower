@@ -256,6 +256,44 @@ The workspace UI (M3.1), fault injection, real Electron worker replacement and
 load measurements, Coach migration, authenticated driver conformance and
 permitted Claude distribution remain open.
 
+## Wave D checkpoint, 2026-10-30
+
+- `5ba2d81` adds the Workspace section and Mod+9 while retaining existing
+  shortcut assignments. Register repositories, browse paginated Projects and
+  Tasks, create/select Tasks, search loaded records and read Conversations.
+  Conversation history uses stable watermarks and sequence deduplication;
+  oversized records load in chunks with digest, schema and identity checks.
+  Rendering is limited to 300 events at a time with controls for loaded history.
+- `8b5dd00` exposes a bounded, renderer-safe connection catalog. Listing and
+  dispatch share one lazy cached snapshot. Listing opens neither the SQL worker
+  nor a native agent session. Capabilities remain unknown until negotiation;
+  executable availability does not establish authentication or feature support.
+
+Review and Electron testing fixed an empty Conversation stuck in loading, Task
+lists ignoring refreshed pages, and a catch-up cursor repeating the initial
+request. Refreshed Project/Task records replace prior values by identity. The
+Electron workspace test creates a Task through the UI and verifies selection,
+list refresh, persistence and confirmed shutdown. The rendered app was inspected.
+
+Verification at `8b5dd00`: full Vitest passes 336 files and 3,832 tests, with
+5 skipped. All four TypeScript projects, Effect diagnostics, Prettier and build
+pass. ESLint reports zero errors and 1,412 warnings. Windows NSIS packaging and
+the packaged verifier pass, including workspace persistence and a confirmed
+196 ms shutdown. No paid inference or authenticated native turn was run.
+
+The first full Playwright run passed 10/12 specs; both RPC specs exited with
+Windows code 2147483651 during close. Both pass in isolation with exit code zero.
+A second run was interrupted after further close failures while other gates ran.
+The clean serial run passes all 12 specs in 2 minutes. The cause of the earlier
+close failures remains unproven; do not treat reruns as a shutdown guarantee.
+
+M3.1 remains partial. The next slice needs authoritative active Run/session reads
+and negotiated capabilities for composer, resume, interrupt, queued prompts,
+steering, approvals and questions. A listing of executable connections cannot
+supply those guarantees. Board status/archive commands, full Task payload viewing,
+conversation forks, attachments and broader keyboard/accessibility checks remain
+open. Real authenticated turns and Claude distribution remain release gates.
+
 ## Constraints for these slices
 
 - Follow [ADR 0038](../adr/0038-engine-core-and-desktop-adapters.md). Core owns
@@ -291,3 +329,14 @@ Architectural agreement does not complete an ADR, certify a protocol or prove
 packaged behavior. Keep the implementation PR in draft until its agreed scope
 passes the issue's applicable gates. Move deferred scope to tracked follow-ups
 before marking the parent issue complete.
+
+## Workspace interaction research
+
+The requested product experience is an agent coding workspace. The initial
+Project/Task forms and event reader are implementation groundwork, not the final
+interaction design. Before extending them, inspect the reference applications'
+actual layout and source workflows: project navigation, thread/task hierarchy,
+composer, live assistant/tool presentation, approvals, changes/review, terminals,
+worktree selection, reconnect and restoration. Translate those behaviors into
+the existing Effect Atom/RPC and execution ownership model. Keep reference
+product names out of committed documentation and tracker text.

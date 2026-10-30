@@ -42,7 +42,7 @@ _Avoid_: filter settings, date range
 
 **Section**:
 The app's top-level screens — overview, sessions, pull requests, spend, optimize,
-models, compare, coach & skills, settings. The sidebar and the numbered shortcuts
+models, compare, coach & skills, workspace, settings. The sidebar and the numbered shortcuts
 navigate between them.
 _Avoid_: page, tab
 
