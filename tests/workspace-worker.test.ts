@@ -630,6 +630,24 @@ describe('workspace worker RPC client', () => {
       modelId: 'queued-model',
       issuedAt: timestamp,
     }
+    const response = {
+      commandId: 'respond-worker',
+      runId: beginRun.runId,
+      ownerEpoch: 7,
+      generation: 1,
+      requestId: 'approval-worker',
+      decision: { kind: 'approve' as const },
+      issuedAt: timestamp,
+    }
+    const steer = {
+      commandId: 'steer-worker',
+      runId: beginRun.runId,
+      ownerEpoch: 7,
+      generation: 1,
+      message: 'Please focus',
+      issuedAt: timestamp,
+    }
+    const retryMetadata = { ownerEpoch: 8, issuedAt: '2026-10-30T12:00:00Z' }
     await withStore(filename, async store => {
       await setup(store)
       await Effect.runPromise(store.enqueueFollowUp(queued))
@@ -638,7 +656,12 @@ describe('workspace worker RPC client', () => {
       )
     })
     await withStore(filename, async store => {
-      expect(await Effect.runPromise(store.enqueueFollowUp(queued))).toMatchObject({ replayed: true })
+      expect(await Effect.runPromise(store.enqueueFollowUp({ ...queued, issuedAt: retryMetadata.issuedAt }))).toEqual({
+        commandId: queued.commandId,
+        conversationId: conversation.id,
+        acceptedAt: timestamp,
+        replayed: true,
+      })
       expect((await Effect.runPromise(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([
         { commandId: queued.commandId },
         { commandId: 'queue-worker-2' },
@@ -674,17 +697,13 @@ describe('workspace worker RPC client', () => {
           },
         }),
       )
-      const response = {
-        commandId: 'respond-worker',
-        runId: beginRun.runId,
-        ownerEpoch: 7,
-        generation: 1,
-        requestId: 'approval-worker',
-        decision: { kind: 'approve' as const },
-        issuedAt: timestamp,
-      }
       expect(await Effect.runPromise(store.recordRequestResponse(response))).toMatchObject({ replayed: false })
-      expect(await Effect.runPromise(store.recordRequestResponse(response))).toMatchObject({ replayed: true })
+      expect(await Effect.runPromise(store.recordRequestResponse({ ...response, ...retryMetadata }))).toEqual({
+        commandId: response.commandId,
+        runId: beginRun.runId,
+        acceptedAt: timestamp,
+        replayed: true,
+      })
       await Effect.runPromise(
         store.settleRequestResponse(beginRun.runId, 'approval-worker', {
           ownerEpoch: 7,
@@ -692,14 +711,6 @@ describe('workspace worker RPC client', () => {
           outcome: 'uncertain',
         }),
       )
-      const steer = {
-        commandId: 'steer-worker',
-        runId: beginRun.runId,
-        ownerEpoch: 7,
-        generation: 1,
-        message: 'Please focus',
-        issuedAt: timestamp,
-      }
       expect(await Effect.runPromise(store.recordSteer(steer))).toMatchObject({ replayed: false })
       await Effect.runPromise(
         store.settleSteer(beginRun.runId, steer.commandId, {
@@ -712,6 +723,56 @@ describe('workspace worker RPC client', () => {
     })
     await withStore(filename, async store => {
       expect((await Effect.runPromise(store.listQueuedFollowUps(conversation.id))).items).toEqual([])
+      expect(await Effect.runPromise(store.enqueueFollowUp({ ...queued, issuedAt: retryMetadata.issuedAt }))).toEqual({
+        commandId: queued.commandId,
+        conversationId: conversation.id,
+        acceptedAt: timestamp,
+        replayed: true,
+      })
+      const replay = await Effect.runPromise(
+        store.promoteNextFollowUp(conversation.id, {
+          ...beginRun,
+          ...retryMetadata,
+          runId: 'regenerated-promotion' as never,
+          provisionalAgentSessionId: 'regenerated-session',
+        }),
+      )
+      expect(replay).toEqual({
+        followUp: { ...queued, position: 1 },
+        receipt: {
+          commandId: beginRun.commandId,
+          runId: beginRun.runId,
+          acceptedAt: beginRun.issuedAt,
+          replayed: true,
+        },
+      })
+      expect(await Effect.runPromise(store.recordRequestResponse({ ...response, ...retryMetadata }))).toEqual({
+        commandId: response.commandId,
+        runId: beginRun.runId,
+        acceptedAt: timestamp,
+        replayed: true,
+      })
+      expect(await Effect.runPromise(store.recordSteer({ ...steer, ...retryMetadata }))).toEqual({
+        commandId: steer.commandId,
+        runId: beginRun.runId,
+        acceptedAt: timestamp,
+        replayed: true,
+      })
+      await expect(Effect.runPromise(store.enqueueFollowUp({ ...queued, prompt: 'Different' }))).rejects.toMatchObject({
+        code: 'command-conflict',
+      })
+      await expect(
+        Effect.runPromise(
+          store.promoteNextFollowUp(conversation.id, { ...beginRun, checkoutId: 'different-checkout' as never }),
+        ),
+      ).rejects.toMatchObject({ code: 'command-conflict' })
+      await expect(
+        Effect.runPromise(store.recordRequestResponse({ ...response, decision: { kind: 'deny' } })),
+      ).rejects.toMatchObject({ code: 'command-conflict' })
+      await expect(Effect.runPromise(store.recordSteer({ ...steer, message: 'Different' }))).rejects.toMatchObject({
+        code: 'command-conflict',
+      })
+
       expect(
         await Effect.runPromise(
           store.promoteNextFollowUp(conversation.id, {
@@ -736,7 +797,24 @@ describe('workspace worker RPC client', () => {
       await setup(store)
 
       await expect(Effect.runPromise(store.beginRun(beginRun))).resolves.toMatchObject({ replayed: false })
-      await expect(Effect.runPromise(store.beginRun(beginRun))).resolves.toMatchObject({ replayed: true })
+      await expect(
+        Effect.runPromise(
+          store.beginRun({
+            ...beginRun,
+            issuedAt: '2026-10-30T12:00:00Z',
+            runId: 'regenerated-worker-run' as never,
+            provisionalAgentSessionId: 'regenerated-worker-session',
+          }),
+        ),
+      ).resolves.toEqual({
+        commandId: beginRun.commandId,
+        runId: beginRun.runId,
+        acceptedAt: beginRun.issuedAt,
+        replayed: true,
+      })
+      await expect(
+        Effect.runPromise(store.beginRun({ ...beginRun, prompt: 'Different intent' })),
+      ).rejects.toMatchObject({ code: 'command-conflict' })
       const claim = await Effect.runPromise(store.claimDispatch(beginRun.runId, 7, '2026-10-29T10:00:02Z'))
       expect(claim).toMatchObject({ runId: beginRun.runId, ownerEpoch: 7, workspacePath: checkout.path })
       await Effect.runPromise(
@@ -796,6 +874,22 @@ describe('workspace worker RPC client', () => {
         const recoveredStore = await replacement.runtime.runPromise(WorkspaceStore)
         expect(replacement.workers).toHaveLength(1)
         await expect(Effect.runPromise(recoveredStore.recoverWorker(7, '2026-10-29T10:00:03Z'))).resolves.toBe(1)
+        expect(
+          await Effect.runPromise(
+            recoveredStore.beginRun({
+              ...beginRun,
+              issuedAt: '2026-10-30T12:00:00Z',
+              runId: 'regenerated-after-replacement' as never,
+              provisionalAgentSessionId: 'regenerated-session-after-replacement',
+            }),
+          ),
+        ).toEqual({
+          commandId: beginRun.commandId,
+          runId: beginRun.runId,
+          acceptedAt: beginRun.issuedAt,
+          replayed: true,
+        })
+
         const snapshot = await Effect.runPromise(recoveredStore.readTaskSnapshot(task.id, 10))
         expect(snapshot.runs).toMatchObject([expect.objectContaining({ id: beginRun.runId, status: 'uncertain' })])
         expect(replacement.workers).toHaveLength(1)

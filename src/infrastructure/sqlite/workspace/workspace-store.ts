@@ -38,6 +38,7 @@ import {
   followUpReceiptSchema,
   nativeSessionBindingSchema,
   ownerEpochAcquisitionSchema,
+  promotedFollowUpSchema,
   queuedFollowUpSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
@@ -217,6 +218,13 @@ const migrations = [
       ) WHERE singleton = 1;
     `),
   },
+  {
+    version: 8,
+    name: 'persist_workspace_promotion_receipts',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_command_receipt ADD COLUMN promotion_payload TEXT;
+    `),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
@@ -253,6 +261,25 @@ const canonical = (value: unknown): string => {
 const fingerprint = (value: unknown): string => {
   return createHash('sha256').update(canonical(value)).digest('hex')
 }
+
+const receiptServerFields = {
+  beginRun: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
+  promoteFollowUp: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
+  enqueueFollowUp: ['issuedAt'],
+  recordRequestResponse: ['issuedAt', 'occurredAt', 'ownerEpoch'],
+  recordSteer: ['issuedAt', 'occurredAt', 'ownerEpoch'],
+} as const
+
+type ReceiptKind = keyof typeof receiptServerFields
+
+const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
+  const excluded: ReadonlyArray<string> = receiptServerFields[kind]
+  const intent = Object.fromEntries(Object.entries(command).filter(([field]) => !excluded.includes(field)))
+  return `v2:${fingerprint({ kind, intent })}`
+}
+
+const matchesReceipt = (saved: string, kind: ReceiptKind, command: object): boolean =>
+  saved === (saved.startsWith('v2:') ? receiptFingerprint(kind, command) : fingerprint(command))
 
 const decodeRun = decodeJson(agentRunSchema)
 const decodeWorkerEpoch = (epoch: unknown) =>
@@ -357,11 +384,11 @@ const makeService = Effect.gen(function* () {
         )
         const receipt = yield* sql.withTransaction(
           Effect.gen(function* () {
-            const commandFingerprint = fingerprint(command)
+            const commandFingerprint = receiptFingerprint('beginRun', command)
             const prior =
               yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
             if (prior[0]) {
-              if (prior[0].fingerprint !== commandFingerprint)
+              if (!matchesReceipt(String(prior[0].fingerprint), 'beginRun', command))
                 return yield* Effect.fail(
                   safeError('command-conflict', 'Command ID was already used with different input'),
                 )
@@ -1121,28 +1148,31 @@ const makeService = Effect.gen(function* () {
     }
   }
 
-  const replayReceipt = Effect.fnUntraced(function* (command: { readonly commandId: string }) {
+  const replayReceipt = Effect.fnUntraced(function* (kind: ReceiptKind, command: { readonly commandId: string }) {
     const prior =
       yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
     if (!prior[0]) return undefined
-    if (prior[0].fingerprint !== fingerprint(command))
+    if (!matchesReceipt(String(prior[0].fingerprint), kind, command))
       return yield* Effect.fail(safeError('command-conflict', 'Command ID was already used with different input'))
     const receipt = yield* decodeJson(commandReceiptSchema)(String(prior[0].payload))
     return { ...receipt, replayed: true }
   })
 
-  const saveReceipt = Effect.fnUntraced(function* (command: {
-    readonly commandId: string
-    readonly runId: AgentRun['id']
-    readonly issuedAt: string
-  }) {
+  const saveReceipt = Effect.fnUntraced(function* (
+    kind: ReceiptKind,
+    command: {
+      readonly commandId: string
+      readonly runId: AgentRun['id']
+      readonly issuedAt: string
+    },
+  ) {
     const receipt: CommandReceipt = {
       commandId: command.commandId,
       runId: command.runId,
       acceptedAt: command.issuedAt,
       replayed: false,
     }
-    yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${fingerprint(command)}, ${encode(receipt)})`
+    yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${receiptFingerprint(kind, command)}, ${encode(receipt)})`
     return receipt
   })
 
@@ -1160,7 +1190,7 @@ const makeService = Effect.gen(function* () {
         yield* validateCommandBytes(command)
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const replay = yield* replayReceipt(command)
+            const replay = yield* replayReceipt('recordRequestResponse', command)
             if (replay) return replay
             const { run } = yield* loadOwnedDispatch(command.runId, command.ownerEpoch, true)
             const pending =
@@ -1175,7 +1205,7 @@ const makeService = Effect.gen(function* () {
               commandId: command.commandId,
               requestId: command.requestId,
             })
-            return yield* saveReceipt(command)
+            return yield* saveReceipt('recordRequestResponse', command)
           }),
         )
       }),
@@ -1217,7 +1247,7 @@ const makeService = Effect.gen(function* () {
         yield* validateCommandBytes(command)
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const replay = yield* replayReceipt(command)
+            const replay = yield* replayReceipt('recordSteer', command)
             if (replay) return replay
             const { run } = yield* loadOwnedDispatch(command.runId, command.ownerEpoch)
             if (run.status === 'completed' || run.status === 'failed' || run.status === 'interrupted')
@@ -1231,7 +1261,7 @@ const makeService = Effect.gen(function* () {
               )
             yield* sql`INSERT INTO workspace_steer_intent (command_id, run_id, state, payload) VALUES (${command.commandId}, ${command.runId}, 'pending', ${encode({ ...command, state: 'pending' })})`
             yield* appendEvent(run, 'steerRecorded', command.issuedAt, { commandId: command.commandId })
-            return yield* saveReceipt(command)
+            return yield* saveReceipt('recordSteer', command)
           }),
         )
       }),
@@ -1275,7 +1305,7 @@ const makeService = Effect.gen(function* () {
             const prior =
               yield* sql`SELECT fingerprint, payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
             if (prior[0]) {
-              if (prior[0].fingerprint !== fingerprint(command))
+              if (!matchesReceipt(String(prior[0].fingerprint), 'enqueueFollowUp', command))
                 return yield* Effect.fail(
                   safeError('command-conflict', 'Command ID was already used with different input'),
                 )
@@ -1296,7 +1326,7 @@ const makeService = Effect.gen(function* () {
               acceptedAt: command.issuedAt,
               replayed: false,
             }
-            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${fingerprint(command)}, ${encode(receipt)})`
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${receiptFingerprint('enqueueFollowUp', command)}, ${encode(receipt)})`
             return receipt
           }),
         )
@@ -1428,6 +1458,19 @@ const makeService = Effect.gen(function* () {
           return yield* Effect.fail(safeError('membership-conflict', 'Promotion Conversation does not match the Run'))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
+            const prior =
+              yield* sql`SELECT fingerprint, promotion_payload FROM workspace_command_receipt WHERE command_id = ${command.commandId}`
+            if (prior[0]) {
+              if (
+                !matchesReceipt(String(prior[0].fingerprint), 'promoteFollowUp', command) ||
+                prior[0].promotion_payload == null
+              )
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const promoted = yield* decodeJson(promotedFollowUpSchema)(String(prior[0].promotion_payload))
+              return { ...promoted, receipt: { ...promoted.receipt, replayed: true } }
+            }
             const active =
               yield* sql`SELECT r.id FROM workspace_agent_run r JOIN workspace_dispatch_intent i ON i.run_id = r.id WHERE i.conversation_id = ${conversationId} AND r.status NOT IN ('completed', 'failed', 'interrupted') LIMIT 1`
             if (active.length > 0) return null
@@ -1450,8 +1493,10 @@ const makeService = Effect.gen(function* () {
             })
             if (receipt.replayed)
               return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
+            const promoted = { followUp, receipt }
+            yield* sql`UPDATE workspace_command_receipt SET fingerprint = ${receiptFingerprint('promoteFollowUp', command)}, promotion_payload = ${encode(promoted)} WHERE command_id = ${command.commandId}`
             yield* sql`DELETE FROM workspace_follow_up_queue WHERE position = ${followUp.position}`
-            return { followUp, receipt }
+            return promoted
           }),
         )
       }),

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -76,7 +77,108 @@ const acceptRun = async (
   )
 }
 
+const legacyFingerprint = (value: unknown): string => {
+  const canonical = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+    if (typeof value === 'object' && value !== null) {
+      return `{${Object.entries(value)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
+        .join(',')}}`
+    }
+    return JSON.stringify(value)
+  }
+  return createHash('sha256').update(canonical(value)).digest('hex')
+}
+
 describe('WorkspaceStore', () => {
+  it.each(['beginRun', 'enqueueFollowUp', 'recordRequestResponse', 'recordSteer'] as const)(
+    'preserves whole-command replay and conflict semantics for legacy %s receipts',
+    async kind => {
+      const directory = mkdtempSync(join(process.cwd(), '.workspace-legacy-receipt-'))
+      const filename = join(directory, 'workspace.db')
+      const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      const legacyCommand = {
+        beginRun: command,
+        enqueueFollowUp: {
+          commandId: command.commandId,
+          issuedAt: command.issuedAt,
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Legacy queue',
+        },
+        recordRequestResponse: {
+          commandId: command.commandId,
+          issuedAt: command.issuedAt,
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          requestId: 'legacy-request',
+          decision: { kind: 'approve' as const },
+        },
+        recordSteer: {
+          commandId: command.commandId,
+          issuedAt: command.issuedAt,
+          runId: command.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          message: 'Legacy steering',
+        },
+      }[kind]
+      const receipt = {
+        commandId: command.commandId,
+        acceptedAt: command.issuedAt,
+        replayed: false,
+        ...(kind === 'enqueueFollowUp' ? { conversationId: conversation.id } : { runId: command.runId }),
+      }
+      try {
+        const store = await runtime.runPromise(WorkspaceStore)
+        const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+        try {
+          await writer.runPromise(
+            Effect.gen(function* () {
+              const sql = yield* SqlClient.SqlClient
+              yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${command.commandId}, ${legacyFingerprint(legacyCommand)}, ${JSON.stringify(receipt)})`
+            }),
+          )
+        } finally {
+          await writer.dispose()
+        }
+        const invoke = (input: unknown) => {
+          switch (kind) {
+            case 'beginRun':
+              return Effect.runPromise(store.beginRun(input as BeginRunCommand))
+            case 'enqueueFollowUp':
+              return Effect.runPromise(store.enqueueFollowUp(input as Parameters<typeof store.enqueueFollowUp>[0]))
+            case 'recordRequestResponse':
+              return Effect.runPromise(
+                store.recordRequestResponse(input as Parameters<typeof store.recordRequestResponse>[0]),
+              )
+            case 'recordSteer':
+              return Effect.runPromise(store.recordSteer(input as Parameters<typeof store.recordSteer>[0]))
+          }
+        }
+        expect(await invoke(legacyCommand)).toEqual({ ...receipt, replayed: true })
+        await expect(invoke({ ...legacyCommand, issuedAt: '2026-10-30T12:00:00Z' })).rejects.toMatchObject({
+          code: 'command-conflict',
+        })
+        const changedIntent = {
+          ...legacyCommand,
+          ...{
+            beginRun: { prompt: 'Changed' },
+            enqueueFollowUp: { prompt: 'Changed' },
+            recordRequestResponse: { requestId: 'different-request' },
+            recordSteer: { message: 'Changed' },
+          }[kind],
+        }
+        await expect(invoke(changedIntent)).rejects.toMatchObject({ code: 'command-conflict' })
+      } finally {
+        await runtime.dispose()
+        rmSync(directory, { recursive: true, force: true })
+      }
+    },
+  )
+
   it('allocates unique owner epochs atomically and advances them after reopening the database', async () => {
     const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-epoch-'))
     const filename = join(directory, 'workspace.sqlite')
@@ -667,7 +769,19 @@ describe('WorkspaceStore', () => {
         { state: 'resolved', delivery: { outcome: 'accepted', nativeConfirmation: 'confirmed' } },
       ])
       expect(snapshot.steerIntents).toMatchObject([{ state: 'failed' }])
-      expect(await run(store.recordRequestResponse(response))).toMatchObject({ replayed: true })
+      expect(
+        await run(store.recordRequestResponse({ ...response, ownerEpoch: 8, issuedAt: '2026-10-30T12:00:00Z' })),
+      ).toEqual({
+        commandId: response.commandId,
+        runId: command.runId,
+        acceptedAt: response.issuedAt,
+        replayed: true,
+      })
+      for (const changed of [{ requestId: 'another-request' }, { runId: 'another-run' as never }, { generation: 2 }]) {
+        await expect(run(store.recordRequestResponse({ ...response, ...changed }))).rejects.toMatchObject({
+          code: 'command-conflict',
+        })
+      }
     })
   })
 
@@ -809,6 +923,17 @@ describe('WorkspaceStore', () => {
       store = await runtime.runPromise(WorkspaceStore)
       run = effect => runtime.runPromise(effect)
       expect(
+        await run(
+          store.promoteNextFollowUp(conversation.id, {
+            ...command,
+            nativeSessionId: 'native-existing',
+            runId: 'reopened-new-run' as never,
+            issuedAt: '2026-10-30T12:00:00Z',
+            provisionalAgentSessionId: 'reopened-session',
+          }),
+        ),
+      ).toEqual({ ...promoted, receipt: { ...promoted?.receipt, replayed: true } })
+      expect(
         await run(store.promoteNextFollowUp(conversation.id, { ...command, commandId: 'cannot-promote-twice' })),
       ).toBeNull()
       expect((await run(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([{ prompt: 'Second' }])
@@ -830,6 +955,67 @@ describe('WorkspaceStore', () => {
     }
   })
 
+  it('replays promotion before checking active Runs or the queue without promoting another follow-up', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const followUp = {
+        commandId: 'promotion-queue-1',
+        taskId: task.id,
+        conversationId: conversation.id,
+        prompt: 'Queued intent',
+        issuedAt: command.issuedAt,
+      }
+      await run(store.enqueueFollowUp(followUp))
+      await run(store.enqueueFollowUp({ ...followUp, commandId: 'promotion-queue-2', prompt: 'Next intent' }))
+      const promoted = await run(store.promoteNextFollowUp(conversation.id, command))
+      expect(promoted).toMatchObject({
+        followUp: { ...followUp, position: 1 },
+        receipt: { runId: command.runId, acceptedAt: command.issuedAt, replayed: false },
+      })
+      const retry = {
+        ...command,
+        runId: 'regenerated-run' as never,
+        provisionalAgentSessionId: 'regenerated-session',
+        issuedAt: '2026-10-30T12:00:00Z',
+      }
+      expect(await run(store.promoteNextFollowUp(conversation.id, retry))).toEqual({
+        ...promoted,
+        receipt: { ...promoted?.receipt, replayed: true },
+      })
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([
+        { commandId: 'promotion-queue-2' },
+      ])
+      await expect(run(store.beginRun(command))).rejects.toMatchObject({ code: 'command-conflict' })
+
+      for (const changed of [
+        { prompt: 'Changed intent' },
+        { taskId: 'other-task' as never },
+        { checkoutId: 'other-checkout' as never },
+      ]) {
+        await expect(run(store.promoteNextFollowUp(conversation.id, { ...retry, ...changed }))).rejects.toMatchObject({
+          code: 'command-conflict',
+        })
+      }
+      await run(store.cancelQueuedFollowUp(conversation.id, 'promotion-queue-2'))
+      const claim = await run(store.claimDispatch(command.runId, 7, command.issuedAt))
+      expect(claim.prompt).toBe('Queued intent')
+      await run(
+        store.failDispatch(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      expect(await run(store.promoteNextFollowUp(conversation.id, retry))).toEqual({
+        ...promoted,
+        receipt: { ...promoted?.receipt, replayed: true },
+      })
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toEqual([])
+      expect((await run(store.readTaskSnapshot(task.id, 20))).runs).toHaveLength(1)
+    })
+  })
+
   it('records steering before delivery and rejects a terminal run', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
@@ -844,7 +1030,22 @@ describe('WorkspaceStore', () => {
         issuedAt: command.issuedAt,
       }
       expect(await run(store.recordSteer(steer))).toMatchObject({ replayed: false })
-      expect(await run(store.recordSteer(steer))).toMatchObject({ replayed: true })
+      expect(await run(store.recordSteer({ ...steer, ownerEpoch: 8, issuedAt: '2026-10-30T12:00:00Z' }))).toEqual({
+        commandId: steer.commandId,
+        runId: command.runId,
+        acceptedAt: steer.issuedAt,
+        replayed: true,
+      })
+      for (const changed of [
+        { message: 'Different intent' },
+        { runId: 'another-run' as never },
+        { expectedNativeTurnId: 'another-turn' },
+        { generation: 2 },
+      ]) {
+        await expect(run(store.recordSteer({ ...steer, ...changed }))).rejects.toMatchObject({
+          code: 'command-conflict',
+        })
+      }
       await run(
         store.settleSteer(command.runId, steer.commandId, {
           ownerEpoch: 7,
@@ -882,7 +1083,15 @@ describe('WorkspaceStore', () => {
         issuedAt: command.issuedAt,
       }
       expect(await run(store.enqueueFollowUp(followUp))).toMatchObject({ replayed: false })
-      expect(await run(store.enqueueFollowUp(followUp))).toMatchObject({ replayed: true })
+      expect(await run(store.enqueueFollowUp({ ...followUp, issuedAt: '2026-10-30T12:00:00Z' }))).toEqual({
+        commandId: followUp.commandId,
+        conversationId: conversation.id,
+        acceptedAt: followUp.issuedAt,
+        replayed: true,
+      })
+      await expect(run(store.enqueueFollowUp({ ...followUp, prompt: 'Different intent' }))).rejects.toMatchObject({
+        code: 'command-conflict',
+      })
       await run(store.enqueueFollowUp({ ...followUp, commandId: 'queue-2', prompt: 'Second' }))
       const promoted = await Promise.all([
         run(store.promoteNextFollowUp(conversation.id, command)),
@@ -933,7 +1142,19 @@ describe('WorkspaceStore', () => {
       }
       expect(await run(store.recordRequestResponse(response))).toMatchObject({ replayed: false })
       expect((await run(store.readTaskSnapshot(task.id, 20))).requestResponses).toMatchObject([{ state: 'pending' }])
-      expect(await run(store.recordRequestResponse(response))).toMatchObject({ replayed: true })
+      expect(
+        await run(store.recordRequestResponse({ ...response, ownerEpoch: 8, issuedAt: '2026-10-30T12:00:00Z' })),
+      ).toEqual({
+        commandId: response.commandId,
+        runId: command.runId,
+        acceptedAt: response.issuedAt,
+        replayed: true,
+      })
+      for (const changed of [{ requestId: 'another-request' }, { runId: 'another-run' as never }, { generation: 2 }]) {
+        await expect(run(store.recordRequestResponse({ ...response, ...changed }))).rejects.toMatchObject({
+          code: 'command-conflict',
+        })
+      }
       await expect(run(store.recordRequestResponse({ ...response, decision: { kind: 'deny' } }))).rejects.toMatchObject(
         { code: 'command-conflict' },
       )
@@ -963,11 +1184,20 @@ describe('WorkspaceStore', () => {
     })
   })
 
-  it('commits a run receipt, prompt, event and intent once, and replays only an exact command', async () => {
+  it('commits a run once and replays client intent with regenerated server metadata', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
       expect(await run(store.beginRun(command))).toMatchObject({ commandId: 'cmd-1', runId: 'run-1', replayed: false })
-      expect(await run(store.beginRun({ ...command, prompt: 'Fix the bug' }))).toMatchObject({ replayed: true })
+      expect(
+        await run(
+          store.beginRun({
+            ...command,
+            issuedAt: '2026-10-30T12:00:00Z',
+            runId: 'regenerated-run' as never,
+            provisionalAgentSessionId: 'regenerated-session',
+          }),
+        ),
+      ).toEqual({ commandId: command.commandId, runId: command.runId, acceptedAt: command.issuedAt, replayed: true })
       await expect(run(store.beginRun({ ...command, prompt: 'Different prompt' }))).rejects.toMatchObject({
         code: 'command-conflict',
       })
@@ -1721,6 +1951,7 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE workspace_request_response_intent`
             yield* sql`DROP TABLE workspace_steer_intent`
             yield* sql`DROP TABLE workspace_follow_up_queue`
+            yield* sql`ALTER TABLE workspace_command_receipt DROP COLUMN promotion_payload`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`
             yield* sql`ALTER TABLE workspace_worker_epoch DROP COLUMN allocated_epoch`
           }),
