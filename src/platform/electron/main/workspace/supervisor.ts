@@ -24,6 +24,8 @@ export interface WorkspaceWorkerSupervisorOptions extends WorkspaceWorkerStoreOp
   readonly maxReplacements?: number
   readonly restartWindowMs?: number
   readonly restartBackoffMs?: number
+  /** Runs before closing a failed generation and before acquiring another writer. */
+  readonly beforeReplace?: () => Effect.Effect<void, unknown>
 }
 
 export interface WorkspaceWorkerSupervisorStatus {
@@ -165,8 +167,8 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
         generation.store = Context.get(context, WorkspaceStore)
         const recoveredAt = DateTime.formatIso(yield* DateTime.now)
         const acquisition = yield* generation.store.acquireOwnerEpoch(recoveredAt)
-        yield* SubscriptionRef.set(status, { state: 'ready', lastFailure: null })
         yield* SubscriptionRef.set(ownerEpoch, acquisition.ownerEpoch)
+        yield* SubscriptionRef.set(status, { state: 'ready', lastFailure: null })
       })
 
       const opened = yield* Effect.exit(openGeneration())
@@ -180,24 +182,29 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
       }
 
       const store = new Proxy({} as WorkspaceStore['Service'], {
-        get:
-          (_target, key) =>
-          (...args: ReadonlyArray<unknown>) =>
+        get: (_target, key) => {
+          if (typeof key !== 'string' || key === 'then' || key in Object.prototype) return undefined
+          return (...args: ReadonlyArray<unknown>) =>
             Effect.suspend(() => {
               const generation = current
               if (stopping || SubscriptionRef.getUnsafe(status).state !== 'ready' || !generation?.store)
                 return Effect.fail(unavailable())
-              const operation = Reflect.get(generation.store, key) as (
-                ...args: ReadonlyArray<unknown>
-              ) => Effect.Effect<unknown, WorkspaceStoreError>
-              return operation(...args).pipe(
+              const operation: unknown = Reflect.get(generation.store, key)
+              if (typeof operation !== 'function')
+                return Effect.fail(
+                  new WorkspaceStoreError({ code: 'invalid-data', message: 'Unknown workspace operation.' }),
+                )
+              return (operation as (...args: ReadonlyArray<unknown>) => Effect.Effect<unknown, WorkspaceStoreError>)(
+                ...args,
+              ).pipe(
                 Effect.tapError(error =>
                   Effect.sync(() => {
                     if (error.code === 'database-unavailable' && error.message === UNAVAILABLE) generation.fail()
                   }),
                 ),
               )
-            }),
+            })
+        },
       })
 
       if (current) {
@@ -209,12 +216,17 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
               yield* Effect.promise(() => generation.failed)
               if (stopping) return
               yield* SubscriptionRef.set(status, { state: 'replacing', lastFailure: UNAVAILABLE })
+              const fenced = options.beforeReplace ? yield* Effect.exit(options.beforeReplace()) : Exit.void
               const closed = yield* Effect.exit(closeGeneration(current))
               if (Exit.isFailure(closed)) {
                 yield* SubscriptionRef.set(status, { state: 'unavailable', lastFailure: CLEANUP_FAILED })
                 return
               }
               current = undefined
+              if (Exit.isFailure(fenced)) {
+                yield* SubscriptionRef.set(status, { state: 'unavailable', lastFailure: UNAVAILABLE })
+                return
+              }
               while (!stopping) {
                 const now = DateTime.toEpochMillis(yield* DateTime.now)
                 attempts = attempts.filter(time => now - time < restartWindowMs)

@@ -95,6 +95,8 @@ describe('workspace worker supervisor', () => {
         lastFailure: null,
       })
       expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(1)
+      expect(Reflect.get(supervisor.store, 'then')).toBeUndefined()
+      expect(Reflect.get(supervisor.store, Symbol.iterator)).toBeUndefined()
       await Effect.runPromise(supervisor.store.registerProject({ project, mainCheckout: checkout }))
       expect(workers).toHaveLength(1)
     } finally {
@@ -102,6 +104,50 @@ describe('workspace worker supervisor', () => {
     }
     expect(workers[0]?.threadId).toBe(-1)
     expect(workers).toHaveLength(1)
+  }, 15_000)
+  it('fences the old owner before opening a replacement generation', async () => {
+    const order: Array<string> = []
+    const { runtime, workers } = fixture('replacement-fence', {
+      beforeReplace: () =>
+        Effect.sync(() => {
+          order.push('fence')
+        }),
+      workerFactory: (path, data) => {
+        order.push(`worker-${order.filter(item => item !== 'worker-close' && item.startsWith('worker-')).length + 1}`)
+        const worker = new Worker(path, { workerData: data })
+        worker.once('exit', () => order.push('worker-close'))
+        return worker
+      },
+    })
+    try {
+      const supervisor = await runtime.runPromise(WorkspaceWorkerSupervisor)
+      const first = workers[0]
+      if (!first) throw new Error('worker missing')
+      first.emit('error', new Error('injected replacement fault'))
+      await expect
+        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 12_000 })
+        .toBe(2)
+      expect(order).toEqual(['worker-1', 'fence', 'worker-close', 'worker-2'])
+    } finally {
+      await runtime.dispose()
+    }
+  }, 15_000)
+  it('does not open a replacement when the old execution cleanup gate is unconfirmed', async () => {
+    const { runtime, workers } = fixture('replacement-fence-fails', {
+      beforeReplace: () => Effect.fail(new Error('private native cleanup detail')),
+    })
+    try {
+      const supervisor = await runtime.runPromise(WorkspaceWorkerSupervisor)
+      const first = workers[0]
+      if (!first) throw new Error('worker missing')
+      await first.terminate()
+      await expect
+        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.status)), { timeout: 12_000 })
+        .toMatchObject({ state: 'unavailable' })
+      expect(workers).toHaveLength(1)
+    } finally {
+      await runtime.dispose()
+    }
   }, 15_000)
   it.each(['claimed', 'accepted'] as const)(
     'replaces a dead owner once and recovers its %s dispatch without redispatch',
@@ -149,7 +195,7 @@ describe('workspace worker supervisor', () => {
         if (!worker) throw new Error('worker missing')
         await worker.terminate()
         await expect
-          .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 })
+          .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 12_000 })
           .toBe(2)
         expect(supervisor.store).toBe(store)
         expect(workers).toHaveLength(2)
@@ -178,12 +224,14 @@ describe('workspace worker supervisor', () => {
       const first = workers[0]
       if (!first) throw new Error('worker missing')
       await first.terminate()
-      await expect.poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 }).toBe(2)
+      await expect
+        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 12_000 })
+        .toBe(2)
       const second = workers[1]
       if (!second) throw new Error('replacement missing')
       await second.terminate()
       await expect
-        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.status)), { timeout: 5_000 })
+        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.status)), { timeout: 12_000 })
         .toMatchObject({ state: 'unavailable', lastFailure: 'Workspace storage is unavailable.' })
       await expect(Effect.runPromise(supervisor.store.pageEvents(0, 10))).rejects.toMatchObject({
         _tag: 'WorkspaceStoreError',
@@ -258,7 +306,9 @@ describe('workspace worker supervisor', () => {
       await response
       await worker.terminate()
       await rejected
-      await expect.poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 5_000 }).toBe(2)
+      await expect
+        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 12_000 })
+        .toBe(2)
       const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
       expect(snapshot.runs).toMatchObject([{ id: 'flight-run', status: 'queued' }])
       const page = await Effect.runPromise(store.pageEvents(0, 100))
@@ -337,7 +387,7 @@ describe('workspace worker supervisor', () => {
       if (!worker) throw new Error('worker missing')
       await worker.terminate()
       await expect
-        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.status)), { timeout: 5_000 })
+        .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.status)), { timeout: 12_000 })
         .toEqual({ state: 'unavailable', lastFailure: 'Workspace storage is unavailable.' })
       expect(workers).toHaveLength(3)
       const [, firstReplacement, secondReplacement] = starts

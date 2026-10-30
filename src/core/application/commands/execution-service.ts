@@ -61,6 +61,8 @@ export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceEr
   reason: Schema.Literals(['invalid-options', 'service-stopped', 'background-failure']),
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
+  /** Every stopAll failure distinguishes native cleanup from durable settlement. */
+  nativeCleanup: Schema.optional(Schema.Literals(['confirmed', 'unconfirmed'])),
 }) {}
 
 export interface ExecutionServiceOptions {
@@ -168,6 +170,9 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const backgroundFailures: Array<Cause.Cause<unknown>> = []
     let stopping = false
     let workerScopeClosed = false
+    let nativeCleanupUnconfirmed = false
+    const shutdownGate = yield* Semaphore.make(1)
+    let shutdownResult: Exit.Exit<void, ExecutionServiceError> | undefined
 
     const failUnresolved = (
       state: ManagedRun,
@@ -237,13 +242,32 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             })
           }
           const connectionOptions = yield* connections.resolve(state.claim.connectionId, state.claim.driverId)
-          const connection = yield* driver.connect(connectionOptions)
           const scope = yield* Scope.Scope
+          const connectionScope = yield* Scope.make()
           yield* Scope.addFinalizer(
             scope,
-            connection
-              .close(closeDeadlineMs)
-              .pipe(Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause)))),
+            Scope.close(connectionScope, Exit.void).pipe(
+              Effect.catchCause(cause =>
+                Effect.sync(() => {
+                  nativeCleanupUnconfirmed = true
+                  backgroundFailures.push(cause)
+                }),
+              ),
+            ),
+          )
+          const connection = yield* driver
+            .connect(connectionOptions)
+            .pipe(Effect.provideService(Scope.Scope, connectionScope))
+          yield* Scope.addFinalizer(
+            scope,
+            connection.close(closeDeadlineMs).pipe(
+              Effect.catchCause(cause =>
+                Effect.sync(() => {
+                  nativeCleanupUnconfirmed = true
+                  backgroundFailures.push(cause)
+                }),
+              ),
+            ),
           )
           const connectionIdentity = yield* Schema.decodeUnknownEffect(agentConnectionIdentitySchema)(
             connection.identity,
@@ -641,7 +665,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 message: 'Execution queue is full; queued follow-up remains queued',
               })
             const promoted = yield* store.promoteNextFollowUp(conversationId, command)
-            if (!promoted) return null
+            if (!promoted || promoted.receipt.replayed) return promoted
             const claimResult = yield* Effect.exit(
               store.claimDispatch(promoted.receipt.runId, parsedOptions.ownerEpoch, yield* timestamp),
             )
@@ -677,16 +701,32 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
       return yield* runOwnedControl(
         Effect.uninterruptibleMask(restoreNative =>
           Effect.gen(function* () {
-            yield* store.requestInterrupt(runId, parsedOptions.ownerEpoch, yield* timestamp)
-            if (!state) return
-            state.interruptRequested = true
-            yield* restoreNative(sendNativeInterrupt(state))
+            const requested = yield* Effect.exit(
+              store.requestInterrupt(runId, parsedOptions.ownerEpoch, yield* timestamp),
+            )
+            const interrupted = state
+              ? yield* Effect.exit(
+                  Effect.gen(function* () {
+                    state.interruptRequested = true
+                    yield* restoreNative(sendNativeInterrupt(state))
+                  }),
+                )
+              : Exit.void
+            if (Exit.isFailure(requested)) {
+              return yield* Effect.failCause(
+                Exit.isFailure(interrupted) ? Cause.combine(requested.cause, interrupted.cause) : requested.cause,
+              )
+            }
+            if (Exit.isFailure(interrupted)) return yield* Effect.failCause(interrupted.cause)
           }),
         ),
       )
     })
 
-    const stopAll = Effect.fn('ExecutionService.stopAll')(function* (): Effect.fn.Return<void, ExecutionServiceError> {
+    const performStopAll = Effect.fn('ExecutionService.performStopAll')(function* (): Effect.fn.Return<
+      void,
+      ExecutionServiceError
+    > {
       stopping = true
       yield* admission.withPermit(Effect.void)
       const states = Array.from(workers.values())
@@ -698,11 +738,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
               const requested = yield* Effect.exit(
                 store.requestInterrupt(state.claim.runId, state.claim.ownerEpoch, yield* timestamp),
               )
-              if (Exit.isFailure(requested)) {
-                backgroundFailures.push(requested.cause)
-                return
-              }
               state.interruptRequested = true
+              if (Exit.isFailure(requested)) backgroundFailures.push(requested.cause)
               yield* sendNativeInterrupt(state).pipe(
                 Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
               )
@@ -730,7 +767,17 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         concurrency: 'unbounded',
       })
       const forcedCleanupBudgetMs = Math.max(1, Math.ceil(closeDeadlineMs / 3))
+      const forcedFiberBudgetMs = Math.max(1, Math.floor(forcedCleanupBudgetMs / 2))
+      const forcedScopeBudgetMs = Math.max(1, forcedCleanupBudgetMs - forcedFiberBudgetMs)
       const drainBudgetMs = Math.max(1, closeDeadlineMs - forcedCleanupBudgetMs)
+      const closeOwnedResources = (budgetMs: number) =>
+        Effect.gen(function* () {
+          if (workerScopeClosed) return !nativeCleanupUnconfirmed
+          const closed = yield* Scope.close(workerScope, Exit.void).pipe(Effect.timeoutOption(budgetMs))
+          if (Option.isNone(closed)) return false
+          workerScopeClosed = true
+          return !nativeCleanupUnconfirmed
+        })
       const completed = yield* drain.pipe(Effect.timeoutOption(drainBudgetMs))
       if (Option.isNone(completed)) {
         for (const state of states) state.shuttingDown = true
@@ -744,33 +791,46 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.forEach(allFibers, fiber => Fiber.interrupt(fiber), { concurrency: 'unbounded' }),
           ],
           { concurrency: 'unbounded' },
-        ).pipe(Effect.timeoutOption(forcedCleanupBudgetMs))
+        ).pipe(Effect.timeoutOption(forcedFiberBudgetMs))
         if (Option.isNone(forced)) {
           return yield* new ExecutionServiceError({
             reason: 'background-failure',
             message: 'Shutdown deadline expired before execution resource cleanup completed',
+            nativeCleanup: 'unconfirmed',
           })
         }
         const [settlement] = forced.value
+        const resourcesClosed = yield* Effect.exit(closeOwnedResources(forcedScopeBudgetMs))
+        if (Exit.isFailure(resourcesClosed) || !resourcesClosed.value) {
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Execution resources could not be confirmed closed after shutdown',
+            ...(Exit.isFailure(resourcesClosed) ? { cause: resourcesClosed.cause } : {}),
+            nativeCleanup: 'unconfirmed',
+          })
+        }
         if (Exit.isFailure(settlement)) {
           return yield* new ExecutionServiceError({
             reason: 'background-failure',
             message: 'Shutdown cleanup could not persist the uncertain execution fence',
             cause: settlement.cause,
+            nativeCleanup: 'confirmed',
           })
-        }
-        if (!workerScopeClosed) {
-          yield* Scope.close(workerScope, Exit.void)
-          workerScopeClosed = true
         }
         return yield* new ExecutionServiceError({
           reason: 'background-failure',
           message: 'Shutdown deadline expired before execution resource cleanup completed',
+          nativeCleanup: 'confirmed',
         })
       }
-      if (!workerScopeClosed) {
-        yield* Scope.close(workerScope, Exit.void)
-        workerScopeClosed = true
+      const resourcesClosed = yield* Effect.exit(closeOwnedResources(forcedCleanupBudgetMs))
+      if (Exit.isFailure(resourcesClosed) || !resourcesClosed.value) {
+        return yield* new ExecutionServiceError({
+          reason: 'background-failure',
+          message: 'Execution resources could not be confirmed closed during shutdown',
+          ...(Exit.isFailure(resourcesClosed) ? { cause: resourcesClosed.cause } : {}),
+          nativeCleanup: 'unconfirmed',
+        })
       }
       const failure = backgroundFailures.shift()
       if (failure) {
@@ -778,11 +838,45 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           reason: 'background-failure',
           message: 'An execution worker or its owned resource failed during cleanup',
           cause: failure,
+          nativeCleanup: 'confirmed',
         })
       }
     })
 
-    yield* Scope.addFinalizer(appScope, stopAll().pipe(Effect.orDie))
+    // Scope release must not retry a timed-out native cleanup or mask its original result.
+    const stopAll = Effect.fn('ExecutionService.stopAll')(function* () {
+      return yield* Effect.uninterruptible(
+        shutdownGate.withPermit(
+          Effect.gen(function* () {
+            if (!shutdownResult) {
+              shutdownResult = yield* Effect.exit(
+                performStopAll().pipe(
+                  Effect.catchCause(cause => {
+                    const failure = cause.reasons.find(Cause.isFailReason)?.error
+                    return Effect.fail(
+                      failure instanceof ExecutionServiceError
+                        ? failure
+                        : new ExecutionServiceError({
+                            reason: 'background-failure',
+                            message: 'Execution shutdown could not confirm resource cleanup',
+                            cause,
+                            nativeCleanup: 'unconfirmed',
+                          }),
+                    )
+                  }),
+                ),
+              )
+            }
+            return yield* shutdownResult
+          }),
+        ),
+      )
+    })
+
+    yield* Scope.addFinalizer(
+      appScope,
+      Effect.suspend(() => (shutdownResult ? Effect.void : stopAll().pipe(Effect.orDie))),
+    )
     return ExecutionService.of({
       start,
       interrupt,

@@ -386,6 +386,7 @@ describe('ExecutionService', () => {
         _tag: 'ExecutionServiceError',
         reason: 'background-failure',
         message: expect.stringContaining('Shutdown deadline expired'),
+        nativeCleanup: 'confirmed',
       })
       expect(Date.now() - startedAt).toBeLessThan(250)
       expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
@@ -401,6 +402,140 @@ describe('ExecutionService', () => {
       await runtime.dispose()
     }
   })
+
+  it.each(['interrupt', 'stopAll'] as const)(
+    'still sends the native interrupt when persisting %s fails',
+    async operation => {
+      const interrupted = await Effect.runPromise(Deferred.make<undefined>())
+      const persistenceFailure = new WorkspaceStoreError({
+        code: 'database-unavailable',
+        message: 'interrupt persistence failed',
+      })
+      const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+      const store = await storeRuntime.runPromise(WorkspaceStore)
+      let nativeInterrupts = 0
+      const session = makeSession({
+        interrupt: () =>
+          Effect.gen(function* () {
+            nativeInterrupts += 1
+            yield* Deferred.succeed(interrupted, undefined)
+            return { acknowledged: true, termination: 'stillRunning' as const }
+          }),
+        events: () =>
+          Stream.fromEffect(Deferred.await(interrupted)).pipe(
+            Stream.as({ kind: 'turnInterrupted', nativeTurnId: 'native-turn' } as const),
+          ),
+      })
+      const runtime = makeRuntime(
+        () => Effect.succeed(makeConnection(session)),
+        { closeDeadlineMs: 180 },
+        WorkspaceStore.of({
+          ...store,
+          requestInterrupt: () => Effect.fail(persistenceFailure),
+        }),
+      )
+      try {
+        const run: RunEffect = effect => runtime.runPromise(effect)
+        await setup(store, run)
+        const service = await runtime.runPromise(ExecutionService)
+        await run(service.start(command))
+        await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('running')
+        if (operation === 'interrupt') {
+          await expect(run(service.interrupt(command.runId))).rejects.toMatchObject(persistenceFailure)
+        } else {
+          await expect(run(service.stopAll())).rejects.toMatchObject({
+            _tag: 'ExecutionServiceError',
+            nativeCleanup: 'confirmed',
+          })
+        }
+        expect(nativeInterrupts).toBe(1)
+        await expect
+          .poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+          .toBe('interrupted')
+      } finally {
+        await runtime.dispose()
+        await storeRuntime.dispose()
+      }
+    },
+  )
+
+  it('confirms native cleanup even when forced shutdown cannot persist its uncertain fence', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runtime = makeRuntime(
+      () => Effect.succeed(makeConnection(makeSession({ events: () => Stream.never }))),
+      { closeDeadlineMs: 180 },
+      WorkspaceStore.of({
+        ...store,
+        failDispatch: () =>
+          Effect.fail(new WorkspaceStoreError({ code: 'database-unavailable', message: 'shutdown settlement failed' })),
+      }),
+    )
+    try {
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('running')
+      const shutdown = await run(Effect.exit(service.stopAll()))
+      expect(shutdown).toMatchObject({ _tag: 'Failure' })
+      if (Exit.isFailure(shutdown)) {
+        expect(shutdown.cause.reasons.filter(Cause.isFailReason).map(reason => reason.error)).toMatchObject([
+          {
+            _tag: 'ExecutionServiceError',
+            nativeCleanup: 'confirmed',
+            message: 'Shutdown cleanup could not persist the uncertain execution fence',
+          },
+        ])
+      }
+      await expect(run(service.stopAll())).rejects.toMatchObject({
+        _tag: 'ExecutionServiceError',
+        nativeCleanup: 'confirmed',
+      })
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
+  it.each(['connection-close', 'driver-finalizer'] as const)(
+    'does not confirm native cleanup when %s fails',
+    async failure => {
+      const closeAttempted = await Effect.runPromise(Deferred.make<undefined>())
+      const connection = makeConnection(makeSession(), {
+        close: () =>
+          Effect.andThen(
+            Deferred.succeed(closeAttempted, undefined),
+            failure === 'connection-close'
+              ? Effect.fail(new AgentDriverError({ code: 'disconnected', message: 'native close failed' }))
+              : Effect.void,
+          ),
+      })
+      const runtime = makeRuntime(
+        () =>
+          failure === 'driver-finalizer'
+            ? Effect.acquireRelease(Effect.succeed(connection), () =>
+                Effect.die(new Error('driver scope cleanup failed')),
+              )
+            : Effect.succeed(connection),
+        { closeDeadlineMs: 180 },
+      )
+      try {
+        const store = await runtime.runPromise(WorkspaceStore)
+        const run: RunEffect = effect => runtime.runPromise(effect)
+        await setup(store, run)
+        const service = await runtime.runPromise(ExecutionService)
+        await run(service.start(command))
+        await run(Deferred.await(closeAttempted))
+        await expect(run(service.stopAll())).rejects.toMatchObject({
+          _tag: 'ExecutionServiceError',
+          nativeCleanup: 'unconfirmed',
+        })
+      } finally {
+        await runtime.dispose()
+      }
+    },
+  )
 
   it('ingests and answers a native request while submit is waiting for that answer', async () => {
     const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())
@@ -731,6 +866,62 @@ describe('ExecutionService', () => {
     }
   })
 
+  it('returns a replayed promotion without claiming or calling a native driver', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    await setup(store, runStore)
+    await runStore(
+      store.enqueueFollowUp({
+        commandId: 'queue-replayed',
+        issuedAt: '2026-10-29T10:00:02Z',
+        taskId: task.id,
+        conversationId: conversation.id,
+        prompt: 'Original queued prompt',
+      }),
+    )
+    const original = await runStore(store.promoteNextFollowUp(conversation.id, command))
+    if (!original) throw new Error('Expected the original promotion')
+    const replay = { ...original, receipt: { ...original.receipt, replayed: true } }
+    let claims = 0
+    let connections = 0
+    let submissions = 0
+    const session = makeSession({
+      submit: () =>
+        Effect.sync(() => {
+          submissions += 1
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+    })
+    const runtime = makeRuntime(
+      () =>
+        Effect.sync(() => {
+          connections += 1
+          return makeConnection(session)
+        }),
+      {},
+      WorkspaceStore.of({
+        ...store,
+        promoteNextFollowUp: () => Effect.succeed(replay),
+        claimDispatch: (...args) =>
+          Effect.andThen(
+            Effect.sync(() => {
+              claims += 1
+            }),
+            store.claimDispatch(...args),
+          ),
+      }),
+    )
+    try {
+      const service = await runtime.runPromise(ExecutionService)
+      expect(await runtime.runPromise(service.promoteQueuedFollowUp(conversation.id, command))).toEqual(replay)
+      expect({ claims, connections, submissions }).toEqual({ claims: 0, connections: 0, submissions: 0 })
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
   it('promotes a queued follow-up into one dispatch claim', async () => {
     let submittedPrompt: string | undefined
     let submitCalls = 0
@@ -772,7 +963,7 @@ describe('ExecutionService', () => {
       const promoted = await run(service.promoteQueuedFollowUp(conversation.id, promotion))
       const replay = await run(service.promoteQueuedFollowUp(conversation.id, promotion))
       expect(promoted?.receipt).toMatchObject({ runId: 'queued-run-1', replayed: false })
-      expect(replay).toBeNull()
+      expect(replay?.receipt).toMatchObject({ runId: 'queued-run-1', replayed: true })
       await run(Deferred.succeed(finishTurn, undefined))
       await run(service.stopAll())
       expect(submittedPrompt).toBe('Follow up from the queue')
@@ -1202,6 +1393,7 @@ describe('ExecutionService', () => {
         _tag: 'ExecutionServiceError',
         reason: 'background-failure',
         message: expect.stringContaining('deadline'),
+        nativeCleanup: 'unconfirmed',
       })
       expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
         status: 'uncertain',
