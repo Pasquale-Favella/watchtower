@@ -17,9 +17,11 @@ import {
   type AgentSessionContext,
 } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
+import { CheckoutResolver, CheckoutResolverError } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
+import type { ResolvedCheckout } from '@/shared/schemas/checkout.js'
 import type { AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
 import type { AgentSessionId } from '@/shared/schemas/workspace.js'
 import { type BeginRunCommand, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
@@ -105,12 +107,39 @@ const makeConnection = (
   ...overrides,
 })
 
+const resolvedCheckout: ResolvedCheckout = {
+  canonicalPath: checkout.path,
+  kind: 'main',
+  repositoryIdentity: project.repositoryIdentity,
+  mainCheckoutPath: checkout.path,
+  branch: 'main',
+  headRevision: null,
+  dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+}
+const checkoutResolverLayer = (
+  resolve: CheckoutResolver['Service']['resolve'] = path =>
+    Effect.succeed(
+      path === 'C:/other-repo'
+        ? { ...resolvedCheckout, canonicalPath: path, mainCheckoutPath: path, repositoryIdentity: 'repo:two' }
+        : resolvedCheckout,
+    ),
+) =>
+  Layer.succeed(
+    CheckoutResolver,
+    CheckoutResolver.of({
+      resolve,
+      createIsolatedWorktree: () => Effect.die('Unexpected worktree creation'),
+      removeWorktree: () => Effect.die('Unexpected worktree removal'),
+    }),
+  )
+
 const makeRuntime = (
   connect: DriverConnect,
   options: Partial<ExecutionServiceOptions> = {},
   storeService?: WorkspaceStore['Service'],
   additionalDrivers: ReadonlyArray<AgentDriver['Service']> = [],
   resolverLayer = fakeResolverLayer(),
+  checkoutLayer = checkoutResolverLayer(),
 ) =>
   ManagedRuntime.make(
     Layer.provideMerge(
@@ -126,7 +155,7 @@ const makeRuntime = (
             ]),
           ),
         ),
-        resolverLayer,
+        Layer.merge(resolverLayer, checkoutLayer),
       ),
     ),
   )
@@ -137,6 +166,346 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
 }
 
 describe('ExecutionService', () => {
+  it.each([
+    ['canonical path changed', Effect.succeed({ ...resolvedCheckout, canonicalPath: 'C:/different-checkout' })],
+    ['repository identity changed', Effect.succeed({ ...resolvedCheckout, repositoryIdentity: 'repo:replacement' })],
+    ['main checkout mapping changed', Effect.succeed({ ...resolvedCheckout, mainCheckoutPath: 'C:/other-main' })],
+    ['checkout kind changed', Effect.succeed({ ...resolvedCheckout, kind: 'worktree' as const })],
+    [
+      'directory is not a repository',
+      Effect.succeed({
+        ...resolvedCheckout,
+        kind: 'directory' as const,
+        repositoryIdentity: null,
+        mainCheckoutPath: null,
+        branch: null,
+        headRevision: null,
+      }),
+    ],
+    [
+      'path is missing',
+      Effect.fail(new CheckoutResolverError({ code: 'path-missing', message: 'Sensitive filesystem path' })),
+    ],
+    [
+      'path is not a directory',
+      Effect.fail(new CheckoutResolverError({ code: 'not-a-directory', message: 'Sensitive filesystem path' })),
+    ],
+    ['resolver failed', Effect.fail(new CheckoutResolverError({ code: 'git-failed', message: 'Sensitive Git error' }))],
+  ])('refuses a checkout when %s before native dispatch', async (_label, resolution) => {
+    const nativeCalls: string[] = []
+    const runtime = makeRuntime(
+      () => {
+        nativeCalls.push('connect')
+        return Effect.succeed(makeConnection(makeSession()))
+      },
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(),
+      checkoutResolverLayer(() => resolution),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('failed')
+      const stopped = await run(Effect.flip(service.stopAll()))
+      expect(stopped).toMatchObject({ _tag: 'ExecutionServiceError', nativeCleanup: 'confirmed' })
+      expect(stopped.cause).toMatchObject({
+        reasons: [
+          expect.objectContaining({
+            error: expect.objectContaining({
+              _tag: 'ExecutionServiceError',
+              message: 'Registered checkout could not be verified for execution.',
+            }),
+          }),
+        ],
+      })
+      expect(JSON.stringify(stopped)).not.toContain('Sensitive')
+      expect(nativeCalls).toEqual([])
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toEqual([
+        expect.objectContaining({ id: command.runId, status: 'failed', failure: 'launch-failed' }),
+      ])
+      expect(await run(store.recoverWorker(7, '2026-10-29T10:00:02Z'))).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('bounds shutdown while checkout revalidation is slow, without native dispatch', async () => {
+    const resolverEntered = Deferred.makeUnsafe<undefined>()
+    const nativeCalls: string[] = []
+    const runtime = makeRuntime(
+      () => {
+        nativeCalls.push('connect')
+        return Effect.succeed(makeConnection(makeSession()))
+      },
+      { closeDeadlineMs: 60 },
+      undefined,
+      [],
+      fakeResolverLayer(),
+      checkoutResolverLayer(() =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(resolverEntered, undefined)
+          yield* Effect.sleep(500)
+          return resolvedCheckout
+        }),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      const started = run(service.start(command))
+      await run(Deferred.await(resolverEntered))
+      const before = performance.now()
+      const stopped = await run(Effect.exit(service.stopAll()))
+      const elapsedMs = performance.now() - before
+      await started
+      const schedulingToleranceMs = 25
+      expect(elapsedMs).toBeLessThan(60 + schedulingToleranceMs)
+      expect(Exit.isFailure(stopped)).toBe(true)
+      if (Exit.isFailure(stopped)) {
+        expect(Cause.squash(stopped.cause)).toMatchObject({ _tag: 'ExecutionServiceError', nativeCleanup: 'confirmed' })
+      }
+      expect(nativeCalls).toEqual([])
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
+        status: 'uncertain',
+        failure: 'shutdown',
+      })
+      expect(await run(store.recoverWorker(7, '2026-10-29T10:00:02Z'))).toBe(0)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('admits concurrent starts without waiting for another checkout resolver', async () => {
+    const slowResolutionEntered = Deferred.makeUnsafe<undefined>()
+    const nativeCalls: string[] = []
+    const otherProject = { ...project, id: 'project-fast' as never, repositoryIdentity: 'repo:fast' }
+    const otherCheckout = { ...checkout, id: 'checkout-fast' as never, path: 'C:/fast-repo' }
+    const otherTask = { ...task, id: 'task-fast' as never, projectId: otherProject.id }
+    const otherConversation = { ...conversation, id: 'conversation-fast' as never }
+    const fastCommand = {
+      ...command,
+      commandId: 'fast-command',
+      runId: 'fast-run' as never,
+      taskId: otherTask.id,
+      conversationId: otherConversation.id,
+      checkoutId: otherCheckout.id,
+      provisionalAgentSessionId: 'fast-session',
+    }
+    const session = makeSession({
+      events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+    })
+    const runtime = makeRuntime(
+      () =>
+        Effect.succeed(
+          makeConnection(session, {
+            openSession: context => {
+              nativeCalls.push(context.workspacePath)
+              return Effect.succeed(session)
+            },
+          }),
+        ),
+      { closeDeadlineMs: 60 },
+      undefined,
+      [],
+      fakeResolverLayer(),
+      checkoutResolverLayer(path =>
+        path === checkout.path
+          ? Effect.gen(function* () {
+              yield* Deferred.succeed(slowResolutionEntered, undefined)
+              yield* Effect.sleep(500)
+              return resolvedCheckout
+            })
+          : Effect.succeed({
+              ...resolvedCheckout,
+              canonicalPath: otherCheckout.path,
+              mainCheckoutPath: otherCheckout.path,
+              repositoryIdentity: otherProject.repositoryIdentity,
+            }),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      await run(store.registerProject({ project: otherProject, mainCheckout: otherCheckout }))
+      await run(store.createTask({ task: otherTask, conversation: otherConversation }))
+      const service = await runtime.runPromise(ExecutionService)
+      const first = run(service.start(command))
+      await run(Deferred.await(slowResolutionEntered))
+      const before = performance.now()
+      const second = await run(service.start(fastCommand))
+      expect(performance.now() - before).toBeLessThan(150)
+      expect(second.runId).toBe('fast-run')
+      await expect
+        .poll(async () => (await run(store.readTaskSnapshot(otherTask.id, 10))).runs[0]?.status)
+        .toBe('completed')
+      expect(nativeCalls).toEqual(['C:/fast-repo'])
+      await first
+      await run(Effect.exit(service.stopAll()))
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('settles and reports a checkout that disappears after admission but before native dispatch', async () => {
+    const allowResolution = Deferred.makeUnsafe<undefined>()
+    const nativeCalls: string[] = []
+    const runtime = makeRuntime(
+      () => {
+        nativeCalls.push('connect')
+        return Effect.succeed(makeConnection(makeSession()))
+      },
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(),
+      checkoutResolverLayer(() =>
+        Deferred.await(allowResolution).pipe(
+          Effect.andThen(
+            Effect.fail(new CheckoutResolverError({ code: 'path-missing', message: 'Sensitive filesystem path' })),
+          ),
+        ),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await run(Deferred.succeed(allowResolution, undefined))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('failed')
+      expect(nativeCalls).toEqual([])
+      expect(await run(store.recoverWorker(7, '2026-10-29T10:00:02Z'))).toBe(0)
+      const stopped = await run(Effect.exit(service.stopAll()))
+      expect(Exit.isFailure(stopped)).toBe(true)
+      if (Exit.isFailure(stopped)) {
+        expect(Cause.squash(stopped.cause)).toMatchObject({ _tag: 'ExecutionServiceError', nativeCleanup: 'confirmed' })
+        expect(String(Cause.squash(stopped.cause))).not.toContain('Sensitive filesystem path')
+      }
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('dispatches a matching checkout even when its tracked, untracked, and ignored files are dirty', async () => {
+    const nativeCalls: string[] = []
+    const session = makeSession({
+      events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+      submit: () =>
+        Effect.sync(() => {
+          nativeCalls.push('submit')
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+    })
+    const runtime = makeRuntime(
+      () => {
+        nativeCalls.push('connect')
+        return Effect.succeed(makeConnection(session))
+      },
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(),
+      checkoutResolverLayer(() =>
+        Effect.succeed({
+          ...resolvedCheckout,
+          dirty: { trackedChanges: 3, untrackedCount: 2, ignoredCount: 1 },
+        }),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('completed')
+      expect(nativeCalls).toEqual(['connect', 'submit'])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it.each([true, false])(
+    'validates a paginated worktree checkout against its main mapping (matches: %s)',
+    async matches => {
+      const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+      const store = await storeRuntime.runPromise(WorkspaceStore)
+      await setup(store, effect => storeRuntime.runPromise(effect))
+      const nativeCalls: string[] = []
+      const runtime = makeRuntime(
+        () => {
+          nativeCalls.push('connect')
+          return Effect.succeed(
+            makeConnection(
+              makeSession({
+                events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+              }),
+            ),
+          )
+        },
+        {},
+        WorkspaceStore.of({
+          ...store,
+          getProject: (id, options) =>
+            store.getProject(id).pipe(
+              Effect.map(detail => ({
+                ...detail,
+                mainCheckout: { ...detail.mainCheckout, id: 'main-checkout' as never, path: 'C:/main' },
+                otherCheckouts: options?.afterCheckoutId ? [{ ...detail.mainCheckout, kind: 'worktree' as const }] : [],
+                nextAfterCheckoutId: options?.afterCheckoutId ? null : ('before-target' as never),
+                totalOtherCheckouts: 1,
+              })),
+            ),
+        }),
+        [],
+        fakeResolverLayer(),
+        checkoutResolverLayer(() =>
+          Effect.succeed({
+            ...resolvedCheckout,
+            kind: 'worktree',
+            mainCheckoutPath: matches ? 'C:/main' : 'C:/replaced-main',
+          }),
+        ),
+      )
+      try {
+        const service = await runtime.runPromise(ExecutionService)
+        if (matches) {
+          await runtime.runPromise(service.start(command))
+          await expect
+            .poll(async () => (await storeRuntime.runPromise(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+            .toBe('completed')
+          expect(nativeCalls).toEqual(['connect'])
+        } else {
+          await runtime.runPromise(service.start(command))
+          await expect
+            .poll(async () => (await storeRuntime.runPromise(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+            .toBe('failed')
+          expect(await runtime.runPromise(Effect.flip(service.stopAll()))).toMatchObject({
+            _tag: 'ExecutionServiceError',
+            nativeCleanup: 'confirmed',
+          })
+          expect(nativeCalls).toEqual([])
+          expect((await storeRuntime.runPromise(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
+            status: 'failed',
+            failure: 'launch-failed',
+          })
+        }
+      } finally {
+        await runtime.dispose()
+        await storeRuntime.dispose()
+      }
+    },
+  )
+
   it('coalesces adjacent text and flushes it on the age deadline before a request event', async () => {
     const textCommitted = await Effect.runPromise(Deferred.make<undefined>())
     const allowRequest = await Effect.runPromise(Deferred.make<undefined>())

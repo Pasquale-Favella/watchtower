@@ -19,6 +19,7 @@ import type {
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
+import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
@@ -161,6 +162,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const store = yield* WorkspaceStore
     const drivers = yield* AgentDriverRegistry
     const connections = yield* HarnessConnectionResolver
+    const checkouts = yield* CheckoutResolver
     const appScope = yield* Scope.Scope
     const workerScope = yield* Scope.make()
     const runPermits = yield* Semaphore.make(maxConcurrentRuns)
@@ -189,6 +191,43 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         })
         state.settled = true
       })
+
+    const revalidateCheckout = Effect.fn('ExecutionService.revalidateCheckout')(
+      function* (claim: DispatchClaim) {
+        const resolved = yield* checkouts.resolve(claim.workspacePath)
+        let detail = yield* store.getProject(claim.projectId)
+        let registered =
+          detail.mainCheckout.id === claim.checkoutId
+            ? detail.mainCheckout
+            : detail.otherCheckouts.find(checkout => checkout.id === claim.checkoutId)
+        while (!registered && detail.nextAfterCheckoutId !== null) {
+          detail = yield* store.getProject(claim.projectId, { afterCheckoutId: detail.nextAfterCheckoutId })
+          registered = detail.otherCheckouts.find(checkout => checkout.id === claim.checkoutId)
+        }
+        if (
+          !registered ||
+          registered.projectId !== claim.projectId ||
+          registered.path !== claim.workspacePath ||
+          resolved.canonicalPath !== claim.workspacePath ||
+          resolved.kind === 'directory' ||
+          resolved.repositoryIdentity !== detail.project.repositoryIdentity ||
+          resolved.kind !== registered.kind ||
+          resolved.mainCheckoutPath !== detail.mainCheckout.path
+        ) {
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Registered checkout could not be verified for execution.',
+          })
+        }
+      },
+      Effect.mapError(
+        () =>
+          new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Registered checkout could not be verified for execution.',
+          }),
+      ),
+    )
 
     const sendNativeInterrupt = (state: ManagedRun) =>
       Effect.suspend(() => {
@@ -234,6 +273,9 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             state.shuttingDown = true
             return
           }
+          yield* revalidateCheckout(state.claim).pipe(
+            Effect.tapError(error => Effect.sync(() => backgroundFailures.push(Cause.fail(error)))),
+          )
           const driver = yield* drivers.resolve(state.claim.driverId)
           if (driver.driverId !== state.claim.driverId) {
             return yield* new ExecutionServiceError({
@@ -424,7 +466,9 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           eventCounter: 0,
         }
         workers.set(claim.runId, state)
-        state.fiber = yield* Effect.forkIn(trackedWorker(state), workerScope, { startImmediately: true })
+        state.fiber = yield* Effect.forkIn(Effect.interruptible(trackedWorker(state)), workerScope, {
+          startImmediately: true,
+        })
         yield* Deferred.succeed(state.ready, undefined)
         return state
       })

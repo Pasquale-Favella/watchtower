@@ -16,6 +16,7 @@ import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import { ExecutionService, ExecutionServiceError } from '@/core/application/commands/execution-service.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
+import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { WorkspaceWorkerSupervisorOptions } from '@/platform/electron/main/workspace/supervisor.js'
@@ -36,6 +37,7 @@ export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()
 export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
   readonly loadConnections: () => Effect.Effect<ReadonlyArray<HarnessConnection>, unknown>
   readonly loadDrivers?: () => Effect.Effect<AgentDriverRegistry['Service'], unknown>
+  readonly loadCheckoutResolver?: () => Effect.Effect<CheckoutResolver['Service'], unknown>
   readonly runtimeExecutable?: string
   readonly closeDeadlineMs?: number
 }
@@ -99,6 +101,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       let openFailure: WorkspaceStoreError | undefined
       let execution: OwnedExecution | undefined
       let driverRegistry: AgentDriverRegistry['Service'] | undefined
+      let checkoutResolver: CheckoutResolver['Service'] | undefined
       let opening: Deferred.Deferred<SupervisorContext, WorkspaceStoreError> | undefined
       let stopped = false
 
@@ -250,6 +253,37 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             driverRegistry = Context.get(driversContext, AgentDriverRegistry)
           }
         }
+        if (!checkoutResolver) {
+          if (options.loadCheckoutResolver)
+            checkoutResolver = yield* options
+              .loadCheckoutResolver()
+              .pipe(
+                Effect.mapError(
+                  cause => new WorkspaceHostError({ message: 'Checkout validation could not be loaded.', cause }),
+                ),
+              )
+          else {
+            const [{ CheckoutResolverLive }, { CommandRunnerLive }, NodeFileSystem, NodePath] =
+              yield* Effect.tryPromise({
+                try: () =>
+                  Promise.all([
+                    import('@/infrastructure/filesystem/checkout-resolver.js'),
+                    import('@/infrastructure/process/command-runner.js'),
+                    import('@effect/platform-node/NodeFileSystem'),
+                    import('@effect/platform-node/NodePath'),
+                  ]),
+                catch: cause => new WorkspaceHostError({ message: 'Checkout validation could not be loaded.', cause }),
+              })
+            const checkoutContext = yield* Layer.buildWithScope(
+              CheckoutResolverLive.pipe(
+                Layer.provide(CommandRunnerLive),
+                Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)),
+              ),
+              scope,
+            )
+            checkoutResolver = Context.get(checkoutContext, CheckoutResolver)
+          }
+        }
         const connections = yield* options
           .loadConnections()
           .pipe(
@@ -260,6 +294,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         if (!isCurrent(ownerEpoch)) return yield* closedExecution()
         const layers = Layer.mergeAll(
           Layer.succeed(WorkspaceStore, owner.store),
+          Layer.succeed(CheckoutResolver, checkoutResolver),
           Layer.succeed(AgentDriverRegistry, driverRegistry),
           HarnessConnectionResolver.layer(connections, { runtimeExecutable: options.runtimeExecutable }),
         )

@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process'
+import { realpathSync } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
@@ -21,6 +23,7 @@ import {
   type AgentDriverSession,
 } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
+import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import type { WorkspaceHostOptions } from '@/platform/electron/main/workspace/host.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
@@ -67,6 +70,23 @@ const fixture = (
         loadConnections: () =>
           Effect.succeed([{ id: 'test-connection', driverId: 'acp', command: 'fake-agent', args: [] }]),
         loadDrivers: () => Effect.succeed(driverRegistry),
+        loadCheckoutResolver: () =>
+          Effect.succeed(
+            CheckoutResolver.of({
+              resolve: path =>
+                Effect.succeed({
+                  canonicalPath: path,
+                  kind: 'main',
+                  repositoryIdentity: `repo:${path.slice('C:/repo-'.length)}`,
+                  mainCheckoutPath: path,
+                  branch: null,
+                  headRevision: null,
+                  dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+                }),
+              createIsolatedWorktree: () => Effect.die('Unexpected worktree creation'),
+              removeWorktree: () => Effect.die('Unexpected worktree removal'),
+            }),
+          ),
         ...options,
         workerFactory: (path, data) => {
           const worker = workerFactory ? workerFactory(path, data) : new Worker(path, { workerData: data })
@@ -206,6 +226,51 @@ describe('lazy application WorkspaceHost', () => {
       await runtime.dispose()
     }
   })
+
+  it('provides the real checkout resolver and refuses a repository deleted after registration', async () => {
+    const repositoryPath = join(directory, 'deleted-checkout')
+    await mkdir(repositoryPath)
+    execFileSync('git', ['init', '--quiet', '--initial-branch=main'], { cwd: repositoryPath, windowsHide: true })
+    const registered = workspace('deleted-checkout')
+    const nativeCalls: string[] = []
+    const drivers = AgentDriverRegistry.fromDrivers([
+      AgentDriver.of({
+        driverId: 'acp',
+        connect: () => {
+          nativeCalls.push('connect')
+          return Effect.die('Deleted checkout must never connect')
+        },
+      }),
+    ])
+    const { runtime } = fixture('deleted-checkout', undefined, drivers, undefined, { loadCheckoutResolver: undefined })
+    try {
+      const host = await runtime.runPromise(WorkspaceHost)
+      await runtime.runPromise(
+        host.store.registerProject({
+          project: { ...registered.project, repositoryIdentity: realpathSync.native(join(repositoryPath, '.git')) },
+          mainCheckout: { ...registered.checkout, path: realpathSync.native(repositoryPath) },
+        }),
+      )
+      await runtime.runPromise(host.store.createTask({ task: registered.task, conversation: registered.conversation }))
+      await rm(repositoryPath, { recursive: true, force: true })
+      await runtime.runPromise(host.withExecution(service => service.start(beginCommand('deleted-checkout'))))
+      await expect
+        .poll(
+          async () => (await runtime.runPromise(host.store.readTaskSnapshot(registered.task.id, 10))).runs[0]?.status,
+        )
+        .toBe('failed')
+      expect(nativeCalls).toEqual([])
+      expect((await runtime.runPromise(host.store.readTaskSnapshot(registered.task.id, 10))).runs).toEqual([
+        expect.objectContaining({ id: 'run-deleted-checkout', status: 'failed', failure: 'launch-failed' }),
+      ])
+      await expect(runtime.dispose()).rejects.toMatchObject({
+        _tag: 'ExecutionServiceError',
+        nativeCleanup: 'confirmed',
+      })
+    } finally {
+      await runtime.dispose().catch(() => {})
+    }
+  }, 15_000)
 
   it('does not expose thenable or symbol properties on its store', async () => {
     const { runtime, workers } = fixture('not-thenable')
