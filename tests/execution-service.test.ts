@@ -698,6 +698,49 @@ describe('ExecutionService', () => {
     }
   })
 
+  it('interrupts an observed turn while native submit is still waiting for completion', async () => {
+    const submitted = Effect.runSync(Deferred.make<undefined>())
+    const interrupted = Effect.runSync(Deferred.make<undefined>())
+    let interruptCalls = 0
+    const session = makeSession({
+      submit: () =>
+        Effect.gen(function* () {
+          yield* Deferred.succeed(submitted, undefined)
+          yield* Deferred.await(interrupted)
+          return { nativeSessionId: 'native-session', generation: 1 }
+        }),
+      interrupt: () =>
+        Effect.gen(function* () {
+          interruptCalls++
+          yield* Deferred.succeed(interrupted, undefined)
+          return { acknowledged: true, termination: 'unknown' as const }
+        }),
+      events: () =>
+        Stream.concat(
+          Stream.fromEffect(Deferred.await(submitted)).pipe(Stream.as({ kind: 'turnStarted' } as const)),
+          Stream.fromEffect(Deferred.await(interrupted)).pipe(Stream.as({ kind: 'turnInterrupted' } as const)),
+        ),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await run(Deferred.await(submitted))
+      await run(service.interrupt(command.runId))
+      await expect
+        .poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+        .toBe('interrupted')
+      expect(interruptCalls).toBe(1)
+      await run(service.stopAll())
+    } finally {
+      await Effect.runPromise(Deferred.succeed(interrupted, undefined))
+      await runtime.dispose()
+    }
+  })
+
   it('bounds stopAll when a native interrupt ignores cancellation', async () => {
     const submitFinished = await Effect.runPromise(Deferred.make<undefined>())
     const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())

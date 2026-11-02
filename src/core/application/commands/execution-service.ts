@@ -84,6 +84,7 @@ interface ManagedRun {
   nativeTurnId?: string | undefined
   submitEntered: boolean
   acknowledged: boolean
+  turnObserved: boolean
   terminal: boolean
   settled: boolean
   interruptRequested: boolean
@@ -231,7 +232,12 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
 
     const sendNativeInterrupt = (state: ManagedRun) =>
       Effect.suspend(() => {
-        if (!state.interruptRequested || state.interruptSent || !state.acknowledged || !state.session) {
+        if (
+          !state.interruptRequested ||
+          state.interruptSent ||
+          (!state.acknowledged && !state.turnObserved) ||
+          !state.session
+        ) {
           return Effect.void
         }
         state.interruptSent = true
@@ -261,6 +267,13 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           occurredAt: yield* timestamp,
           event,
         })
+        if (event.kind === 'turnStarted') {
+          state.turnObserved = true
+          if (event.nativeTurnId !== undefined) state.nativeTurnId = event.nativeTurnId
+          yield* sendNativeInterrupt(state).pipe(
+            Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
+          )
+        }
         if (isTerminalEvent(event)) state.terminal = true
         if (input.publishCommittedEvent) yield* input.publishCommittedEvent(committed)
         return !state.terminal
@@ -458,6 +471,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           controlOrder: yield* Semaphore.make(1),
           submitEntered: false,
           acknowledged: false,
+          turnObserved: false,
           terminal: false,
           settled: false,
           interruptRequested: false,
