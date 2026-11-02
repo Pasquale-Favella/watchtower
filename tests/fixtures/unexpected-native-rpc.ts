@@ -28,6 +28,7 @@ export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:listConnections': unexpected,
   'workspace:inspectConnection': unexpected,
   'workspace:ensureScratchProject': unexpected,
+  'workspace:chooseProjectDirectory': unexpected,
   'workspace:registerProject': unexpected,
   'workspace:createTask': unexpected,
   'workspace:listProjects': unexpected,

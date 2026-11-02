@@ -91,6 +91,11 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     success: workspaceProjectRegistrationSchema,
     error,
   }),
+  Rpc.make('workspace:chooseProjectDirectory', {
+    payload: Schema.Struct({}),
+    success: Schema.NullOr(Schema.String),
+    error,
+  }),
   Rpc.make('workspace:inspectConnection', {
     payload: Schema.Struct({ connectionId: Connections.workspaceConnectionSchema.fields.connectionId }),
     success: Connections.workspaceConnectionInspectionSchema,

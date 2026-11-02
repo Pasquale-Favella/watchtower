@@ -416,6 +416,17 @@ app.whenReady().then(async () => {
               Layer.merge(
                 coachHandlers(agents.native),
                 workspaceHandlers({
+                  chooseProjectDirectory: () =>
+                    Effect.tryPromise({
+                      try: async () => {
+                        const selected = await dialog.showOpenDialog({
+                          title: 'Open a Project',
+                          properties: ['openDirectory'],
+                        })
+                        return selected.canceled ? null : (selected.filePaths[0] ?? null)
+                      },
+                      catch: error => error,
+                    }),
                   prepareScratchProject: store =>
                     ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
                 }),

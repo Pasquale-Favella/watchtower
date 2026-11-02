@@ -105,6 +105,7 @@ const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
  */
 export function workspaceHandlers<R = never>(
   options: {
+    readonly chooseProjectDirectory?: () => Effect.Effect<string | null, unknown, R>
     readonly prepareScratchProject?: (
       store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
     ) => Effect.Effect<import('@/shared/schemas/workspace-projects.js').WorkspaceProjectRegistration, unknown, R>
@@ -130,6 +131,8 @@ export function workspaceHandlers<R = never>(
       })
 
       return WorkspaceRpcGroup.toLayer({
+        'workspace:chooseProjectDirectory': () =>
+          options.chooseProjectDirectory ? safe(options.chooseProjectDirectory()) : Effect.fail(failure('unavailable')),
         'workspace:status': () =>
           safe(
             Effect.gen(function* () {
