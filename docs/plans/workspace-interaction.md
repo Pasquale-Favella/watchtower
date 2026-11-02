@@ -21,9 +21,20 @@ not complete M3.1 or establish interaction parity.
 The active Conversation owns the viewport. Use a compact Project/Task navigator,
 a flexible chat column and an optional changes inspector. A terminal drawer
 belongs to the current checkout. Avoid a second page scrollbar around the chat.
-The existing Workspace route already bypasses the analytics dashboard layout.
+Workspace and Analytics are separate application verticals. Workspace opens by
+default, including after reload, and loads the Project navigator. The sidebar header
+uses the `sidebar-07` application switcher. Workspace owns the Project/Task
+navigator in the shared sidebar; it has no second navigator inside the content
+area. The existing Workspace route bypasses the Analytics dashboard layout.
 
-- Keep application navigation collapsible and preserve existing shortcuts.
+- Keep the shared sidebar collapsible and responsive in both verticals. Scope
+  numbered Section shortcuts, refresh and the command palette to Analytics;
+  keep the registry-owned sidebar toggle available in both verticals. Workspace
+  is selected by the application switcher rather than a numbered shortcut.
+- Store the selected vertical and last resolved Analytics destination in the
+  window's Atom registry. Switching back restores the destination, including
+  session source identity. Router navigation stays authoritative. Workspace
+  Project/Task/Conversation selection remains shared and locally persisted.
 - The workspace navigator groups Tasks under Projects. Expand Conversations
   when a Task has several; keep the common one-Conversation case simple.
 - Show title, activity, unread/attention state and pin/archive actions in compact
@@ -39,6 +50,24 @@ The existing Workspace route already bypasses the analytics dashboard layout.
   state; do not add decorative tabs for unimplemented services.
 - On smaller windows, open navigation and inspector as dismissible panels while
   retaining the conversation and input area. Resize panes within minimum sizes.
+
+### Vertical navigation checkpoint
+
+Workspace now opens by default. The shared sidebar contains the application
+switcher and the active vertical's navigator. Analytics owns its Section
+shortcuts, command palette and scan status; the shared sidebar toggle works in
+both verticals. Switching back to Analytics restores the last resolved route
+and session source identity. Project/Task/Conversation selection uses shared
+Atom state and the existing local persistence format. The collapsed switcher
+keeps the logo inside its button with the original muted background.
+
+Verification on Windows: 342 Vitest files passed, with 3,862 passing tests and
+5 skipped; all 14 Electron tests passed. The targeted navigation tests also
+passed after the default-vertical correction. All four TypeScript projects,
+Effect diagnostics, formatting and build passed. ESLint reported zero errors
+with existing repository warnings. The packaged verifier now follows the
+default Workspace boot flow; installer certification was not rerun for this UI
+correction. No native agent turn was started.
 
 ## Conversation and composer
 

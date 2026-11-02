@@ -3,14 +3,14 @@ import { describe, expect, it } from 'vitest'
 import { shortcutForAction } from '../src/renderer/app/shortcuts.js'
 import {
   PALETTE_ACTIONS,
-  PALETTE_SECTIONS,
   PALETTE_ROWS,
+  PALETTE_SECTIONS,
   rowFilterValue,
 } from '../src/renderer/components/shell/CommandPalette.js'
 
 describe('command palette rows (ADR 0028)', () => {
   it('lists every section plus refresh/toggleSidebar — and never itself', () => {
-    expect(PALETTE_SECTIONS).toHaveLength(10)
+    expect(PALETTE_SECTIONS).toHaveLength(9)
     expect([...PALETTE_ACTIONS]).toEqual(['refresh', 'toggleSidebar'])
     expect([...PALETTE_SECTIONS, ...PALETTE_ACTIONS]).not.toContain('commandPalette')
   })

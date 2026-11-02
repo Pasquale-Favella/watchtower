@@ -5,7 +5,7 @@ import type { Section } from '@/shared/schemas/navigation.js'
 import type { Platform, ShortcutAction, ShortcutDef } from '@/shared/schemas/renderer.js'
 export type { Platform, Section, ShortcutAction, ShortcutDef }
 
-/** Sections in sidebar/nav order. Existing numbered shortcuts retain their assignments; Workspace uses `Mod+9`. */
+/** Analytics sections in sidebar/nav order. Workspace is a separate app vertical. */
 export const NAV_SECTIONS: readonly Section[] = [
   'overview',
   'sessions',
@@ -15,7 +15,6 @@ export const NAV_SECTIONS: readonly Section[] = [
   'models',
   'compare',
   'coachSkills',
-  'workspace',
   'settings',
 ]
 
@@ -54,7 +53,7 @@ export function displayShortcutForAction(action: ShortcutAction, platform?: Plat
   return def ? displayShortcut(def.hotkey, platform) : undefined
 }
 
-/** The footer's numbered-section range, e.g. `⌘1–⌘7` on mac, `Ctrl+1–Ctrl+7` elsewhere. */
+/** The footer's numbered-section range, e.g. `⌘1–⌘8` on mac, `Ctrl+1–Ctrl+8` elsewhere. */
 export function sectionsRangeLabel(platform?: Platform): string {
   const first = NUMBERED_SECTION_SHORTCUTS[0]
   const last = NUMBERED_SECTION_SHORTCUTS[NUMBERED_SECTION_SHORTCUTS.length - 1]

@@ -1,101 +1,21 @@
-import { PanelLeftClose, PanelLeftOpen } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { SidebarTrigger } from '@/renderer/components/ui/sidebar'
 import type { ConversationId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceTask } from './hooks.js'
-import {
-  mergeWorkspaceNavigation,
-  readWorkspaceNavigation,
-  type WorkspaceNavigationState,
-  writeWorkspaceNavigation,
-} from './workspace-navigation.js'
+import { useWorkspaceNavigation } from './use-workspace-navigation.js'
 import { WorkspaceConversation } from './WorkspaceConversation.js'
-import { WorkspaceProjects } from './WorkspaceProjects.js'
-
-function browserStorage(): Storage | null {
-  try {
-    return typeof window === 'undefined' ? null : window.localStorage
-  } catch {
-    return null
-  }
-}
 
 export function WorkspaceView() {
-  const [navigation, setNavigation] = useState<WorkspaceNavigationState>(() =>
-    readWorkspaceNavigation(browserStorage()),
-  )
-  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false)
-  useEffect(() => writeWorkspaceNavigation(browserStorage(), navigation), [navigation])
-
-  function updateNavigation(update: Partial<WorkspaceNavigationState>) {
-    setNavigation(current => mergeWorkspaceNavigation(current, update))
-  }
-
-  const selectProject = useCallback((projectId: WorkspaceNavigationState['projectId']) => {
-    setNavigation(current => mergeWorkspaceNavigation(current, { projectId, taskId: null, conversationId: null }))
-  }, [])
-  const selectTask = useCallback((taskId: WorkspaceNavigationState['taskId']) => {
-    setNavigation(current => mergeWorkspaceNavigation(current, { taskId, conversationId: null }))
-  }, [])
-  const selectConversation = useCallback((conversationId: ConversationId | null) => {
-    setNavigation(current => mergeWorkspaceNavigation(current, { conversationId }))
-  }, [])
+  const { navigation, selectTask, selectConversation } = useWorkspaceNavigation()
 
   return (
-    <main className="relative flex min-h-0 flex-1 overflow-hidden" aria-label="Agent workspace">
-      <aside
-        aria-label="Workspace navigation"
-        className={`${mobileNavigationOpen ? 'absolute inset-y-0 left-0 z-20 flex w-[min(88vw,340px)] shadow-xl' : 'hidden'} ${navigation.navigationCollapsed ? 'md:w-14' : 'md:flex md:w-[320px]'} bg-background min-h-0 shrink-0 flex-col border-r p-3 md:relative md:flex`}
-      >
-        <div className="mb-2 flex justify-end gap-1">
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            className="hidden md:inline-flex"
-            aria-label={
-              navigation.navigationCollapsed ? 'Expand workspace navigation' : 'Collapse workspace navigation'
-            }
-            title={navigation.navigationCollapsed ? 'Expand navigation' : 'Collapse navigation'}
-            onClick={() => updateNavigation({ navigationCollapsed: !navigation.navigationCollapsed })}
-          >
-            {navigation.navigationCollapsed ? <PanelLeftOpen /> : <PanelLeftClose />}
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="md:hidden"
-            onClick={() => setMobileNavigationOpen(false)}
-          >
-            Close navigation
-          </Button>
-        </div>
-        {(!navigation.navigationCollapsed || mobileNavigationOpen) && (
-          <WorkspaceProjects
-            selectedProjectId={navigation.projectId}
-            selectedTaskId={navigation.taskId}
-            onSelectProject={selectProject}
-            onSelectTask={selectTask}
-          />
-        )}
-      </aside>
-
-      {mobileNavigationOpen && (
-        <button
-          aria-label="Close workspace navigation"
-          className="absolute inset-0 z-10 bg-black/30 md:hidden"
-          onClick={() => setMobileNavigationOpen(false)}
-        />
-      )}
-
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agent workspace">
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label="Selected task">
-        <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2 md:hidden">
-          <Button type="button" variant="outline" size="sm" onClick={() => setMobileNavigationOpen(true)}>
-            Projects and tasks
-          </Button>
+        <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
+          <SidebarTrigger aria-label="Toggle workspace navigation" />
           <span className="text-muted-foreground truncate text-xs">
             {navigation.taskId ? 'Selected Task' : 'Workspace'}
           </span>
@@ -113,16 +33,8 @@ export function WorkspaceView() {
             <div className="max-w-sm">
               <h1 className="text-lg font-semibold">Choose a Task</h1>
               <p className="text-muted-foreground mt-2 text-sm">
-                Select a Task from the navigator or create one in a Project.
+                Select a Task from the workspace sidebar or create one in a Project.
               </p>
-              <Button
-                type="button"
-                variant="outline"
-                className="mt-4 md:hidden"
-                onClick={() => setMobileNavigationOpen(true)}
-              >
-                Browse Projects
-              </Button>
             </div>
           </div>
         )}

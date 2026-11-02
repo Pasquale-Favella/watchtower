@@ -41,10 +41,16 @@ optional provider filter; every data fetch consumes it.
 _Avoid_: filter settings, date range
 
 **Section**:
-The app's top-level screens — overview, sessions, pull requests, spend, optimize,
-models, compare, coach & skills, workspace, settings. The sidebar and the numbered shortcuts
+An Analytics screen: overview, sessions, pull requests, spend, optimize,
+models, compare, coach & skills, settings. The Analytics sidebar and its shortcuts
 navigate between them.
 _Avoid_: page, tab
+
+**Application vertical**:
+One of the app's two working areas, Analytics or Workspace. The sidebar switcher
+selects the vertical and its navigation. Workspace groups Projects and Tasks;
+Analytics groups Sections.
+_Avoid_: workspace section
 
 **Command palette**:
 The single keyboard-driven launcher (`Mod+K`) listing Sections and Actions.

@@ -1,5 +1,7 @@
 import { ROUTES, type Section, SECTIONS } from '@/shared/schemas/navigation.js'
 
+export type AppVertical = 'analytics' | 'workspace'
+
 // The renderer's navigation entry point (ADR 0014). Sections and routes
 // themselves are declared once in shared/schemas/navigation.ts.
 
@@ -38,6 +40,18 @@ export function navigateToSection(section: Section): void {
 /** Navigate to a session detail route. */
 export function navigateToSession(id: string, sourceId?: number | null): void {
   if (!navigate) return
-  if (sourceId == null) navigate(ROUTES.sessionDetail(id))
-  else navigate(ROUTES.sessionDetail(id), sourceId)
+  navigate(ROUTES.sessionDetail(id), sourceId ?? undefined)
+}
+
+/** Switch the shell's app vertical, restoring the last Analytics route when returning. */
+export function navigateToVertical(
+  vertical: AppVertical,
+  destination: { readonly to: string; readonly sourceId?: number } = { to: ROUTES.overview },
+): void {
+  if (!navigate) return
+  if (vertical === 'workspace') {
+    navigate(ROUTES.workspace)
+    return
+  }
+  navigate(destination.to, destination.sourceId)
 }

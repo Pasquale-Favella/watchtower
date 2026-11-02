@@ -184,16 +184,16 @@ export function WorkspaceProjects({
 
   return (
     <section aria-label="Projects and tasks" className="flex min-h-0 flex-col gap-3">
-      <header className="flex shrink-0 items-center justify-between gap-2">
+      <header className="flex shrink-0 flex-col gap-2">
         <div className="min-w-0">
           <h1 className="truncate text-sm font-semibold">{selectedProject?.name ?? 'Workspace'}</h1>
           <p className="text-muted-foreground text-[11px]">Projects · Tasks</p>
         </div>
         <div className="flex shrink-0 gap-1">
-          <Button size="sm" variant="outline" onClick={() => setRegisterOpen(true)}>
+          <Button className="flex-1" size="sm" variant="outline" onClick={() => setRegisterOpen(true)}>
             Open Project
           </Button>
-          <Button size="sm" onClick={() => setTaskOpen(true)} disabled={!selectedProject}>
+          <Button className="flex-1" size="sm" onClick={() => setTaskOpen(true)} disabled={!selectedProject}>
             New Task
           </Button>
         </div>
