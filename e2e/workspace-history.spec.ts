@@ -30,7 +30,8 @@ test('workspace opens recent conversation activity and loads large content in th
     await dismissOnboarding(launched.window)
     const { window } = launched
     await switchVertical(window, 'Workspace')
-    await window.getByRole('button', { name: /History fixture/ }).click()
+    const projectGroup = window.getByRole('button', { name: 'History fixture', exact: true })
+    if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
     await window.getByRole('button', { name: /Read recent activity/ }).click()
     const history = window.getByRole('region', { name: 'Conversation history' })
     const messages = history.getByRole('region', { name: 'Messages', exact: true })
@@ -47,7 +48,7 @@ test('workspace opens recent conversation activity and loads large content in th
     await window.getByRole('button', { name: 'Toggle workspace navigation', exact: true }).first().click()
     await window.setViewportSize({ width: 720, height: 800 })
     await window.getByRole('button', { name: 'Toggle workspace navigation', exact: true }).click()
-    await expect(window.getByRole('button', { name: /History fixture/ })).toBeVisible()
+    await expect(window.getByRole('button', { name: 'History fixture', exact: true })).toBeVisible()
     await window.keyboard.press('Escape')
     await expect(window.getByRole('heading', { name: 'Read recent activity', exact: true })).toBeVisible()
     expect(launched.pageErrors).toEqual([])

@@ -9,6 +9,7 @@ import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/l
 import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query.js'
 import { RendererConnection } from '@/shared/rpc/reconnecting-protocol.js'
 import type { WorkspaceEventFrame, WorkspaceRpcError } from '@/shared/rpc/workspace.js'
+import type { ProjectId } from '@/shared/schemas/workspace.js'
 
 import { createWorkspaceIntent, retryWorkspaceIntent } from './commands.js'
 import { applyWorkspaceFrame, createWorkspaceProjection, workspaceResume } from './events.js'
@@ -61,6 +62,26 @@ export function createWorkspaceAtoms(
     query: (request: WorkspaceRequest<'workspace:listTasks'>, id: string) =>
       client.query('workspace:listTasks', request, queryOptions(id)),
   })
+  const sidebarTaskSlots = new Map<ProjectId, typeof workspaceTasks>()
+  const sidebarTaskReaders = new Map<typeof workspaceTasks, number>()
+  const workspaceTasksForSidebar = (projectId: ProjectId) => {
+    const cached = sidebarTaskSlots.get(projectId)
+    if (cached) return cached
+    const slot = createRpcQuerySlot({
+      key: workspaceQueryKey,
+      query: (request: WorkspaceRequest<'workspace:listTasks'>, id: string) =>
+        client.query('workspace:listTasks', request, queryOptions(id)),
+    })
+    sidebarTaskSlots.set(projectId, slot)
+    if (sidebarTaskSlots.size > 128) {
+      for (const [id, candidate] of sidebarTaskSlots) {
+        if (sidebarTaskReaders.has(candidate)) continue
+        sidebarTaskSlots.delete(id)
+        break
+      }
+    }
+    return slot
+  }
   const workspaceTask = createRpcQuerySlot({
     key: workspaceQueryKey,
     query: (request: WorkspaceRequest<'workspace:readTaskDetail'>, id: string) =>
@@ -127,12 +148,22 @@ export function createWorkspaceAtoms(
   ]
   const queryPolling = createWorkspaceQueryPolling(
     (options.runtime ?? client.runtime.factory)(options.layer ?? ApplicationProtocolLayer),
-    { targets: fallbackTargets, beforeRefresh: waitForWorkspaceConnection },
+    { targets: () => [...fallbackTargets, ...sidebarTaskSlots.values()], beforeRefresh: waitForWorkspaceConnection },
   )
+  const retainWorkspaceSidebarQuery = (registry: AtomRegistry.AtomRegistry, slot: typeof workspaceTasks) => {
+    sidebarTaskReaders.set(slot, (sidebarTaskReaders.get(slot) ?? 0) + 1)
+    const release = queryPolling.retain(registry, slot)
+    return () => {
+      const remaining = (sidebarTaskReaders.get(slot) ?? 1) - 1
+      if (remaining === 0) sidebarTaskReaders.delete(slot)
+      else sidebarTaskReaders.set(slot, remaining)
+      release()
+    }
+  }
   const refreshWorkspace = (registry: AtomRegistry.AtomRegistry, source: 'command' | 'event') => {
     const targets =
       source === 'command'
-        ? [...fallbackTargets, workspaceRequests]
+        ? [...fallbackTargets, workspaceRequests, ...sidebarTaskSlots.values()]
         : [
             workspaceStatus,
             workspaceTasks,
@@ -143,6 +174,7 @@ export function createWorkspaceAtoms(
             workspaceFollowUps,
             workspaceRequestResponses,
             workspaceSteerIntents,
+            ...sidebarTaskSlots.values(),
           ]
     queryPolling.refresh(registry, targets)
     const conversation = registry.get(workspaceConversation.requestAtom)
@@ -153,7 +185,7 @@ export function createWorkspaceAtoms(
   const makeCommand = <Request extends { readonly commandId: string }, Value>(
     send: (rpc: Client, request: Request) => Effect.Effect<Value, CommandError>,
   ) =>
-    workspaceRuntime.fn<Omit<Request, 'commandId'>>()(
+    workspaceRuntime.fn<Omit<Request, 'commandId'> & { readonly commandId?: string }>()(
       (input, get) =>
         Effect.gen(function* () {
           const intent = createWorkspaceIntent(input) as Request
@@ -240,10 +272,12 @@ export function createWorkspaceAtoms(
 
   return {
     retainWorkspaceQuery: queryPolling.retain,
+    retainWorkspaceSidebarQuery,
     workspaceStatus,
     workspaceProjects,
     workspaceProject,
     workspaceTasks,
+    workspaceTasksForSidebar,
     workspaceTask,
     workspaceTaskSnapshot,
     workspaceNativeAgentSessions,
@@ -270,10 +304,12 @@ export function createWorkspaceAtoms(
 
 export const {
   retainWorkspaceQuery,
+  retainWorkspaceSidebarQuery,
   workspaceStatus,
   workspaceProjects,
   workspaceProject,
   workspaceTasks,
+  workspaceTasksForSidebar,
   workspaceTask,
   workspaceTaskSnapshot,
   workspaceNativeAgentSessions,

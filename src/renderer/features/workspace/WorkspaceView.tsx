@@ -6,19 +6,22 @@ import type { ConversationId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceTask } from './hooks.js'
 import { useWorkspaceNavigation } from './use-workspace-navigation.js'
+import { WorkspaceComposer } from './WorkspaceComposer.js'
 import { WorkspaceConversation } from './WorkspaceConversation.js'
+import { WorkspaceNewChat } from './WorkspaceNewChat.js'
+import { WorkspaceProjectDialog } from './WorkspaceProjectDialog.js'
+import { WorkspaceRequests } from './WorkspaceRequests.js'
 
 export function WorkspaceView() {
-  const { navigation, selectTask, selectConversation } = useWorkspaceNavigation()
+  const { navigation, selectProject, selectTask, selectConversation } = useWorkspaceNavigation()
 
   return (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agent workspace">
+      <WorkspaceProjectDialog />
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label="Selected task">
         <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
           <SidebarTrigger aria-label="Toggle workspace navigation" />
-          <span className="text-muted-foreground truncate text-xs">
-            {navigation.taskId ? 'Selected Task' : 'Workspace'}
-          </span>
+          <span className="text-muted-foreground truncate text-xs">{navigation.taskId ? 'Chat' : 'Workspace'}</span>
         </header>
         {navigation.taskId ? (
           <TaskConversation
@@ -29,14 +32,15 @@ export function WorkspaceView() {
             onSelectConversation={selectConversation}
           />
         ) : (
-          <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center">
-            <div className="max-w-sm">
-              <h1 className="text-lg font-semibold">Choose a Task</h1>
-              <p className="text-muted-foreground mt-2 text-sm">
-                Select a Task from the workspace sidebar or create one in a Project.
-              </p>
-            </div>
-          </div>
+          <WorkspaceNewChat
+            projectId={navigation.projectId}
+            onProjectChange={selectProject}
+            onStarted={(projectId, taskId, conversationId) => {
+              selectProject(projectId)
+              selectTask(taskId)
+              selectConversation(conversationId)
+            }}
+          />
         )}
       </section>
     </main>
@@ -147,6 +151,12 @@ function TaskConversation({
           <div className="p-5 text-sm">No conversation activity yet.</div>
         )}
       </div>
+      {conversation && (
+        <div key={conversation.id} className="shrink-0">
+          <WorkspaceRequests taskId={task.id} conversationId={conversation.id} />
+          <WorkspaceComposer task={task} conversationId={conversation.id} />
+        </div>
+      )}
     </div>
   )
 }

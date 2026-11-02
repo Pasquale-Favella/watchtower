@@ -27,6 +27,30 @@ function fixture() {
 }
 
 describe('mounted workspace query consumers', () => {
+  it('includes project groups added after the polling owner was created', async () => {
+    const registry = AtomRegistry.make()
+    const targets: Array<{ refreshAtom: Atom.Writable<unknown, void> }> = []
+    const polling = createWorkspaceQueryPolling(Atom.context()(Layer.empty), { targets: () => targets, intervalMs: 20 })
+    let reads = 0
+    const slot = createRpcQuerySlot({
+      key: (request: string) => request,
+      query: () => Atom.make(Effect.sync(() => ++reads)),
+    })
+    targets.push(slot)
+    slot.pin(registry)
+    registry.set(slot.requestAtom, 'late-project')
+    try {
+      const unmount = polling.retain(registry, slot)
+      await waitUntil(() => reads >= 2)
+      unmount()
+      const stoppedAt = reads
+      await new Promise(resolve => setTimeout(resolve, 80))
+      expect(reads).toBe(stoppedAt)
+    } finally {
+      registry.dispose()
+    }
+  })
+
   it('stops refreshing a retained query when its last view unmounts', async () => {
     const { registry, slot, polling, requests } = fixture()
     try {

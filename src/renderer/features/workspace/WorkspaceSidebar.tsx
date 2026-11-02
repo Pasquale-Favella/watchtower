@@ -4,19 +4,18 @@ import { useCallback } from 'react'
 import {
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
   useSidebar,
 } from '@/renderer/components/ui/sidebar'
-import type { TaskId } from '@/shared/schemas/workspace.js'
+import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceNavigation } from './use-workspace-navigation.js'
 import { WorkspaceProjects } from './WorkspaceProjects.js'
 
 /** Project and Task navigation for the workspace vertical's shared app sidebar. */
-export function WorkspaceSidebar() {
+export function WorkspaceSidebar({ onNewChat }: { readonly onNewChat?: (projectId: ProjectId | null) => void }) {
   const { navigation, selectProject, selectTask } = useWorkspaceNavigation()
   const { setOpen, setOpenMobile } = useSidebar()
   const selectTaskFromSidebar = useCallback(
@@ -29,7 +28,6 @@ export function WorkspaceSidebar() {
 
   return (
     <SidebarGroup className="min-h-0 flex-1">
-      <SidebarGroupLabel>Workspace</SidebarGroupLabel>
       <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
         <SidebarMenu className="hidden group-data-[collapsible=icon]:flex">
           <SidebarMenuItem>
@@ -43,12 +41,17 @@ export function WorkspaceSidebar() {
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>
-        <div className="min-h-0 flex-1 overflow-y-auto group-data-[collapsible=icon]:hidden">
+        <div className="flex min-h-0 flex-1 flex-col group-data-[collapsible=icon]:hidden">
           <WorkspaceProjects
             selectedProjectId={navigation.projectId}
             selectedTaskId={navigation.taskId}
             onSelectProject={selectProject}
             onSelectTask={selectTaskFromSidebar}
+            onNewChat={projectId => {
+              selectProject(projectId)
+              setOpenMobile(false)
+              onNewChat?.(projectId)
+            }}
           />
         </div>
       </SidebarGroupContent>

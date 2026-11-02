@@ -7,7 +7,7 @@ export interface WorkspaceQueryRefreshTarget {
 }
 
 interface WorkspaceQueryPollingOptions<Requirements> {
-  readonly targets: readonly WorkspaceQueryRefreshTarget[]
+  readonly targets: readonly WorkspaceQueryRefreshTarget[] | (() => readonly WorkspaceQueryRefreshTarget[])
   readonly beforeRefresh?: Effect.Effect<unknown, never, Requirements>
   readonly intervalMs?: number
 }
@@ -35,7 +35,8 @@ export function createWorkspaceQueryPolling<Requirements, Error>(
   }
   const pollingAtom = runtime.atom(get => {
     const consumers = get(consumersAtom)
-    const targets = options.targets.filter(target => (consumers.get(target) ?? 0) > 0)
+    const available = typeof options.targets === 'function' ? options.targets() : options.targets
+    const targets = available.filter(target => (consumers.get(target) ?? 0) > 0)
     if (targets.length === 0 || !get(visibleAtom)) return Effect.void
     return Effect.forever(
       Effect.sleep(options.intervalMs ?? 3000).pipe(

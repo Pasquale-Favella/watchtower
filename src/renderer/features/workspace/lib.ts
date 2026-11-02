@@ -8,7 +8,9 @@ type WorkspaceRpcs = RpcGroup.Rpcs<typeof WorkspaceRpcGroup>
 export type WorkspaceTag = WorkspaceRpcs['_tag']
 export type WorkspaceRequest<Tag extends WorkspaceTag> = Rpc.Payload<Rpc.ExtractTag<WorkspaceRpcs, Tag>>
 export type WorkspaceResult<Tag extends WorkspaceTag> = Rpc.Success<Rpc.ExtractTag<WorkspaceRpcs, Tag>>
-export type WorkspaceCommandInput<Tag extends WorkspaceTag> = Omit<WorkspaceRequest<Tag>, 'commandId'>
+export type WorkspaceCommandInput<Tag extends WorkspaceTag> = Omit<WorkspaceRequest<Tag>, 'commandId'> & {
+  readonly commandId?: string
+}
 
 export const workspaceQueryKey = (request: unknown): string => JSON.stringify(request)
 

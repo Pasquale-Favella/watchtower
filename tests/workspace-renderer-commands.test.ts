@@ -8,6 +8,15 @@ import { WorkspaceRpcError } from '../src/shared/rpc/workspace.js'
 const disconnected = new RpcClientError({ reason: new RpcClientDefect({ message: 'Disconnected', cause: undefined }) })
 
 describe('workspace command intent', () => {
+  it('replays an explicitly retained command without allocating a new attempt', () => {
+    const retained = { commandId: 'retained-intent', prompt: 'original' }
+    const replay = createWorkspaceIntent(retained, () => {
+      throw new Error('A retained command must not allocate a new ID')
+    })
+    retained.prompt = 'edited after capture'
+    expect(replay).toEqual({ commandId: 'retained-intent', prompt: 'original' })
+  })
+
   it('reuses one commandId and payload after reconnect but generates a new ID for a new intent', async () => {
     let next = 0
     const id = () => `command-${++next}`

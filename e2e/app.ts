@@ -170,6 +170,7 @@ async function closeAndRemoveProfile(
 export async function launchApp(
   profileRoot = tmpdir(),
   beforeLaunch?: (profile: string) => Promise<void>,
+  harnessDirectory?: string,
 ): Promise<LaunchedApp> {
   const userDataDir = mkdtempSync(join(profileRoot, 'watchtower-e2e-'))
   const args = [
@@ -201,6 +202,7 @@ export async function launchApp(
         .split(/\r?\n/)[0]
       env.PATH = [systemDirectory, dirname(process.execPath), dirname(git)].join(delimiter)
     }
+    if (harnessDirectory) env.PATH = [harnessDirectory, env.PATH ?? process.env.PATH ?? ''].join(delimiter)
     const launchedApp = await electron.launch({ args, env, timeout: 60_000 })
     app = launchedApp
     state = { child: launchedApp.process(), closeCompleted: false }

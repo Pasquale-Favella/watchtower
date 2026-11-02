@@ -1,39 +1,49 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { ChevronDown, ChevronRight, Folder, FolderPlus, MessageCircle, Plus, Search, SquarePen, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
 import { Button } from '@/renderer/components/ui/button'
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/renderer/components/ui/dialog'
 import { Input } from '@/renderer/components/ui/input'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectReadPage, WorkspaceTaskReadPage } from '@/shared/schemas/workspace-store.js'
 
-import {
-  useCreateTask,
-  useRegisterProject,
-  useWorkspaceProject,
-  useWorkspaceProjects,
-  useWorkspaceTasks,
-  type WorkspaceRequest,
-} from './hooks.js'
-import { appendUniquePage, searchLoaded } from './project-ui.js'
+import { useWorkspaceProject, useWorkspaceProjects, useWorkspaceSidebarTasks, type WorkspaceRequest } from './hooks.js'
+import { appendUniquePage } from './project-ui.js'
+import { useWorkspaceProjectDialog } from './use-project-dialog.js'
 
 const PAGE_SIZE = 30
+const NO_PROJECT_GROUP = 'no-project'
 const FIRST_PROJECT_PAGE: WorkspaceRequest<'workspace:listProjects'> = { options: { limit: PAGE_SIZE } }
-const errorText = (error: unknown): string =>
-  error instanceof Error ? error.message : 'The operation failed. Try again.'
+type SidebarTaskPage = WorkspaceTaskReadPage
+type LoadedTaskGroup = { readonly items: SidebarTaskPage['items']; readonly nextAfterId: TaskId | null }
 
 export interface WorkspaceProjectsProps {
   selectedProjectId: ProjectId | null
   selectedTaskId: TaskId | null
   onSelectProject: (projectId: ProjectId | null) => void
   onSelectTask: (taskId: TaskId | null) => void
+  onNewChat?: (projectId: ProjectId | null) => void
+}
+
+function isScratchProject(project: WorkspaceProjectReadPage['items'][number]): boolean {
+  return project.isScratch === true
+}
+
+function taskStatusClass(status: WorkspaceTaskReadPage['items'][number]['status']): string {
+  switch (status) {
+    case 'inProgress':
+      return 'bg-blue-500'
+    case 'blocked':
+      return 'bg-amber-500'
+    case 'inReview':
+      return 'bg-violet-500'
+    case 'completed':
+      return 'bg-emerald-500'
+    case 'archived':
+      return 'bg-muted-foreground/40'
+    case 'open':
+      return 'bg-sidebar-foreground/30'
+  }
 }
 
 export function WorkspaceProjects({
@@ -41,366 +51,457 @@ export function WorkspaceProjects({
   selectedTaskId,
   onSelectProject,
   onSelectTask,
+  onNewChat,
 }: WorkspaceProjectsProps) {
   const [projectRequest, setProjectRequest] = useState(FIRST_PROJECT_PAGE)
   const projectsQuery = useWorkspaceProjects(projectRequest)
   const [projects, setProjects] = useState<WorkspaceProjectReadPage['items']>([])
   const selectedProjectQuery = useWorkspaceProject(selectedProjectId ? { projectId: selectedProjectId } : null)
-  const [projectSearch, setProjectSearch] = useState('')
-  const [taskSearch, setTaskSearch] = useState('')
-  const [taskRequest, setTaskRequest] = useState<WorkspaceRequest<'workspace:listTasks'> | null>(null)
-  const tasksQuery = useWorkspaceTasks(taskRequest)
-  const [tasks, setTasks] = useState<WorkspaceTaskReadPage['items']>([])
-  const [registerName, setRegisterName] = useState('')
-  const [registerPath, setRegisterPath] = useState('')
-  const [taskTitle, setTaskTitle] = useState('')
-  const [taskDescription, setTaskDescription] = useState('')
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [registrationNotice, setRegistrationNotice] = useState<string | null>(null)
-  const [registerOpen, setRegisterOpen] = useState(false)
-  const [taskOpen, setTaskOpen] = useState(false)
-  const [registering, setRegistering] = useState(false)
-  const [creatingTask, setCreatingTask] = useState(false)
-  const activeProjectId = useRef<ProjectId | null>(selectedProjectId)
+  const [expandedGroupIds, setExpandedGroupIds] = useState<ReadonlySet<string>>(() => new Set())
+  const [loadedTasks, setLoadedTasks] = useState<Readonly<Record<string, LoadedTaskGroup>>>({})
+  const [search, setSearch] = useState('')
+  const projectDialog = useWorkspaceProjectDialog()
+  const projectPage = projectsQuery.data
 
   useEffect(() => {
-    activeProjectId.current = selectedProjectId
-  }, [selectedProjectId])
-
-  useEffect(() => {
-    if (projectsQuery.status !== 'ready' || !projectsQuery.data) return
     const page = projectsQuery.data
+    if (projectsQuery.status !== 'ready' || !page) return
     setProjects(previous => appendUniquePage(previous, page.items))
-    if (!selectedProjectId && page.items[0]) onSelectProject(page.items[0].id)
-    else if (selectedProjectId && !projects.some(project => project.id === selectedProjectId) && page.items.length) {
-      const restored = selectedProjectQuery.data?.project
-      if (restored) setProjects(previous => appendUniquePage(previous, [restored]))
-      else if (selectedProjectQuery.error) onSelectProject(page.items[0]?.id ?? null)
-    }
-  }, [
-    projectsQuery.data,
-    projectsQuery.status,
-    projectRequest,
-    onSelectProject,
-    projects,
-    selectedProjectId,
-    selectedProjectQuery.data,
-    selectedProjectQuery.status,
-    selectedProjectQuery.error,
-  ])
+  }, [projectsQuery.data, projectsQuery.status])
 
   useEffect(() => {
-    if (selectedProjectId) setTaskRequest({ projectId: selectedProjectId, options: { limit: PAGE_SIZE } })
-  }, [selectedProjectId])
+    const restored = selectedProjectQuery.data?.project
+    if (restored) setProjects(previous => appendUniquePage(previous, [restored]))
+    if (selectedProjectId && selectedProjectQuery.error) onSelectProject(null)
+  }, [onSelectProject, selectedProjectId, selectedProjectQuery.data, selectedProjectQuery.error])
+
+  const scratchProjects = useMemo(() => projects.filter(isScratchProject), [projects])
+  const regularProjects = useMemo(() => projects.filter(project => !isScratchProject(project)), [projects])
+  const searchTerm = search.trim().toLocaleLowerCase()
+  const searching = searchTerm.length > 0
 
   useEffect(() => {
-    if (!taskRequest || tasksQuery.status !== 'ready' || !tasksQuery.data) return
-    if (activeProjectId.current !== taskRequest.projectId) return
-    const page = tasksQuery.data
-    setTasks(previous => appendUniquePage(previous, page.items))
-    if (!selectedTaskId && page.items[0]) onSelectTask(page.items[0].id)
-  }, [taskRequest, tasksQuery.data, tasksQuery.status, onSelectTask, selectedTaskId])
+    if (!selectedProjectId) return
+    const groupId = scratchProjects.some(project => project.id === selectedProjectId)
+      ? NO_PROJECT_GROUP
+      : selectedProjectId
+    setExpandedGroupIds(current => (current.has(groupId) ? current : new Set([...current, groupId])))
+  }, [scratchProjects, selectedProjectId])
 
-  const selectedProject =
-    projects.find(project => project.id === selectedProjectId) ?? selectedProjectQuery.data?.project ?? null
-  const filteredProjects = useMemo(
-    () => searchLoaded(projects, projectSearch, project => [project.name, project.repositoryIdentity]),
-    [projects, projectSearch],
-  )
-  const filteredTasks = useMemo(
-    () => searchLoaded(tasks, taskSearch, task => [task.title, task.description]),
-    [tasks, taskSearch],
-  )
-
-  function selectProject(projectId: ProjectId) {
-    if (projectId === selectedProjectId) return
-    activeProjectId.current = projectId
-    setTasks([])
-    setTaskSearch('')
+  const newChat = (projectId: ProjectId | null) => {
+    const target = projectId && scratchProjects.some(project => project.id === projectId) ? null : projectId
     onSelectProject(projectId)
     onSelectTask(null)
+    onNewChat?.(target)
   }
 
-  async function registerProject(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    setActionError(null)
-    setRegistrationNotice(null)
-    setRegistering(true)
-    try {
-      const receipt = await registerCommand.execute({ path: registerPath.trim(), name: registerName.trim() })
-      const project = receipt.project
-      setProjects(previous => appendUniquePage(previous, [project]))
-      activeProjectId.current = project.id
-      onSelectProject(project.id)
-      onSelectTask(null)
-      setRegistrationNotice(
-        receipt.reused
-          ? `Using the existing Project “${project.name}” at ${receipt.mainCheckout.path}.`
-          : `Registered “${project.name}” at ${receipt.mainCheckout.path}.`,
-      )
-      setRegisterName('')
-      setRegisterPath('')
-      setRegisterOpen(false)
-      setProjectRequest(FIRST_PROJECT_PAGE)
-    } catch (error) {
-      setActionError(errorText(error))
-    } finally {
-      setRegistering(false)
-    }
+  const toggleProject = (projectId: ProjectId) => {
+    setExpandedGroupIds(current => {
+      const next = new Set(current)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
+      return next
+    })
   }
 
-  async function createTask(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!selectedProjectId) return
-    const projectAtStart = selectedProjectId
-    setActionError(null)
-    setCreatingTask(true)
-    try {
-      const receipt = await createTaskCommand.execute({
-        projectId: projectAtStart,
-        title: taskTitle.trim(),
-        description: taskDescription.trim(),
+  const toggleNoProject = () => {
+    setExpandedGroupIds(current => {
+      const next = new Set(current)
+      if (next.has(NO_PROJECT_GROUP)) next.delete(NO_PROJECT_GROUP)
+      else next.add(NO_PROJECT_GROUP)
+      return next
+    })
+  }
+
+  const selectTask = (taskId: TaskId, projectId: ProjectId) => {
+    onSelectProject(projectId)
+    onSelectTask(taskId)
+  }
+
+  const rememberTasksPage = useCallback(
+    (projectId: ProjectId, request: WorkspaceRequest<'workspace:listTasks'>, page: SidebarTaskPage) => {
+      setLoadedTasks(current => {
+        const existing = current[projectId]
+        const nextAfterId =
+          request.options?.afterId !== undefined
+            ? page.nextAfterId
+            : existing
+              ? existing.nextAfterId === null && page.total > existing.items.length
+                ? page.nextAfterId
+                : existing.nextAfterId
+              : page.nextAfterId
+        return {
+          ...current,
+          [projectId]: {
+            items: appendUniquePage(existing?.items ?? [], page.items),
+            nextAfterId,
+          },
+        }
       })
-      if (activeProjectId.current !== projectAtStart) return
-      onSelectTask(receipt.taskId)
-      setTaskTitle('')
-      setTaskDescription('')
-      setTaskOpen(false)
-      setTasks([])
-      setTaskRequest({ projectId: projectAtStart, options: { limit: PAGE_SIZE } })
-    } catch (error) {
-      if (activeProjectId.current === projectAtStart) setActionError(errorText(error))
-    } finally {
-      setCreatingTask(false)
-    }
-  }
+    },
+    [],
+  )
 
-  const registerCommand = useRegisterProject()
-  const createTaskCommand = useCreateTask()
-  const projectPage = projectsQuery.data
-  const taskPage = tasksQuery.data
   const projectCanLoadMore = Boolean(projectPage?.nextAfterId)
-  const taskCanLoadMore = Boolean(taskPage?.nextAfterId && taskRequest?.projectId === selectedProjectId)
+  const noProjectMatches = scratchProjects.some(project => {
+    const tasks = loadedTasks[project.id]?.items
+    return (
+      !tasks ||
+      loadedTasks[project.id]?.nextAfterId !== null ||
+      tasks.some(task => task.title.toLocaleLowerCase().includes(searchTerm))
+    )
+  })
+  const searchHasMatches =
+    regularProjects.some(
+      project =>
+        project.name.toLocaleLowerCase().includes(searchTerm) ||
+        loadedTasks[project.id]?.items.some(task => task.title.toLocaleLowerCase().includes(searchTerm)),
+    ) || noProjectMatches
+  const searchStillLoading =
+    regularProjects.some(project => loadedTasks[project.id] === undefined) ||
+    scratchProjects.some(project => loadedTasks[project.id] === undefined)
 
   return (
-    <section aria-label="Projects and tasks" className="flex min-h-0 flex-col gap-3">
-      <header className="flex shrink-0 flex-col gap-2">
-        <div className="min-w-0">
-          <h1 className="truncate text-sm font-semibold">{selectedProject?.name ?? 'Workspace'}</h1>
-          <p className="text-muted-foreground text-[11px]">Projects · Tasks</p>
+    <section aria-label="Chats" className="flex min-h-0 flex-1 flex-col">
+      <header className="flex shrink-0 items-center gap-1.5 px-2 pb-2">
+        <div className="relative min-w-0 flex-1">
+          <Search
+            aria-hidden="true"
+            className="text-sidebar-muted-foreground pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2"
+          />
+          <Input
+            type="search"
+            aria-label="Search loaded chats"
+            placeholder="Search"
+            value={search}
+            onChange={event => setSearch(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === 'Escape' && search) {
+                event.preventDefault()
+                setSearch('')
+              }
+            }}
+            className="bg-sidebar-accent/50 focus-visible:border-sidebar-border focus-visible:bg-sidebar h-8 rounded-md border-transparent pr-8 pl-8 text-xs shadow-none"
+          />
+          {search && (
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label="Clear search"
+              title="Clear search"
+              className="absolute top-1/2 right-1 -translate-y-1/2"
+              onClick={() => setSearch('')}
+            >
+              <X className="size-3.5" />
+            </Button>
+          )}
         </div>
-        <div className="flex shrink-0 gap-1">
-          <Button className="flex-1" size="sm" variant="outline" onClick={() => setRegisterOpen(true)}>
-            Open Project
-          </Button>
-          <Button className="flex-1" size="sm" onClick={() => setTaskOpen(true)} disabled={!selectedProject}>
-            New Task
-          </Button>
-        </div>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label="New chat"
+          title="New chat"
+          disabled={!onNewChat}
+          onClick={() => newChat(null)}
+        >
+          <SquarePen className="size-4" />
+        </Button>
+        <Button
+          type="button"
+          size="icon-sm"
+          variant="ghost"
+          aria-label="Open Project"
+          title="Open Project"
+          onClick={projectDialog.open}
+        >
+          <FolderPlus className="size-4" />
+        </Button>
       </header>
 
-      {registrationNotice && (
-        <p role="status" className="text-muted-foreground text-xs">
-          {registrationNotice}
+      {projectDialog.notice && (
+        <p role="status" className="text-sidebar-muted-foreground px-3 pb-2 text-xs">
+          {projectDialog.notice}
         </p>
       )}
-      {actionError && (
-        <p role="alert" className="text-destructive text-xs">
-          {actionError}
+      {searching && (
+        <p role="status" className="text-sidebar-muted-foreground px-3 pb-2 text-[10px]">
+          Search covers loaded Projects and chats only. Load more to search additional results.
         </p>
       )}
-
-      <label className="sr-only" htmlFor="workspace-project-search">
-        Search loaded Projects
-      </label>
-      <Input
-        id="workspace-project-search"
-        type="search"
-        value={projectSearch}
-        onChange={event => setProjectSearch(event.target.value)}
-        placeholder="Find a Project"
-      />
       <QueryErrorNotice error={projectsQuery.error} hasData={projects.length > 0} />
-      <div className="min-h-0 flex-1 overflow-auto">
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {projectsQuery.status === 'loading' && projects.length === 0 ? (
-          <p role="status" className="text-muted-foreground py-3 text-xs">
-            Loading Projects…
-          </p>
-        ) : filteredProjects.length === 0 ? (
-          <p className="text-muted-foreground py-3 text-xs">
-            {projects.length
-              ? 'No loaded Projects match this search.'
-              : 'No registered Projects yet. Open one to begin.'}
+          <p role="status" className="text-sidebar-muted-foreground px-2 py-3 text-xs">
+            Loading chats…
           </p>
         ) : (
-          <ul aria-label="Loaded Projects" className="space-y-1">
-            {filteredProjects.map(project => (
-              <li key={project.id}>
+          <ul aria-label="Project chats" className="space-y-0.5">
+            {regularProjects.map(project => (
+              <ProjectFolder
+                key={project.id}
+                project={project}
+                expanded={searching || expandedGroupIds.has(project.id)}
+                visible={
+                  !searching ||
+                  project.name.toLocaleLowerCase().includes(searchTerm) ||
+                  !loadedTasks[project.id] ||
+                  loadedTasks[project.id].nextAfterId !== null ||
+                  loadedTasks[project.id].items.some(task => task.title.toLocaleLowerCase().includes(searchTerm))
+                }
+                searchTerm={searchTerm}
+                projectMatchesSearch={project.name.toLocaleLowerCase().includes(searchTerm)}
+                loadedTaskGroup={loadedTasks[project.id]}
+                selectedTaskId={selectedTaskId}
+                onToggle={() => {
+                  if (!searching) toggleProject(project.id)
+                }}
+                onNewChat={() => newChat(project.id)}
+                onSelectTask={(taskId, projectId) => selectTask(taskId, projectId)}
+                onTasksPage={rememberTasksPage}
+              />
+            ))}
+
+            {scratchProjects.length > 0 && (!searching || noProjectMatches) && (
+              <li className="list-none">
                 <button
                   type="button"
-                  onClick={() => selectProject(project.id)}
-                  aria-current={selectedProjectId === project.id ? 'true' : undefined}
-                  className={`focus-visible:ring-ring w-full rounded-md px-2 py-1.5 text-left text-xs outline-none focus-visible:ring-2 ${selectedProjectId === project.id ? 'bg-accent text-foreground' : 'text-muted-foreground hover:bg-muted'}`}
+                  aria-expanded={searching || expandedGroupIds.has(NO_PROJECT_GROUP)}
+                  onClick={() => {
+                    if (!searching) toggleNoProject()
+                  }}
+                  disabled={searching}
+                  className="hover:bg-sidebar-accent focus-visible:ring-ring flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm outline-none focus-visible:ring-2"
                 >
-                  <span className="block truncate font-medium">{project.name}</span>
-                  <span className="text-muted-foreground block truncate text-[10px]">{project.repositoryIdentity}</span>
+                  <Folder className="text-sidebar-muted-foreground size-4 shrink-0" />
+                  <span className="text-sidebar-foreground/90 min-w-0 flex-1 truncate font-medium">No project</span>
+                  {searching || expandedGroupIds.has(NO_PROJECT_GROUP) ? (
+                    <ChevronDown className="text-sidebar-muted-foreground size-3.5 shrink-0" />
+                  ) : (
+                    <ChevronRight className="text-sidebar-muted-foreground size-3.5 shrink-0" />
+                  )}
                 </button>
-                {selectedProjectId === project.id && (
-                  <div className="ml-3 border-l pl-2">
-                    <label className="sr-only" htmlFor="workspace-task-search">
-                      Search loaded Tasks
-                    </label>
-                    <Input
-                      id="workspace-task-search"
-                      type="search"
-                      className="my-1 h-8"
-                      value={taskSearch}
-                      onChange={event => setTaskSearch(event.target.value)}
-                      placeholder="Find a Task"
-                    />
-                    <QueryErrorNotice error={tasksQuery.error} hasData={tasks.length > 0} />
-                    {tasksQuery.status === 'loading' && tasks.length === 0 ? (
-                      <p role="status" className="py-2 text-xs">
-                        Loading Tasks…
-                      </p>
-                    ) : filteredTasks.length === 0 ? (
-                      <p className="text-muted-foreground py-2 text-xs">
-                        {tasks.length ? 'No loaded Tasks match this search.' : 'No Tasks for this Project yet.'}
-                      </p>
-                    ) : (
-                      <ul aria-label={`Tasks for ${project.name}`} className="space-y-0.5">
-                        {filteredTasks.map(task => (
-                          <li key={task.id}>
-                            <button
-                              type="button"
-                              onClick={() => onSelectTask(task.id)}
-                              aria-current={selectedTaskId === task.id ? 'true' : undefined}
-                              className={`focus-visible:ring-ring w-full rounded px-2 py-1.5 text-left outline-none focus-visible:ring-2 ${selectedTaskId === task.id ? 'bg-accent text-foreground' : 'hover:bg-muted'}`}
-                            >
-                              <span className="block truncate text-xs">{task.title}</span>
-                              <span className="text-muted-foreground block truncate text-[10px]">{task.status}</span>
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <div className="text-muted-foreground flex items-center justify-between py-1 text-[10px]">
-                      <span>
-                        {tasks.length} loaded of {taskPage?.total ?? '…'}
-                      </span>
-                      {taskCanLoadMore && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => {
-                            const afterId = taskPage?.nextAfterId
-                            if (afterId)
-                              setTaskRequest({ projectId: project.id, options: { afterId, limit: PAGE_SIZE } })
-                          }}
-                        >
-                          Load more
-                        </Button>
-                      )}
-                    </div>
+                {(searching || expandedGroupIds.has(NO_PROJECT_GROUP)) && (
+                  <div className="border-sidebar-border ml-3.5 border-l pl-2">
+                    {scratchProjects.map(project => (
+                      <SidebarTaskGroup
+                        key={project.id}
+                        projectId={project.id}
+                        searchTerm={searchTerm}
+                        projectMatchesSearch={false}
+                        loadedTaskGroup={loadedTasks[project.id]}
+                        selectedTaskId={selectedTaskId}
+                        accessibleLabel="No project chats"
+                        onSelectTask={selectTask}
+                        onTasksPage={rememberTasksPage}
+                      />
+                    ))}
                   </div>
                 )}
               </li>
-            ))}
+            )}
           </ul>
         )}
-        <p className="text-muted-foreground py-1 text-[10px]">
-          {projects.length} loaded of {projectPage?.total ?? '…'} Projects
-        </p>
+
+        {searching && !searchHasMatches && !searchStillLoading && (
+          <p className="text-sidebar-muted-foreground px-2 py-3 text-xs" role="status">
+            No loaded Projects or chats match Search.
+          </p>
+        )}
+
         {projectCanLoadMore && (
           <Button
             type="button"
             variant="ghost"
             size="sm"
+            className="my-1 h-7 w-full justify-start text-xs"
             onClick={() => {
               const afterId = projectPage?.nextAfterId
               if (afterId) setProjectRequest({ options: { afterId, limit: PAGE_SIZE } })
             }}
           >
+            <MessageCircle className="size-3.5" />
             Load more Projects
           </Button>
         )}
       </div>
-
-      <Dialog open={registerOpen} onOpenChange={setRegisterOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Open a Project</DialogTitle>
-            <DialogDescription>Register a local checkout or reuse its existing Project.</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={registerProject} className="space-y-3">
-            <label className="block text-sm" htmlFor="workspace-project-name">
-              Project name
-            </label>
-            <Input
-              id="workspace-project-name"
-              value={registerName}
-              onChange={event => setRegisterName(event.target.value)}
-              required
-              maxLength={512}
-            />
-            <label className="block text-sm" htmlFor="workspace-project-path">
-              Local checkout path
-            </label>
-            <Input
-              id="workspace-project-path"
-              value={registerPath}
-              onChange={event => setRegisterPath(event.target.value)}
-              required
-              placeholder="C:\\src\\project"
-            />
-            <DialogFooter>
-              <Button type="submit" disabled={registering || !registerName.trim() || !registerPath.trim()}>
-                {registering ? 'Opening…' : 'Open Project'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog open={taskOpen} onOpenChange={setTaskOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>New Task</DialogTitle>
-            <DialogDescription>
-              {selectedProject ? `Create a Task in ${selectedProject.name}.` : 'Select a Project first.'}
-            </DialogDescription>
-          </DialogHeader>
-          <form onSubmit={createTask} className="space-y-3">
-            <label className="sr-only" htmlFor="workspace-task-title">
-              Task title
-            </label>
-            <Input
-              id="workspace-task-title"
-              value={taskTitle}
-              onChange={event => setTaskTitle(event.target.value)}
-              placeholder="What needs to be done?"
-              required
-              maxLength={512}
-            />
-            <label className="sr-only" htmlFor="workspace-task-description">
-              Task description
-            </label>
-            <Input
-              id="workspace-task-description"
-              value={taskDescription}
-              onChange={event => setTaskDescription(event.target.value)}
-              placeholder="Description (optional)"
-              maxLength={20_000}
-            />
-            <DialogFooter>
-              <Button type="submit" disabled={creatingTask || !selectedProject || !taskTitle.trim()}>
-                {creatingTask ? 'Creating…' : 'Create Task'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
     </section>
+  )
+}
+
+function ProjectFolder({
+  project,
+  expanded,
+  visible,
+  searchTerm,
+  projectMatchesSearch,
+  loadedTaskGroup,
+  selectedTaskId,
+  onToggle,
+  onNewChat,
+  onSelectTask,
+  onTasksPage,
+}: {
+  readonly project: WorkspaceProjectReadPage['items'][number]
+  readonly expanded: boolean
+  readonly visible: boolean
+  readonly searchTerm: string
+  readonly projectMatchesSearch: boolean
+  readonly loadedTaskGroup: LoadedTaskGroup | undefined
+  readonly selectedTaskId: TaskId | null
+  readonly onToggle: () => void
+  readonly onNewChat: () => void
+  readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
+  readonly onTasksPage: (
+    projectId: ProjectId,
+    request: WorkspaceRequest<'workspace:listTasks'>,
+    page: SidebarTaskPage,
+  ) => void
+}) {
+  return (
+    <li className={visible ? 'list-none' : 'hidden'}>
+      <div className="group/project hover:bg-sidebar-accent relative flex h-8 items-center rounded-md">
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          disabled={searchTerm.length > 0}
+          className="focus-visible:ring-ring flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-sm outline-none focus-visible:ring-2"
+        >
+          <Folder className="text-sidebar-muted-foreground size-4 shrink-0" />
+          <span className="text-sidebar-foreground/90 min-w-0 flex-1 truncate font-medium">{project.name}</span>
+        </button>
+        <Button
+          type="button"
+          size="icon-xs"
+          variant="ghost"
+          className="mr-0.5 opacity-0 group-focus-within/project:opacity-100 group-hover/project:opacity-100 pointer-coarse:opacity-100"
+          aria-label={`New chat in ${project.name}`}
+          title={`New chat in ${project.name}`}
+          onClick={onNewChat}
+        >
+          <Plus className="size-3.5" />
+        </Button>
+        <button
+          type="button"
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} ${project.name}`}
+          aria-expanded={expanded}
+          onClick={onToggle}
+          disabled={searchTerm.length > 0}
+          className="text-sidebar-muted-foreground hover:text-sidebar-foreground focus-visible:ring-ring mr-1 flex size-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2"
+        >
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </button>
+      </div>
+      {expanded && (
+        <div className="border-sidebar-border ml-3.5 border-l pl-2">
+          <SidebarTaskGroup
+            projectId={project.id}
+            searchTerm={searchTerm}
+            projectMatchesSearch={projectMatchesSearch}
+            loadedTaskGroup={loadedTaskGroup}
+            selectedTaskId={selectedTaskId}
+            accessibleLabel={`Chats in ${project.name}`}
+            onSelectTask={onSelectTask}
+            onTasksPage={onTasksPage}
+          />
+        </div>
+      )}
+    </li>
+  )
+}
+
+function SidebarTaskGroup({
+  projectId,
+  searchTerm,
+  projectMatchesSearch,
+  loadedTaskGroup,
+  selectedTaskId,
+  accessibleLabel,
+  onSelectTask,
+  onTasksPage,
+}: {
+  readonly projectId: ProjectId
+  readonly searchTerm: string
+  readonly projectMatchesSearch: boolean
+  readonly loadedTaskGroup: LoadedTaskGroup | undefined
+  readonly selectedTaskId: TaskId | null
+  readonly accessibleLabel: string
+  readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
+  readonly onTasksPage: (
+    projectId: ProjectId,
+    request: WorkspaceRequest<'workspace:listTasks'>,
+    page: SidebarTaskPage,
+  ) => void
+}) {
+  const [request, setRequest] = useState<WorkspaceRequest<'workspace:listTasks'>>({
+    projectId,
+    options: { limit: PAGE_SIZE },
+  })
+  const query = useWorkspaceSidebarTasks(projectId, request)
+  const page = query.data
+
+  useEffect(() => {
+    if (query.status !== 'ready' || !page) return
+    onTasksPage(projectId, request, {
+      ...page,
+      items: page.items.filter(task => task.projectId === projectId),
+    })
+  }, [onTasksPage, page, projectId, query.status, request])
+
+  const loadMore = () => {
+    const nextAfterId = loadedTaskGroup?.nextAfterId ?? page?.nextAfterId
+    if (nextAfterId) setRequest({ projectId, options: { afterId: nextAfterId, limit: PAGE_SIZE } })
+  }
+
+  const tasks = loadedTaskGroup?.items ?? []
+  const visibleTasks =
+    searchTerm && !projectMatchesSearch
+      ? tasks.filter(task => task.title.toLocaleLowerCase().includes(searchTerm))
+      : tasks
+
+  return (
+    <>
+      {query.error && <QueryErrorNotice error={query.error} hasData={tasks.length > 0} />}
+      {query.status === 'loading' && tasks.length === 0 ? (
+        <p role="status" className="text-sidebar-muted-foreground px-2 py-2 text-xs">
+          Loading chats…
+        </p>
+      ) : visibleTasks.length === 0 ? (
+        <p className="text-sidebar-muted-foreground px-2 py-2 text-xs">
+          {searchTerm ? 'No loaded chats match Search' : 'No chats yet'}
+        </p>
+      ) : (
+        <ul aria-label={accessibleLabel} className="space-y-0.5">
+          {visibleTasks.map(task => (
+            <li key={task.id} className="list-none">
+              <button
+                type="button"
+                onClick={() => onSelectTask(task.id, projectId)}
+                aria-current={selectedTaskId === task.id ? 'page' : undefined}
+                className={`focus-visible:ring-ring flex min-h-8 w-full items-center gap-2 rounded-md px-2.5 py-1 text-left text-xs outline-none focus-visible:ring-2 ${selectedTaskId === task.id ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'}`}
+              >
+                <span className={`size-1.5 shrink-0 rounded-full ${taskStatusClass(task.status)}`} aria-hidden="true" />
+                <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                <span className="sr-only">{task.status}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {loadedTaskGroup?.nextAfterId && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="my-1 h-7 w-full justify-start text-xs"
+          onClick={loadMore}
+        >
+          Load more chats
+        </Button>
+      )}
+    </>
   )
 }

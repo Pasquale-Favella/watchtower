@@ -3,10 +3,10 @@ import { RpcClientError } from 'effect/rpc/RpcClientError'
 
 /** Snapshot user intent once, outside the retry loop; callers must not reuse it for a new action. */
 export function createWorkspaceIntent<Input extends object>(
-  input: Input,
+  input: Input & { readonly commandId?: string },
   commandId: () => string = () => crypto.randomUUID(),
 ): Input & { readonly commandId: string } {
-  return { ...structuredClone(input), commandId: commandId() }
+  return { ...structuredClone(input), commandId: input.commandId ?? commandId() }
 }
 
 /** Only transport failures are replayable. Domain conflicts/stale commands require a new user decision. */

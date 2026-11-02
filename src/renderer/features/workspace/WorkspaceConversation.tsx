@@ -311,7 +311,9 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
   for (const { value: result } of payloadResults.entries.values()) {
     if (result.value && 'data' in result.value) hydratedEvents.set(result.value.sequence, result.value)
   }
-  const entries = projectConversation(items, hydratedEvents)
+  const entries = projectConversation(items, hydratedEvents).filter(
+    entry => entry.kind !== 'status' || !['runQueued', 'dispatchClaimed', 'runStarted'].includes(entry.event.kind),
+  )
   const start = renderStart ?? Math.max(0, entries.length - VISIBLE_LIMIT)
   const shownEntries = entries.slice(start, start + VISIBLE_LIMIT)
   const auditOffset = auditStart ?? Math.max(0, items.length - VISIBLE_LIMIT)
@@ -597,14 +599,13 @@ function AssistantTurnEntry({
     <article className="max-w-[92%] space-y-3 px-1 py-1" aria-label="Assistant turn">
       <header className="text-muted-foreground flex flex-wrap items-center gap-2 text-xs">
         <strong className="text-foreground">Assistant</strong>
-        <span>
-          Run <code>{entry.runId}</code> · generation {entry.generation}
-        </span>
-        {entry.nativeTurnId && (
-          <span>
-            · <code>{entry.nativeTurnId}</code>
-          </span>
-        )}
+        <details className="min-w-0">
+          <summary className="cursor-pointer">Turn details</summary>
+          <p className="mt-1 break-all">
+            Run {entry.runId} · generation {entry.generation}
+          </p>
+          {entry.nativeTurnId && <p className="break-all">Native turn {entry.nativeTurnId}</p>}
+        </details>
         <span className="sr-only">Durable event sequences {entry.audit.map(event => event.sequence).join(', ')}</span>
       </header>
       {entry.blocks.map(block => (
@@ -717,7 +718,10 @@ function ConversationStatusEntry({ entry }: { readonly entry: ConversationStatus
       className={`max-w-[92%] rounded border px-3 py-2 text-sm ${attention ? 'border-destructive/50 bg-destructive/5' : 'bg-muted/40'}`}
       aria-label="Run status"
     >
-      <EventSummary event={entry.event} />
+      <p>{eventSummary(entry.event)}</p>
+      {typeof entry.event.data.reason === 'string' && (
+        <p className="text-destructive mt-1">{entry.event.data.reason}</p>
+      )}
     </article>
   )
 }
@@ -919,14 +923,10 @@ function DriverContent({ event }: { readonly event: import('@/shared/schemas/exe
         </p>
       )
     case 'turnStarted':
+      return null
     case 'turnCompleted':
     case 'turnInterrupted':
-      return (
-        <p className="text-sm">
-          {driverEventSummary(event)}
-          {event.nativeTurnId ? ` · ${event.nativeTurnId}` : ''}
-        </p>
-      )
+      return <p className="text-sm">{driverEventSummary(event)}</p>
     case 'usageReported':
       return (
         <p className="text-muted-foreground text-sm">

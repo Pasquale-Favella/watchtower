@@ -16,24 +16,26 @@ import {
   registerProjectAtom,
   respondAtom,
   retainWorkspaceQuery,
+  retainWorkspaceSidebarQuery,
   startRunAtom,
   steerAtom,
   workspaceConversation,
   workspaceFollowUps,
+  workspaceNativeAgentSessions,
   workspacePayload,
   workspaceProject,
   workspaceProjectionAtom,
   workspaceProjects,
+  workspaceRequestResponses,
   workspaceRequests,
   workspaceStatus,
+  workspaceSteerIntents,
   workspaceStreamStateAtom,
   workspaceSubscriptionAtom,
   workspaceTask,
-  workspaceTaskSnapshot,
-  workspaceNativeAgentSessions,
   workspaceTasks,
-  workspaceRequestResponses,
-  workspaceSteerIntents,
+  workspaceTasksForSidebar,
+  workspaceTaskSnapshot,
 } from './atoms.js'
 import { nextConversationRequest, nextPayloadRequest, workspaceQueryKey, type WorkspaceRequest } from './lib.js'
 
@@ -68,6 +70,30 @@ export const useWorkspaceProject = (request: WorkspaceRequest<'workspace:getProj
   useWorkspaceQuery(workspaceProject, request)
 export const useWorkspaceTasks = (request: WorkspaceRequest<'workspace:listTasks'> | null) =>
   useWorkspaceQuery(workspaceTasks, request)
+export function useWorkspaceSidebarTasks(
+  projectId: import('@/shared/schemas/workspace.js').ProjectId,
+  request: WorkspaceRequest<'workspace:listTasks'> | null,
+) {
+  useWorkspaceLifetime()
+  const registry = useContext(RegistryContext)
+  const slot = workspaceTasksForSidebar(projectId)
+  const selected = useAtomValue(slot.requestAtom)
+  const result = useAtomValue(slot.resultAtom)
+  const select = useAtomSet(slot.requestAtom)
+  const active = request !== null
+  useEffect(() => {
+    if (!request) return
+    const release = retainWorkspaceSidebarQuery(registry, slot)
+    select(request)
+    return () => {
+      select(null)
+      release()
+    }
+  }, [active, registry, request, select, slot])
+  if (!request || !selected || workspaceQueryKey(selected) !== workspaceQueryKey(request))
+    return querySnapshot(AsyncResult.initial())
+  return querySnapshot(result)
+}
 export const useWorkspaceTask = (request: WorkspaceRequest<'workspace:readTaskDetail'> | null) =>
   useWorkspaceQuery(workspaceTask, request)
 export const useWorkspaceTaskSnapshot = (request: WorkspaceRequest<'workspace:readTaskSnapshot'> | null) =>

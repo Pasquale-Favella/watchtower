@@ -323,7 +323,8 @@ function readOperationalRecords(profile) {
 async function checkDefaultWorkspace(window, profile) {
   const workspace = window.locator('main[aria-label="Agent workspace"]')
   await expect(workspace).toBeVisible({ timeout: 30000 })
-  await expect(workspace.getByRole('heading', { name: 'Choose a Task', exact: true })).toBeVisible()
+  await expect(workspace.getByRole('heading', { name: 'What should we work on?', exact: true })).toBeVisible()
+  await expect(workspace.getByRole('combobox', { name: 'Project', exact: true })).toHaveText('No project')
   await expect(workspace.locator('header').getByText('Workspace', { exact: true })).toBeVisible()
   await expect(window.getByRole('button', { name: 'Switch application, Workspace' })).toBeVisible()
 
@@ -402,6 +403,16 @@ async function checkWorkspace(app, window, profile, repository) {
   assert.equal(result.status.state, 'ready')
   assert.ok(Number.isSafeInteger(result.status.ownerEpoch) && result.status.ownerEpoch >= 1)
   assert.equal(result.status.highWatermark, 0, 'Metadata-only acceptance must not start an agent Run')
+  const scratch = await window.evaluate(async () => {
+    const created = await window.rpcProbe.call('workspace:ensureScratchProject', {})
+    const reused = await window.rpcProbe.call('workspace:ensureScratchProject', {})
+    return { created, reused }
+  })
+  assert.equal(scratch.created.project.isScratch, true)
+  assert.equal(scratch.created.project.name, 'No project')
+  assert.deepEqual(scratch.reused.project, scratch.created.project)
+  assert.equal(scratch.reused.mainCheckout.id, scratch.created.mainCheckout.id)
+  assert.equal(fs.statSync(path.join(profile, 'workspace', 'scratch', '.git')).isDirectory(), true)
   console.log(
     'Packaged ASAR worker, project/task creation and reads, detail, command replay and event snapshot passed.',
   )
