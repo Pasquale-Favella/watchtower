@@ -10,6 +10,7 @@ import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query.js'
 import { RendererConnection } from '@/shared/rpc/reconnecting-protocol.js'
 import type { WorkspaceEventFrame, WorkspaceRpcError } from '@/shared/rpc/workspace.js'
 import type { ProjectId } from '@/shared/schemas/workspace.js'
+import type { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
 
 import { createWorkspaceIntent, retryWorkspaceIntent } from './commands.js'
 import { applyWorkspaceFrame, createWorkspaceProjection, workspaceResume } from './events.js'
@@ -21,7 +22,7 @@ export interface WorkspaceStreamState {
   readonly error: string | null
 }
 type Client = Effect.Success<typeof ApplicationClient>
-type CommandError = WorkspaceRpcError | RpcClientError
+type CommandError = WorkspaceRpcError | ProjectSetupError | RpcClientError
 
 const waitForWorkspaceConnection = Effect.gen(function* () {
   const connection = yield* RendererConnection
@@ -201,6 +202,12 @@ export function createWorkspaceAtoms(
   const registerProjectAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:registerProject'>) =>
     rpc('workspace:registerProject', request),
   )
+  const createProjectAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createProject'>) =>
+    rpc('workspace:createProject', request),
+  )
+  const cloneProjectAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:cloneProject'>) =>
+    rpc('workspace:cloneProject', request),
+  )
   const createTaskAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createTask'>) =>
     rpc('workspace:createTask', request),
   )
@@ -291,6 +298,8 @@ export function createWorkspaceAtoms(
     workspaceStreamStateAtom,
     workspaceSubscriptionAtom,
     registerProjectAtom,
+    createProjectAtom,
+    cloneProjectAtom,
     createTaskAtom,
     startRunAtom,
     interruptAtom,
@@ -323,6 +332,8 @@ export const {
   workspaceStreamStateAtom,
   workspaceSubscriptionAtom,
   registerProjectAtom,
+  createProjectAtom,
+  cloneProjectAtom,
   createTaskAtom,
   startRunAtom,
   interruptAtom,

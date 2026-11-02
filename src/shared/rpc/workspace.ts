@@ -4,7 +4,15 @@ import * as Schema from 'effect/Schema'
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import * as Connections from '@/shared/schemas/workspace-connections.js'
 import {
+  browseWorkspaceDirectoriesSchema,
+  cloneWorkspaceProjectSchema,
+  createWorkspaceProjectSchema,
+  githubRepositorySchema,
+  ProjectSetupError,
   registerWorkspaceProjectSchema,
+  remoteRepositorySchema,
+  remoteSourceReadinessSchema,
+  workspaceDirectoryListingSchema,
   workspaceProjectRegistrationSchema,
 } from '@/shared/schemas/workspace-projects.js'
 import * as Store from '@/shared/schemas/workspace-store.js'
@@ -71,6 +79,8 @@ export const workspaceStartRunRequestSchema = Schema.Struct({
 })
 
 const error = WorkspaceRpcError
+/** Project setup reports its own fixed-message codes so the user learns which step failed. */
+const setupError = Schema.Union([WorkspaceRpcError, ProjectSetupError])
 /** Command IDs bind durable client intent, not regenerated server timestamps/epochs/Run IDs.
  * Start/respond/steer/enqueue/promote return the original store receipt on replay.
  * Registration/task creation return durable receipts. Registration reuses an active repository's
@@ -95,6 +105,41 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     payload: Schema.Struct({}),
     success: Schema.NullOr(Schema.String),
     error,
+  }),
+  Rpc.make('workspace:browseDirectories', {
+    payload: browseWorkspaceDirectoriesSchema,
+    success: workspaceDirectoryListingSchema,
+    error,
+  }),
+  Rpc.make('workspace:remoteSourceReadiness', {
+    payload: Schema.Struct({}),
+    success: remoteSourceReadinessSchema,
+    error,
+  }),
+  Rpc.make('workspace:lookupGitHubRepository', {
+    payload: Schema.Struct({ repository: githubRepositorySchema }),
+    success: remoteRepositorySchema,
+    error: setupError,
+  }),
+  Rpc.make('workspace:createProject', {
+    payload: Schema.Struct({
+      commandId,
+      path: createWorkspaceProjectSchema.fields.path,
+      name: createWorkspaceProjectSchema.fields.name,
+      publish: createWorkspaceProjectSchema.fields.publish,
+    }),
+    success: workspaceProjectRegistrationSchema,
+    error: setupError,
+  }),
+  Rpc.make('workspace:cloneProject', {
+    payload: Schema.Struct({
+      commandId,
+      path: cloneWorkspaceProjectSchema.fields.path,
+      name: cloneWorkspaceProjectSchema.fields.name,
+      source: cloneWorkspaceProjectSchema.fields.source,
+    }),
+    success: workspaceProjectRegistrationSchema,
+    error: setupError,
   }),
   Rpc.make('workspace:inspectConnection', {
     payload: Schema.Struct({ connectionId: Connections.workspaceConnectionSchema.fields.connectionId }),

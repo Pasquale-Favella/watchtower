@@ -15,6 +15,7 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
+import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
@@ -23,6 +24,7 @@ import { discoverNativeHarnessExecutables } from '@/infrastructure/agent-harness
 import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
 import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
+import { ProjectProvisionerLive } from '@/infrastructure/filesystem/project-provisioner.js'
 import {
   closeOperationalLog,
   initOperationalLog,
@@ -163,8 +165,9 @@ const workspaceStoreLayer = Layer.effect(
   WorkspaceStore,
   Effect.map(WorkspaceHost, host => host.store),
 )
-const workspaceLayer = WorkspaceProjectsLive.pipe(
-  Layer.provideMerge(Layer.merge(CheckoutResolverLive, workspaceStoreLayer)),
+const workspaceLayer = WorkspaceProjectSetupLive.pipe(
+  Layer.provideMerge(WorkspaceProjectsLive),
+  Layer.provideMerge(Layer.mergeAll(CheckoutResolverLive, ProjectProvisionerLive, workspaceStoreLayer)),
   Layer.provideMerge(workspaceHostLayer),
 )
 

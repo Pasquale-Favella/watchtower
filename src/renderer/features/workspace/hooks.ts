@@ -9,6 +9,8 @@ import { pinWindowAtom, querySnapshot, useRemoteQuery } from '@/renderer/stores/
 
 import {
   cancelQueuedFollowUpAtom,
+  cloneProjectAtom,
+  createProjectAtom,
   createTaskAtom,
   enqueueFollowUpAtom,
   interruptAtom,
@@ -150,6 +152,8 @@ function useWorkspaceCommand<Input, Value, Error>(atom: Atom.AtomResultFn<Input,
 }
 
 export const useRegisterProject = () => useWorkspaceCommand(registerProjectAtom)
+export const useCreateProject = () => useWorkspaceCommand(createProjectAtom)
+export const useCloneProject = () => useWorkspaceCommand(cloneProjectAtom)
 export const useCreateTask = () => useWorkspaceCommand(createTaskAtom)
 export const useStartRun = () => useWorkspaceCommand(startRunAtom)
 export const useInterruptRun = () => useWorkspaceCommand(interruptAtom)

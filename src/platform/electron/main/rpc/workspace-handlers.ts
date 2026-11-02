@@ -4,16 +4,19 @@ import * as Cause from 'effect/Cause'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import { ExecutionServiceError } from '@/core/application/commands/execution-service.js'
+import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
 import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
 import { ConnectionInspectionError } from '@/platform/electron/main/workspace/connection-inspection.js'
+import { browseDirectories } from '@/platform/electron/main/workspace/directory-browse.js'
 import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
 import {
   WORKSPACE_RPC_PROTOCOL_VERSION,
@@ -30,6 +33,7 @@ import {
   taskIdSchema,
   workspaceCheckoutIdSchema,
 } from '@/shared/schemas/workspace.js'
+import { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
 import * as Store from '@/shared/schemas/workspace-store.js'
 
 const messages = {
@@ -90,10 +94,28 @@ function safe<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, Workspa
     }),
   )
 }
+/** Like `safe`, but keeps the setup step's own fixed-message failure. */
+function setupSafe<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, WorkspaceRpcError | ProjectSetupError, R> {
+  return effect.pipe(
+    Effect.catchCause((cause): Effect.Effect<never, WorkspaceRpcError | ProjectSetupError> => {
+      const found = Cause.findError(cause)
+      if (found._tag === 'Success' && Schema.is(ProjectSetupError)(found.success)) return Effect.fail(found.success)
+      return Effect.fail(found._tag === 'Success' ? sanitize(found.success) : failure('failed'))
+    }),
+  )
+}
 const timestamp = Effect.map(DateTime.now, DateTime.formatIso)
 function entityId(kind: string, commandId: string): string {
   // JSON escapes lone surrogates, which UTF-8 encoding would collapse into one replacement character.
   return `${kind}-${createHash('sha256').update(JSON.stringify(commandId)).digest('hex')}`
+}
+function registrationIds(commandId: string) {
+  return {
+    projectId: Schema.decodeUnknownSync(projectIdSchema)(entityId('project', commandId)),
+    checkoutId: Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(entityId('checkout', commandId)),
+  }
 }
 const EVENT_PAGE_LIMIT = 100
 const EVENT_FRAME_CAPACITY = 8
@@ -115,12 +137,15 @@ export function workspaceHandlers<R = never>(
     Effect.gen(function* () {
       const host = yield* WorkspaceHost
       const projects = yield* WorkspaceProjects
+      const setup = yield* Effect.serviceOption(WorkspaceProjectSetup)
       const store = host.store
       const read = <A, E, R>(use: () => Effect.Effect<A, E, R>) =>
         safe(Effect.andThen(host.ensureOpen, Effect.suspend(use)))
       const mutation = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.uninterruptible(read(() => effect))
       const timedMutation = <A, E, R>(use: (issuedAt: string) => Effect.Effect<A, E, R>) =>
         mutation(Effect.flatMap(timestamp, use))
+      const setupMutation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.uninterruptible(setupSafe(Effect.andThen(host.ensureOpen, effect)))
       const begin = Effect.fnUntraced(function* (request: Schema.Schema.Type<typeof workspaceStartRunRequestSchema>) {
         return {
           ...request,
@@ -133,6 +158,22 @@ export function workspaceHandlers<R = never>(
       return WorkspaceRpcGroup.toLayer({
         'workspace:chooseProjectDirectory': () =>
           options.chooseProjectDirectory ? safe(options.chooseProjectDirectory()) : Effect.fail(failure('unavailable')),
+        'workspace:browseDirectories': ({ directoryPath }) =>
+          safe(Effect.tryPromise(() => browseDirectories(directoryPath))),
+        'workspace:remoteSourceReadiness': () =>
+          Option.isSome(setup) ? setup.value.readiness : Effect.fail(failure('unavailable')),
+        'workspace:lookupGitHubRepository': ({ repository }) =>
+          Option.isSome(setup)
+            ? setupSafe(setup.value.lookupGitHubRepository(repository))
+            : Effect.fail(failure('unavailable')),
+        'workspace:createProject': request =>
+          Option.isSome(setup)
+            ? setupMutation(setup.value.create({ ...request, ...registrationIds(request.commandId) }))
+            : Effect.fail(failure('unavailable')),
+        'workspace:cloneProject': request =>
+          Option.isSome(setup)
+            ? setupMutation(setup.value.clone({ ...request, ...registrationIds(request.commandId) }))
+            : Effect.fail(failure('unavailable')),
         'workspace:status': () =>
           safe(
             Effect.gen(function* () {
@@ -155,19 +196,14 @@ export function workspaceHandlers<R = never>(
           host.inspectConnection ? safe(host.inspectConnection(connectionId)) : Effect.fail(failure('unavailable')),
         'workspace:registerProject': request =>
           mutation(
-            Effect.gen(function* () {
-              const projectId = Schema.decodeUnknownSync(projectIdSchema)(entityId('project', request.commandId))
-              const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(
-                entityId('checkout', request.commandId),
-              )
-              return yield* projects.register({
+            Effect.suspend(() =>
+              projects.register({
                 commandId: request.commandId,
-                projectId,
-                checkoutId,
+                ...registrationIds(request.commandId),
                 name: request.name,
                 path: request.path,
-              })
-            }),
+              }),
+            ),
           ),
         'workspace:createTask': request =>
           mutation(
