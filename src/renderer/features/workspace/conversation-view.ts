@@ -62,6 +62,10 @@ export interface ConversationAssistantTurn {
   readonly generation: number
   readonly nativeTurnId: string | null
   readonly sequence: number
+  /** Occurrence of the turn's first durable record, shown as its timestamp. */
+  readonly occurredAt: string
+  /** Run facts as of the last loaded record for this Run and generation. */
+  readonly run: ConversationRun
   readonly blocks: readonly ConversationTurnBlock[]
   readonly audit: readonly WorkspaceExecutionEvent[]
 }
@@ -74,22 +78,223 @@ export interface ConversationStatusNotice {
 }
 
 export type ConversationEntry = ConversationUserMessage | ConversationAssistantTurn | ConversationStatusNotice
-type MutableAssistantTurn = Omit<ConversationAssistantTurn, 'blocks' | 'audit'> & {
+
+export type ConversationRunStatus =
+  | 'queued'
+  | 'starting'
+  | 'active'
+  | 'awaitingInput'
+  | 'interrupting'
+  | 'completed'
+  | 'interrupted'
+  | 'failed'
+  | 'uncertain'
+  | 'recoveryRequired'
+
+export interface ConversationRun {
+  readonly runId: WorkspaceExecutionEvent['runId']
+  readonly generation: number
+  readonly status: ConversationRunStatus
+  /** Occurrence of runStarted (or dispatchClaimed); null when that record is not loaded. */
+  readonly startedAt: string | null
+  /** Occurrence of the first loaded record for the Run, the fallback clock for live elapsed time. */
+  readonly observedAt: string | null
+  /** Occurrence of the record that settled the Run, when loaded. */
+  readonly settledAt: string | null
+  readonly pendingRequestKind: 'approval' | 'question' | null
+  readonly lastOutput: 'reasoning' | 'text' | 'tool' | null
+}
+
+/** The live state of the most recent Run, when it has not settled. */
+export interface ConversationActivity {
+  readonly runId: WorkspaceExecutionEvent['runId']
+  readonly generation: number
+  readonly label: 'working' | 'thinking' | 'awaitingAnswer' | 'awaitingApproval'
+  /** Start used for the elapsed ticker. */
+  readonly since: string | null
+}
+
+export interface ConversationProjection {
+  readonly entries: ConversationEntry[]
+  readonly activity: ConversationActivity | null
+}
+
+const terminalRunStatuses = new Set<ConversationRunStatus>([
+  'completed',
+  'interrupted',
+  'failed',
+  'uncertain',
+  'recoveryRequired',
+])
+
+export function isActiveRunStatus(status: ConversationRunStatus): boolean {
+  return !terminalRunStatuses.has(status)
+}
+
+interface MutableRun {
+  readonly runId: WorkspaceExecutionEvent['runId']
+  readonly generation: number
+  status: ConversationRunStatus
+  startedAt: string | null
+  observedAt: string | null
+  settledAt: string | null
+  readonly pending: Map<string, 'approval' | 'question'>
+  lastOutput: ConversationRun['lastOutput']
+  lastSequence: number
+}
+
+type MutableAssistantTurn = Omit<ConversationAssistantTurn, 'blocks' | 'audit' | 'run'> & {
   readonly blocks: ConversationTurnBlock[]
   readonly audit: WorkspaceExecutionEvent[]
   readonly identityKey: string
+  readonly runKey: string
 }
 
-/** Project ordered durable records into user messages and assistant turns. */
-export function projectConversation(
+function runKeyFor(event: WorkspaceExecutionEvent): string {
+  return `${event.runId}:${event.generation}`
+}
+
+function transitionRun(run: MutableRun, status: ConversationRunStatus, occurredAt: string, reopen = false): void {
+  if (terminalRunStatuses.has(run.status) && !terminalRunStatuses.has(status) && !reopen) return
+  run.status = status
+  run.settledAt = terminalRunStatuses.has(status) ? occurredAt : null
+}
+
+/** Folds one durable record into its Run's lifecycle. Terminal states hold until a new native turn starts. */
+function observeRun(
+  runs: Map<string, MutableRun>,
+  event: WorkspaceExecutionEvent,
+  driver: AgentDriverEvent | null,
+): void {
+  const key = runKeyFor(event)
+  const run: MutableRun = runs.get(key) ?? {
+    runId: event.runId,
+    generation: event.generation,
+    status: 'active',
+    startedAt: null,
+    observedAt: event.occurredAt,
+    settledAt: null,
+    pending: new Map(),
+    lastOutput: null,
+    lastSequence: event.sequence,
+  }
+  runs.set(key, run)
+  run.lastSequence = event.sequence
+  switch (event.kind) {
+    case 'runQueued':
+      transitionRun(run, 'queued', event.occurredAt)
+      return
+    case 'dispatchClaimed':
+      transitionRun(run, 'starting', event.occurredAt)
+      run.startedAt ??= event.occurredAt
+      return
+    case 'runStarted':
+      transitionRun(run, 'active', event.occurredAt)
+      run.startedAt ??= event.occurredAt
+      return
+    case 'runInterruptRequested':
+      transitionRun(run, 'interrupting', event.occurredAt)
+      return
+    case 'runFailed':
+      transitionRun(run, 'failed', event.occurredAt)
+      return
+    case 'runUncertain':
+      transitionRun(run, 'uncertain', event.occurredAt)
+      return
+    case 'runRecoveryRequired':
+      transitionRun(run, 'recoveryRequired', event.occurredAt)
+      return
+    case 'driverEvent':
+      break
+    default:
+      return
+  }
+  if (!driver) return
+  switch (driver.kind) {
+    case 'turnStarted':
+      transitionRun(run, 'active', event.occurredAt, true)
+      run.startedAt ??= event.occurredAt
+      if (run.pending.size > 0) transitionRun(run, 'awaitingInput', event.occurredAt)
+      break
+    case 'turnCompleted':
+      transitionRun(run, 'completed', event.occurredAt)
+      break
+    case 'turnInterrupted':
+      transitionRun(run, 'interrupted', event.occurredAt)
+      break
+    case 'turnFailed':
+      transitionRun(run, 'failed', event.occurredAt)
+      break
+    case 'requestPending':
+      run.pending.set(driver.request.requestId, driver.request.kind)
+      transitionRun(run, 'awaitingInput', event.occurredAt)
+      break
+    case 'requestResolved':
+      run.pending.delete(driver.requestId)
+      if (run.pending.size === 0 && run.status === 'awaitingInput') transitionRun(run, 'active', event.occurredAt)
+      break
+    case 'reasoningDelta':
+      run.lastOutput = 'reasoning'
+      break
+    case 'textDelta':
+      run.lastOutput = 'text'
+      break
+    case 'toolStarted':
+    case 'toolUpdated':
+    case 'toolCompleted':
+      run.lastOutput = 'tool'
+      break
+    default:
+      break
+  }
+}
+
+function snapshotRun(run: MutableRun): ConversationRun {
+  const pending = [...run.pending.values()]
+  return {
+    runId: run.runId,
+    generation: run.generation,
+    status: run.status,
+    startedAt: run.startedAt,
+    observedAt: run.observedAt,
+    settledAt: run.settledAt,
+    pendingRequestKind: pending.at(-1) ?? null,
+    lastOutput: run.lastOutput,
+  }
+}
+
+function activityFor(runs: ReadonlyMap<string, MutableRun>): ConversationActivity | null {
+  let latest: MutableRun | null = null
+  for (const run of runs.values()) if (!latest || run.lastSequence > latest.lastSequence) latest = run
+  if (!latest || !isActiveRunStatus(latest.status)) return null
+  const pendingKind = [...latest.pending.values()].at(-1)
+  const label: ConversationActivity['label'] =
+    latest.status !== 'awaitingInput'
+      ? latest.lastOutput === 'reasoning'
+        ? 'thinking'
+        : 'working'
+      : pendingKind === 'approval'
+        ? 'awaitingApproval'
+        : 'awaitingAnswer'
+  return {
+    runId: latest.runId,
+    generation: latest.generation,
+    label,
+    since: latest.startedAt ?? latest.observedAt,
+  }
+}
+
+/** Project ordered durable records into user messages, assistant turns and the live Run activity. */
+export function projectConversationView(
   items: readonly WorkspaceConversationPageItem[],
   hydratedEvents: ReadonlyMap<number, WorkspaceExecutionEvent> = new Map(),
-): ConversationEntry[] {
+): ConversationProjection {
   const ordered = [...items].sort((a, b) => a.event.sequence - b.event.sequence)
   const entries: Array<ConversationUserMessage | ConversationStatusNotice | MutableAssistantTurn> = []
   const users = new Map<string, ConversationUserMessage>()
   const activeNativeTurns = new Map<string, string>()
   const toolStates = new Map<string, Extract<ConversationTurnBlock, { readonly kind: 'tool' }>>()
+  const runs = new Map<string, MutableRun>()
   let lastTurn: MutableAssistantTurn | null = null
 
   for (const item of ordered) {
@@ -107,6 +312,7 @@ export function projectConversation(
     }
 
     if (isConversationStatusEvent(event)) {
+      observeRun(runs, event, null)
       entries.push({ kind: 'status', id: `status:${event.sequence}`, sequence: event.sequence, event })
       lastTurn = null
       continue
@@ -114,8 +320,9 @@ export function projectConversation(
     if (event.kind !== 'driverEvent') continue
     const hydratedEvent = hydratedEvents.get(event.sequence)
     const driver = decodeConversationEvent(hydratedEvent ?? event)
+    observeRun(runs, event, driver)
     if (!driver && !event.payloadTruncated) continue
-    const runGeneration = `${event.runId}:${event.generation}`
+    const runGeneration = runKeyFor(event)
     if (driver && 'nativeTurnId' in driver && driver.nativeTurnId)
       activeNativeTurns.set(runGeneration, driver.nativeTurnId)
     const nativeTurnId =
@@ -129,10 +336,12 @@ export function projectConversation(
         kind: 'assistant',
         id: `turn:${event.runId}:${event.generation}:${event.sequence}`,
         identityKey,
+        runKey: runGeneration,
         runId: event.runId,
         generation: event.generation,
         nativeTurnId,
         sequence: event.sequence,
+        occurredAt: event.occurredAt,
         blocks: [],
         audit: [],
       }
@@ -151,8 +360,9 @@ export function projectConversation(
     turn.audit.push(event)
   }
 
-  return entries.map(entry => {
+  const projected = entries.map((entry): ConversationEntry => {
     if (entry.kind !== 'assistant') return entry
+    const run = runs.get(entry.runKey)
     return {
       kind: entry.kind,
       id: entry.id,
@@ -160,10 +370,32 @@ export function projectConversation(
       generation: entry.generation,
       nativeTurnId: entry.nativeTurnId,
       sequence: entry.sequence,
+      occurredAt: entry.occurredAt,
+      run: run
+        ? snapshotRun(run)
+        : {
+            runId: entry.runId,
+            generation: entry.generation,
+            status: 'active',
+            startedAt: null,
+            observedAt: entry.occurredAt,
+            settledAt: null,
+            pendingRequestKind: null,
+            lastOutput: null,
+          },
       blocks: [...entry.blocks],
       audit: [...entry.audit],
     }
   })
+  return { entries: projected, activity: activityFor(runs) }
+}
+
+/** Entries only, for callers that do not render the live activity. */
+export function projectConversation(
+  items: readonly WorkspaceConversationPageItem[],
+  hydratedEvents: ReadonlyMap<number, WorkspaceExecutionEvent> = new Map(),
+): ConversationEntry[] {
+  return projectConversationView(items, hydratedEvents).entries
 }
 
 function isConversationStatusEvent(event: WorkspaceExecutionEvent): boolean {
