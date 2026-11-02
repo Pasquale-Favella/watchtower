@@ -1,8 +1,10 @@
-import { Effect, Fiber, Queue, Stream } from 'effect'
+import { Cause, Deferred, Effect, Fiber, Queue, Stream } from 'effect'
 import { describe, expect, it } from 'vitest'
 
 import {
+  closeChildProcess,
   JsonRpcClient,
+  JsonRpcFailure,
   jsonRpcLimits,
   type JsonRpcTransport,
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
@@ -33,6 +35,91 @@ function fakeTransport() {
 }
 
 describe('JSON-RPC client', () => {
+  it('shares in-flight cleanup and its failure between concurrent callers', async () => {
+    const started = Effect.runSync(Deferred.make<undefined>())
+    const release = Effect.runSync(Deferred.make<undefined>())
+    let closes = 0
+    let secondFinished = false
+    const results: string[] = []
+    const transport: JsonRpcTransport = {
+      input: Stream.never,
+      write: () => Effect.void,
+      close: () =>
+        Effect.gen(function* () {
+          closes++
+          yield* Deferred.succeed(started, undefined)
+          yield* Deferred.await(release)
+          return yield* new JsonRpcFailure({ reason: 'cleanup-unconfirmed' })
+        }),
+    }
+    await Effect.runPromiseExit(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* JsonRpcClient.make(transport)
+          const first = yield* Effect.forkScoped(Effect.result(client.close()))
+          yield* Deferred.await(started)
+          const second = yield* Effect.forkScoped(
+            Effect.result(client.close()).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  secondFinished = true
+                }),
+              ),
+            ),
+          )
+          yield* Effect.yieldNow
+          expect(secondFinished).toBe(false)
+          yield* Deferred.succeed(release, undefined)
+          results.push((yield* Fiber.join(first))._tag, (yield* Fiber.join(second))._tag)
+        }),
+      ),
+    )
+    expect(closes).toBe(1)
+    expect(results).toEqual(['Failure', 'Failure'])
+  })
+
+  it('reports unconfirmed child-process cleanup when the peer does not exit by the deadline', async () => {
+    let killCalls = 0
+    const result = await Effect.runPromise(
+      Effect.exit(
+        closeChildProcess(
+          () =>
+            Effect.sync(() => {
+              killCalls += 1
+            }),
+          () => Effect.never,
+          5,
+        ),
+      ),
+    )
+
+    expect(killCalls).toBe(1)
+    expect(result._tag).toBe('Failure')
+    if (result._tag === 'Failure') {
+      const failure = Cause.findError(result.cause)
+      expect(failure._tag).toBe('Success')
+      if (failure._tag === 'Success') expect(failure.success.reason).toBe('cleanup-unconfirmed')
+    }
+  })
+
+  it('propagates a transport cleanup failure from explicit close', async () => {
+    const transport: JsonRpcTransport = {
+      input: Stream.empty,
+      write: () => Effect.void,
+      close: () => Effect.fail(new JsonRpcFailure({ reason: 'cleanup-unconfirmed' })),
+    }
+    const result = await Effect.runPromiseExit(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const client = yield* JsonRpcClient.make(transport)
+          return yield* client.close()
+        }),
+      ),
+    )
+
+    expect(result._tag).toBe('Failure')
+  })
+
   it('matches out-of-order responses to their original requests', async () => {
     const fake = fakeTransport()
     const result = await Effect.runPromise(

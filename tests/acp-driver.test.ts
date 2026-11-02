@@ -410,8 +410,14 @@ describe('generic ACP driver', () => {
             seen.push(event.kind)
             if (event.kind !== 'requestPending') return Effect.void
             expect(event.request.options).toEqual([
-              { id: 'allow-once', label: 'Allow once', scope: 'once', kind: 'allow' },
-              { id: 'reject-once', label: 'Reject once', scope: 'once', kind: 'deny' },
+              {
+                id: 'allow-once',
+                label: 'Allow once',
+                scope: 'once',
+                kind: 'allow',
+                decision: { kind: 'approve', optionId: 'allow-once' },
+              },
+              { id: 'reject-once', label: 'Reject once', scope: 'once', kind: 'deny', decision: { kind: 'deny' } },
             ])
             return session
               .respond(promptRunId, event.request.requestId, context.generation, { kind: 'approve' })

@@ -66,6 +66,7 @@ export const registerProjectCommandSchema = Schema.Struct({
     id: projectIdSchema,
     name: text,
     repositoryIdentity: text,
+    isScratch: Schema.optional(Schema.Boolean),
     createdAt: timestamp,
     updatedAt: timestamp,
   }),

@@ -26,6 +26,8 @@ export const unexpectedCoachHandlers = CoachRpcGroup.toLayer({
 export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:status': unexpected,
   'workspace:listConnections': unexpected,
+  'workspace:inspectConnection': unexpected,
+  'workspace:ensureScratchProject': unexpected,
   'workspace:registerProject': unexpected,
   'workspace:createTask': unexpected,
   'workspace:listProjects': unexpected,

@@ -79,6 +79,11 @@ A concrete working tree or directory for a Project. A main checkout and a
 worktree are distinct checkouts.
 _Avoid_: workspace folder
 
+**No project**:
+A chat using the application's persistent managed checkout rather than a
+registered user repository. Its internal Project keeps execution and recovery
+identities valid and stays out of the user Project picker.
+
 **Task**:
 The user's objective and its delivery lifecycle, independent of any one agent
 attempt. Completing an attempt does not complete the Task.

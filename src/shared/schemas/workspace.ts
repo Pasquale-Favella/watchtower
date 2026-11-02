@@ -30,6 +30,7 @@ export const projectSchema = Schema.Struct({
   id: projectIdSchema,
   name: nonBlank,
   repositoryIdentity: nonBlank,
+  isScratch: Schema.optional(Schema.Boolean),
   createdAt: timestamp,
   updatedAt: timestamp,
   archivedAt: optionalTimestamp,

@@ -112,6 +112,7 @@ export const agentRequestSchema = Schema.Struct({
   generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   kind: Schema.Literals(['approval', 'question']),
   prompt: Schema.String,
+  cancelDecision: Schema.optional(Schema.Struct({ kind: Schema.Literal('cancel') })),
   options: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -119,6 +120,7 @@ export const agentRequestSchema = Schema.Struct({
         label: Schema.String,
         scope: Schema.optional(Schema.Literals(['once', 'session', 'project'])),
         kind: Schema.optional(Schema.Literals(['allow', 'deny', 'allowAlways', 'other'])),
+        decision: Schema.optional(agentRequestDecisionSchema),
       }),
     ),
   ),

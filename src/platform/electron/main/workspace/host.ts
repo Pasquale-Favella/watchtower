@@ -15,10 +15,16 @@ import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import { ExecutionService, ExecutionServiceError } from '@/core/application/commands/execution-service.js'
+import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
+import {
+  ConnectionInspectionError,
+  inspectWorkspaceConnection,
+} from '@/platform/electron/main/workspace/connection-inspection.js'
 import type { WorkspaceWorkerSupervisorOptions } from '@/platform/electron/main/workspace/supervisor.js'
 import {
   WorkspaceWorkerSupervisor,
@@ -26,8 +32,8 @@ import {
 } from '@/platform/electron/main/workspace/supervisor.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
 import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
+import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
-import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
 
 const UNAVAILABLE = 'Workspace execution is unavailable until owned resources are confirmed closed.'
 
@@ -44,6 +50,8 @@ export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
   readonly loadCheckoutResolver?: () => Effect.Effect<CheckoutResolver['Service'], unknown>
   readonly runtimeExecutable?: string
   readonly closeDeadlineMs?: number
+  readonly connectionInspectionDeadlineMs?: number
+  readonly connectionCleanupDeadlineMs?: number
 }
 
 type SupervisorContext = Context.Context<WorkspaceWorkerSupervisor>
@@ -73,6 +81,13 @@ export class WorkspaceHost extends Context.Service<
     >
     /** Lazy catalog read that does not open the workspace worker or acquire ExecutionService. */
     readonly listConnections?: Effect.Effect<ReadonlyArray<WorkspaceConnection>, WorkspaceHostError>
+    readonly inspectConnection?: (
+      connectionId: string,
+    ) => Effect.Effect<
+      WorkspaceConnectionInspection,
+      WorkspaceHostError | ConnectionInspectionError | HarnessConnectionResolutionError | AgentDriverError,
+      ChildProcessSpawner.ChildProcessSpawner
+    >
     readonly eventHighWatermark: SubscriptionRef.SubscriptionRef<number>
     readonly status: SubscriptionRef.SubscriptionRef<WorkspaceHostStatus>
   }
@@ -107,6 +122,9 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       let openFailure: WorkspaceStoreError | undefined
       let execution: OwnedExecution | undefined
       let driverRegistry: AgentDriverRegistry['Service'] | undefined
+      let loadingDrivers:
+        | Effect.Effect<AgentDriverRegistry['Service'], WorkspaceHostError, ChildProcessSpawner.ChildProcessSpawner>
+        | undefined
       let checkoutResolver: CheckoutResolver['Service'] | undefined
       let opening: Deferred.Deferred<SupervisorContext, WorkspaceStoreError> | undefined
       let stopped = false
@@ -241,6 +259,35 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       // Effect.cached also coalesces concurrent callers and retries an interrupted first load.
       const getConnectionCatalog = yield* Effect.cached(catalogLoad)
 
+      const getDrivers = Effect.fn('WorkspaceHost.getDrivers')(function* () {
+        if (driverRegistry) return driverRegistry
+        if (!loadingDrivers) {
+          loadingDrivers = options.loadDrivers
+            ? options
+                .loadDrivers()
+                .pipe(
+                  Effect.mapError(
+                    cause => new WorkspaceHostError({ message: 'Harness drivers could not be loaded.', cause }),
+                  ),
+                )
+            : Effect.gen(function* () {
+                const { agentDriverRegistryLayer } = yield* Effect.tryPromise({
+                  try: () => import('@/infrastructure/agent-harnesses/drivers/registry.js'),
+                  catch: cause => new WorkspaceHostError({ message: 'Harness drivers could not be loaded.', cause }),
+                })
+                const context = yield* Layer.buildWithScope(
+                  agentDriverRegistryLayer({ runtimeExecutable: options.runtimeExecutable }),
+                  appScope,
+                )
+                return Context.get(context, AgentDriverRegistry)
+              })
+          loadingDrivers = loadingDrivers.pipe(Effect.tap(value => Effect.sync(() => (driverRegistry = value))))
+        }
+        const loading = loadingDrivers
+        if (!loading) return yield* new WorkspaceHostError({ message: 'Harness drivers could not be loaded.' })
+        return yield* loading
+      })
+
       const getExecution = Effect.fn('WorkspaceHost.getExecution')(function* () {
         const context = yield* getSupervisor()
         const owner = Context.get(context, WorkspaceWorkerSupervisor)
@@ -256,27 +303,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         )
         const scope = hostScope
         if (!scope) return yield* new WorkspaceHostError({ message: 'Workspace application scope is unavailable.' })
-        if (!driverRegistry) {
-          if (options.loadDrivers)
-            driverRegistry = yield* options
-              .loadDrivers()
-              .pipe(
-                Effect.mapError(
-                  cause => new WorkspaceHostError({ message: 'Harness drivers could not be loaded.', cause }),
-                ),
-              )
-          else {
-            const { agentDriverRegistryLayer } = yield* Effect.tryPromise({
-              try: () => import('@/infrastructure/agent-harnesses/drivers/registry.js'),
-              catch: cause => new WorkspaceHostError({ message: 'Harness drivers could not be loaded.', cause }),
-            })
-            const driversContext = yield* Layer.buildWithScope(
-              agentDriverRegistryLayer({ runtimeExecutable: options.runtimeExecutable }),
-              scope,
-            )
-            driverRegistry = Context.get(driversContext, AgentDriverRegistry)
-          }
-        }
+        driverRegistry = yield* getDrivers()
         if (!checkoutResolver) {
           if (options.loadCheckoutResolver)
             checkoutResolver = yield* options
@@ -430,6 +457,23 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         ensureOpen,
         withExecution,
         listConnections: getConnectionCatalog.pipe(Effect.map(catalog => catalog.rows)),
+        inspectConnection: connectionId =>
+          Effect.flatMap(getConnectionCatalog, catalog =>
+            Effect.flatMap(getDrivers(), drivers =>
+              inspectWorkspaceConnection(catalog.connections, drivers, connectionId, {
+                initializeDeadlineMs: options.connectionInspectionDeadlineMs,
+                cleanupDeadlineMs: options.connectionCleanupDeadlineMs,
+              }),
+            ),
+          ).pipe(
+            Effect.mapError(error =>
+              error instanceof WorkspaceHostError ||
+              error instanceof ConnectionInspectionError ||
+              error instanceof HarnessConnectionResolutionError
+                ? error
+                : new WorkspaceHostError({ message: 'Connection inspection failed.' }),
+            ),
+          ),
         eventHighWatermark,
         status,
       })

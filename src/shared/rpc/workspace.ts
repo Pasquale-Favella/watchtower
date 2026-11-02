@@ -2,12 +2,12 @@ import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
+import * as Connections from '@/shared/schemas/workspace-connections.js'
 import {
   registerWorkspaceProjectSchema,
   workspaceProjectRegistrationSchema,
 } from '@/shared/schemas/workspace-projects.js'
 import * as Store from '@/shared/schemas/workspace-store.js'
-import * as Connections from '@/shared/schemas/workspace-connections.js'
 
 export const WORKSPACE_RPC_PROTOCOL_VERSION = 1
 const beginRunFields = Store.beginRunCommandSchema.fields
@@ -22,6 +22,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'invalid-request',
     'failed',
     'stream-overflow',
+    'cleanup-unconfirmed',
   ]),
   message: Schema.Literals([
     'Workspace is unavailable.',
@@ -31,6 +32,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'Workspace request is invalid.',
     'Workspace operation failed.',
     'Workspace stream exceeded its limit. Resume from the last received sequence.',
+    'Native connection cleanup could not be confirmed.',
   ]),
 }) {}
 
@@ -82,6 +84,16 @@ export const WorkspaceRpcGroup = RpcGroup.make(
   Rpc.make('workspace:listConnections', {
     payload: Schema.Struct({}),
     success: Connections.workspaceConnectionListSchema,
+    error,
+  }),
+  Rpc.make('workspace:ensureScratchProject', {
+    payload: Schema.Struct({}),
+    success: workspaceProjectRegistrationSchema,
+    error,
+  }),
+  Rpc.make('workspace:inspectConnection', {
+    payload: Schema.Struct({ connectionId: Connections.workspaceConnectionSchema.fields.connectionId }),
+    success: Connections.workspaceConnectionInspectionSchema,
     error,
   }),
   Rpc.make('workspace:registerProject', {

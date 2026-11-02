@@ -13,6 +13,7 @@ import { ExecutionServiceError } from '@/core/application/commands/execution-ser
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
 import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
+import { ConnectionInspectionError } from '@/platform/electron/main/workspace/connection-inspection.js'
 import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
 import {
   WORKSPACE_RPC_PROTOCOL_VERSION,
@@ -39,6 +40,7 @@ const messages = {
   'invalid-request': 'Workspace request is invalid.',
   failed: 'Workspace operation failed.',
   'stream-overflow': 'Workspace stream exceeded its limit. Resume from the last received sequence.',
+  'cleanup-unconfirmed': 'Native connection cleanup could not be confirmed.',
 } as const
 function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
@@ -61,6 +63,8 @@ function sanitize(error: unknown): WorkspaceRpcError {
     }
   }
   if (Schema.is(WorkspaceHostError)(error)) return failure('unavailable')
+  if (Schema.is(ConnectionInspectionError)(error))
+    return failure(error.message === 'Connection cleanup could not be confirmed.' ? 'cleanup-unconfirmed' : 'failed')
   if (Schema.is(ExecutionServiceError)(error))
     return failure(error.reason === 'invalid-options' ? 'invalid-request' : 'unavailable')
   if (Schema.is(HarnessConnectionResolutionError)(error))
@@ -99,7 +103,13 @@ const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 /** Build in the application runtime, with WorkspaceHost and WorkspaceProjects.
  * Streams own only their bounded reader fiber, never the application's execution scope.
  */
-export function workspaceHandlers() {
+export function workspaceHandlers<R = never>(
+  options: {
+    readonly prepareScratchProject?: (
+      store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
+    ) => Effect.Effect<import('@/shared/schemas/workspace-projects.js').WorkspaceProjectRegistration, unknown, R>
+  } = {},
+) {
   return Layer.unwrap(
     Effect.gen(function* () {
       const host = yield* WorkspaceHost
@@ -132,8 +142,14 @@ export function workspaceHandlers() {
               }
             }),
           ),
+        'workspace:ensureScratchProject': () =>
+          options.prepareScratchProject
+            ? mutation(options.prepareScratchProject(store))
+            : Effect.fail(failure('unavailable')),
         'workspace:listConnections': () =>
           safe(Effect.map(host.listConnections ?? Effect.succeed([]), items => ({ items }))),
+        'workspace:inspectConnection': ({ connectionId }) =>
+          host.inspectConnection ? safe(host.inspectConnection(connectionId)) : Effect.fail(failure('unavailable')),
         'workspace:registerProject': request =>
           mutation(
             Effect.gen(function* () {

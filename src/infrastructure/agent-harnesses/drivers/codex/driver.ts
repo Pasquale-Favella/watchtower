@@ -261,7 +261,10 @@ export function codexAgentDriverFromTransport(
       discover: () => Effect.succeed(capabilities),
       openSession: context => openSession(client, context, undefined, sessions, requests, connectionScope),
       loadSession: (context, native) => openSession(client, context, native, sessions, requests, connectionScope),
-      close: deadlineMs => Effect.flatMap(failActiveRuns(sessions, requests), () => client.close(deadlineMs)),
+      close: deadlineMs =>
+        Effect.flatMap(failActiveRuns(sessions, requests), () => client.close(deadlineMs)).pipe(
+          Effect.mapError(toDriverFailure),
+        ),
     }
 
     yield* Effect.forkScoped(dispatch(client, sessions, requests))
@@ -894,9 +897,15 @@ function handleEvent(
     const approvalOptions = questionRequest
       ? undefined
       : [
-          { id: 'allow-once', label: 'Allow once', scope: 'once' as const, kind: 'allow' as const },
-          { id: 'decline', label: 'Decline', kind: 'deny' as const },
-          { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const },
+          {
+            id: 'allow-once',
+            label: 'Allow once',
+            scope: 'once' as const,
+            kind: 'allow' as const,
+            decision: { kind: 'approve' as const, optionId: 'allow-once' },
+          },
+          { id: 'decline', label: 'Decline', kind: 'deny' as const, decision: { kind: 'deny' as const } },
+          { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const, decision: { kind: 'cancel' as const } },
         ]
     const pending: AgentDriverEvent = {
       kind: 'requestPending',

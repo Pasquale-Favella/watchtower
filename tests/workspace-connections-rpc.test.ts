@@ -10,11 +10,14 @@ import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
+import { AgentDriver, AgentDriverError } from '@/core/ports/agent-driver.js'
+import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
 import { WorkspaceHost, type WorkspaceHostStatus, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
 import { workspaceConnectionListSchema } from '@/shared/schemas/workspace-connections.js'
+import type { AgentCapabilities } from '@/shared/schemas/execution.js'
 
 const rows = [
   {
@@ -36,6 +39,48 @@ const unusedCheckoutResolver = Layer.succeed(CheckoutResolver, {
   createIsolatedWorktree: () => Effect.die('unused'),
   removeWorktree: () => Effect.die('unused'),
 })
+
+const inspectedCapabilities: AgentCapabilities = {
+  openSession: { support: 'supported', restrictions: [], evidence: [{ source: 'protocol', detail: 'fixture' }] },
+  loadSession: { support: 'unknown', restrictions: [], evidence: [] },
+  submit: { support: 'supported', restrictions: [], evidence: [{ source: 'protocol', detail: 'fixture' }] },
+  interrupt: { support: 'unknown', restrictions: [], evidence: [] },
+  steer: { support: 'unsupported', restrictions: [], evidence: [{ source: 'driver', detail: 'fixture' }] },
+  respond: { support: 'unknown', restrictions: [], evidence: [] },
+  reconcile: { support: 'unknown', restrictions: [], evidence: [] },
+  models: [],
+  modes: [],
+}
+
+function makeInspectionRegistry(close: () => Effect.Effect<void, AgentDriverError>) {
+  let connects = 0
+  let discoveries = 0
+  const driver = AgentDriver.of({
+    driverId: 'acp',
+    connect: options => {
+      connects += 1
+      return Effect.succeed({
+        identity: { id: options.connectionId, driverId: 'acp', protocolVersion: '1', authentication: 'unknown' },
+        discover: () =>
+          Effect.sync(() => {
+            discoveries += 1
+            return inspectedCapabilities
+          }),
+        openSession: () => Effect.die('inspection must not open a native session'),
+        loadSession: () => Effect.die('inspection must not load a native session'),
+        close,
+      })
+    },
+  })
+  return { registry: AgentDriverRegistry.fromDrivers([driver]), counts: () => ({ connects, discoveries }) }
+}
+
+const harnessConnection = {
+  id: rows[0]!.connectionId,
+  driverId: 'acp' as const,
+  command: 'unused-agent',
+  args: [],
+}
 
 describe('workspace connection catalog RPC', () => {
   it('returns safe catalog rows without opening workspace storage or execution', async () => {
@@ -95,6 +140,94 @@ describe('workspace connection catalog RPC', () => {
         items: [{ ...rows[0], label: 'x'.repeat(257) }],
       }),
     ).toThrow()
+  })
+
+  it('inspects only the selected connection, without opening the worker or a native session', async () => {
+    let workerStarts = 0
+    let closes = 0
+    const fixture = makeInspectionRegistry(() =>
+      Effect.sync(() => {
+        closes += 1
+      }),
+    )
+    const runtime = ManagedRuntime.make(
+      workspaceHandlers().pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            WorkspaceHostLive({
+              filename: 'unused-workspace.db',
+              workerPath: 'unused-workspace-worker.js',
+              workerFactory: () => {
+                workerStarts += 1
+                throw new Error('Inspection must not open workspace storage')
+              },
+              loadConnectionCatalog: () => Effect.succeed({ connections: [harnessConnection], rows }),
+              loadDrivers: () => Effect.succeed(fixture.registry),
+            }),
+            unusedProjects,
+            unusedCheckoutResolver,
+            NodeServices.layer,
+          ),
+        ),
+      ),
+    )
+    try {
+      const result = await runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            return yield* client['workspace:inspectConnection']({ connectionId: rows[0]!.connectionId })
+          }),
+        ),
+      )
+      expect(result.protocol).toEqual({ state: 'initialized', version: '1' })
+      expect(result.authentication).toBe('unknown')
+      expect(result.capabilities.models).toEqual({ state: 'session-scoped', items: [] })
+      expect(result.capabilities.modes).toEqual({ state: 'session-scoped', items: [] })
+      expect(fixture.counts()).toEqual({ connects: 1, discoveries: 1 })
+      expect(closes).toBe(1)
+      expect(workerStarts).toBe(0)
+      expect(JSON.stringify(result)).not.toMatch(/command|args|secret|credential|environment/i)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('returns an explicit cleanup failure when the native connection cannot be closed', async () => {
+    const fixture = makeInspectionRegistry(() =>
+      Effect.fail(new AgentDriverError({ code: 'timeout', message: 'fixture cleanup failure' })),
+    )
+    const runtime = ManagedRuntime.make(
+      workspaceHandlers().pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            WorkspaceHostLive({
+              filename: 'unused-workspace.db',
+              workerPath: 'unused-workspace-worker.js',
+              loadConnectionCatalog: () => Effect.succeed({ connections: [harnessConnection], rows }),
+              loadDrivers: () => Effect.succeed(fixture.registry),
+            }),
+            unusedProjects,
+            unusedCheckoutResolver,
+            NodeServices.layer,
+          ),
+        ),
+      ),
+    )
+    try {
+      const error = await runtime.runPromiseExit(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            return yield* client['workspace:inspectConnection']({ connectionId: rows[0]!.connectionId })
+          }),
+        ),
+      )
+      expect(error._tag).toBe('Failure')
+      expect(JSON.stringify(error)).toContain('cleanup-unconfirmed')
+    } finally {
+      await runtime.dispose()
+    }
   })
 
   it('keeps the loader inert until first list and coalesces concurrent catalog reads', async () => {

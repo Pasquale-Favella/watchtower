@@ -56,6 +56,7 @@ import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-ev
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
+import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
 import { DbWorkerClient } from '@/platform/electron/workers/client.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
 import { LedgerMcpPool } from '@/platform/mcp/pool.js'
@@ -411,7 +412,15 @@ app.whenReady().then(async () => {
       switch (role) {
         case 'app':
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
-            Effect.provide(Layer.merge(coachHandlers(agents.native), workspaceHandlers())),
+            Effect.provide(
+              Layer.merge(
+                coachHandlers(agents.native),
+                workspaceHandlers({
+                  prepareScratchProject: store =>
+                    ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
+                }),
+              ),
+            ),
             provideHandlers,
           )
           break

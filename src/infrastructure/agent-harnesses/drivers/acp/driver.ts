@@ -622,6 +622,10 @@ function permissionOptions(options: ReadonlyArray<PermissionOption>) {
       label: option.name,
       scope: 'once' as const,
       kind: option.kind === 'allow_once' ? ('allow' as const) : ('deny' as const),
+      decision:
+        option.kind === 'allow_once'
+          ? ({ kind: 'approve', optionId: option.optionId } as const)
+          : ({ kind: 'deny' } as const),
     }))
 }
 

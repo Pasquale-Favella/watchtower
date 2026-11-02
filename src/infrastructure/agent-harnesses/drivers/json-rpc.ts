@@ -3,6 +3,7 @@ import * as Effect from 'effect/Effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
 import { platformSpawnCommand, which } from '@/infrastructure/process/executable.js'
@@ -19,6 +20,7 @@ export class JsonRpcFailure extends Schema.TaggedError<JsonRpcFailure>()('JsonRp
     'write-failed',
     'request-failed',
     'too-many-pending',
+    'cleanup-unconfirmed',
   ]),
 }) {}
 
@@ -59,8 +61,20 @@ export type JsonRpcEvent =
 export interface JsonRpcTransport {
   readonly input: Stream.Stream<Uint8Array, unknown>
   readonly write: (bytes: Uint8Array) => Effect.Effect<void, unknown>
-  readonly close: (deadlineMs?: number) => Effect.Effect<void>
+  readonly close: (deadlineMs?: number) => Effect.Effect<void, JsonRpcFailure>
 }
+
+/** A successful close requires observing process exit within the caller's deadline. */
+export const closeChildProcess = Effect.fn('closeChildProcess')(function* (
+  kill: () => Effect.Effect<void, unknown>,
+  awaitExit: () => Effect.Effect<unknown, unknown>,
+  deadlineMs: number,
+): Effect.fn.Return<void, JsonRpcFailure> {
+  yield* Effect.exit(Effect.timeoutOption(kill(), `${Math.max(0, deadlineMs)} millis`))
+  const exited = yield* Effect.exit(Effect.timeoutOption(awaitExit(), `${Math.max(0, deadlineMs)} millis`))
+  if (exited._tag === 'Failure' || exited.value._tag === 'None')
+    return yield* new JsonRpcFailure({ reason: 'cleanup-unconfirmed' })
+})
 
 /** Spawn a long-lived stdio peer using Effect's managed process handle. stderr is drained and discarded. */
 export const spawnJsonRpcStdio = Effect.fn('spawnJsonRpcStdio')(function* (
@@ -96,8 +110,11 @@ export const spawnJsonRpcStdio = Effect.fn('spawnJsonRpcStdio')(function* (
     close: (deadlineMs = 1000) =>
       Effect.gen(function* () {
         yield* Queue.shutdown(input)
-        yield* handle.kill().pipe(Effect.ignore)
-        yield* handle.exitCode.pipe(Effect.timeoutOption(`${deadlineMs} millis`), Effect.ignore)
+        yield* closeChildProcess(
+          () => handle.kill(),
+          () => handle.exitCode,
+          deadlineMs,
+        )
       }),
   } satisfies JsonRpcTransport
 })
@@ -131,7 +148,7 @@ export class JsonRpcClient {
   private readonly incomingAcks = new Map<number, Deferred.Deferred<undefined, JsonRpcFailure>>()
   private readonly incomingBarriers = new Map<number, Deferred.Deferred<undefined, JsonRpcFailure>>()
   private closed = false
-  private shutdownStarted = false
+  private shutdownCompletion?: Deferred.Deferred<undefined, JsonRpcFailure>
 
   private constructor(
     private readonly transport: JsonRpcTransport,
@@ -142,7 +159,8 @@ export class JsonRpcClient {
     return Effect.gen(function* () {
       const events = yield* Queue.bounded<JsonRpcEvent, JsonRpcFailure>(MAX_INCOMING_MESSAGES)
       const client = new JsonRpcClient(transport, events)
-      yield* Effect.addFinalizer(() => client.shutdown())
+      const scope = yield* Effect.scope
+      yield* Scope.addFinalizerExit(scope, () => client.shutdown().pipe(Effect.orDie))
       yield* Effect.forkScoped(client.readLoop())
       return client
     })
@@ -228,7 +246,7 @@ export class JsonRpcClient {
     return this.send({ id, error: { code, message } })
   }
 
-  close(deadlineMs = 1000): Effect.Effect<void> {
+  close(deadlineMs = 1000): Effect.Effect<void, JsonRpcFailure> {
     return this.shutdown(deadlineMs)
   }
 
@@ -339,20 +357,29 @@ export class JsonRpcClient {
     })
   }
 
-  private shutdown(deadlineMs = 1000): Effect.Effect<void> {
-    return Effect.gen({ self: this }, function* () {
-      if (this.shutdownStarted) return
-      this.shutdownStarted = true
-      this.closed = true
-      for (const pending of this.pending.values())
-        yield* Deferred.fail(pending.reply, new JsonRpcFailure({ reason: 'closed' }))
-      this.pending.clear()
-      for (const barrier of this.incomingBarriers.values())
-        yield* Deferred.fail(barrier, new JsonRpcFailure({ reason: 'closed' }))
-      this.incomingBarriers.clear()
-      yield* Queue.shutdown(this.events)
-      yield* this.transport.close(deadlineMs)
-    })
+  private shutdown(deadlineMs = 1000): Effect.Effect<void, JsonRpcFailure> {
+    return Effect.uninterruptibleMask(restore =>
+      Effect.gen({ self: this }, function* () {
+        if (this.shutdownCompletion) return yield* restore(Deferred.await(this.shutdownCompletion))
+        const completion = yield* Deferred.make<undefined, JsonRpcFailure>()
+        this.shutdownCompletion = completion
+        this.closed = true
+        for (const pending of this.pending.values())
+          yield* Deferred.fail(pending.reply, new JsonRpcFailure({ reason: 'closed' }))
+        this.pending.clear()
+        for (const barrier of this.incomingBarriers.values())
+          yield* Deferred.fail(barrier, new JsonRpcFailure({ reason: 'closed' }))
+        this.incomingBarriers.clear()
+        yield* Queue.shutdown(this.events)
+        const closed = yield* Effect.exit(restore(this.transport.close(deadlineMs)))
+        if (closed._tag === 'Failure') {
+          yield* Deferred.fail(completion, new JsonRpcFailure({ reason: 'cleanup-unconfirmed' }))
+        } else {
+          yield* Deferred.succeed(completion, undefined)
+        }
+        return yield* Deferred.await(completion)
+      }),
+    )
   }
 }
 
