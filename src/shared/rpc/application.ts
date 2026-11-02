@@ -1,16 +1,20 @@
 import * as RpcGroup from 'effect/rpc/RpcGroup'
 
 import { AnalyticsRpcGroup, GetOverview } from '@/shared/rpc/analytics.js'
+import { CheckoutInspectionRpcGroup } from '@/shared/rpc/checkout-inspection.js'
 import { CoachRpcGroup } from '@/shared/rpc/coach.js'
 import { ConfigRpcGroup } from '@/shared/rpc/config.js'
 import { LifecycleRpcGroup } from '@/shared/rpc/lifecycle.js'
 import { NativeRpcGroup, StartScan } from '@/shared/rpc/native.js'
 import { OrbShellRpcGroup, ShellRpcGroup } from '@/shared/rpc/shell.js'
+import { TerminalRpcGroup } from '@/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
 
 export const ApplicationRpcGroup = AnalyticsRpcGroup.merge(ConfigRpcGroup)
   .merge(CoachRpcGroup)
   .merge(WorkspaceRpcGroup)
+  .merge(CheckoutInspectionRpcGroup)
+  .merge(TerminalRpcGroup)
   .merge(ShellRpcGroup)
   .merge(NativeRpcGroup)
   .merge(LifecycleRpcGroup.omit('panel:events', 'beacon:events'))

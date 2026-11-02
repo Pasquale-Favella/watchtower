@@ -48,3 +48,17 @@ export function useWorkspaceDraft(conversationId: ConversationId) {
     setPreferences,
   }
 }
+
+/** Appends an `@path` reference to a Conversation's draft, for actions outside the composer. */
+export function useDraftReference() {
+  const drafts = useAtomValue(workspaceDraftsAtom)
+  const update = useAtomSet(updateWorkspaceDraftAtom)
+  return useCallback(
+    (conversationId: ConversationId, path: string) => {
+      const text = drafts[conversationId]?.text ?? ''
+      const separator = text && !/\s$/.test(text) ? ' ' : ''
+      update({ conversationId, text: `${text}${separator}@${path} ` })
+    },
+    [drafts, update],
+  )
+}

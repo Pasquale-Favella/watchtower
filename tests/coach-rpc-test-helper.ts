@@ -21,7 +21,12 @@ import type {
 } from '../src/shared/schemas/agents.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import type { SkillsThresholds } from '../src/shared/schemas/skills.js'
-import { unexpectedShellHandlers, unexpectedWorkspaceHandlers } from './fixtures/unexpected-native-rpc.js'
+import {
+  unexpectedCheckoutInspectionHandlers,
+  unexpectedShellHandlers,
+  unexpectedTerminalHandlers,
+  unexpectedWorkspaceHandlers,
+} from './fixtures/unexpected-native-rpc.js'
 
 export interface CoachRpcTestOverrides {
   readonly harnesses?: () => Effect.Effect<CoachHarnessRow[]>
@@ -112,6 +117,8 @@ export function makeCoachRpcTestClient(runtime: Atom.RegistryRuntimeFactory, ove
   const handlers = Layer.mergeAll(
     unexpectedShellHandlers,
     unexpectedWorkspaceHandlers,
+    unexpectedCheckoutInspectionHandlers,
+    unexpectedTerminalHandlers,
     analyticsHandlers({ request: workerRequest }),
     configHandlers({ request: workerRequest }, Effect.succeed(0)),
     nativeHandlers(nativeCapabilities),

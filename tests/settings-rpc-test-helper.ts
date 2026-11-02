@@ -13,6 +13,8 @@ import { ApplicationClient } from '../src/renderer/shared/lib/application-rpc.js
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
 import {
+  unexpectedCheckoutInspectionHandlers,
+  unexpectedTerminalHandlers,
   unexpectedCoachHandlers,
   unexpectedShellRpcs,
   unexpectedWorkspaceHandlers,
@@ -62,6 +64,8 @@ export function makeSettingsRpcTestClient(
   const handlers = Layer.mergeAll(
     unexpectedCoachHandlers,
     unexpectedWorkspaceHandlers,
+    unexpectedCheckoutInspectionHandlers,
+    unexpectedTerminalHandlers,
     ShellRpcGroup.toLayer({ ...unexpectedShellRpcs, 'shell:open-settings': shellOverrides.openSettings ?? unexpected }),
     analyticsHandlers({ request }),
     configHandlers(

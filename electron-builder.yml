@@ -28,9 +28,12 @@ extraResources:
 # them is not just wasteful but breaks the mac universal build: @electron/
 # universal joins EVERY unpacked file into one glob, and minimatch rejects
 # globs over 64KB ("pattern is too long").
+# node-pty loads its N-API prebuilds (and the macOS spawn-helper) from disk, so
+# the whole package is unpacked; both universal halves install identical bytes.
 asarUnpack:
   - node_modules/@openai/codex-*/**
   - node_modules/@anthropic-ai/claude-agent-sdk-*/**
+  - node_modules/node-pty/**
 win:
   target:
     - nsis

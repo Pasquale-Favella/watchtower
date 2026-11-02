@@ -3,8 +3,10 @@ import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
 
 import { nativeHandlers } from '../../src/platform/electron/main/rpc/native-handlers.js'
+import { CheckoutInspectionRpcGroup } from '../../src/shared/rpc/checkout-inspection.js'
 import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'
 import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
+import { TerminalRpcGroup } from '../../src/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '../../src/shared/rpc/workspace.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native RPC operation in a data-query test'))
@@ -21,6 +23,24 @@ export const unexpectedCoachHandlers = CoachRpcGroup.toLayer({
   'coach:run': () => Stream.die(new Error('Unexpected Coach run in a data-query test')),
   'coach:cancel': unexpected,
   'coach:reset': unexpected,
+})
+
+export const unexpectedCheckoutInspectionHandlers = CheckoutInspectionRpcGroup.toLayer({
+  'checkout:diffPreview': unexpected,
+  'checkout:filePatch': unexpected,
+  'checkout:branches': unexpected,
+  'checkout:listEntries': unexpected,
+  'checkout:readFile': unexpected,
+})
+
+export const unexpectedTerminalHandlers = TerminalRpcGroup.toLayer({
+  'terminal:open': unexpected,
+  'terminal:attach': () => Stream.die(new Error('Unexpected terminal subscription in a data-query test')),
+  'terminal:write': unexpected,
+  'terminal:resize': unexpected,
+  'terminal:restart': unexpected,
+  'terminal:close': unexpected,
+  'terminal:list': unexpected,
 })
 
 export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
@@ -87,4 +107,6 @@ export const unexpectedNativeHandlers = Layer.mergeAll(
   unexpectedCoachHandlers,
   unexpectedShellHandlers,
   unexpectedWorkspaceHandlers,
+  unexpectedCheckoutInspectionHandlers,
+  unexpectedTerminalHandlers,
 )

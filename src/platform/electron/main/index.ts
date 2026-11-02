@@ -18,7 +18,9 @@ import { join } from 'path'
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError } from '@/core/ports/agent-driver.js'
+import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import type { TerminalHost } from '@/core/ports/terminal-host.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { createDetectedHarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
 import { discoverNativeHarnessExecutables } from '@/infrastructure/agent-harnesses/native-executables.js'
@@ -33,6 +35,8 @@ import {
   safeLogOperationalEvent,
 } from '@/infrastructure/logging/operational-log.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
+import { TerminalHostLive } from '@/infrastructure/terminal/terminal-host.js'
+import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
 import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
 import {
@@ -44,6 +48,7 @@ import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
 import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
 import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
 import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
+import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
 import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
 import { analyticsHandlers, configHandlers } from '@/platform/electron/main/rpc/handlers.js'
@@ -56,16 +61,20 @@ import {
 } from '@/platform/electron/main/rpc/lifecycle.js'
 import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
 import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
+import { terminalHandlers } from '@/platform/electron/main/rpc/terminal-handlers.js'
 import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
+import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
 import { DbWorkerClient } from '@/platform/electron/workers/client.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
 import { LedgerMcpPool } from '@/platform/mcp/pool.js'
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
+import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
 import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
+import { TerminalRpcError } from '@/shared/rpc/terminal.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 /**
@@ -181,7 +190,9 @@ const workspaceStoreLayer = Layer.effect(
 )
 const workspaceLayer = WorkspaceProjectSetupLive.pipe(
   Layer.provideMerge(WorkspaceProjectsLive),
-  Layer.provideMerge(Layer.mergeAll(CheckoutResolverLive, ProjectProvisionerLive, workspaceStoreLayer)),
+  Layer.provideMerge(
+    Layer.mergeAll(CheckoutResolverLive, CheckoutInspectionLive, ProjectProvisionerLive, workspaceStoreLayer),
+  ),
   Layer.provideMerge(workspaceHostLayer),
 )
 
@@ -206,6 +217,7 @@ const mainRuntime = makeMainRuntime(
       requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
     }),
     rendererLifecycleLayer,
+    TerminalHostLive,
   ),
 )
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
@@ -226,6 +238,10 @@ let backgroundShell: BackgroundShellHandle | null = null
 const hasInstanceLock = app.requestSingleInstanceLock()
 if (!hasInstanceLock) app.quit()
 app.on('second-instance', () => backgroundShell?.showMainWindow())
+// Renderers never open their own windows; external links go through the http(s)-only shell RPC.
+app.on('web-contents-created', (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+})
 
 function publishLifecycle(event: LifecyclePublishEvent): void {
   if (lifecycleHub) mainRuntime.runSync(lifecycleHub.publish(event))
@@ -425,12 +441,14 @@ app.whenReady().then(async () => {
         | WorkspaceHost
         | WorkspaceProjects
         | CheckoutResolver
+        | CheckoutInspection
+        | TerminalHost
       >
       switch (role) {
         case 'app':
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
             Effect.provide(
-              Layer.merge(
+              Layer.mergeAll(
                 coachHandlers(agents.native),
                 workspaceHandlers({
                   attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
@@ -447,6 +465,33 @@ app.whenReady().then(async () => {
                     }),
                   prepareScratchProject: store =>
                     ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
+                }),
+                Layer.unwrap(
+                  Effect.map(WorkspaceHost, host =>
+                    terminalHandlers({
+                      resolveTaskCwd: taskId =>
+                        resolveTaskCheckoutPath(taskId).pipe(
+                          Effect.provideService(WorkspaceHost, host),
+                          Effect.mapError(
+                            () =>
+                              new TerminalRpcError({
+                                code: 'cwd-unavailable',
+                                message: 'The Task checkout is unavailable.',
+                              }),
+                          ),
+                        ),
+                    }),
+                  ),
+                ),
+                checkoutInspectionHandlers({
+                  resolveCheckoutPath: request =>
+                    resolveCheckoutPath(request).pipe(
+                      Effect.mapError(code =>
+                        code === 'not-found'
+                          ? new CheckoutInspectionRpcError({ code, message: 'Checkout record was not found.' })
+                          : new CheckoutInspectionRpcError({ code, message: 'Checkout inspection is unavailable.' }),
+                      ),
+                    ),
                 }),
               ),
             ),
