@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test'
 
 import { dismissOnboarding, withApp } from './app'
 import { invokeRpc } from './rpc-probe'
+import { switchVertical } from './verticals'
 
 test('updates RPC and Settings preserve the development-build fallback', async () => {
   await withApp(async ({ window }) => {
@@ -21,6 +22,7 @@ test('updates RPC and Settings preserve the development-build fallback', async (
       })
     }
     await dismissOnboarding(window)
+    await switchVertical(window, 'Analytics')
     await window.getByRole('button', { name: 'Settings', exact: true }).click()
     await expect(window.getByRole('button', { name: 'Check for updates', exact: true })).toBeDisabled()
     await expect(window.getByRole('button', { name: 'Open release page' })).toBeVisible()

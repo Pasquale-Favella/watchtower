@@ -9,8 +9,9 @@ import * as Schema from 'effect/Schema'
 import { workspaceProjectRegistrationSchema } from '../src/shared/schemas/workspace-projects'
 import { dismissOnboarding, launchApp } from './app'
 import { invokeRpc, invokeRpcStreamFirst } from './rpc-probe'
+import { switchVertical } from './verticals'
 
-test('workspace stays lazy, persists project and task across reload, and closes cleanly', async () => {
+test('workspace opens by default, persists project and task across reload, and closes cleanly', async () => {
   const directory = mkdtempSync(join(resolve('.'), '.watchtower-workspace-'))
   const repository = join(directory, 'repository')
   let launched: Awaited<ReturnType<typeof launchApp>> | undefined
@@ -52,12 +53,14 @@ test('workspace stays lazy, persists project and task across reload, and closes 
       })
     }, shutdownLog)
     expect(existsSync(join(profile, 'ledger.db'))).toBe(true)
-    expect(existsSync(join(profile, 'workspace.db'))).toBe(false)
-    expect(await invokeRpc(window, 'workspace:status')).toEqual({
-      ok: true,
-      value: { protocolVersion: 1, state: 'not-started', ownerEpoch: null, highWatermark: 0 },
-    })
-    expect(existsSync(join(profile, 'workspace.db'))).toBe(false)
+    await expect(window.getByRole('main', { name: 'Agent workspace' })).toBeVisible()
+    await expect
+      .poll(() => invokeRpc(window, 'workspace:status'))
+      .toMatchObject({
+        ok: true,
+        value: { protocolVersion: 1, state: 'ready', highWatermark: 0 },
+      })
+    expect(existsSync(join(profile, 'workspace.db'))).toBe(true)
 
     const registration = { commandId: randomUUID(), path: repository, name: 'Workspace fixture' }
     const registered = await invokeRpc(window, 'workspace:registerProject', registration)
@@ -91,14 +94,14 @@ test('workspace stays lazy, persists project and task across reload, and closes 
     })
 
     await window.reload()
-    await expect(window.getByRole('button', { name: 'Overview', exact: true })).toBeVisible()
+    await expect(window.getByRole('main', { name: 'Agent workspace' })).toBeVisible()
     expect(await invokeRpc(window, 'workspace:listProjects', {})).toEqual(projects)
     expect(await invokeRpc(window, 'workspace:listTasks', { projectId: project.id })).toEqual(tasks)
     expect(await invokeRpc(window, 'workspace:registerProject', registration)).toMatchObject({
       ok: true,
       value: { commandId: registration.commandId, replayed: true, project: { id: project.id } },
     })
-    await window.getByRole('button', { name: 'Workspace', exact: true }).click()
+    await switchVertical(window, 'Workspace')
     await expect(window.getByRole('main', { name: 'Agent workspace' })).toBeVisible()
     await window.getByRole('button', { name: 'Open Project', exact: true }).click()
     await expect(window.getByRole('dialog', { name: 'Open a Project' })).toBeVisible()
@@ -118,7 +121,7 @@ test('workspace stays lazy, persists project and task across reload, and closes 
     await expect(window.getByRole('heading', { name: 'Created from the workspace', exact: true })).toBeVisible()
     await expect(window.getByRole('button', { name: /Created from the workspace/ })).toBeVisible()
     await window.reload()
-    await window.getByRole('button', { name: 'Workspace', exact: true }).click()
+    await switchVertical(window, 'Workspace')
     await expect(window.getByRole('heading', { name: 'Created from the workspace', exact: true })).toBeVisible()
     await window.screenshot({ path: test.info().outputPath('workspace.png'), fullPage: true })
     expect(pageErrors).toEqual([])

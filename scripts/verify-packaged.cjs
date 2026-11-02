@@ -320,19 +320,26 @@ function readOperationalRecords(profile) {
     .map(line => JSON.parse(line))
 }
 
-async function checkWorkspaceNotStarted(window, profile) {
-  assert.equal(fs.existsSync(path.join(profile, 'workspace.db')), false)
-  assert.deepEqual(await window.evaluate(() => window.rpcProbe.call('workspace:status')), {
-    protocolVersion: 1,
-    state: 'not-started',
-    ownerEpoch: null,
-    highWatermark: 0,
-  })
-  assert.equal(fs.existsSync(path.join(profile, 'workspace.db')), false, 'Status must not start the workspace')
+async function checkDefaultWorkspace(window, profile) {
+  const workspace = window.locator('main[aria-label="Agent workspace"]')
+  await expect(workspace).toBeVisible({ timeout: 30000 })
+  await expect(workspace.getByRole('heading', { name: 'Choose a Task', exact: true })).toBeVisible()
+  await expect(workspace.locator('header').getByText('Workspace', { exact: true })).toBeVisible()
+  await expect(window.getByRole('button', { name: 'Switch application, Workspace' })).toBeVisible()
+
+  await expect
+    .poll(async () => (await window.evaluate(() => window.rpcProbe.call('workspace:status'))).state)
+    .toBe('ready')
+  const status = await window.evaluate(() => window.rpcProbe.call('workspace:status'))
+  assert.equal(status.protocolVersion, 1)
+  assert.equal(status.state, 'ready')
+  assert.ok(Number.isSafeInteger(status.ownerEpoch) && status.ownerEpoch >= 1)
+  assert.equal(status.highWatermark, 0, 'Opening the default Workspace must not start an agent Run')
+  assert.equal(fs.statSync(path.join(profile, 'workspace.db')).isFile(), true)
+  console.log('Packaged default Agent workspace and ready worker passed without starting an agent Run.')
 }
 
 async function checkWorkspace(app, window, profile, repository) {
-  await checkWorkspaceNotStarted(window, profile)
   const packagedLayout = await app.evaluate(({ app: electronApp }) => {
     const fs = process.getBuiltinModule('fs')
     const path = process.getBuiltinModule('path')
@@ -396,7 +403,7 @@ async function checkWorkspace(app, window, profile, repository) {
   assert.ok(Number.isSafeInteger(result.status.ownerEpoch) && result.status.ownerEpoch >= 1)
   assert.equal(result.status.highWatermark, 0, 'Metadata-only acceptance must not start an agent Run')
   console.log(
-    'Packaged workspace lazy boot, ASAR worker, project/task creation and reads, detail, command replay and event snapshot passed.',
+    'Packaged ASAR worker, project/task creation and reads, detail, command replay and event snapshot passed.',
   )
 }
 
@@ -629,7 +636,6 @@ async function main() {
       capturePageErrors(window)
       await expect(window).toHaveTitle(/Watchtower/)
       await installRendererRpcProbe(window)
-      await checkWorkspaceNotStarted(window, profile)
       await window.evaluate(() => window.rpcProbe.call('cadence:set', { value: 'manual' }))
       const skip = window.getByRole('button', { name: 'Skip' })
       const retry = window.getByRole('button', { name: 'Retry' })
@@ -639,11 +645,14 @@ async function main() {
       assert.equal(await retry.isVisible(), false)
       await skip.click()
       await expect(skip).toBeHidden()
-      await checkWorkspaceNotStarted(window, profile)
+      await checkDefaultWorkspace(window, profile)
       console.log(
-        `Packaged workspace-free boot passed: ${Math.round(performance.now() - bootStarted)}ms (existing launch/scan budgets unchanged).`,
+        `Packaged app boot passed: ${Math.round(performance.now() - bootStarted)}ms (existing launch/scan budgets unchanged).`,
       )
       await checkRendererRpc(window)
+      await window.getByRole('button', { name: 'Switch application, Workspace' }).click()
+      await window.getByRole('menuitem', { name: /^Analytics/ }).click()
+      await expect(window.getByRole('button', { name: 'Switch application, Analytics' })).toBeVisible()
       await window.getByRole('button', { name: 'Sessions', exact: true }).click()
       await expect(
         window

@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 import { dismissOnboarding, expectSingleMainWindow, waitForAnyVisible, withApp } from './app'
+import { switchVertical } from './verticals'
 
 /**
  * Smoke (spins out of #123 W7, tracks #133): the built app boots in a real
@@ -11,6 +12,7 @@ test('app boots, onboarding dismisses, sections navigate', async () => {
   await withApp(async ({ app, window }) => {
     await expect(window).toHaveTitle(/Watchtower/)
     await dismissOnboarding(window)
+    await switchVertical(window, 'Analytics')
 
     // Sessions shows host-dependent content (the suite scans the machine's
     // real sources read-only): real rows with a search box, or the empty
