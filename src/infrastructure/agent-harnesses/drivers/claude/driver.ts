@@ -28,6 +28,7 @@ import {
   type NativeSessionReference,
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
+import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import { executablePathEnv } from '@/infrastructure/process/executable.js'
 import type {
   AgentCapabilities,
@@ -86,6 +87,7 @@ const unsupported = (detail: string) => ({
 })
 
 const capabilities: AgentCapabilities = {
+  promptContent: { images: true, files: true },
   openSession: supported('Creates a Claude Agent SDK streaming-input session.'),
   loadSession: supported(
     'Resumes the exact native session ID using the SDK resume option; there is no fresh-session fallback.',
@@ -808,7 +810,35 @@ const makeSession = (
           messagesByUuid.set(uuid, input.runId)
           const nativeMessage: SDKUserMessage = {
             type: 'user',
-            message: { role: 'user', content: text },
+            message: {
+              role: 'user',
+              content: input.attachments?.length
+                ? [
+                    { type: 'text', text },
+                    ...input.attachments.map(attachment => {
+                      if (attachment.mediaType.startsWith('image/'))
+                        return {
+                          type: 'image' as const,
+                          source: {
+                            type: 'base64' as const,
+                            media_type: attachment.mediaType as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
+                            data: attachment.content,
+                          },
+                        }
+                      if (attachment.mediaType === 'application/pdf')
+                        return {
+                          type: 'document' as const,
+                          source: {
+                            type: 'base64' as const,
+                            media_type: 'application/pdf' as const,
+                            data: attachment.content,
+                          },
+                        }
+                      return { type: 'text' as const, text: attachmentText(attachment) }
+                    }),
+                  ]
+                : text,
+            },
             parent_tool_use_id: null,
             uuid,
           }

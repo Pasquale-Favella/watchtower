@@ -1,5 +1,7 @@
 import * as Schema from 'effect/Schema'
 
+import { agentModelChoiceSchema } from './execution.js'
+
 /** Renderer-safe description of a detected Harness Connection.
  * Launch commands, arguments, environment and credential references are intentionally absent.
  */
@@ -27,8 +29,8 @@ const capabilitySchema = Schema.Struct({
   evidence: Schema.Array(capabilityEvidenceSchema).check(Schema.isMaxLength(16)),
 })
 const choiceFactsSchema = Schema.Struct({
-  state: Schema.Literals(['unknown', 'session-scoped']),
-  items: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })).check(Schema.isMaxLength(256)),
+  state: Schema.Literals(['unknown', 'session-scoped', 'connection-scoped']),
+  items: Schema.Array(agentModelChoiceSchema).check(Schema.isMaxLength(256)),
 })
 
 /** Connection inspection never opens a native session. Choice catalogs can remain session-scoped. */
@@ -50,6 +52,7 @@ export const workspaceConnectionInspectionSchema = Schema.Struct({
     reconcile: capabilitySchema,
     models: choiceFactsSchema,
     modes: choiceFactsSchema,
+    promptContent: Schema.optional(Schema.Struct({ images: Schema.Boolean, files: Schema.Boolean })),
   }),
 })
 

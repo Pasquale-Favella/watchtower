@@ -27,6 +27,12 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     if (process.platform !== 'win32') chmodSync(shim, 0o755)
     execFileSync('git', ['init', repository], { stdio: 'pipe', windowsHide: true })
     writeFileSync(join(repository, 'README.md'), 'Fixture repository\n')
+    mkdirSync(join(repository, '.agents', 'skills', 'review'), { recursive: true })
+    writeFileSync(
+      join(repository, '.agents', 'skills', 'review', 'SKILL.md'),
+      'Check the tests before suggesting a fix.',
+    )
+    writeFileSync(join(repository, 'notes.txt'), 'Original attached notes')
     execFileSync('git', ['add', '.'], { cwd: repository, stdio: 'pipe', windowsHide: true })
     execFileSync(
       'git',
@@ -79,8 +85,49 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await window.getByRole('combobox', { name: 'Search Projects', exact: true }).fill('repo')
     await window.getByRole('option', { name: 'repository', exact: true }).click()
     await window.screenshot({ path: test.info().outputPath('workspace-new-chat.png'), fullPage: true })
-    await newChat.getByLabel('Harness connection').selectOption({ label: 'Gemini CLI' })
+    await newPrompt.fill('/mod')
+    await expect(newChat.getByRole('option', { name: '/model command', exact: true })).toBeVisible()
+    await newPrompt.press('Enter')
+    await window.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await window.getByRole('option', { name: 'Agent default', exact: true }).click()
     await expect(newChat.getByText('Ready to send', { exact: true })).toBeVisible()
+    await newPrompt.fill('Inspect this checkout @READ')
+    await expect(newChat.getByRole('option', { name: 'README.md', exact: true })).toBeVisible()
+    await newPrompt.press('Enter')
+    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('README.md')
+    await newPrompt.fill('/rev')
+    await expect(newChat.getByRole('option', { name: '/review skill', exact: true })).toBeVisible()
+    await newPrompt.press('Tab')
+    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('SKILL.md')
+    await newChat.locator('input[type=file]').setInputFiles({
+      name: 'context.txt',
+      mimeType: 'text/plain',
+      buffer: Buffer.from('Attachment from the file picker'),
+    })
+    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('context.txt')
+    await newPrompt.evaluate(input => {
+      const clipboardData = new DataTransfer()
+      clipboardData.items.add(
+        new File(
+          [
+            Uint8Array.from(
+              atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII='),
+              value => value.charCodeAt(0),
+            ),
+          ],
+          'pixel.png',
+          { type: 'image/png' },
+        ),
+      )
+      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+    })
+    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('pixel.png')
+    await newChat.getByRole('button', { name: 'pixel.png', exact: true }).click()
+    await expect(window.getByRole('dialog', { name: 'pixel.png', exact: true })).toBeVisible()
+    await window
+      .getByRole('dialog', { name: 'pixel.png', exact: true })
+      .getByRole('button', { name: 'Close', exact: true })
+      .click()
     await newPrompt.fill('Inspect this checkout')
     await newPrompt.press('Shift+Enter')
     await expect(newPrompt).toHaveValue('Inspect this checkout\n')
@@ -93,16 +140,32 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(requests.getByText('Inspect checkout status', { exact: true }).first()).toBeVisible()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await expect(requests.getByRole('button', { name: 'Skip inspection', exact: true })).toBeEnabled()
+    await prompt.fill('/fixture-')
+    await expect(composer.getByRole('option', { name: '/fixture-check agent command', exact: true })).toBeVisible()
+    await prompt.press('Enter')
+    await expect(prompt).toHaveValue('/fixture-check ')
     await prompt.fill('Queued work to cancel')
     await prompt.press('Enter')
     const queue = composer.getByRole('list', { name: 'Queued prompts' })
     await expect(queue.getByText('Queued work to cancel', { exact: true })).toBeVisible()
     await queue.getByRole('button', { name: 'Cancel', exact: true }).click()
     await expect(queue).toHaveCount(0)
+    await composer.getByRole('button', { name: 'Agent and model', exact: true }).click()
+    await window.getByRole('option', { name: 'Fixture model', exact: true }).click()
+    await composer.getByRole('combobox', { name: 'Effort / mode', exact: true }).selectOption('plan')
+    await composer.locator('input[type=file]').setInputFiles(join(repository, 'notes.txt'))
+    await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('notes.txt')
     await prompt.fill('Queued work to dispatch')
     await prompt.press('Enter')
     await expect(queue.getByText('Queued work to dispatch', { exact: true })).toBeVisible()
+    writeFileSync(join(repository, 'notes.txt'), 'Changed after queueing')
     await prompt.fill('Keep this draft during navigation')
+    await prompt.evaluate(input => {
+      const dataTransfer = new DataTransfer()
+      dataTransfer.items.add(new File(['Draft context'], 'draft-context.txt', { type: 'text/plain' }))
+      input.dispatchEvent(new DragEvent('drop', { dataTransfer, bubbles: true, cancelable: true }))
+    })
+    await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('draft-context.txt')
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     await expect(newPrompt).toHaveValue('')
     await newPrompt.fill('Independent second draft')
@@ -110,6 +173,8 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(prompt).toHaveValue('Keep this draft during navigation')
     await window.reload()
     await expect(prompt).toHaveValue('Keep this draft during navigation')
+    await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('draft-context.txt')
+    await composer.getByRole('button', { name: 'Remove draft-context.txt', exact: true }).click()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await expect(queue.getByText('Queued work to dispatch', { exact: true })).toBeVisible()
     await requests.getByRole('button', { name: 'Inspect once', exact: true }).click()
@@ -121,14 +186,15 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(queue.getByRole('button', { name: 'Dispatch', exact: true })).toBeEnabled()
     await queue.getByRole('button', { name: 'Dispatch', exact: true }).click()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
-    await composer.getByRole('button', { name: 'Inspect Run connection to enable Stop', exact: true }).click()
     await composer.getByRole('button', { name: 'Stop Run', exact: true }).click()
     await expect(composer.getByRole('button', { name: 'Stop Run', exact: true })).toHaveCount(0)
     await expect(prompt).toHaveValue('Keep this draft during navigation')
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     await expect(newPrompt).toHaveValue('Independent second draft')
     await expect(newChat.getByRole('combobox', { name: 'Project', exact: true })).toHaveText('No project')
-    await newChat.getByLabel('Harness connection').selectOption({ label: 'Gemini CLI' })
+    await newChat.getByRole('button', { name: 'Agent and model', exact: true }).click()
+    await window.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
+    await window.getByRole('option', { name: 'Agent default', exact: true }).click()
     await expect(newChat.getByText('Ready to send', { exact: true })).toBeVisible()
     await newPrompt.fill('Discuss without a project')
     await newPrompt.press('Enter')
@@ -147,13 +213,49 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     const records = readFileSync(protocolLog, 'utf8')
       .trim()
       .split('\n')
-      .map(line => JSON.parse(line) as { kind: string; result?: unknown })
-    expect(records.filter(record => record.kind === 'prompt')).toHaveLength(3)
+      .map(
+        line =>
+          JSON.parse(line) as {
+            kind: string
+            result?: unknown
+            prompt?: Array<{ type: string; text?: string; data?: string }>
+            sessionId?: string
+          },
+      )
+    const sentPrompts = records.filter(record => record.kind === 'prompt')
+    expect(sentPrompts).toHaveLength(3)
+    expect(sentPrompts[1].sessionId).toBe(sentPrompts[0].sessionId)
+    expect(sentPrompts[0].prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'image', data: expect.any(String) }),
+        expect.objectContaining({ type: 'text', text: expect.stringContaining('Fixture repository') }),
+        expect.objectContaining({
+          type: 'text',
+          text: expect.stringContaining('Check the tests before suggesting a fix.'),
+        }),
+        expect.objectContaining({ type: 'text', text: expect.stringContaining('Attachment from the file picker') }),
+      ]),
+    )
+    expect(sentPrompts[1].prompt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'text', text: expect.stringContaining('Original attached notes') }),
+      ]),
+    )
+    expect(JSON.stringify(sentPrompts[1])).not.toContain('Changed after queueing')
     expect(records.filter(record => record.kind === 'decision')).toContainEqual({
       kind: 'decision',
       result: { outcome: { outcome: 'selected', optionId: 'fixture-read-once' } },
     })
     expect(records.filter(record => record.kind === 'cancel')).toHaveLength(1)
+    expect(records).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'session/set_mode', params: expect.objectContaining({ modeId: 'plan' }) }),
+        expect.objectContaining({
+          kind: 'session/set_model',
+          params: expect.objectContaining({ modelId: 'fixture-model' }),
+        }),
+      ]),
+    )
     expect(launched.pageErrors).toEqual([])
     await launched.close()
     launched = undefined

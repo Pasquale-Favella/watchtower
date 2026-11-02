@@ -30,8 +30,14 @@ export function useWorkspaceDraft(conversationId: ConversationId) {
 
   const setDraft = useCallback((text: string) => update({ conversationId, text }), [conversationId, update])
   const setPreferences = useCallback(
-    (preference: { readonly checkoutId?: string; readonly connectionId?: string }) =>
-      updatePreference({ conversationId, preference }),
+    (preference: {
+      readonly checkoutId?: string
+      readonly connectionId?: string
+      readonly modelId?: string
+      readonly modeId?: string
+      readonly resumeNativeContext?: boolean
+      readonly resumeSessionId?: string
+    }) => updatePreference({ conversationId, preference }),
     [conversationId, updatePreference],
   )
 

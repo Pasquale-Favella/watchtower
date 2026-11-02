@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import { WorkspaceWorkerStoreLive } from '@/platform/electron/workers/workspace/client.js'
+import { WORKSPACE_WORKER_PROTOCOL_VERSION } from '@/shared/rpc/workspace-worker.js'
 import {
   type BeginRunCommand,
   type QueuedFollowUpPage,
@@ -141,11 +142,11 @@ parentPort.on = (event, listener) => on(event, event === 'message'
   : listener)
 
 const group = RpcGroup.make(
-  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(8) }) }),
+  Rpc.make('workspace-worker:ready', { success: Schema.Struct({ protocolVersion: Schema.Literal(${WORKSPACE_WORKER_PROTOCOL_VERSION}) }) }),
   Rpc.make('workspace-worker:shutdown', { success: Schema.Void }),
 )
 const handlers = group.toLayer({
-  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: 8 }),
+  'workspace-worker:ready': () => Effect.succeed({ protocolVersion: ${WORKSPACE_WORKER_PROTOCOL_VERSION} }),
   'workspace-worker:shutdown': () => Effect.succeed(undefined),
 })
 const program = Effect.scoped(Effect.gen(function* () {

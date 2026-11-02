@@ -1,6 +1,7 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
+import * as PromptContext from '@/shared/schemas/prompt-context.js'
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import * as Connections from '@/shared/schemas/workspace-connections.js'
 import {
@@ -72,6 +73,7 @@ export const workspaceStartRunRequestSchema = Schema.Struct({
   driverId: beginRunFields.driverId,
   connectionId: beginRunFields.connectionId,
   prompt: beginRunFields.prompt,
+  attachments: beginRunFields.attachments,
   modelId: beginRunFields.modelId,
   modeId: beginRunFields.modeId,
   nativeSessionId: beginRunFields.nativeSessionId,
@@ -90,6 +92,26 @@ const setupError = Schema.Union([WorkspaceRpcError, ProjectSetupError])
  * Cancellation reports removed for both cancelled and already removed/promoted entries; it never stops a promoted Run.
  */
 export const WorkspaceRpcGroup = RpcGroup.make(
+  Rpc.make('workspace:importAttachment', {
+    payload: PromptContext.importPromptAttachmentSchema,
+    success: PromptContext.promptAttachmentSchema,
+    error,
+  }),
+  Rpc.make('workspace:previewAttachment', {
+    payload: PromptContext.promptAttachmentSchema,
+    success: Schema.NullOr(Schema.String),
+    error,
+  }),
+  Rpc.make('workspace:searchPromptContext', {
+    payload: PromptContext.searchPromptContextSchema,
+    success: PromptContext.promptContextSearchResultSchema,
+    error,
+  }),
+  Rpc.make('workspace:attachPromptContext', {
+    payload: PromptContext.attachPromptContextSchema,
+    success: PromptContext.promptAttachmentSchema,
+    error,
+  }),
   Rpc.make('workspace:status', { success: workspaceStatusSchema, error }),
   Rpc.make('workspace:listConnections', {
     payload: Schema.Struct({}),
@@ -270,6 +292,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       generation: Store.recordSteerCommandSchema.fields.generation,
       expectedNativeTurnId: Store.recordSteerCommandSchema.fields.expectedNativeTurnId,
       message: Store.recordSteerCommandSchema.fields.message,
+      attachments: Store.recordSteerCommandSchema.fields.attachments,
     }),
     success: Store.commandReceiptSchema,
     error,
@@ -280,6 +303,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       taskId: taskIdSchema,
       conversationId: conversationIdSchema,
       prompt: Store.enqueueFollowUpCommandSchema.fields.prompt,
+      attachments: Store.enqueueFollowUpCommandSchema.fields.attachments,
       driverId: Store.enqueueFollowUpCommandSchema.fields.driverId,
       connectionId: Store.enqueueFollowUpCommandSchema.fields.connectionId,
       modelId: Store.enqueueFollowUpCommandSchema.fields.modelId,

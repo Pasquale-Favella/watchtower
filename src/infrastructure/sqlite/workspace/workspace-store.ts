@@ -15,8 +15,10 @@ import {
   UnsupportedLedgerSchemaVersion,
 } from '@/infrastructure/sqlite/sqlite-migrations.js'
 import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
-import { agentDriverEventSchema, agentRunSchema } from '@/shared/schemas/execution.js'
+import { agentCapabilitiesSchema, agentDriverEventSchema, agentRunSchema } from '@/shared/schemas/execution.js'
+import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
 import {
+  agentSessionIdSchema,
   type Project,
   projectIdSchema,
   projectSchema,
@@ -58,10 +60,10 @@ import {
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   WORKSPACE_STORE_READ_BYTE_CAPACITY,
   workspaceCheckoutPageOptionsSchema,
-  workspaceConversationPageOptionsSchema,
   workspaceConversationMessageSchema,
   type WorkspaceConversationPageItem,
   workspaceConversationPageItemSchema,
+  workspaceConversationPageOptionsSchema,
   workspaceConversationPageSchema,
   type WorkspaceConversationRead,
   workspaceConversationReadSchema,
@@ -71,8 +73,6 @@ import {
   type WorkspaceExecutionEvent,
   workspaceExecutionEventSchema,
   workspaceNativeAgentSessionSchema,
-  type WorkspaceRunContext,
-  workspaceRunContextSchema,
   workspacePayloadPageOptionsSchema,
   type WorkspacePayloadReference,
   type WorkspacePendingRuntimeRequest,
@@ -83,6 +83,8 @@ import {
   workspaceProjectReadPageSchema,
   type WorkspaceReadPageOptions,
   workspaceReadPageOptionsSchema,
+  type WorkspaceRunContext,
+  workspaceRunContextSchema,
   WorkspaceStoreError,
   workspaceTaskDetailSchema,
   workspaceTaskReadPageSchema,
@@ -230,6 +232,15 @@ const migrations = [
     name: 'persist_workspace_promotion_receipts',
     up: executeSqliteScript(`
       ALTER TABLE workspace_command_receipt ADD COLUMN promotion_payload TEXT;
+    `),
+  },
+  {
+    version: 9,
+    name: 'persist_prompt_attachment_snapshots',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_dispatch_intent ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE workspace_message ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE workspace_agent_session ADD COLUMN capabilities TEXT;
     `),
   },
 ] as const
@@ -601,6 +612,8 @@ const makeService = Effect.gen(function* () {
             yield* sql`INSERT INTO workspace_agent_run (id, task_id, checkout_id, generation, status, submitted_at, payload) VALUES (${run.id}, ${run.taskId}, ${command.checkoutId}, ${run.generation}, 'queued', ${run.submittedAt}, ${encode(run)})`
             yield* sql`INSERT INTO workspace_message (id, run_id, conversation_id, role, content, created_at) VALUES (${`user:${run.id}`}, ${run.id}, ${command.conversationId}, 'user', ${command.prompt}, ${command.issuedAt})`
             yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.nativeSessionId ?? null}, 'pending')`
+            yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
+            yield* sql`UPDATE workspace_message SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
             yield* appendEvent(run, 'runQueued', command.issuedAt, { conversationId: command.conversationId })
             const result: CommandReceipt = {
               commandId: command.commandId,
@@ -676,6 +689,25 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(
                 safeError('membership-conflict', 'Dispatch checkout payload does not match stored membership'),
               )
+            const knownSessions = intent.requested_native_session_id
+              ? yield* sql`SELECT id, task_id, conversation_id, checkout_id, generation FROM workspace_agent_session WHERE driver_id = ${intent.driver_id} AND connection_id = ${intent.connection_id} AND native_session_id = ${intent.requested_native_session_id}`
+              : []
+            const knownSession = knownSessions[0]
+            if (
+              knownSession &&
+              (knownSession.task_id !== intent.task_id ||
+                knownSession.conversation_id !== intent.conversation_id ||
+                knownSession.checkout_id !== intent.checkout_id ||
+                Number(knownSession.generation) !== Number(intent.generation))
+            )
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Native session does not match the claimed context'),
+              )
+            const agentSessionId = knownSession
+              ? yield* Schema.decodeUnknownEffect(agentSessionIdSchema)(knownSession.id).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored native session identity is invalid')),
+                )
+              : undefined
             const run = yield* transition(current, 'starting', claimedAt)
             yield* sql`UPDATE workspace_dispatch_intent SET state = 'claimed', owner_epoch = ${ownerEpoch} WHERE run_id = ${runId} AND state = 'pending'`
             yield* persistRun(run)
@@ -687,12 +719,14 @@ const makeService = Effect.gen(function* () {
               conversationId: String(intent.conversation_id),
               ownerEpoch,
               provisionalAgentSessionId: String(intent.provisional_session_id),
+              ...(agentSessionId ? { agentSessionId } : {}),
               driverId: String(intent.driver_id),
               connectionId: String(intent.connection_id),
               checkoutId: String(intent.checkout_id),
               workspacePath: checkout.path,
               generation: Number(intent.generation),
               prompt: String(intent.prompt),
+              attachments: yield* decodeJson(promptAttachmentsSchema)(String(intent.attachments ?? '[]')),
               modelId: intent.model_id as string | null,
               modeId: intent.mode_id as string | null,
               nativeSessionId: intent.requested_native_session_id as string | null,
@@ -746,6 +780,8 @@ const makeService = Effect.gen(function* () {
     }
     if (run.sessionId && run.sessionId !== sessionId)
       return yield* Effect.fail(safeError('membership-conflict', 'Agent Session changed during native session binding'))
+    if (binding.capabilities)
+      yield* sql`UPDATE workspace_agent_session SET capabilities = ${encode(binding.capabilities)} WHERE id = ${sessionId}`
     if (!run.sessionId) {
       const associatedRun = { ...run, sessionId: sessionId as AgentRun['sessionId'] }
       yield* sql`UPDATE workspace_agent_run SET session_id = ${sessionId}, payload = ${encode(associatedRun)} WHERE id = ${runId}`
@@ -1035,6 +1071,10 @@ const makeService = Effect.gen(function* () {
                 safeError('invalid-transition', 'Terminal Run cannot accept another driver event'),
               )
             switch (event.kind) {
+              case 'capabilitiesUpdated':
+                if (run.sessionId)
+                  yield* sql`UPDATE workspace_agent_session SET capabilities = ${encode(event.capabilities)} WHERE id = ${run.sessionId}`
+                break
               case 'turnStarted':
                 if (run.status === 'starting' || run.status === 'awaitingInput')
                   updatedRun = yield* transitionWithNativeId('running')
@@ -1579,6 +1619,7 @@ const makeService = Effect.gen(function* () {
             const receipt = yield* beginRun({
               ...command,
               prompt: followUp.prompt,
+              attachments: followUp.attachments ?? [],
               driverId: followUp.driverId ?? command.driverId,
               connectionId: followUp.connectionId ?? command.connectionId,
               modelId: followUp.modelId === undefined ? command.modelId : followUp.modelId,
@@ -1759,8 +1800,8 @@ const makeService = Effect.gen(function* () {
     }
   }
 
-  const decodeNativeSession = (row: Record<string, unknown>) =>
-    Schema.decodeUnknownEffect(workspaceNativeAgentSessionSchema)({
+  const decodeNativeSession = Effect.fnUntraced(function* (row: Record<string, unknown>) {
+    return yield* Schema.decodeUnknownEffect(workspaceNativeAgentSessionSchema)({
       id: row.id,
       taskId: row.task_id,
       conversationId: row.conversation_id,
@@ -1770,7 +1811,11 @@ const makeService = Effect.gen(function* () {
       nativeSessionId: row.native_session_id,
       generation: Number(row.generation),
       status: row.status,
+      ...(row.capabilities
+        ? { capabilities: yield* decodeJson(agentCapabilitiesSchema)(String(row.capabilities)) }
+        : {}),
     }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored native Agent Session failed validation')))
+  })
 
   const readWorkspacePayload: WorkspaceStore['Service']['readWorkspacePayload'] = (reference, afterOffset, limit) =>
     guard(
@@ -1791,11 +1836,12 @@ const makeService = Effect.gen(function* () {
               }
               case 'message': {
                 const rows =
-                  yield* sql`SELECT id, content, created_at FROM workspace_message WHERE id = ${reference.id} AND role = 'user'`
+                  yield* sql`SELECT id, content, created_at, attachments FROM workspace_message WHERE id = ${reference.id} AND role = 'user'`
                 if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Conversation message does not exist'))
                 value = yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)({
                   id: rows[0].id,
                   content: rows[0].content,
+                  attachments: yield* decodeJson(promptAttachmentsSchema)(String(rows[0].attachments ?? '[]')),
                   createdAt: rows[0].created_at,
                 }).pipe(
                   Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')),
@@ -2349,7 +2395,7 @@ const makeService = Effect.gen(function* () {
               for (let index = 0; index < limit; index += 1) {
                 if (beforeSequence < 1) break
                 const rows =
-                  yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${beforeSequence} AND e.sequence <= ${highWatermark} ORDER BY e.sequence DESC LIMIT 1`
+                  yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${beforeSequence} AND e.sequence <= ${highWatermark} ORDER BY e.sequence DESC LIMIT 1`
                 const row = rows[0] as Record<string, unknown> | undefined
                 if (!row) break
                 const storedEvent = yield* decodeStoredEvent(row)
@@ -2360,6 +2406,9 @@ const makeService = Effect.gen(function* () {
                     : {
                         id: row.message_id,
                         content: row.message_content,
+                        attachments: yield* decodeJson(promptAttachmentsSchema)(
+                          String(row.message_attachments ?? '[]'),
+                        ),
                         createdAt: row.message_created_at,
                       }
                 const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
@@ -2400,7 +2449,7 @@ const makeService = Effect.gen(function* () {
             let cursor = afterSequence
             for (let index = 0; index < limit; index += 1) {
               const rows =
-                yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
+                yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
               const row = rows[0] as Record<string, unknown> | undefined
               if (!row) break
               const storedEvent = yield* decodeStoredEvent(row)
@@ -2411,6 +2460,7 @@ const makeService = Effect.gen(function* () {
                   : {
                       id: row.message_id,
                       content: row.message_content,
+                      attachments: yield* decodeJson(promptAttachmentsSchema)(String(row.message_attachments ?? '[]')),
                       createdAt: row.message_created_at,
                     }
               const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({

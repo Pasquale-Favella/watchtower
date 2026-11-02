@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
+import { ArrowUp, CornerUpRight, ListPlus, Square } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
@@ -7,6 +8,7 @@ import type { ConversationId, Task, WorkspaceCheckoutId } from '@/shared/schemas
 import {
   currentConversationRuns,
   isRunActive,
+  latestConversationSession,
   shouldSubmitComposerKey,
   validateResumeSelection,
 } from './composer-state.js'
@@ -26,8 +28,12 @@ import {
 } from './hooks.js'
 import type { WorkspaceCommandInput } from './lib.js'
 import { canClearCapturedDraft } from './pending-start-state.js'
+import { usePromptAttachments } from './prompt-context-hooks.js'
+import { promptWithAttachments } from './prompt-editor.js'
 import { usePendingStart } from './use-pending-start.js'
 import { useWorkspaceDraft } from './use-workspace-draft.js'
+import { WorkspaceAgentPicker } from './WorkspaceAgentPicker.js'
+import { WorkspacePromptInput } from './WorkspacePromptInput.js'
 
 type Intent =
   | {
@@ -70,12 +76,17 @@ export function WorkspaceComposer({
   readonly conversationId: ConversationId
 }) {
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
+  const attachments = usePromptAttachments(conversationId)
+  const inspectionRequested = useRef('')
+  const agentPickerRef = useRef<{ open: () => void }>(null)
   const [selectedCheckoutId, setSelectedCheckoutId] = useState<WorkspaceCheckoutId | ''>('')
   const [selectedConnectionId, setSelectedConnectionId] = useState('')
   const [resumeSessionId, setResumeSessionId] = useState('')
-  const [resumeMode, setResumeMode] = useState(false)
-  const [modelId, setModelId] = useState('')
-  const [modeId, setModeId] = useState('')
+  const [resumePreference, setResumeMode] = useState<boolean | null>(null)
+  const [selectedModelId, setModelId] = useState<string | null>(null)
+  const [selectedModeId, setModeId] = useState<string | null>(null)
+  const modelId = selectedModelId ?? preferences?.modelId ?? ''
+  const modeId = selectedModeId ?? preferences?.modeId ?? ''
   const [intent, setIntent] = useState<Intent | null>(null)
   const [error, setError] = useState<string | null>(null)
   const draftRef = useRef(draft)
@@ -107,21 +118,63 @@ export function WorkspaceComposer({
     return [project.data.mainCheckout, ...project.data.otherCheckouts].filter(checkout => !checkout.archivedAt)
   }, [project.data])
   const availableCheckoutIds = useMemo(() => new Set(checkoutChoices.map(checkout => checkout.id)), [checkoutChoices])
-  const sessionChoices = sessions.data?.items ?? []
-  const selectedSession = resumeSessionId
-    ? (sessionChoices.find(session => session.id === resumeSessionId) ?? null)
-    : null
-  const preferredCheckout = checkoutChoices.find(
-    checkout => checkout.id === selectedCheckoutId || checkout.id === preferences?.checkoutId,
+  const sessionChoices = useMemo(() => sessions.data?.items ?? [], [sessions.data])
+  const preferredCheckout =
+    checkoutChoices.find(checkout => checkout.id === (selectedCheckoutId || preferences?.checkoutId)) ??
+    checkoutChoices[0]
+  const preferredConnectionId = connections.data?.items.some(
+    item => item.connectionId === (selectedConnectionId || preferences?.connectionId),
   )
+    ? selectedConnectionId || preferences?.connectionId || ''
+    : ''
+  const continuation = latestConversationSession(
+    snapshot.data?.runs ?? [],
+    sessionChoices,
+    conversationId,
+    preferredCheckout?.id ?? '',
+    preferredConnectionId,
+  )
+  const resumeMode = resumePreference ?? preferences?.resumeNativeContext ?? Boolean(continuation)
+  const chosenResumeSessionId = resumeSessionId || preferences?.resumeSessionId || ''
+  const selectedSession = chosenResumeSessionId
+    ? (sessionChoices.find(session => session.id === chosenResumeSessionId) ?? null)
+    : continuation
   const checkoutId = (resumeMode && selectedSession?.checkoutId) || preferredCheckout?.id || ''
-  const connectionId =
-    (resumeMode && selectedSession?.connectionId) ||
-    (connections.data?.items.some(item => item.connectionId === (selectedConnectionId || preferences?.connectionId))
-      ? selectedConnectionId || preferences?.connectionId
-      : '')
+  const connectionId = (resumeMode && selectedSession?.connectionId) || preferredConnectionId
   const selectedConnection = connections.data?.items.find(item => item.connectionId === connectionId) ?? null
-  const inspected = inspect.data?.connectionId === connectionId ? inspect.data : null
+  const inspection = inspect.data?.connectionId === connectionId ? inspect.data : null
+  const observedSession = useMemo(() => {
+    if (resumeMode && selectedSession) return selectedSession
+    const byId = new Map(sessionChoices.map(session => [session.id, session]))
+    return [...(snapshot.data?.runs ?? [])]
+      .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))
+      .map(run => (run.sessionId ? byId.get(run.sessionId) : undefined))
+      .find(
+        session =>
+          session?.conversationId === conversationId &&
+          session.connectionId === connectionId &&
+          session.checkoutId === checkoutId &&
+          session.capabilities,
+      )
+  }, [sessionChoices, snapshot.data, resumeMode, selectedSession, conversationId, connectionId, checkoutId])
+  const inspected = useMemo(
+    () =>
+      inspection && observedSession?.capabilities
+        ? {
+            ...inspection,
+            capabilities: {
+              ...inspection.capabilities,
+              models: observedSession.capabilities.models.length
+                ? { state: 'session-scoped' as const, items: observedSession.capabilities.models }
+                : inspection.capabilities.models,
+              modes: observedSession.capabilities.modes.length
+                ? { state: 'session-scoped' as const, items: observedSession.capabilities.modes }
+                : inspection.capabilities.modes,
+            },
+          }
+        : inspection,
+    [inspection, observedSession],
+  )
   const validatedSession =
     selectedSession && sessions.data && !sessions.data.truncated && sessions.data.nextAfterId === null
       ? validateResumeSelection(
@@ -160,8 +213,9 @@ export function WorkspaceComposer({
     submitSupport?.support === 'supported' &&
     capabilities?.submit.support === 'supported',
   )
-  const modelChoices = capabilities?.models.state === 'session-scoped' ? capabilities.models.items : []
-  const modeChoices = capabilities?.modes.state === 'session-scoped' ? capabilities.modes.items : []
+  const attachmentBlocked = attachments.items.some(item =>
+    item.mediaType.startsWith('image/') ? !capabilities?.promptContent?.images : !capabilities?.promptContent?.files,
+  )
   const busy = activeRun !== null
   const pendingStart = pendingStarts.store.records[conversationId] ?? null
   const blocked =
@@ -177,6 +231,22 @@ export function WorkspaceComposer({
     !connections.error &&
     !sessions.error &&
     !followUps.error
+  let submissionHint = ''
+  if (!selectedConnection) submissionHint = 'Choose an agent below to continue.'
+  else if (!inspected)
+    submissionHint = inspect.pending ? 'Checking the selected agent…' : 'Check the selected agent in Run settings.'
+  else if (resumeMode && !validatedSession)
+    submissionHint = 'Choose a validated native session or a fresh context in Run settings.'
+  else if (!submitAvailable)
+    submissionHint = 'The selected agent has not confirmed support for this context. Check Run settings.'
+
+  const inspectSelectedConnection = inspect.execute
+  const inspectionPending = inspect.pending
+  useEffect(() => {
+    if (!connectionId || inspected || inspectionPending || inspectionRequested.current === connectionId) return
+    inspectionRequested.current = connectionId
+    void inspectSelectedConnection({ connectionId }).catch(() => {})
+  }, [connectionId, inspected, inspectionPending, inspectSelectedConnection])
 
   const requestInspection = () => {
     if (!connectionId) return
@@ -214,6 +284,7 @@ export function WorkspaceComposer({
       } else if (nextIntent.kind === 'enqueue') await enqueue.execute(nextIntent.command)
       else await steerRun.execute(nextIntent.command)
       if (canClearCapturedDraft(draftRef.current, nextIntent.draftValue)) setDraft('')
+      attachments.clearCaptured(nextIntent.command.attachments ?? [])
       setIntent(null)
     } catch (cause) {
       if (nextIntent.kind === 'start') {
@@ -229,8 +300,17 @@ export function WorkspaceComposer({
   }
 
   const submit = () => {
-    const prompt = draft.trim()
-    if (!prompt || !actionStateReady || blocked || pendingStart || pendingStarts.store.error || intent) return
+    const prompt = promptWithAttachments(draft, attachments.items)
+    if (
+      !prompt ||
+      attachmentBlocked ||
+      !actionStateReady ||
+      blocked ||
+      pendingStart ||
+      pendingStarts.store.error ||
+      intent
+    )
+      return
     if (busy) {
       if (!queueExhaustive || !checkoutId || !selectedConnection) return
       const command: WorkspaceCommandInput<'workspace:enqueueFollowUp'> = {
@@ -238,6 +318,7 @@ export function WorkspaceComposer({
         taskId: task.id,
         conversationId,
         prompt,
+        attachments: [...attachments.items],
         driverId: selectedConnection.driverId,
         connectionId,
         modelId: modelId || null,
@@ -257,6 +338,7 @@ export function WorkspaceComposer({
       driverId: validatedSession?.driverId ?? selectedConnection.driverId,
       connectionId: validatedSession?.connectionId ?? selectedConnection.connectionId,
       prompt,
+      attachments: [...attachments.items],
       modelId: modelId || null,
       modeId: modeId || null,
       nativeSessionId: validatedSession?.nativeSessionId ?? null,
@@ -312,8 +394,16 @@ export function WorkspaceComposer({
     inspect.data.capabilities.steer.support === 'supported',
   )
   const steer = () => {
-    if (!activeRun?.nativeTurnId || !steerAvailable || blocked || intent || !draft.trim()) return
-    const prompt = draft.trim()
+    if (
+      !activeRun?.nativeTurnId ||
+      !steerAvailable ||
+      blocked ||
+      intent ||
+      attachmentBlocked ||
+      !promptWithAttachments(draft, attachments.items)
+    )
+      return
+    const prompt = promptWithAttachments(draft, attachments.items)
     void sendIntent({
       kind: 'steer',
       prompt,
@@ -324,6 +414,7 @@ export function WorkspaceComposer({
         generation: activeRun.generation,
         expectedNativeTurnId: activeRun.nativeTurnId,
         message: prompt,
+        attachments: [...attachments.items],
       },
     })
   }
@@ -351,18 +442,27 @@ export function WorkspaceComposer({
       intent
     )
       return
+    const queuedSession =
+      resumeMode &&
+      validatedSession &&
+      validatedSession.driverId === item.driverId &&
+      validatedSession.connectionId === item.connectionId
+        ? validatedSession
+        : null
+    if (resumeMode && !queuedSession) return
     const command: WorkspaceCommandInput<'workspace:promoteQueuedFollowUp'> = {
       commandId: commandIdFor(`promote:${item.commandId}`),
       taskId: task.id,
       conversationId,
       checkoutId,
-      generation: 1,
+      generation: queuedSession?.generation ?? 1,
       driverId: item.driverId,
       connectionId: item.connectionId,
       prompt: item.prompt,
+      attachments: item.attachments ?? [],
       modelId: item.modelId ?? null,
       modeId: item.modeId ?? null,
-      nativeSessionId: null,
+      nativeSessionId: queuedSession?.nativeSessionId ?? null,
       retryOfRunId: null,
     }
     try {
@@ -385,6 +485,7 @@ export function WorkspaceComposer({
     ) {
       event.preventDefault()
       if (steerAvailable) steer()
+      else submit()
       return
     }
     if (
@@ -412,6 +513,11 @@ export function WorkspaceComposer({
                 : 'The message is saved. Retry to confirm delivery or send it if it was not accepted.'}
             </p>
             <p className="mt-2 break-words whitespace-pre-wrap">{pendingStart.rawDraft}</p>
+            {pendingStart.command.attachments?.length ? (
+              <p className="text-muted-foreground mt-1 text-xs">
+                {pendingStart.command.attachments.map(item => item.name).join(' · ')}
+              </p>
+            ) : null}
           </details>
           {pendingStart.state === 'uncertain' && (
             <Button
@@ -434,39 +540,6 @@ export function WorkspaceComposer({
               ? 'Message delivery needs confirmation.'
               : (activityLabels[activeRun?.status ?? 'running'] ?? 'Working…')}
           </span>
-          {activeRun && stopSupported && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={interrupt.pending}
-              onClick={() => void stopRun()}
-            >
-              Stop Run
-            </Button>
-          )}
-          {activeRun && !stopSupported && activeRunContext && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={inspect.pending}
-              onClick={inspectActiveRunConnection}
-            >
-              Inspect Run connection to enable Stop
-            </Button>
-          )}
-          {steerAvailable && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!draft.trim() || Boolean(intent) || steerRun.pending}
-              onClick={steer}
-            >
-              Steer Run
-            </Button>
-          )}
         </div>
       )}
       {followUps.data?.items.length ? (
@@ -479,6 +552,11 @@ export function WorkspaceComposer({
               <div className="min-w-0">
                 <p className="text-muted-foreground text-xs">Queued #{item.position} · Waiting to dispatch</p>
                 <p className="break-words whitespace-pre-wrap">{item.prompt}</p>
+                {item.attachments?.length ? (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    {item.attachments.map(attachment => attachment.name).join(' · ')}
+                  </p>
+                ) : null}
               </div>
               <div className="flex shrink-0 gap-2">
                 <Button
@@ -500,6 +578,10 @@ export function WorkspaceComposer({
                     !contextComplete ||
                     !item.driverId ||
                     !item.connectionId ||
+                    (resumeMode &&
+                      (!validatedSession ||
+                        validatedSession.driverId !== item.driverId ||
+                        validatedSession.connectionId !== item.connectionId)) ||
                     promoteFollowUp.pending
                   }
                   onClick={() => void dispatchQueued(item)}
@@ -549,27 +631,6 @@ export function WorkspaceComposer({
               ))}
             </select>
           </label>
-          <label className="flex min-w-0 flex-col gap-1 text-xs">
-            Harness connection
-            <select
-              className="bg-background min-w-0 rounded-md border px-2 py-1.5"
-              value={connectionId}
-              onChange={event => {
-                setSelectedConnectionId(event.target.value)
-                setResumeSessionId('')
-                setModelId('')
-                setModeId('')
-                setPreferences({ checkoutId, connectionId: event.target.value })
-              }}
-            >
-              <option value="">Choose a connection</option>
-              {connections.data?.items.map(connection => (
-                <option key={connection.connectionId} value={connection.connectionId}>
-                  {connection.label}
-                </option>
-              ))}
-            </select>
-          </label>
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -593,6 +654,7 @@ export function WorkspaceComposer({
               onChange={event => {
                 setResumeMode(event.target.checked)
                 setResumeSessionId('')
+                setPreferences({ resumeNativeContext: event.target.checked, resumeSessionId: '' })
               }}
             />
             Resume a native session
@@ -602,9 +664,10 @@ export function WorkspaceComposer({
               Native session
               <select
                 className="bg-background min-w-0 rounded-md border px-2 py-1.5"
-                value={resumeSessionId}
+                value={selectedSession?.id ?? resumeSessionId}
                 onChange={event => {
                   setResumeSessionId(event.target.value)
+                  setPreferences({ resumeSessionId: event.target.value })
                   const session = sessionChoices.find(choice => choice.id === event.target.value)
                   if (session) setPreferences({ checkoutId: session.checkoutId, connectionId: session.connectionId })
                 }}
@@ -625,42 +688,6 @@ export function WorkspaceComposer({
               </select>
             </label>
           )}
-          <label className="flex min-w-0 flex-col gap-1 text-xs">
-            Model
-            <select
-              className="bg-background min-w-0 rounded-md border px-2 py-1.5"
-              value={modelId}
-              onChange={event => setModelId(event.target.value)}
-              disabled={!modelChoices.length}
-            >
-              <option value="">
-                {capabilities?.models.state === 'session-scoped' ? 'Driver default' : 'Unknown · driver default'}
-              </option>
-              {modelChoices.map(choice => (
-                <option key={choice.id} value={choice.id}>
-                  {choice.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label className="flex min-w-0 flex-col gap-1 text-xs">
-            Effort / mode
-            <select
-              className="bg-background min-w-0 rounded-md border px-2 py-1.5"
-              value={modeId}
-              onChange={event => setModeId(event.target.value)}
-              disabled={!modeChoices.length}
-            >
-              <option value="">
-                {capabilities?.modes.state === 'session-scoped' ? 'Driver default' : 'Unknown · driver default'}
-              </option>
-              {modeChoices.map(choice => (
-                <option key={choice.id} value={choice.id}>
-                  {choice.label}
-                </option>
-              ))}
-            </select>
-          </label>
         </div>
         {project.data?.nextAfterCheckoutId && (
           <p className="mt-2 text-sm text-amber-700" role="status">
@@ -698,44 +725,142 @@ export function WorkspaceComposer({
           Message delivery is unresolved. More work is blocked until its status is confirmed.
         </p>
       )}
-      {!submitAvailable && !busy && (
+      {submissionHint && !busy && (
         <p className="text-muted-foreground mb-2 text-xs" role="status">
-          Select or check your agent in Run settings to continue.
+          {submissionHint}
         </p>
       )}
-      <div className="flex items-end gap-3">
-        <textarea
-          aria-label="Prompt"
-          className="bg-background max-h-60 min-h-24 min-w-0 flex-1 resize-y rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-2"
-          placeholder={busy ? 'Write a follow-up; Enter queues it' : 'Describe the work to do…'}
-          value={draft}
-          maxLength={WORKSPACE_DRAFT_MAX_LENGTH}
-          onChange={event => {
-            draftRef.current = event.target.value
-            setDraft(event.target.value)
-          }}
-          onKeyDown={keyDown}
-        />
-        <Button
-          type="button"
-          disabled={
-            !draft.trim() ||
-            !actionStateReady ||
-            blocked ||
-            Boolean(pendingStart) ||
-            Boolean(pendingStarts.store.error) ||
-            Boolean(intent) ||
-            (busy ? !queueExhaustive : !submitAvailable || (resumeMode && !validatedSession))
-          }
-          onClick={submit}
-        >
-          {intent ? 'Command pending' : busy ? 'Queue follow-up' : 'Send'}
-        </Button>
-      </div>
-      <p className="text-muted-foreground mt-2 text-xs">
-        Enter {busy ? 'queues' : 'sends'} · Shift+Enter adds a line
-        {steerAvailable ? ' · Ctrl/⌘+Enter steers the active Run' : ''}. Drafts stay with this Conversation.
-      </p>
+      <WorkspacePromptInput
+        value={draft}
+        autoFocus
+        onChange={value => {
+          draftRef.current = value
+          setDraft(value)
+        }}
+        onKeyDown={keyDown}
+        attachments={attachments}
+        projectId={task.projectId}
+        checkoutId={checkoutId}
+        maxLength={WORKSPACE_DRAFT_MAX_LENGTH}
+        nativeCommands={observedSession?.capabilities?.commands ?? []}
+        onOpenModelPicker={() => agentPickerRef.current?.open()}
+        placeholder={busy ? 'Write a follow-up, @ reference a file, or / choose a skill…' : undefined}
+        hint={`Enter ${busy ? 'queues' : 'sends'} · Shift+Enter adds a line${steerAvailable ? ' · Ctrl/⌘+Enter steers' : ''}`}
+        controls={
+          <WorkspaceAgentPicker
+            controlRef={agentPickerRef}
+            connections={connections.data?.items ?? []}
+            connectionId={connectionId}
+            modelId={modelId}
+            modeId={modeId}
+            inspection={inspected}
+            pending={inspect.pending}
+            onConnectionChange={id => {
+              setSelectedConnectionId(id)
+              setResumeSessionId('')
+              setResumeMode(null)
+              setModelId('')
+              setModeId('')
+              setPreferences({
+                checkoutId,
+                connectionId: id,
+                modelId: '',
+                modeId: '',
+                resumeNativeContext: undefined,
+                resumeSessionId: '',
+              })
+            }}
+            onModelChange={id => {
+              setModelId(id)
+              setModeId('')
+              setPreferences({ modelId: id, modeId: '' })
+            }}
+            onModeChange={id => {
+              setModeId(id)
+              setPreferences({ modeId: id })
+            }}
+          />
+        }
+        actions={
+          <>
+            {activeRun && !stopSupported && activeRunContext && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={inspect.pending}
+                onClick={inspectActiveRunConnection}
+              >
+                Inspect Run connection to enable Stop
+              </Button>
+            )}
+            {activeRun && stopSupported && (
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="outline"
+                className="rounded-full"
+                aria-label="Stop Run"
+                title="Stop Run"
+                disabled={interrupt.pending || activeRun.status === 'interruptRequested'}
+                onClick={() => void stopRun()}
+              >
+                <Square className="size-3 fill-current" />
+              </Button>
+            )}
+            {steerAvailable && (
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="outline"
+                className="rounded-full"
+                aria-label="Steer Run"
+                title="Steer Run (Ctrl/⌘+Enter)"
+                disabled={
+                  !promptWithAttachments(draft, attachments.items) ||
+                  attachmentBlocked ||
+                  Boolean(intent) ||
+                  blocked ||
+                  steerRun.pending
+                }
+                onClick={steer}
+              >
+                <CornerUpRight className="size-4" />
+              </Button>
+            )}
+            <Button
+              type="button"
+              size="icon-sm"
+              className="rounded-full"
+              aria-label={busy ? 'Queue follow-up' : 'Send'}
+              title={busy ? 'Queue follow-up' : 'Send'}
+              disabled={
+                !promptWithAttachments(draft, attachments.items) ||
+                attachmentBlocked ||
+                !actionStateReady ||
+                blocked ||
+                Boolean(pendingStart) ||
+                Boolean(pendingStarts.store.error) ||
+                Boolean(intent) ||
+                (busy ? !queueExhaustive : !submitAvailable || (resumeMode && !validatedSession))
+              }
+              onClick={submit}
+            >
+              {busy ? <ListPlus className="size-4" /> : <ArrowUp className="size-4" />}
+            </Button>
+          </>
+        }
+      />
+      {resumeMode && selectedSession && (
+        <p className="text-muted-foreground mt-1 text-[11px]" role="status">
+          Continuing this Conversation's native context. Choose a fresh context in Run settings.
+        </p>
+      )}
+      {attachmentBlocked && (
+        <p className="text-muted-foreground mt-2 text-xs" role="status">
+          The selected agent has not confirmed support for these attachments. Choose a compatible agent or remove them.
+        </p>
+      )}
     </section>
   )
 }

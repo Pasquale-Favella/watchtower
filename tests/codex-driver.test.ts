@@ -61,6 +61,91 @@ function* connect(server: ReturnType<typeof fakeServer>) {
 }
 
 describe('Codex native App Server driver', () => {
+  it('discovers native models and effort without opening a thread and sends resolved image and file context', async () => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const inspecting = yield* Effect.forkScoped(connection.discover())
+          const catalog = yield* server.read
+          expect(catalog.method).toBe('model/list')
+          yield* server.send({
+            id: catalog.id,
+            result: {
+              data: [
+                {
+                  id: 'catalog-model',
+                  model: 'native-model',
+                  displayName: 'Native model',
+                  isDefault: true,
+                  supportedReasoningEfforts: [{ reasoningEffort: 'high', description: 'More reasoning' }],
+                },
+              ],
+              nextCursor: null,
+            },
+          })
+          const capabilities = yield* Fiber.join(inspecting)
+          expect(capabilities.models).toEqual([
+            { id: 'native-model', label: 'Native model', modes: [{ id: 'high', label: 'high' }] },
+          ])
+          expect(capabilities.promptContent).toEqual({ images: true, files: true })
+          expect(yield* Queue.size(server.output)).toBe(0)
+          const opening = yield* Effect.forkScoped(
+            connection.openSession({ ...context, modelId: 'native-model', modeId: 'high' }),
+          )
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-content' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-content' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({
+              runId,
+              messages: [{ role: 'user', content: 'Inspect this image and file' }],
+              attachmentIds: [],
+              attachments: [
+                {
+                  id: 'a'.repeat(64),
+                  name: 'image.png',
+                  size: 3,
+                  source: 'file',
+                  mediaType: 'image/png',
+                  content: 'YWJj',
+                },
+                {
+                  id: 'b'.repeat(64),
+                  name: 'notes.md',
+                  size: 5,
+                  source: 'reference',
+                  mediaType: 'text/plain',
+                  content: 'Notes',
+                },
+              ],
+            }),
+          )
+          const start = yield* server.read
+          expect(start.params).toMatchObject({
+            model: 'native-model',
+            effort: 'high',
+            input: [
+              { type: 'text', text: 'Inspect this image and file' },
+              { type: 'image', url: 'data:image/png;base64,YWJj' },
+              { type: 'text', text: expect.stringContaining('Notes') },
+            ],
+          })
+          yield* server.send({ id: start.id, result: { turn: { id: 'turn-content', status: 'inProgress' } } })
+          yield* Fiber.join(submitting)
+          yield* server.send({
+            method: 'turn/completed',
+            params: { threadId: 'thread-content', turn: { id: 'turn-content', status: 'completed' } },
+          })
+          yield* Stream.runCollect(session.events(runId))
+          yield* connection.close(100)
+        }),
+      ),
+    )
+  })
+
   it('completes initialize before opening a thread, holds approval until a user decision, and rejects stale steering', async () => {
     const server = fakeServer()
     const outcome = await Effect.runPromise(

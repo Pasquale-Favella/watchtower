@@ -18,6 +18,7 @@ import type {
   AgentSessionContext,
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
+import { AgentDriverError as PromptContentError } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
@@ -28,6 +29,7 @@ import {
   agentDriverEventSchema,
   agentSessionIdentitySchema,
 } from '@/shared/schemas/execution.js'
+import type { PromptAttachment, ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 import {
   type BeginRunCommand,
@@ -67,6 +69,9 @@ export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceEr
 }) {}
 
 export interface ExecutionServiceOptions {
+  readonly resolveAttachments?: (
+    references: readonly PromptAttachment[],
+  ) => Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError>
   readonly ownerEpoch: number
   readonly closeDeadlineMs?: number | undefined
   readonly maxConcurrentRuns?: number | undefined
@@ -96,7 +101,7 @@ interface ManagedRun {
 const timestamp = Effect.map(DateTime.now, DateTime.formatIso)
 
 const contextFor = (claim: DispatchClaim): AgentSessionContext => ({
-  sessionId: claim.provisionalAgentSessionId as AgentSessionContext['sessionId'],
+  sessionId: (claim.agentSessionId ?? claim.provisionalAgentSessionId) as AgentSessionContext['sessionId'],
   projectId: claim.projectId,
   taskId: claim.taskId,
   conversationId: claim.conversationId,
@@ -176,6 +181,16 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     let nativeCleanupUnconfirmed = false
     const shutdownGate = yield* Semaphore.make(1)
     let shutdownResult: Exit.Exit<void, ExecutionServiceError> | undefined
+
+    function resolveAttachments(
+      references?: readonly PromptAttachment[],
+    ): Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError> {
+      if (!references?.length) return Effect.succeed([])
+      if (input.resolveAttachments) return input.resolveAttachments(references)
+      return Effect.fail(
+        new PromptContentError({ code: 'invalid-state', message: 'Attachment resolution is unavailable.' }),
+      )
+    }
 
     const failUnresolved = (
       state: ManagedRun,
@@ -289,6 +304,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           yield* revalidateCheckout(state.claim).pipe(
             Effect.tapError(error => Effect.sync(() => backgroundFailures.push(Cause.fail(error)))),
           )
+          const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
           const driver = yield* drivers.resolve(state.claim.driverId)
           if (driver.driverId !== state.claim.driverId) {
             return yield* new ExecutionServiceError({
@@ -371,6 +387,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             nativeSessionId: identity.nativeSessionId,
             generation: state.claim.generation,
             recordedAt: yield* timestamp,
+            capabilities: session.capabilities,
           })
           const eventFiber = yield* Effect.forkChild(
             consumeCoalescedAgentEvents(session.events(state.claim.runId), event => handleCommittedEvent(state, event)),
@@ -382,6 +399,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 runId: state.claim.runId,
                 messages: [{ role: 'user', content: state.claim.prompt }],
                 attachmentIds: [],
+                attachments: resolvedAttachments,
               })
               const nativeAcceptance = yield* Schema.decodeUnknownEffect(nativeTurnAcceptanceSchema)(acceptedValue)
               if (
@@ -669,8 +687,19 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                     message: 'The Run has no active native session for steering',
                   })
                 }
+                const session = state.session
                 const sent = yield* Effect.exit(
-                  restoreNative(state.session.steer(command.runId, command.expectedNativeTurnId, command.message)),
+                  restoreNative(
+                    Effect.gen(function* () {
+                      const attachments = yield* resolveAttachments(command.attachments)
+                      return yield* session.steer(
+                        command.runId,
+                        command.expectedNativeTurnId,
+                        command.message,
+                        attachments,
+                      )
+                    }),
+                  ),
                 )
                 const delivery = Exit.isSuccess(sent) ? sent.value : { outcome: 'uncertain' as const }
                 const settled = yield* Effect.exit(

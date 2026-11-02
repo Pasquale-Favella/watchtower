@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   currentConversationRuns,
   isRunActive,
+  latestConversationSession,
   shouldSubmitComposerKey,
   validateResumeSelection,
 } from '@/renderer/features/workspace/composer-state.js'
@@ -34,6 +35,35 @@ const run = (id: string, status: AgentRun['status']): AgentRun => ({
 })
 
 describe('workspace composer state', () => {
+  it('continues the most recent matching native context and leaves stale or different contexts unselected', () => {
+    const session: WorkspaceNativeAgentSession = {
+      id: 'session-z' as WorkspaceNativeAgentSession['id'],
+      taskId,
+      conversationId,
+      checkoutId,
+      connectionId: 'connection-a',
+      driverId: 'acp',
+      nativeSessionId: 'native-first',
+      generation: 1,
+      status: 'active',
+    }
+    const newer = { ...session, id: 'session-a' as WorkspaceNativeAgentSession['id'], nativeSessionId: 'native-second' }
+    const first = { ...run('run-first', 'completed'), sessionId: session.id }
+    const last = { ...run('run-last', 'completed'), sessionId: newer.id, submittedAt: '2026-11-02T00:01:00Z' }
+    expect(
+      latestConversationSession([last, first], [newer, session], conversationId, checkoutId, 'connection-a'),
+    ).toEqual(newer)
+    expect(latestConversationSession([last], [newer], conversationId, checkoutId, 'other')).toBeNull()
+    expect(
+      latestConversationSession(
+        [last],
+        [{ ...newer, status: 'unavailable' }],
+        conversationId,
+        checkoutId,
+        'connection-a',
+      ),
+    ).toBeNull()
+  })
   it('submits only Enter without Shift or active IME composition', () => {
     expect(shouldSubmitComposerKey({ key: 'Enter', shiftKey: false, isComposing: false })).toBe(true)
     expect(shouldSubmitComposerKey({ key: 'Enter', shiftKey: true, isComposing: false })).toBe(false)

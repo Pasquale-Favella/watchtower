@@ -42,7 +42,17 @@ area. The existing Workspace route bypasses the Analytics dashboard layout.
 - Register/open a repository through a header action and dialog. Put editable
   Project metadata and connection setup in contextual settings. Registration
   forms must not permanently occupy the working area.
-- New Task opens a focused composer. Preserve its draft if creation or dispatch
+- Put the Project picker in the new-chat heading. Search and select Projects,
+  add a Project from the same popup, or start without a Project through the
+  secondary action beneath the heading. Changing this choice preserves typed
+  input. The shared registration dialog offers the native folder chooser and
+  retains a manual path field. Selecting a connection checks that connection;
+  an extra inspection step must not obstruct the first message.
+- New chat opens a focused composer with a Project picker, including No project.
+  Opening the draft creates no Task. Its first submission creates the Task and
+  Conversation, then dispatches the captured prompt. No project uses a persistent
+  application-owned checkout and hides its internal Project from repository
+  choices. Preserve the draft if creation or dispatch
   fails. If Task creation commits before Run dispatch fails, keep the Task and
   show the failure there; do not silently create duplicates on retry.
 - The conversation header shows Task title, checkout/branch and current state,
@@ -175,7 +185,9 @@ Coach's later migration consumes the common execution engine.
    listing inert. Own shared contracts, handlers, read hooks and their tests.
 2. **Shell and navigation.** Replace permanent forms with compact navigation and
    dialogs; persist selection/drafts/panes. Own WorkspaceView and navigation
-   components. Keep initial draft input distinct from dispatched work.
+   components. Use folder headers and nested chat rows, a New chat action and a
+   Project/No project picker in the chat. Keep initial draft input distinct from
+   dispatched work.
 3. **Turn projection and controls.** Group the durable transcript into messages
    and tool activity. Wire pinned composer, requests, queue, stop/resume and
    recovery to the contracts above. Own transcript/composer/request components
@@ -213,3 +225,156 @@ issue, PR and living plan rather than a second planning thread.
 - Run ordinary CI without paid inference. Keep authenticated native turns,
   packaging/authentication certification and cross-platform evidence as explicit
   release gates.
+
+## Chat-first checkpoint, 2026-11-02
+
+The default screen is a chat draft. The Project picker sits in its heading,
+with searchable Projects, No project and Add project. The secondary action
+starts without a repository. Both registration entry points open one Add project
+palette: browse local folders (Create & Add / Init & Add for missing or non-Git
+folders), create a new project with an optional private GitHub repository, or
+clone from GitHub or a Git URL. Setup runs through the user's own `git`/`gh`
+(ADR 0012 addendum) and is replay-safe under its command ID. Folder headers
+expand independently in the sidebar; its compact Search and icon actions
+replace the permanent setup controls.
+Search explicitly covers loaded Projects and Tasks, with paging available for
+the rest. Expanding a folder does not navigate away from the active chat.
+
+The first message creates the Task and Conversation before dispatch. No project
+uses a persistent managed Git checkout inside the application profile, with
+ordinary checkout revalidation and exclusive-write admission. The internal
+Project stays out of the picker. These chats currently share that checkout;
+separate working trees remain part of the checkout work.
+
+The pinned composer supports explicit native resume, queue/cancel/dispatch,
+capability-gated steering and Stop, exact approval options, and structured
+questions. Only adapters that expose cancellation offer a question cancel
+control. Ordinary launch records and native identifiers stay in collapsed
+details. The audit and response history remain inspectable.
+
+Start commands persist their immutable payload and original draft before RPC.
+Typing can continue independently. Uncertain delivery survives navigation and
+reload and exposes an explicit retry of the same command, while fresh work is
+blocked for that Conversation. Retention bounds never silently discard an
+unresolved command. Selected connection inspection opens no session or SQL
+worker and does not claim account authentication. Model and mode facts remain
+unknown or session-scoped when the adapter cannot establish a catalog.
+
+The deterministic Electron journey covers Project selection, folder browsing,
+first send, approval, queue cancellation/promotion, streaming restoration,
+interruption and a No project chat. No paid inference is required. The Stop
+journey exposed and fixed an execution deadlock: an observed active turn can be
+interrupted while its submit call waits for completion, without fabricating
+native acceptance.
+
+Scroll restoration, older-page anchoring and measured long-history/streaming
+budgets remain open. Git/diff, PTY, file inspection, preview, forks, attachments,
+the Task status/archive board, Coach migration and authenticated driver
+certification remain later work. This checkpoint does not complete M3.1 or #178.
+
+## Implementation checkpoint, wave E
+
+The compact navigator now moves repository registration and Task creation into
+dialogs and restores Project/Task/Conversation selection. Conversation output is
+projected into chronological assistant segments, thinking blocks, tool groups
+and visible Run status notices. Recent activity loads first; older pages and
+forward catch-up use separate cursors. Verified payloads replace visible chat
+placeholders. The reader limits reassembly to 8 MiB and retains at most 16 full
+payloads with a 16 MiB serialized JSON budget; released records offer reload.
+These are configured size limits, not measured heap or responsiveness budgets.
+
+Operational reads expose persisted Run context, native sessions and delivery
+history. Queued and starting Runs get their Conversation/checkout identity from
+retained dispatch intents before native session binding. Coverage reports
+truncation. Worker protocol 8 rejects workers without backward paging semantics.
+
+The composer and its native controls are still unimplemented. Scroll position
+across Conversation switches is not restored. Rendering limits bound entries,
+not the number of tool/text blocks within a turn; 10,000-message responsiveness,
+older-page reader anchoring and sustained streaming remain measurement gates.
+Git/diff, PTY and preview services remain part of the target rather than empty
+inspector tabs.
+
+### Native inspection prerequisite
+
+Expose an explicit selected-connection inspection command. Catalog listing must
+stay inert. Extract lazy driver loading from execution ownership so inspection
+does not open the workspace SQL worker. A scoped inspection may initialize a
+native protocol process, but must never submit a prompt or open a session just
+to obtain a model list. Match immutable connection identity, bound initialize
+and cleanup time, and preserve unconfirmed termination as an error.
+
+Current driver contracts do not establish a complete connection-level catalog:
+
+- ACP model/mode choices arrive with normal session creation or loading.
+- The current native Codex slice initializes the app server but implements no
+  model-list operation. Empty model/mode arrays do not prove an empty catalog.
+- The Claude adapter checks API-key presence before session creation. Presence
+  does not validate a credential; successful initialization is a later native
+  session fact.
+
+Represent unknown, unavailable and observed session-scoped facts separately.
+Successful protocol initialization must not be labeled as account
+authentication. Publish capability evidence and model/mode facts as they become
+available through normal execution. Ordinary tests use deterministic drivers;
+no authenticated native turn was exercised by the seeded history fixture.
+
+## Composer context checkpoint, 2026-11-02
+
+New chats and existing Conversations now share the prompt editor and compact
+agent/model controls. The input grows with its content, preserves IME input,
+continues Markdown lists on Shift+Enter and keeps send, queue, steering and Stop
+beside the selected agent. Agent choices are remembered by connection; a
+Conversation retains its own model and mode choices. The model picker is also
+available through `/model` and Mod+Shift+M.
+
+Follow-ups default to the latest validated native context belonging to the
+Conversation, connection and checkout, with a visible continuation notice.
+Run settings offers an explicit fresh-context choice. A failed or unavailable
+resume never silently starts a new native conversation. Explicit queue dispatch
+uses the selected validated context and keeps its original attachment snapshots.
+Dispatch keeps an existing Agent Session's durable identity when loading its
+native context, so resumed approval requests do not inherit a new provisional
+identity and fail membership checks.
+
+The file picker, clipboard image paste and file drop create attachment snapshots.
+Images offer a preview and every attachment can be removed before submission.
+The current limit is eight attachments and 4 MiB combined per message. Oversized
+input is rejected. Original files are never truncated. Text files are sent as
+context, supported images use native content blocks, and other files remain
+available to native tools at a captured application-owned path. This does not
+promise extraction or preview of every binary format.
+
+`@` searches tracked and nonignored untracked checkout files and folder paths.
+Selecting a file captures its bytes; selecting a folder captures a bounded file
+listing. References cannot read through a link outside the selected checkout.
+`/` and `$` search project skill and command files. Choosing one attaches its
+instructions; agent-advertised slash commands preserve their native command
+text. `/attach` opens the file picker. Menus support arrows, Enter, Tab and Escape.
+
+Attachment metadata survives draft navigation and reload. Start, queue,
+promotion and steering intents retain snapshot references; receipt fingerprints
+include them. A queued message still reads its original snapshot after its
+source changes. SQLite migration 9 retains transcript/dispatch references and
+session capability facts. Worker protocol 9 rejects an older worker that would
+drop this data. Content hashes are checked when resolving saved snapshots.
+
+Connection inspection can list native models and their effort choices without
+creating a native conversation. Session-specific model/mode facts and advertised
+commands come from authoritative native-session reads. Unknown capability facts
+do not enable an action. The deterministic Electron journey exercises file
+references, project skills, file upload, image paste/preview, draft file drop and
+restoration, queue promotion with changed source content, approvals and Stop.
+Driver fixtures cover native image/document blocks and model/effort routing.
+
+Verification during this wave: all 351 Vitest files passed, with 3,939 passing
+tests and five skipped; the full Electron suite passed 16/16. The later native
+continuation correction passed the focused store, execution, worker and composer
+checks and the Electron composer journey again. All four TypeScript projects,
+Effect diagnostics, formatting and the production build passed. ESLint reported
+zero errors with the repository's existing warnings. No paid inference or
+authenticated native turn was started. Packaging was not rerun.
+
+This checkpoint does not certify authenticated native turns, arbitrary binary
+extraction, every provider's permissions/plan controls or the remaining M3.1
+interaction gates. Keep #178 and draft #179 open.

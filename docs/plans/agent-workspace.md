@@ -2,7 +2,8 @@
 
 Status: implementation in progress. The workspace host, worker, store,
 execution service and renderer RPC run in the Electron main process and open on
-first use. No renderer UI or native agent run uses them yet. No workspace release or native protocol certification is
+first use. The renderer provides a chat-first Project picker, durable
+Conversations, a persistent composer and native request controls. No workspace release or native protocol certification is
 complete on this branch yet.
 
 [Issue #178](https://github.com/Pasquale-Favella/watchtower/issues/178) owns the
@@ -293,6 +294,38 @@ steering, approvals and questions. A listing of executable connections cannot
 supply those guarantees. Board status/archive commands, full Task payload viewing,
 conversation forks, attachments and broader keyboard/accessibility checks remain
 open. Real authenticated turns and Claude distribution remain release gates.
+
+## Wave E checkpoint, 2026-10-30
+
+- `9f6614c` exposes Task snapshots, native sessions and delivery history to the
+  renderer. Run context comes from retained dispatch intents, including queued
+  attempts before native binding. Snapshot coverage reports row/body truncation;
+  context is schema-validated and Run/context data shares a 1 MiB budget.
+  Conversation reads add fixed-watermark backward tail paging without changing
+  forward event-stream semantics.
+- `76cb179` replaces permanent setup forms with registration and Task dialogs,
+  compact project/task navigation, responsive collapse and validated selection
+  restoration. A missing restored selection has a visible fallback.
+- `5b72218` groups chronological assistant segments, thinking and tool activity.
+  Known tool provenance survives interleaved Runs. Lifecycle failures and
+  recovery states remain visible in chat. Large records have explicit
+  placeholders and verified hydration replaces them in place. Reassembly is
+  capped at 8 MiB; full records use a 16-entry/16 MiB serialized JSON cache and
+  bounded release markers with a reload affordance.
+- `aa18783` advances the workspace worker protocol to 8. An older worker must
+  not ignore a backward-paging request and return oldest activity as current.
+
+Standards and Spec review found and resolved hidden truncated content, oldest
+history on open, missing pre-bind Run context validation and unbounded hydrated
+payload retention. The seeded Electron history fixture writes through the real
+store before the production worker starts; no native agent turn is required.
+
+The composer and native request/control UI remain open. Connection inspection
+must preserve unknown authentication and session-scoped model/mode facts rather
+than creating native sessions to fill a picker. Selection restoration does not
+yet restore the reader's scroll position. Older-page anchoring, 10,000-message
+responsiveness, blocks within long turns and sustained streaming/load budgets
+still need evidence. Git/diff, PTY, preview and the remaining epic remain open.
 
 ## Constraints for these slices
 

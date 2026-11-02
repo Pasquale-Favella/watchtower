@@ -60,7 +60,7 @@ export const updateWorkspaceComposerPreferenceAtom = Atom.writable(
         context.get(workspaceDraftStorageAtom),
         context.get(workspaceComposerPreferencesAtom),
         update.conversationId,
-        update.preference,
+        { ...context.get(workspaceComposerPreferencesAtom)[update.conversationId], ...update.preference },
       ),
     )
   },

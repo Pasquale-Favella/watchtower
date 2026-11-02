@@ -2,6 +2,7 @@ import {
   type Agent,
   type Client,
   ClientSideConnection,
+  type ContentBlock,
   type InitializeResponse,
   ndJsonStream,
   type PermissionOption,
@@ -38,6 +39,7 @@ import {
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
 import { type JsonRpcTransport, spawnJsonRpcStdio } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import type {
   AgentCapabilities,
   AgentDriverEvent,
@@ -180,7 +182,7 @@ const capability = (
   evidence: [{ source, detail }],
 })
 
-function connectionCapabilities(loadSessionSupported: boolean): AgentCapabilities {
+function connectionCapabilities(loadSessionSupported: boolean, images = false): AgentCapabilities {
   return {
     openSession: capability('supported', 'protocol', 'ACP session/new', [
       'One native session per scoped driver connection.',
@@ -204,6 +206,7 @@ function connectionCapabilities(loadSessionSupported: boolean): AgentCapabilitie
     ),
     models: [],
     modes: [],
+    promptContent: { images, files: true },
   }
 }
 
@@ -515,9 +518,17 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
         ...state.liveCapabilities,
         ...sessionCapabilities({ configOptions: update.configOptions }),
       }
-      return [{ kind: 'nativeNotice', message: 'ACP configuration options changed.' }]
+      return [{ kind: 'capabilitiesUpdated', capabilities: state.liveCapabilities }]
     case 'available_commands_update':
-      return [{ kind: 'nativeNotice', message: 'ACP reported an updated command catalog.' }]
+      state.liveCapabilities = {
+        ...state.liveCapabilities,
+        commands: update.availableCommands.slice(0, 256).map(command => ({
+          name: command.name,
+          description: command.description,
+          ...(command.input?.hint ? { inputHint: command.input.hint } : {}),
+        })),
+      }
+      return [{ kind: 'capabilitiesUpdated', capabilities: state.liveCapabilities }]
     case 'session_info_update':
       return [{ kind: 'nativeNotice', message: 'ACP reported updated session information.' }]
   }
@@ -597,7 +608,8 @@ function selectSessionOptions(
 
 function mapPromptContent(
   input: AgentTurnInput,
-): Effect.Effect<Array<{ type: 'text'; text: string }>, UnsupportedAgentOperation> {
+  images: boolean,
+): Effect.Effect<Array<ContentBlock>, UnsupportedAgentOperation> {
   if (input.attachmentIds.length > 0) {
     return Effect.fail(
       unsupported('submit', 'ACP attachments need a content resolver; attachment IDs cannot be sent as text.'),
@@ -611,7 +623,15 @@ function mapPromptContent(
       ),
     )
   }
-  return Effect.succeed([{ type: 'text', text: input.messages[0].content }])
+  if (!images && input.attachments?.some(item => item.mediaType.startsWith('image/')))
+    return Effect.fail(unsupported('submit', 'This ACP agent did not advertise image input.'))
+  const content: ContentBlock[] = [{ type: 'text', text: input.messages[0].content }]
+  for (const attachment of input.attachments ?? []) {
+    if (attachment.mediaType.startsWith('image/'))
+      content.push({ type: 'image', mimeType: attachment.mediaType, data: attachment.content })
+    else content.push({ type: 'text', text: attachmentText(attachment) })
+  }
+  return Effect.succeed(content)
 }
 
 function permissionOptions(options: ReadonlyArray<PermissionOption>) {
@@ -874,7 +894,7 @@ function sessionInterface(
             code: 'invalid-state',
             message: 'An ACP Run ID cannot be submitted twice.',
           })
-        const content = yield* mapPromptContent(input)
+        const content = yield* mapPromptContent(input, state.liveCapabilities.promptContent?.images === true)
         if (!channel) channel = yield* emptyEventChannel(input.runId)
         channel.submitted = true
         const completed = yield* Effect.sync(() => {
@@ -1044,7 +1064,7 @@ function createConnection(
     const readable = yield* Stream.toReadableStreamEffect(transport.input, { strategy: { highWaterMark: 32 } })
     const writable = new WritableStream<Uint8Array>({
       write: bytes => {
-        if (bytes.byteLength > MAX_FRAME_BYTES) {
+        if (bytes.byteLength > 8 * MAX_FRAME_BYTES) {
           throw new AgentDriverError({
             code: 'protocol-error',
             message: 'ACP outgoing frame exceeded the configured byte limit.',
@@ -1217,6 +1237,10 @@ function createConnection(
           })
         }
         state ??= makeSessionState(context, response.sessionId, connectionState.loadSessionSupported, false)
+        state.liveCapabilities = {
+          ...state.liveCapabilities,
+          promptContent: { images: initialized.agentCapabilities?.promptCapabilities?.image === true, files: true },
+        }
         state.poison = error => poisonConnection(state as AcpSessionState, error)
         state.replaying = false
         state.liveCapabilities = { ...state.liveCapabilities, ...sessionCapabilities(response) }
@@ -1240,7 +1264,13 @@ function createConnection(
 
     return {
       identity: connectionState.identity,
-      discover: () => Effect.succeed(connectionCapabilities(connectionState.loadSessionSupported)),
+      discover: () =>
+        Effect.succeed(
+          connectionCapabilities(
+            connectionState.loadSessionSupported,
+            initialized.agentCapabilities?.promptCapabilities?.image === true,
+          ),
+        ),
       openSession: context => open(context),
       loadSession: (context, native) => open(context, native),
       close: deadlineMs => closeAcpConnection(connectionState, deadlineMs),

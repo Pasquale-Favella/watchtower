@@ -92,6 +92,113 @@ const legacyFingerprint = (value: unknown): string => {
 }
 
 describe('WorkspaceStore', () => {
+  it('keeps the durable session identity when a resumed run creates another approval', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'finish-first',
+          occurredAt: '2026-10-29T10:00:04Z',
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn-1' },
+        }),
+      )
+      const resumed = {
+        ...command,
+        commandId: 'resume-request',
+        runId: 'run-resumed' as never,
+        provisionalAgentSessionId: 'new-provisional-session',
+        nativeSessionId: 'native-session-1',
+      }
+      await run(store.beginRun(resumed))
+      const claim = await run(store.claimDispatch(resumed.runId, 7, '2026-10-29T10:00:05Z'))
+      expect(claim).toMatchObject({
+        agentSessionId: command.provisionalAgentSessionId,
+        provisionalAgentSessionId: 'new-provisional-session',
+      })
+      await run(
+        store.bindNativeSession(resumed.runId, {
+          ownerEpoch: 7,
+          nativeSessionId: 'native-session-1',
+          generation: 1,
+          recordedAt: '2026-10-29T10:00:06Z',
+        }),
+      )
+      await run(
+        store.recordDriverEvent(resumed.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'resumed-approval',
+          occurredAt: '2026-10-29T10:00:07Z',
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'request-1',
+              runId: resumed.runId,
+              sessionId: claim.agentSessionId,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Continue?',
+              options: [],
+              questions: [],
+            },
+          },
+        }),
+      )
+      expect((await run(store.listPendingRuntimeRequests(task.id, 0, 20))).items).toHaveLength(1)
+    })
+  })
+
+  it('retains attachment snapshots in receipts, dispatch claims, transcript pages, and promoted follow-ups', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const attachments = [
+        { id: 'a'.repeat(64), name: 'notes.txt', mediaType: 'text/plain', size: 10, source: 'reference' as const },
+      ]
+      const withContext = { ...command, attachments }
+      await run(store.beginRun(withContext))
+      expect(await run(store.beginRun(withContext))).toMatchObject({ replayed: true })
+      await expect(
+        run(store.beginRun({ ...withContext, attachments: [{ ...attachments[0], name: 'other.txt' }] })),
+      ).rejects.toMatchObject({ code: 'command-conflict' })
+      expect(await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))).toMatchObject({ attachments })
+      const page = await run(store.readConversationPage(conversation.id, 0, 20))
+      expect(page.items.find(item => item.userMessage)?.userMessage).toMatchObject({ attachments })
+      await run(
+        store.failDispatch(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:03Z',
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      await run(
+        store.enqueueFollowUp({
+          commandId: 'queued-context',
+          issuedAt: '2026-10-29T10:00:04Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Use the context',
+          attachments,
+        }),
+      )
+      const promoted = await run(
+        store.promoteNextFollowUp(conversation.id, {
+          ...command,
+          commandId: 'promote-context',
+          runId: 'run-context-promoted' as never,
+          provisionalAgentSessionId: 'session-context-promoted',
+        }),
+      )
+      expect(promoted?.followUp).toMatchObject({ attachments })
+      expect(await run(store.claimDispatch('run-context-promoted' as never, 7, '2026-10-29T10:00:05Z'))).toMatchObject({
+        attachments,
+      })
+    })
+  })
+
   it('durably replays registration and task creation while rejecting changed intent', async () => {
     const directory = mkdtempSync(join(process.cwd(), '.workspace-registration-receipt-'))
     const filename = join(directory, 'workspace.db')
@@ -2120,6 +2227,9 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE workspace_steer_intent`
             yield* sql`DROP TABLE workspace_follow_up_queue`
             yield* sql`ALTER TABLE workspace_command_receipt DROP COLUMN promotion_payload`
+            yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN attachments`
+            yield* sql`ALTER TABLE workspace_message DROP COLUMN attachments`
+            yield* sql`ALTER TABLE workspace_agent_session DROP COLUMN capabilities`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`
             yield* sql`ALTER TABLE workspace_worker_epoch DROP COLUMN allocated_epoch`
           }),

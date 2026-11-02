@@ -31,6 +31,28 @@ export function currentConversationRuns(
   return runs.filter(run => contextByRun.get(run.id)?.conversationId === conversationId)
 }
 
+export function latestConversationSession(
+  runs: readonly AgentRun[],
+  sessions: readonly WorkspaceNativeAgentSession[],
+  conversationId: ConversationId,
+  checkoutId: WorkspaceCheckoutId | '',
+  connectionId: string,
+): WorkspaceNativeAgentSession | null {
+  const byId = new Map(sessions.map(session => [session.id, session]))
+  for (const run of [...runs].sort((a, b) => b.submittedAt.localeCompare(a.submittedAt))) {
+    const session = run.sessionId ? byId.get(run.sessionId) : undefined
+    if (
+      session &&
+      session.conversationId === conversationId &&
+      session.checkoutId === checkoutId &&
+      session.connectionId === connectionId &&
+      (session.status === 'active' || session.status === 'suspended')
+    )
+      return session
+  }
+  return null
+}
+
 export interface ResumeSelection {
   readonly taskId: TaskId
   readonly conversationId: ConversationId

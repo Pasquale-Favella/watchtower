@@ -17,6 +17,7 @@ import { join } from 'path'
 
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
+import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { createDetectedHarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
@@ -32,6 +33,7 @@ import {
   safeLogOperationalEvent,
 } from '@/infrastructure/logging/operational-log.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
+import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
 import {
   BackgroundShell,
@@ -134,6 +136,18 @@ const workspaceHostLayer = Layer.effect(
     )
     const context = yield* Layer.buildWithScope(
       WorkspaceHostLive({
+        resolveAttachments: references =>
+          Effect.tryPromise({
+            try: () =>
+              createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')).resolve(
+                references,
+              ),
+            catch: () =>
+              new AgentDriverError({
+                code: 'invalid-state',
+                message: 'A saved attachment is missing or failed integrity validation.',
+              }),
+          }),
         filename: join(app.getPath('userData'), 'workspace.db'),
         workerPath: join(__dirname, 'workspace-worker.js'),
         runtimeExecutable: process.execPath,
@@ -419,6 +433,7 @@ app.whenReady().then(async () => {
               Layer.merge(
                 coachHandlers(agents.native),
                 workspaceHandlers({
+                  attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
                   chooseProjectDirectory: () =>
                     Effect.tryPromise({
                       try: async () => {

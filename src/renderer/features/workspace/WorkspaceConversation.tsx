@@ -561,6 +561,20 @@ function UserMessageEntry({
           <Markdown>{content}</Markdown>
         </div>
       )}
+      {message.attachments && message.attachments.length > 0 && (
+        <ul className="mt-3 flex flex-wrap gap-2" aria-label="Message attachments">
+          {message.attachments.map(attachment => (
+            <li
+              key={attachment.id}
+              className="bg-background/60 max-w-full truncate rounded-md border px-2 py-1 text-xs"
+              title={attachment.name}
+            >
+              {attachment.source === 'skill' || attachment.source === 'command' ? '/' : ''}
+              {attachment.name}
+            </li>
+          ))}
+        </ul>
+      )}
       {reference && content === undefined && (
         <PayloadControl
           reference={reference}
@@ -924,6 +938,8 @@ function DriverContent({ event }: { readonly event: import('@/shared/schemas/exe
       )
     case 'turnStarted':
       return null
+    case 'capabilitiesUpdated':
+      return <p className="text-muted-foreground text-sm">Agent controls updated.</p>
     case 'turnCompleted':
     case 'turnInterrupted':
       return <p className="text-sm">{driverEventSummary(event)}</p>

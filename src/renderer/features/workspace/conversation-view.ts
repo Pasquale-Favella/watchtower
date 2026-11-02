@@ -318,6 +318,8 @@ export function eventSummary(event: WorkspaceExecutionEvent): string {
 
 export function driverEventSummary(event: AgentDriverEvent): string {
   switch (event.kind) {
+    case 'capabilitiesUpdated':
+      return 'Agent controls updated'
     case 'turnStarted':
       return 'Turn started'
     case 'turnCompleted':

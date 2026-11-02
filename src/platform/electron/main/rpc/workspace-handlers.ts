@@ -15,6 +15,7 @@ import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-pro
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
 import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
+import type { PromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { ConnectionInspectionError } from '@/platform/electron/main/workspace/connection-inspection.js'
 import { browseDirectories } from '@/platform/electron/main/workspace/directory-browse.js'
 import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
@@ -127,12 +128,14 @@ const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
  */
 export function workspaceHandlers<R = never>(
   options: {
+    readonly attachments?: PromptAttachmentStore
     readonly chooseProjectDirectory?: () => Effect.Effect<string | null, unknown, R>
     readonly prepareScratchProject?: (
       store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
     ) => Effect.Effect<import('@/shared/schemas/workspace-projects.js').WorkspaceProjectRegistration, unknown, R>
   } = {},
 ) {
+  const attachmentStore = options.attachments
   return Layer.unwrap(
     Effect.gen(function* () {
       const host = yield* WorkspaceHost
@@ -154,8 +157,44 @@ export function workspaceHandlers<R = never>(
           provisionalAgentSessionId: entityId('session', request.commandId),
         }
       })
+      const contextRoot = Effect.fnUntraced(function* (request: {
+        readonly projectId: import('@/shared/schemas/workspace.js').ProjectId
+        readonly checkoutId?: import('@/shared/schemas/workspace.js').WorkspaceCheckoutId
+      }) {
+        const detail = yield* read(() => store.getProject(request.projectId))
+        if (!detail || detail.project.archivedAt) return yield* failure('not-found')
+        const checkout = [detail.mainCheckout, ...detail.otherCheckouts].find(
+          item => item.id === (request.checkoutId ?? detail.mainCheckout.id) && !item.archivedAt,
+        )
+        if (!checkout) return yield* failure('not-found')
+        return checkout.path
+      })
 
       return WorkspaceRpcGroup.toLayer({
+        'workspace:importAttachment': request =>
+          attachmentStore
+            ? safe(Effect.tryPromise(() => attachmentStore.import(request)))
+            : Effect.fail(failure('unavailable')),
+        'workspace:previewAttachment': request =>
+          attachmentStore
+            ? safe(Effect.tryPromise(() => attachmentStore.preview(request)))
+            : Effect.fail(failure('unavailable')),
+        'workspace:searchPromptContext': request =>
+          attachmentStore
+            ? safe(
+                Effect.flatMap(contextRoot(request), root =>
+                  Effect.tryPromise(() => attachmentStore.search(root, request.kind, request.query)),
+                ),
+              )
+            : Effect.fail(failure('unavailable')),
+        'workspace:attachPromptContext': request =>
+          attachmentStore
+            ? safe(
+                Effect.flatMap(contextRoot(request), root =>
+                  Effect.tryPromise(() => attachmentStore.attach(root, request.path, request.kind)),
+                ),
+              )
+            : Effect.fail(failure('unavailable')),
         'workspace:chooseProjectDirectory': () =>
           options.chooseProjectDirectory ? safe(options.chooseProjectDirectory()) : Effect.fail(failure('unavailable')),
         'workspace:browseDirectories': ({ directoryPath }) =>

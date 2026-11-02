@@ -24,6 +24,7 @@ import {
   type JsonRpcId,
   spawnJsonRpcStdio,
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import type {
   AgentCapabilities,
   AgentConnectionIdentity,
@@ -31,6 +32,7 @@ import type {
   AgentReconcileEvent,
   AgentRequestDecision,
 } from '@/shared/schemas/execution.js'
+import type { ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
 const Initialized = Schema.Struct({
@@ -38,6 +40,45 @@ const Initialized = Schema.Struct({
   platformFamily: Schema.String,
   platformOs: Schema.String,
   userAgent: Schema.String,
+})
+const ModelList = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      model: Schema.String,
+      displayName: Schema.String,
+      isDefault: Schema.optional(Schema.Boolean),
+      supportedReasoningEfforts: Schema.Array(
+        Schema.Struct({ reasoningEffort: Schema.String, description: Schema.String }),
+      ),
+    }),
+  ),
+  nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+})
+
+const discoverModels = Effect.fnUntraced(function* (client: JsonRpcClient): Effect.fn.Return<AgentCapabilities> {
+  const models: AgentCapabilities['models'][number][] = []
+  let cursor: string | undefined
+  let defaultModes: AgentCapabilities['modes'] = []
+  for (let page = 0; page < 3; page++) {
+    const result = yield* client.request('model/list', { limit: 80, ...(cursor ? { cursor } : {}) }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(ModelList)),
+      Effect.timeoutOption('3 seconds'),
+      Effect.catch(() => Effect.succeed({ _tag: 'None' as const })),
+    )
+    if (result._tag === 'None') break
+    for (const model of result.value.data) {
+      const modes = model.supportedReasoningEfforts.map(effort => ({
+        id: effort.reasoningEffort,
+        label: effort.reasoningEffort,
+      }))
+      models.push({ id: model.model, label: model.displayName, modes })
+      if (model.isDefault) defaultModes = modes
+    }
+    if (!result.value.nextCursor) break
+    cursor = result.value.nextCursor
+  }
+  return { ...capabilities, models: models.slice(0, 240), modes: defaultModes }
 })
 const ThreadResponse = Schema.Struct({ thread: Schema.Struct({ id: Schema.String }) })
 const ResumedThreadResponse = Schema.Struct({
@@ -116,11 +157,6 @@ const supported = {
   restrictions: [],
   evidence: [{ source: 'protocol', detail: 'Codex App Server JSONL' }],
 } as const
-const textOnly = {
-  support: 'supported',
-  restrictions: ['Text-only turns; attachments and assistant transcript injection are not supported.'],
-  evidence: [{ source: 'protocol', detail: 'Codex App Server turn/start input' }],
-} as const
 const limitedRequests = {
   support: 'supported',
   restrictions: [
@@ -136,13 +172,14 @@ const textReplay = {
 const capabilities: AgentCapabilities = {
   openSession: supported,
   loadSession: supported,
-  submit: textOnly,
+  submit: supported,
   interrupt: supported,
   steer: supported,
   respond: limitedRequests,
   reconcile: textReplay,
   models: [],
   modes: [],
+  promptContent: { images: true, files: true },
 }
 
 const MAX_REPLAY_EVENTS = 128
@@ -258,7 +295,7 @@ export function codexAgentDriverFromTransport(
 
     const connection: AgentDriverConnection = {
       identity,
-      discover: () => Effect.succeed(capabilities),
+      discover: () => discoverModels(client),
       openSession: context => openSession(client, context, undefined, sessions, requests, connectionScope),
       loadSession: (context, native) => openSession(client, context, native, sessions, requests, connectionScope),
       close: deadlineMs =>
@@ -293,11 +330,6 @@ function openSession(
   connectionScope: import('effect/Scope').Scope,
 ): Effect.Effect<AgentDriverSession, AgentDriverError | UnsupportedAgentOperation> {
   return Effect.gen(function* () {
-    if (context.modeId)
-      return yield* new UnsupportedAgentOperation({
-        operation: native ? 'loadSession' : 'openSession',
-        message: 'Codex mode selection is not supported by this driver slice.',
-      })
     if (sessions.size >= MAX_ACTIVE_SESSIONS)
       return yield* failure('invalid-state', 'This Codex connection reached its active session limit.')
     if (native && sessions.has(native.nativeSessionId))
@@ -379,7 +411,8 @@ function openSession(
       },
       submit: input => submit(client, state, input, requests, sessions, connectionScope),
       interrupt: (runId, expectedNativeTurnId) => interrupt(client, state, runId, expectedNativeTurnId),
-      steer: (runId, expectedNativeTurnId, message) => steer(client, state, runId, expectedNativeTurnId, message),
+      steer: (runId, expectedNativeTurnId, message, attachments) =>
+        steer(client, state, runId, expectedNativeTurnId, message, attachments),
       respond: (runId, requestId, generation, decision) =>
         respond(client, state, runId, requestId, generation, decision, requests),
       reconcile: () => Stream.fromIterable(state.replay),
@@ -410,7 +443,15 @@ function submit(
         operation: 'submit',
         message: 'Assistant transcript replay is not accepted as turn input; Codex retains its own thread history.',
       })
-    const content = input.messages.map(message => ({ type: 'text' as const, text: message.content }))
+    const content: CodexPromptContent[] = input.messages.map(message => ({
+      type: 'text' as const,
+      text: message.content,
+    }))
+    for (const attachment of input.attachments ?? []) {
+      if (attachment.mediaType.startsWith('image/'))
+        content.push({ type: 'image', url: `data:${attachment.mediaType};base64,${attachment.content}` })
+      else content.push({ type: 'text', text: attachmentText(attachment) })
+    }
     if (content.length === 0) return yield* failure('invalid-state', 'A Codex turn requires at least one user message.')
     const events = yield* eventQueue(state, input.runId)
     const run: ActiveRun = {
@@ -446,11 +487,14 @@ function submit(
   })
 }
 
+type CodexPromptContent =
+  { readonly type: 'text'; readonly text: string } | { readonly type: 'image'; readonly url: string }
+
 function startTurn(
   client: JsonRpcClient,
   state: SessionState,
   run: ActiveRun,
-  content: ReadonlyArray<{ readonly type: 'text'; readonly text: string }>,
+  content: ReadonlyArray<CodexPromptContent>,
   requests: Map<string, PendingRequest>,
   sessions: Map<string, SessionState>,
 ) {
@@ -461,6 +505,7 @@ function startTurn(
         cwd: state.context.workspacePath,
         input: content,
         ...(state.context.modelId ? { model: state.context.modelId } : {}),
+        ...(state.context.modeId ? { effort: state.context.modeId } : {}),
       })
       .pipe(
         Effect.mapError(error =>
@@ -600,6 +645,7 @@ function steer(
   runId: AgentRunId,
   expected: string | undefined,
   message: string,
+  attachments: readonly ResolvedPromptAttachment[] = [],
 ) {
   return Effect.gen(function* () {
     const run = state.runs.get(runId)
@@ -611,7 +657,14 @@ function steer(
       .request('turn/steer', {
         threadId: state.nativeSessionId,
         expectedTurnId: expected,
-        input: [{ type: 'text', text: message }],
+        input: [
+          { type: 'text', text: message },
+          ...attachments.map(attachment =>
+            attachment.mediaType.startsWith('image/')
+              ? { type: 'image', url: `data:${attachment.mediaType};base64,${attachment.content}` }
+              : { type: 'text', text: attachmentText(attachment) },
+          ),
+        ],
       })
       .pipe(Effect.mapError(toMutationFailure))
     return { outcome: 'accepted' as const }

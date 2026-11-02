@@ -1,6 +1,7 @@
 import * as Schema from 'effect/Schema'
 
 import {
+  agentCapabilitiesSchema,
   agentDriverEventSchema,
   agentRequestDecisionSchema,
   agentRequestSchema,
@@ -17,6 +18,8 @@ import {
   workspaceCheckoutIdSchema,
   workspaceCheckoutSchema,
 } from '@/shared/schemas/workspace.js'
+
+import { promptAttachmentsSchema } from './prompt-context.js'
 
 const text = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1))
 const timestamp = Schema.String.check(
@@ -109,6 +112,7 @@ export const beginRunCommandSchema = Schema.Struct({
   driverId: text,
   connectionId: text,
   prompt: Schema.String,
+  attachments: Schema.optional(promptAttachmentsSchema),
   modelId: Schema.optional(Schema.NullOr(Schema.String)),
   modeId: Schema.optional(Schema.NullOr(Schema.String)),
   nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
@@ -143,12 +147,15 @@ export const dispatchClaimSchema = Schema.Struct({
   conversationId: conversationIdSchema,
   ownerEpoch: workerEpochSchema,
   provisionalAgentSessionId: text,
+  /** Existing durable identity when resuming an already bound native session. */
+  agentSessionId: Schema.optional(agentSessionIdSchema),
   driverId: text,
   connectionId: text,
   checkoutId: workspaceCheckoutIdSchema,
   workspacePath: text,
   generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   prompt: Schema.String,
+  attachments: Schema.optional(promptAttachmentsSchema),
   modelId: Schema.optional(Schema.NullOr(Schema.String)),
   modeId: Schema.optional(Schema.NullOr(Schema.String)),
   nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
@@ -160,6 +167,7 @@ export const nativeSessionBindingSchema = Schema.Struct({
   nativeSessionId: text,
   generation: beginRunCommandSchema.fields.generation,
   recordedAt: timestamp,
+  capabilities: Schema.optional(agentCapabilitiesSchema),
 })
 export type NativeSessionBinding = Schema.Schema.Type<typeof nativeSessionBindingSchema>
 
@@ -227,6 +235,7 @@ export const recordSteerCommandSchema = Schema.Struct({
   generation: beginRunCommandSchema.fields.generation,
   expectedNativeTurnId: Schema.optional(text),
   message: text,
+  attachments: Schema.optional(promptAttachmentsSchema),
 })
 export type RecordSteerCommand = Schema.Schema.Type<typeof recordSteerCommandSchema>
 
@@ -244,6 +253,7 @@ export const enqueueFollowUpCommandSchema = Schema.Struct({
   taskId: taskIdSchema,
   conversationId: conversationIdSchema,
   prompt: Schema.String,
+  attachments: Schema.optional(promptAttachmentsSchema),
   driverId: Schema.optional(text),
   connectionId: Schema.optional(text),
   modelId: beginRunCommandSchema.fields.modelId,
@@ -479,6 +489,7 @@ export const workspaceNativeAgentSessionSchema = Schema.Struct({
   nativeSessionId: text,
   generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   status: Schema.Literals(['active', 'suspended', 'closed', 'unavailable']),
+  capabilities: Schema.optional(agentCapabilitiesSchema),
 })
 export type WorkspaceNativeAgentSession = Schema.Schema.Type<typeof workspaceNativeAgentSessionSchema>
 export const workspaceNativeAgentSessionPageSchema = Schema.Struct({
@@ -510,6 +521,7 @@ export const workspaceConversationMessageSchema = Schema.Struct({
   ...payloadSummaryFields,
   id: text,
   content: Schema.String,
+  attachments: Schema.optional(promptAttachmentsSchema),
   createdAt: timestamp,
 })
 export const workspaceConversationPageItemSchema = Schema.Struct({

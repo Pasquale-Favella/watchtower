@@ -78,8 +78,8 @@ export function useNewChatDraft() {
     [clearConversationDraftIfUnchanged],
   )
   const saveConversationPreference = useCallback(
-    (conversationId: ConversationId, checkoutId: string, connectionId: string) =>
-      saveComposerPreference({ conversationId, checkoutId, connectionId }),
+    (conversationId: ConversationId, checkoutId: string, connectionId: string, modelId = '', modeId = '') =>
+      saveComposerPreference({ conversationId, checkoutId, connectionId, modelId, modeId }),
     [saveComposerPreference],
   )
   return {

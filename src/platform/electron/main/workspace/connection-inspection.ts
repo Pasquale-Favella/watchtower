@@ -114,8 +114,15 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
           steer: capabilities.steer,
           respond: capabilities.respond,
           reconcile: capabilities.reconcile,
-          models: { state: choices, items: [] },
-          modes: { state: choices, items: [] },
+          models: {
+            state: capabilities.models.length ? ('connection-scoped' as const) : choices,
+            items: capabilities.models,
+          },
+          modes: {
+            state: capabilities.modes.length ? ('connection-scoped' as const) : choices,
+            items: capabilities.modes,
+          },
+          ...(capabilities.promptContent ? { promptContent: capabilities.promptContent } : {}),
         },
       }
     }),

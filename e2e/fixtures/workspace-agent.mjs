@@ -31,18 +31,52 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (frame.method === 'initialize') {
     reply(frame.id, {
       protocolVersion: frame.params.protocolVersion,
-      agentCapabilities: { loadSession: true },
+      agentCapabilities: { loadSession: true, promptCapabilities: { image: true, embeddedContext: true } },
       agentInfo: { name: 'workspace-fixture', version: '1' },
       authMethods: [],
     })
   } else if (frame.method === 'session/new') {
-    reply(frame.id, { sessionId: `fixture-${randomUUID()}` })
+    reply(frame.id, {
+      sessionId: `fixture-${randomUUID()}`,
+      models: {
+        currentModelId: 'fixture-model',
+        availableModels: [{ modelId: 'fixture-model', name: 'Fixture model' }],
+      },
+      modes: {
+        currentModeId: 'code',
+        availableModes: [
+          { id: 'code', name: 'Code' },
+          { id: 'plan', name: 'Plan' },
+        ],
+      },
+    })
   } else if (frame.method === 'session/load') {
+    reply(frame.id, {
+      models: {
+        currentModelId: 'fixture-model',
+        availableModels: [{ modelId: 'fixture-model', name: 'Fixture model' }],
+      },
+      modes: {
+        currentModeId: 'code',
+        availableModes: [
+          { id: 'code', name: 'Code' },
+          { id: 'plan', name: 'Plan' },
+        ],
+      },
+    })
+  } else if (frame.method === 'session/set_mode' || frame.method === 'session/set_model') {
+    appendFileSync(logPath, `${JSON.stringify({ kind: frame.method, params: frame.params })}\n`)
     reply(frame.id, {})
   } else if (frame.method === 'session/prompt') {
     const { sessionId, prompt } = frame.params
     appendFileSync(logPath, `${JSON.stringify({ kind: 'prompt', sessionId, prompt })}\n`)
     prompts.set(sessionId, frame.id)
+    update(sessionId, {
+      sessionUpdate: 'available_commands_update',
+      availableCommands: [
+        { name: 'fixture-check', description: 'Check this fixture', input: { hint: 'Instructions' } },
+      ],
+    })
     update(sessionId, {
       sessionUpdate: 'agent_message_chunk',
       content: { type: 'text', text: 'I will inspect this checkout.' },

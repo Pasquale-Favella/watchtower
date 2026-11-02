@@ -235,9 +235,45 @@ describe('Claude Agent SDK native driver', () => {
           )
           expect(rejectedEmpty._tag).toBe('Failure')
 
-          const submitted = yield* Effect.forkDetach(session.submit(turn))
+          const submitted = yield* Effect.forkDetach(
+            session.submit({
+              ...turn,
+              attachments: [
+                {
+                  id: 'a'.repeat(64),
+                  name: 'image.png',
+                  size: 3,
+                  source: 'file',
+                  mediaType: 'image/png',
+                  content: 'YWJj',
+                },
+                {
+                  id: 'b'.repeat(64),
+                  name: 'document.pdf',
+                  size: 3,
+                  source: 'file',
+                  mediaType: 'application/pdf',
+                  content: 'ZGVm',
+                },
+                {
+                  id: 'c'.repeat(64),
+                  name: 'notes.txt',
+                  size: 5,
+                  source: 'reference',
+                  mediaType: 'text/plain',
+                  content: 'Notes',
+                },
+              ],
+            }),
+          )
           const input = yield* Effect.promise(() => promptIterator(fake.calls[0]!).next())
           expect(input.done).toBe(false)
+          expect(input.value.message.content).toEqual([
+            { type: 'text', text: turn.messages[0].content },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YWJj' } },
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: 'ZGVm' } },
+            { type: 'text', text: expect.stringContaining('Notes') },
+          ])
           const messageUuid = inputUuid(input.value)
           fake.calls[0]!.push({
             type: 'stream_event',

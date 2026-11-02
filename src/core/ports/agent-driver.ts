@@ -12,6 +12,7 @@ import type {
   AgentRequestDecision,
   AgentSessionIdentity,
 } from '@/shared/schemas/execution.js'
+import type { ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type {
   AgentRunId,
   AgentSessionId,
@@ -64,6 +65,7 @@ export interface AgentTurnInput {
   readonly runId: AgentRunId
   readonly messages: ReadonlyArray<{ readonly role: 'user' | 'assistant'; readonly content: string }>
   readonly attachmentIds: ReadonlyArray<string>
+  readonly attachments?: ReadonlyArray<ResolvedPromptAttachment>
 }
 
 export interface NativeTurnAcceptance {
@@ -110,6 +112,7 @@ export interface AgentDriverSession {
     runId: AgentRunId,
     expectedNativeTurnId: string | undefined,
     message: string,
+    attachments?: readonly ResolvedPromptAttachment[],
   ) => Effect.Effect<DeliveryOutcome, AgentDriverError | UnsupportedAgentOperation>
   readonly respond: (
     runId: AgentRunId,

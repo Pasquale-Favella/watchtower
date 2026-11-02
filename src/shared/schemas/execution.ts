@@ -67,6 +67,17 @@ export const capabilitySchema = Schema.Struct({
 })
 export type Capability = Schema.Schema.Type<typeof capabilitySchema>
 
+export const agentModelChoiceSchema = Schema.Struct({
+  id: text,
+  label: Schema.String,
+  modes: Schema.optional(Schema.Array(Schema.Struct({ id: text, label: Schema.String }))),
+})
+export const agentSlashCommandSchema = Schema.Struct({
+  name: text,
+  description: Schema.String,
+  inputHint: Schema.optional(Schema.String),
+})
+
 export const agentCapabilitiesSchema = Schema.Struct({
   openSession: capabilitySchema,
   loadSession: capabilitySchema,
@@ -75,8 +86,10 @@ export const agentCapabilitiesSchema = Schema.Struct({
   steer: capabilitySchema,
   respond: capabilitySchema,
   reconcile: capabilitySchema,
-  models: Schema.Array(Schema.Struct({ id: text, label: Schema.String })),
+  models: Schema.Array(agentModelChoiceSchema),
   modes: Schema.Array(Schema.Struct({ id: text, label: Schema.String })),
+  promptContent: Schema.optional(Schema.Struct({ images: Schema.Boolean, files: Schema.Boolean })),
+  commands: Schema.optional(Schema.Array(agentSlashCommandSchema).check(Schema.isMaxLength(256))),
 })
 export type AgentCapabilities = Schema.Schema.Type<typeof agentCapabilitiesSchema>
 
@@ -137,6 +150,7 @@ export const agentRequestSchema = Schema.Struct({
 export type AgentRequest = Schema.Schema.Type<typeof agentRequestSchema>
 
 export const agentDriverEventSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('capabilitiesUpdated'), capabilities: agentCapabilitiesSchema }),
   Schema.Struct({ kind: Schema.Literal('turnStarted'), nativeTurnId: optionalText }),
   Schema.Struct({ kind: Schema.Literal('turnCompleted'), nativeTurnId: optionalText }),
   Schema.Struct({ kind: Schema.Literal('turnInterrupted'), nativeTurnId: optionalText }),

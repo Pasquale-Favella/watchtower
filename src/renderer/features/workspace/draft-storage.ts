@@ -12,6 +12,10 @@ const draftsSchema = Schema.Record(Schema.String, draftSchema)
 const composerPreferenceSchema = Schema.Struct({
   checkoutId: Schema.optional(Schema.String),
   connectionId: Schema.optional(Schema.String),
+  modelId: Schema.optional(Schema.String),
+  modeId: Schema.optional(Schema.String),
+  resumeNativeContext: Schema.optional(Schema.Boolean),
+  resumeSessionId: Schema.optional(Schema.String),
   updatedAt: Schema.Number,
 })
 const composerPreferencesSchema = Schema.Record(Schema.String, composerPreferenceSchema)

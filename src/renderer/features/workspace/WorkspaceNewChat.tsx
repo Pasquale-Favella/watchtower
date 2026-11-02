@@ -4,17 +4,23 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/renderer/components/ui/button'
 import { useCreateTask, useStartRun } from '@/renderer/features/workspace/hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
+import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectRegistration } from '@/shared/schemas/workspace-projects.js'
 import type { WorkspaceProjectReadPage } from '@/shared/schemas/workspace-store.js'
 
+import { useWorkspaceAgentPreferences } from './agent-preferences.js'
 import { shouldSubmitComposerKey } from './composer-state.js'
 import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connection-hooks.js'
 import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChatProjects } from './new-chat-hooks.js'
 import { NEW_CHAT_DRAFT_MAX_LENGTH, newChatTaskTitle } from './new-chat-state.js'
 import { canClearCapturedDraft } from './pending-start-state.js'
+import { usePromptAttachments } from './prompt-context-hooks.js'
+import { promptWithAttachments } from './prompt-editor.js'
 import { usePendingStart } from './use-pending-start.js'
+import { WorkspaceAgentPicker } from './WorkspaceAgentPicker.js'
 import { WorkspaceProjectPicker } from './WorkspaceProjectPicker.js'
+import { WorkspacePromptInput } from './WorkspacePromptInput.js'
 
 type Props = {
   readonly projectId: ProjectId | null
@@ -33,6 +39,7 @@ type CreationIntent = {
   readonly title: string
   readonly prompt: string
   readonly draftValue: string
+  readonly attachments: readonly PromptAttachment[]
   readonly startCommandId: string
 }
 
@@ -42,12 +49,13 @@ const projectRequest = (projectId: ProjectId | null): WorkspaceRequest<'workspac
 export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Props) {
   const { draft, setDraft, clearDraft, copyDraftToConversation, clearConversationDraft, saveConversationPreference } =
     useNewChatDraft()
+  const attachments = usePromptAttachments('new-chat')
   const draftRef = useRef(draft)
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const agentPickerRef = useRef<{ open: () => void }>(null)
   const creationLock = useRef(false)
-  const [connectionId, setConnectionId] = useState('')
-  const [modelId, setModelId] = useState('')
-  const [modeId, setModeId] = useState('')
+  const { connectionId, setConnectionId, modelId, setModelId, modeId, setModeId } = useWorkspaceAgentPreferences()
+  const inspectedConnection = useRef('')
   const [projectCursor, setProjectCursor] = useState<string | undefined>()
   const [priorProjectPages, setPriorProjectPages] = useState<WorkspaceProjectReadPage['items']>([])
   const [intent, setIntent] = useState<CreationIntent | null>(null)
@@ -78,8 +86,12 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     capabilities?.openSession.support === 'supported' &&
     capabilities.submit.support === 'supported',
   )
-  const modelChoices = capabilities?.models.state === 'session-scoped' ? capabilities.models.items : []
-  const modeChoices = capabilities?.modes.state === 'session-scoped' ? capabilities.modes.items : []
+  let connectionStatus = ''
+  if (inspect.pending) connectionStatus = 'Checking connection…'
+  else if (canSubmit) connectionStatus = 'Ready to send'
+  const attachmentBlocked = attachments.items.some(item =>
+    item.mediaType.startsWith('image/') ? !capabilities?.promptContent?.images : !capabilities?.promptContent?.files,
+  )
   const registeredProjects = useMemo(() => {
     const byId = new Map<string, WorkspaceProjectReadPage['items'][number]>()
     for (const candidate of [...priorProjectPages, ...(projects.data?.items ?? [])]) {
@@ -103,6 +115,13 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   useEffect(() => {
     draftRef.current = draft
   }, [draft])
+  const inspectSelectedConnection = inspect.execute
+  const inspectingConnection = inspect.pending
+  useEffect(() => {
+    if (!selectedConnection || inspected || inspectingConnection || inspectedConnection.current === connectionId) return
+    inspectedConnection.current = connectionId
+    void inspectSelectedConnection({ connectionId }).catch(() => {})
+  }, [selectedConnection, inspected, inspectingConnection, connectionId, inspectSelectedConnection])
 
   const inspectConnection = () => {
     if (!connectionId) return
@@ -155,7 +174,14 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
 
       const retained = draftRef.current
       copyDraftToConversation(receipt.conversationId, retained)
-      saveConversationPreference(receipt.conversationId, checkoutId, creation.connectionId)
+      attachments.copyTo(receipt.conversationId, creation.attachments)
+      saveConversationPreference(
+        receipt.conversationId,
+        checkoutId,
+        creation.connectionId,
+        creation.modelId ?? '',
+        creation.modeId ?? '',
+      )
       const command: WorkspaceRequest<'workspace:startRun'> = {
         commandId: creation.startCommandId,
         taskId: receipt.taskId,
@@ -165,6 +191,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         driverId: creation.driverId,
         connectionId: creation.connectionId,
         prompt: creation.prompt,
+        attachments: creation.attachments,
         modelId: creation.modelId,
         modeId: creation.modeId,
         nativeSessionId: null,
@@ -190,6 +217,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         } else if (canClearCapturedDraft(draftRef.current, creation.draftValue)) {
           clearDraft(creation.draftValue)
           clearConversationDraft(receipt.conversationId, creation.draftValue)
+          attachments.clearCaptured(creation.attachments)
+          attachments.clearIn(receipt.conversationId, creation.attachments)
         }
       } catch (cause) {
         pendingStarts.markUncertain(receipt.conversationId, command.commandId)
@@ -209,8 +238,18 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   }
 
   const submit = () => {
-    const prompt = draft.trim()
-    if (!prompt || !selectedConnection || !canSubmit || creating || starting || !projectReady || intent) return
+    const prompt = promptWithAttachments(draft, attachments.items)
+    if (
+      !prompt ||
+      attachmentBlocked ||
+      !selectedConnection ||
+      !canSubmit ||
+      creating ||
+      starting ||
+      !projectReady ||
+      intent
+    )
+      return
     const creation: CreationIntent = {
       commandId: crypto.randomUUID(),
       projectId,
@@ -222,6 +261,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       title: newChatTaskTitle(prompt),
       prompt,
       draftValue: draft,
+      attachments: [...attachments.items],
       startCommandId: crypto.randomUUID(),
     }
     void createAndStart(creation)
@@ -297,62 +337,72 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
             </>
           )}
         </div>
-        <div className="bg-card focus-within:border-ring focus-within:ring-ring/20 rounded-xl border shadow-sm focus-within:ring-2">
-          <textarea
-            ref={promptRef}
-            aria-label="Prompt"
-            autoFocus
-            className="placeholder:text-muted-foreground min-h-32 w-full resize-y rounded-t-xl bg-transparent px-4 py-4 text-sm outline-none"
-            placeholder="Describe the work to do…"
-            maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
-            value={draft}
-            onChange={event => {
-              draftRef.current = event.target.value
-              setDraft(event.target.value)
-            }}
-            onKeyDown={keyDown}
-          />
-          <div className="flex flex-wrap items-center gap-2 border-t px-3 py-2">
-            <label className="sr-only" htmlFor="new-chat-connection">
-              Harness connection
-            </label>
-            <select
-              id="new-chat-connection"
-              aria-label="Harness connection"
-              className="bg-background max-w-64 rounded-md border px-2 py-1.5 text-xs"
-              value={connectionId}
-              onChange={event => {
-                const selected = event.target.value
-                setConnectionId(selected)
-                setModelId('')
-                setModeId('')
-                if (selected) void inspect.execute({ connectionId: selected }).catch(() => {})
-              }}
-            >
-              <option value="">Choose an agent</option>
-              {connections.data?.items.map(connection => (
-                <option key={connection.connectionId} value={connection.connectionId}>
-                  {connection.label}
-                </option>
-              ))}
-            </select>
-            <span className="text-muted-foreground text-xs" role="status">
-              {inspect.pending ? 'Checking connection…' : canSubmit ? 'Ready to send' : ''}
-            </span>
-            <span className="flex-1" />
+        <WorkspacePromptInput
+          value={draft}
+          onChange={value => {
+            draftRef.current = value
+            setDraft(value)
+          }}
+          onKeyDown={keyDown}
+          inputRef={promptRef}
+          autoFocus
+          attachments={attachments}
+          projectId={projectId}
+          maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
+          onOpenModelPicker={() => agentPickerRef.current?.open()}
+          hint="Enter sends · Shift+Enter adds a line · Drop files or paste an image"
+          controls={
+            <>
+              <WorkspaceAgentPicker
+                controlRef={agentPickerRef}
+                connections={connections.data?.items ?? []}
+                connectionId={connectionId}
+                modelId={modelId}
+                modeId={modeId}
+                inspection={inspected}
+                pending={inspect.pending}
+                onConnectionChange={selected => {
+                  setConnectionId(selected)
+                }}
+                onModelChange={id => {
+                  setModelId(id)
+                  setModeId('')
+                }}
+                onModeChange={setModeId}
+              />
+              <span className="text-muted-foreground text-[11px]" role="status">
+                {connectionStatus}
+              </span>
+            </>
+          }
+          actions={
             <Button
               type="button"
               size="icon-sm"
               className="rounded-full"
               aria-label="Send"
               title="Send"
-              disabled={!draft.trim() || !canSubmit || creating || starting || !projectReady || Boolean(intent)}
+              disabled={
+                !promptWithAttachments(draft, attachments.items) ||
+                attachmentBlocked ||
+                !canSubmit ||
+                creating ||
+                starting ||
+                !projectReady ||
+                Boolean(intent)
+              }
               onClick={submit}
             >
               <ArrowUp />
             </Button>
-          </div>
-        </div>
+          }
+        />
+        {attachmentBlocked && (
+          <p className="text-muted-foreground mt-2 text-xs" role="status">
+            The selected agent has not confirmed support for these attachments. Choose a compatible agent or remove
+            them.
+          </p>
+        )}
         <details className="mt-3">
           <summary className="text-muted-foreground cursor-pointer text-xs">Run settings</summary>
           <div className="mt-2 flex flex-wrap items-center gap-3">
@@ -366,42 +416,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
               Check connection
             </Button>
             <p className="text-muted-foreground text-xs">Sign-in has not been verified.</p>
-            <label className="flex items-center gap-2 text-xs">
-              Model
-              <select
-                className="bg-background rounded-md border px-2 py-1.5"
-                value={modelId}
-                onChange={event => setModelId(event.target.value)}
-                disabled={!modelChoices.length}
-              >
-                <option value="">
-                  {capabilities?.models.state === 'session-scoped' ? 'Driver default' : 'Unknown · driver default'}
-                </option>
-                {modelChoices.map(choice => (
-                  <option key={choice.id} value={choice.id}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="flex items-center gap-2 text-xs">
-              Effort / mode
-              <select
-                className="bg-background rounded-md border px-2 py-1.5"
-                value={modeId}
-                onChange={event => setModeId(event.target.value)}
-                disabled={!modeChoices.length}
-              >
-                <option value="">
-                  {capabilities?.modes.state === 'session-scoped' ? 'Driver default' : 'Unknown · driver default'}
-                </option>
-                {modeChoices.map(choice => (
-                  <option key={choice.id} value={choice.id}>
-                    {choice.label}
-                  </option>
-                ))}
-              </select>
-            </label>
             {project.data?.nextAfterCheckoutId && (
               <span className="text-muted-foreground text-xs">
                 Checkout list is paged; the main checkout will be used.
