@@ -1,6 +1,7 @@
 import * as Schema from 'effect/Schema'
 
 import {
+  agentAccessModeSchema,
   agentCapabilitiesSchema,
   agentDriverEventSchema,
   agentRequestDecisionSchema,
@@ -115,6 +116,8 @@ export const beginRunCommandSchema = Schema.Struct({
   attachments: Schema.optional(promptAttachmentsSchema),
   modelId: Schema.optional(Schema.NullOr(Schema.String)),
   modeId: Schema.optional(Schema.NullOr(Schema.String)),
+  /** Absent means the store applies the fail-safe default; the persisted intent is always explicit. */
+  accessMode: Schema.optional(agentAccessModeSchema),
   nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
   retryOfRunId: Schema.optional(Schema.NullOr(agentRunIdSchema)),
 })
@@ -158,6 +161,7 @@ export const dispatchClaimSchema = Schema.Struct({
   attachments: Schema.optional(promptAttachmentsSchema),
   modelId: Schema.optional(Schema.NullOr(Schema.String)),
   modeId: Schema.optional(Schema.NullOr(Schema.String)),
+  accessMode: Schema.optional(agentAccessModeSchema),
   nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
 })
 export type DispatchClaim = Schema.Schema.Type<typeof dispatchClaimSchema>
@@ -258,6 +262,7 @@ export const enqueueFollowUpCommandSchema = Schema.Struct({
   connectionId: Schema.optional(text),
   modelId: beginRunCommandSchema.fields.modelId,
   modeId: beginRunCommandSchema.fields.modeId,
+  accessMode: beginRunCommandSchema.fields.accessMode,
 })
 export type EnqueueFollowUpCommand = Schema.Schema.Type<typeof enqueueFollowUpCommandSchema>
 

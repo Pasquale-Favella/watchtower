@@ -710,6 +710,25 @@ describe('generic ACP driver', () => {
     expect(fake.closeCalls).toHaveLength(1)
   })
 
+  it('declares approval-required as its only access mode and refuses wider modes before any native session', async () => {
+    const fake = makeFakeAcp()
+    expect(fake.driver.accessModes).toEqual(['approval-required'])
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-access-mode' })
+          const refused = yield* connection.openSession({ ...context, accessMode: 'full-access' }).pipe(Effect.flip)
+          const sessionsAfterRefusal = fake.newSessionCalls.length
+          const opened = yield* connection.openSession({ ...context, accessMode: 'approval-required' })
+          return { refused, sessionsAfterRefusal, opened }
+        }),
+      ),
+    )
+    expect(result.refused).toMatchObject({ _tag: 'UnsupportedAgentOperation', operation: 'openSession' })
+    expect(result.sessionsAfterRefusal).toBe(0)
+    expect(result.opened.identity.nativeSessionId).toBe('native-1')
+  })
+
   it('closes an opened native session when the requested mode is absent from the catalog', async () => {
     const fake = makeFakeAcp()
     const invalidContext = { ...context, modeId: 'missing-mode' }

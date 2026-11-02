@@ -72,6 +72,12 @@ describe('workspace worker RPC server', () => {
       Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION }),
     ).toEqual({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION })
   })
+  it('rejects a worker that would drop persisted run access modes', () => {
+    expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 9 })).toThrow()
+    expect(
+      Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION }),
+    ).toEqual({ protocolVersion: 10 })
+  })
   it('round-trips registration reuse and task receipts with command conflicts', async () => {
     const result = await Effect.runPromise(
       withWorkspaceStore((store, sqlScope) =>

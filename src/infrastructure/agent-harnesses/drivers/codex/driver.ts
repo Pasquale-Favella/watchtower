@@ -26,12 +26,14 @@ import {
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import type {
+  AgentAccessMode,
   AgentCapabilities,
   AgentConnectionIdentity,
   AgentDriverEvent,
   AgentReconcileEvent,
   AgentRequestDecision,
 } from '@/shared/schemas/execution.js'
+import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
@@ -229,6 +231,23 @@ interface SessionState {
   activeRun?: ActiveRun
 }
 
+/** Native App Server policy for one access mode. Thread calls take the mode name; turn calls take the policy object. */
+interface CodexAccessPolicy {
+  readonly approvalPolicy: 'untrusted' | 'on-request' | 'never'
+  readonly sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
+  readonly sandboxPolicy: { readonly type: 'readOnly' | 'workspaceWrite' | 'dangerFullAccess' }
+}
+const codexAccessPolicy = (accessMode: AgentAccessMode): CodexAccessPolicy => {
+  switch (accessMode) {
+    case 'approval-required':
+      return { approvalPolicy: 'untrusted', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly' } }
+    case 'auto-accept-edits':
+      return { approvalPolicy: 'on-request', sandbox: 'workspace-write', sandboxPolicy: { type: 'workspaceWrite' } }
+    case 'full-access':
+      return { approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } }
+  }
+}
+
 const failure = (code: ConstructorParameters<typeof AgentDriverError>[0]['code'], message: string) =>
   new AgentDriverError({ code, message })
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown): A | undefined => {
@@ -315,6 +334,7 @@ export const codexAgentDriverLayer = Layer.effect(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
     return AgentDriver.of({
       driverId: 'codex-app-server',
+      accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
       connect: options =>
         codexAgentDriverConnect(options).pipe(Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)),
     })
@@ -336,12 +356,24 @@ function openSession(
       return yield* failure('invalid-state', 'This Codex thread is already loaded by the connection.')
     if (native && native.generation !== context.generation)
       return yield* failure('invalid-state', 'Native session generation does not match the requested generation.')
+    const policy = codexAccessPolicy(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
     const response = yield* client
       .request(
         native ? 'thread/resume' : 'thread/start',
         native
-          ? { threadId: native.nativeSessionId, cwd: context.workspacePath, excludeTurns: false }
-          : { cwd: context.workspacePath, ...(context.modelId ? { model: context.modelId } : {}) },
+          ? {
+              threadId: native.nativeSessionId,
+              cwd: context.workspacePath,
+              excludeTurns: false,
+              approvalPolicy: policy.approvalPolicy,
+              sandbox: policy.sandbox,
+            }
+          : {
+              cwd: context.workspacePath,
+              ...(context.modelId ? { model: context.modelId } : {}),
+              approvalPolicy: policy.approvalPolicy,
+              sandbox: policy.sandbox,
+            },
       )
       .pipe(Effect.mapError(toDriverFailure))
     const resumed = native ? decode(ResumedThreadResponse, response) : undefined
@@ -499,6 +531,7 @@ function startTurn(
   sessions: Map<string, SessionState>,
 ) {
   return Effect.gen(function* () {
+    const policy = codexAccessPolicy(state.context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
     const result = yield* client
       .requestAfterIncoming('turn/start', {
         threadId: state.nativeSessionId,
@@ -506,6 +539,8 @@ function startTurn(
         input: content,
         ...(state.context.modelId ? { model: state.context.modelId } : {}),
         ...(state.context.modeId ? { effort: state.context.modeId } : {}),
+        approvalPolicy: policy.approvalPolicy,
+        sandboxPolicy: policy.sandboxPolicy,
       })
       .pipe(
         Effect.mapError(error =>

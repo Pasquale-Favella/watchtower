@@ -18,16 +18,17 @@ import type {
   AgentSessionContext,
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
-import { AgentDriverError as PromptContentError } from '@/core/ports/agent-driver.js'
+import { agentDriverAccessModes, AgentDriverError as PromptContentError } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
-import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
+import type { AgentAccessMode, AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
   agentConnectionIdentitySchema,
   agentDriverEventSchema,
   agentSessionIdentitySchema,
+  DEFAULT_AGENT_ACCESS_MODE,
 } from '@/shared/schemas/execution.js'
 import type { PromptAttachment, ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
@@ -61,7 +62,7 @@ const nativeTurnAcceptanceSchema = Schema.Struct({
 })
 
 export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceError>()('ExecutionServiceError', {
-  reason: Schema.Literals(['invalid-options', 'service-stopped', 'background-failure']),
+  reason: Schema.Literals(['invalid-options', 'service-stopped', 'background-failure', 'unsupported-access-mode']),
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
   /** Every stopAll failure distinguishes native cleanup from durable settlement. */
@@ -110,6 +111,7 @@ const contextFor = (claim: DispatchClaim): AgentSessionContext => ({
   generation: claim.generation,
   ...(claim.modelId ? { modelId: claim.modelId } : {}),
   ...(claim.modeId ? { modeId: claim.modeId } : {}),
+  accessMode: claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
 })
 
 const isTerminalEvent = (event: AgentDriverEvent): boolean =>
@@ -130,7 +132,9 @@ export class ExecutionService extends Context.Service<
     readonly steer: (
       command: RecordSteerCommand,
     ) => Effect.Effect<CommandReceipt, WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation>
-    readonly enqueueFollowUp: (command: EnqueueFollowUpCommand) => Effect.Effect<FollowUpReceipt, WorkspaceStoreError>
+    readonly enqueueFollowUp: (
+      command: EnqueueFollowUpCommand,
+    ) => Effect.Effect<FollowUpReceipt, WorkspaceStoreError | ExecutionServiceError>
     readonly cancelQueuedFollowUp: (
       conversationId: BeginRunCommand['conversationId'],
       commandId: string,
@@ -191,6 +195,22 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         new PromptContentError({ code: 'invalid-state', message: 'Attachment resolution is unavailable.' }),
       )
     }
+
+    /** The default is always admitted without resolving a driver. Other modes need a resolved driver that declares
+     * them; an unresolved driver fails closed instead of admitting an unverified native policy. */
+    const requireAccessModeSupport = Effect.fn('ExecutionService.requireAccessModeSupport')(function* (
+      driverId: string,
+      accessMode: AgentAccessMode | undefined,
+    ) {
+      const requested = accessMode ?? DEFAULT_AGENT_ACCESS_MODE
+      if (requested === DEFAULT_AGENT_ACCESS_MODE) return
+      const driver = yield* drivers.resolve(driverId).pipe(Effect.option)
+      if (Option.isSome(driver) && agentDriverAccessModes(driver.value).includes(requested)) return
+      return yield* new ExecutionServiceError({
+        reason: 'unsupported-access-mode',
+        message: `Access mode ${requested} is not available for the selected agent connection`,
+      })
+    })
 
     const failUnresolved = (
       state: ManagedRun,
@@ -558,6 +578,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                   message: 'Execution service is stopping and cannot accept a new run',
                 })
               }
+              yield* requireAccessModeSupport(command.driverId, command.accessMode)
               const receipt = yield* store.beginRun(command)
               if (receipt.replayed) return receipt
               if (workers.size >= maxConcurrentRuns + maxQueuedRuns) {
@@ -724,6 +745,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     })
 
     const enqueueFollowUp = Effect.fn('ExecutionService.enqueueFollowUp')(function* (command: EnqueueFollowUpCommand) {
+      // A queued follow-up names its driver only when the caller knows it; promotion re-checks the rest.
+      if (command.driverId !== undefined) yield* requireAccessModeSupport(command.driverId, command.accessMode)
       return yield* store.enqueueFollowUp(command)
     })
 
@@ -751,6 +774,10 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 reason: 'background-failure',
                 message: 'Execution queue is full; queued follow-up remains queued',
               })
+            // Check the head the store will promote, using the same driver and mode precedence it applies.
+            const next = (yield* store.listQueuedFollowUps(conversationId, { limit: 1 })).items[0]
+            if (next)
+              yield* requireAccessModeSupport(next.driverId ?? command.driverId, next.accessMode ?? command.accessMode)
             const promoted = yield* store.promoteNextFollowUp(conversationId, command)
             if (!promoted || promoted.receipt.replayed) return promoted
             const claimResult = yield* Effect.exit(

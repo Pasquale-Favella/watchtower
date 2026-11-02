@@ -5,7 +5,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 
-import { AgentDriverError } from '@/core/ports/agent-driver.js'
+import { agentDriverAccessModes, AgentDriverError } from '@/core/ports/agent-driver.js'
 import type { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
@@ -106,6 +106,7 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
             : {}),
         },
         authentication: 'unknown' as const,
+        accessModes: agentDriverAccessModes(driver),
         capabilities: {
           openSession: capabilities.openSession,
           loadSession: capabilities.loadSession,

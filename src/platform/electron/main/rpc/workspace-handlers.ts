@@ -46,6 +46,7 @@ const messages = {
   failed: 'Workspace operation failed.',
   'stream-overflow': 'Workspace stream exceeded its limit. Resume from the last received sequence.',
   'cleanup-unconfirmed': 'Native connection cleanup could not be confirmed.',
+  'unsupported-access-mode': 'The selected access mode is not available for this agent connection.',
 } as const
 function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
@@ -70,8 +71,10 @@ function sanitize(error: unknown): WorkspaceRpcError {
   if (Schema.is(WorkspaceHostError)(error)) return failure('unavailable')
   if (Schema.is(ConnectionInspectionError)(error))
     return failure(error.message === 'Connection cleanup could not be confirmed.' ? 'cleanup-unconfirmed' : 'failed')
-  if (Schema.is(ExecutionServiceError)(error))
+  if (Schema.is(ExecutionServiceError)(error)) {
+    if (error.reason === 'unsupported-access-mode') return failure('unsupported-access-mode')
     return failure(error.reason === 'invalid-options' ? 'invalid-request' : 'unavailable')
+  }
   if (Schema.is(HarnessConnectionResolutionError)(error))
     return failure(error.code === 'not-found' ? 'not-found' : 'invalid-request')
   if (Schema.is(AgentDriverError)(error))

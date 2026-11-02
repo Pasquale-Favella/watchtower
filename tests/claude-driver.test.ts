@@ -207,6 +207,37 @@ describe('Claude Agent SDK native driver', () => {
     }
   })
 
+  it.each([
+    { accessMode: 'approval-required' as const, permissionMode: 'default', askMatcher: undefined },
+    { accessMode: 'auto-accept-edits' as const, permissionMode: 'acceptEdits', askMatcher: 'AskUserQuestion' },
+    { accessMode: 'full-access' as const, permissionMode: 'bypassPermissions', askMatcher: 'AskUserQuestion' },
+  ])(
+    'sends $accessMode as the native $permissionMode permission policy',
+    async ({ accessMode, permissionMode, askMatcher }) => {
+      const fake = fakeSdk()
+      const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const driver = yield* AgentDriver
+            const connection = yield* driver.connect({ connectionId: 'connection' })
+            yield* connection.openSession({ ...context, accessMode })
+
+            const options = fakeCall(fake).options
+            expect(options.permissionMode).toBe(permissionMode)
+            expect(options.allowDangerouslySkipPermissions).toBe(accessMode === 'full-access' ? true : undefined)
+            expect(options.hooks?.PreToolUse?.map(hook => hook.matcher)).toEqual([askMatcher])
+            const askHook = options.hooks?.PreToolUse?.[0]?.hooks[0]
+            const decision = yield* Effect.promise(async () => askHook?.({} as never, undefined, {} as never))
+            expect(decision).toEqual({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } })
+            expect(options.canUseTool).toBeTypeOf('function')
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+    },
+  )
+
   it('uses a scoped streaming query and reports accepted text, tool, and final usage events', async () => {
     const fake = fakeSdk()
     const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })

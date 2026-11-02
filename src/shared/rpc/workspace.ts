@@ -32,6 +32,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'failed',
     'stream-overflow',
     'cleanup-unconfirmed',
+    'unsupported-access-mode',
   ]),
   message: Schema.Literals([
     'Workspace is unavailable.',
@@ -42,6 +43,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'Workspace operation failed.',
     'Workspace stream exceeded its limit. Resume from the last received sequence.',
     'Native connection cleanup could not be confirmed.',
+    'The selected access mode is not available for this agent connection.',
   ]),
 }) {}
 
@@ -76,6 +78,7 @@ export const workspaceStartRunRequestSchema = Schema.Struct({
   attachments: beginRunFields.attachments,
   modelId: beginRunFields.modelId,
   modeId: beginRunFields.modeId,
+  accessMode: beginRunFields.accessMode,
   nativeSessionId: beginRunFields.nativeSessionId,
   retryOfRunId: beginRunFields.retryOfRunId,
 })
@@ -308,6 +311,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       connectionId: Store.enqueueFollowUpCommandSchema.fields.connectionId,
       modelId: Store.enqueueFollowUpCommandSchema.fields.modelId,
       modeId: Store.enqueueFollowUpCommandSchema.fields.modeId,
+      accessMode: Store.enqueueFollowUpCommandSchema.fields.accessMode,
     }),
     success: Store.followUpReceiptSchema,
     error,

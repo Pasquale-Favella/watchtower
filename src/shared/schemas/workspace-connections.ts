@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { agentModelChoiceSchema } from './execution.js'
+import { agentAccessModeSchema, agentModelChoiceSchema } from './execution.js'
 
 /** Renderer-safe description of a detected Harness Connection.
  * Launch commands, arguments, environment and credential references are intentionally absent.
@@ -42,6 +42,8 @@ export const workspaceConnectionInspectionSchema = Schema.Struct({
     version: Schema.optional(Schema.String),
   }),
   authentication: Schema.Literal('unknown'),
+  /** Access modes the connection can enforce natively. Absent means only approval-required is known. */
+  accessModes: Schema.optional(Schema.Array(agentAccessModeSchema)),
   capabilities: Schema.Struct({
     openSession: capabilitySchema,
     loadSession: capabilitySchema,

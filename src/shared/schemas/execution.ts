@@ -24,6 +24,11 @@ export const agentRunStatusSchema = Schema.Literals([
 ])
 export type AgentRunStatus = Schema.Schema.Type<typeof agentRunStatusSchema>
 
+/** How much a Run may do without asking. Absent values are applied as the fail-safe default. */
+export const agentAccessModeSchema = Schema.Literals(['approval-required', 'auto-accept-edits', 'full-access'])
+export type AgentAccessMode = Schema.Schema.Type<typeof agentAccessModeSchema>
+export const DEFAULT_AGENT_ACCESS_MODE: AgentAccessMode = 'approval-required'
+
 export const agentRunSchema = Schema.Struct({
   id: agentRunIdSchema,
   taskId: taskIdSchema,

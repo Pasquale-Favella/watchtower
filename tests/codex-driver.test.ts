@@ -146,6 +146,101 @@ describe('Codex native App Server driver', () => {
     )
   })
 
+  it.each([
+    {
+      accessMode: 'approval-required' as const,
+      thread: { approvalPolicy: 'untrusted', sandbox: 'read-only' },
+      turn: { approvalPolicy: 'untrusted', sandboxPolicy: { type: 'readOnly' } },
+    },
+    {
+      accessMode: 'auto-accept-edits' as const,
+      thread: { approvalPolicy: 'on-request', sandbox: 'workspace-write' },
+      turn: { approvalPolicy: 'on-request', sandboxPolicy: { type: 'workspaceWrite' } },
+    },
+    {
+      accessMode: 'full-access' as const,
+      thread: { approvalPolicy: 'never', sandbox: 'danger-full-access' },
+      turn: { approvalPolicy: 'never', sandboxPolicy: { type: 'dangerFullAccess' } },
+    },
+  ])('sends $accessMode natively on thread start and on the turn', async ({ accessMode, thread, turn }) => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession({ ...context, accessMode }))
+          const start = yield* server.read
+          expect(start.method).toBe('thread/start')
+          expect(start.params).toMatchObject(thread)
+          yield* server.send({ id: start.id, result: { thread: { id: 'thread-policy' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-policy' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: 'Apply the policy' }], attachmentIds: [] }),
+          )
+          const turnStart = yield* server.read
+          expect(turnStart.method).toBe('turn/start')
+          expect(turnStart.params).toMatchObject(turn)
+          yield* server.send({ id: turnStart.id, result: { turn: { id: 'turn-policy', status: 'inProgress' } } })
+          yield* Fiber.join(submitting)
+          yield* server.send({
+            method: 'turn/completed',
+            params: { threadId: 'thread-policy', turn: { id: 'turn-policy', status: 'completed' } },
+          })
+          yield* Stream.runCollect(session.events(runId))
+          yield* connection.close(100)
+        }),
+      ),
+    )
+  })
+
+  it('applies the fail-safe approval-required policy when a context has no access mode', async () => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const start = yield* server.read
+          expect(start.params).toMatchObject({ approvalPolicy: 'untrusted', sandbox: 'read-only' })
+          yield* server.send({ id: start.id, result: { thread: { id: 'thread-default-policy' } } })
+          yield* Fiber.join(opening)
+          yield* connection.close(100)
+        }),
+      ),
+    )
+  })
+
+  it('applies the access mode to the exact native thread when a session is resumed', async () => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const loading = yield* Effect.forkScoped(
+            connection.loadSession(
+              { ...context, accessMode: 'auto-accept-edits' },
+              { nativeSessionId: 'thread-policy-resume', generation: context.generation },
+            ),
+          )
+          const resume = yield* server.read
+          expect(resume.method).toBe('thread/resume')
+          expect(resume.params).toMatchObject({
+            threadId: 'thread-policy-resume',
+            approvalPolicy: 'on-request',
+            sandbox: 'workspace-write',
+          })
+          yield* server.send({
+            id: resume.id,
+            result: { cwd: context.workspacePath, thread: { id: 'thread-policy-resume', turns: [] } },
+          })
+          yield* Fiber.join(loading)
+          yield* connection.close(100)
+        }),
+      ),
+    )
+  })
+
   it('completes initialize before opening a thread, holds approval until a user decision, and rejects stale steering', async () => {
     const server = fakeServer()
     const outcome = await Effect.runPromise(

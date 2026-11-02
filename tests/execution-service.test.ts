@@ -22,7 +22,7 @@ import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/c
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import type { ResolvedCheckout } from '@/shared/schemas/checkout.js'
-import type { AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
+import type { AgentAccessMode, AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
 import type { AgentSessionId } from '@/shared/schemas/workspace.js'
 import { type BeginRunCommand, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
@@ -1382,6 +1382,144 @@ describe('ExecutionService', () => {
       expect(submitCalls).toBe(1)
     } finally {
       await Effect.runPromise(Deferred.succeed(finishTurn, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('passes the requested access mode into the driver context and applies the fail-safe default when absent', async () => {
+    const openContextFor = async (accessMode: AgentAccessMode | undefined): Promise<AgentSessionContext> => {
+      const opened = await Effect.runPromise(Deferred.make<AgentSessionContext>())
+      const session = makeSession()
+      const runtime = makeRuntime(() => Effect.die(new Error('test-driver is not used by this test')), {}, undefined, [
+        AgentDriver.of({
+          driverId: 'modes-driver',
+          accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
+          connect: () =>
+            Effect.succeed(
+              makeConnection(session, {
+                identity: { id: 'connection-1', driverId: 'modes-driver', authentication: 'authenticated' },
+                openSession: context => Deferred.succeed(opened, context).pipe(Effect.as(session)),
+              }),
+            ),
+        }),
+      ])
+      try {
+        const store = await runtime.runPromise(WorkspaceStore)
+        const run: RunEffect = effect => runtime.runPromise(effect)
+        await setup(store, run)
+        const service = await runtime.runPromise(ExecutionService)
+        await run(
+          service.start({
+            ...command,
+            driverId: 'modes-driver',
+            ...(accessMode ? { accessMode } : {}),
+          }),
+        )
+        const context = await run(Deferred.await(opened))
+        await run(service.stopAll())
+        return context
+      } finally {
+        await runtime.dispose()
+      }
+    }
+
+    expect((await openContextFor('full-access')).accessMode).toBe('full-access')
+    expect((await openContextFor(undefined)).accessMode).toBe('approval-required')
+  })
+
+  it.each(['approval-driver', 'test-driver', 'unregistered-driver'])(
+    'refuses a non-default access mode for %s before recording a Run',
+    async driverId => {
+      const runtime = makeRuntime(
+        () => Effect.die(new Error('test-driver must not connect in this test')),
+        {},
+        undefined,
+        [
+          AgentDriver.of({
+            driverId: 'approval-driver',
+            accessModes: ['approval-required'],
+            connect: () => Effect.die(new Error('approval-driver must not connect in this test')),
+          }),
+        ],
+      )
+      try {
+        const store = await runtime.runPromise(WorkspaceStore)
+        const run: RunEffect = effect => runtime.runPromise(effect)
+        await setup(store, run)
+        const service = await runtime.runPromise(ExecutionService)
+        const refused = await run(
+          service.start({ ...command, driverId, accessMode: 'auto-accept-edits' }).pipe(Effect.flip),
+        )
+        expect(refused).toMatchObject({ _tag: 'ExecutionServiceError', reason: 'unsupported-access-mode' })
+        expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toEqual([])
+        await run(service.stopAll())
+      } finally {
+        await runtime.dispose()
+      }
+    },
+  )
+
+  it('refuses an unsupported follow-up when it is queued for a known driver and keeps an unsupported head queued', async () => {
+    const runtime = makeRuntime(
+      () => Effect.die(new Error('test-driver must not connect in this test')),
+      {},
+      undefined,
+      [
+        AgentDriver.of({
+          driverId: 'approval-driver',
+          accessModes: ['approval-required'],
+          connect: () => Effect.die(new Error('approval-driver must not connect in this test')),
+        }),
+      ],
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      const refusedAtQueue = await run(
+        service
+          .enqueueFollowUp({
+            commandId: 'queue-refused',
+            issuedAt: '2026-10-29T10:00:02Z',
+            taskId: task.id,
+            conversationId: conversation.id,
+            prompt: 'Refused at queue time',
+            driverId: 'approval-driver',
+            accessMode: 'full-access',
+          })
+          .pipe(Effect.flip),
+      )
+      expect(refusedAtQueue).toMatchObject({ reason: 'unsupported-access-mode' })
+
+      await run(
+        service.enqueueFollowUp({
+          commandId: 'queue-unsupported-head',
+          issuedAt: '2026-10-29T10:00:03Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Needs full access',
+          accessMode: 'full-access',
+        }),
+      )
+      const refusedPromotion = await run(
+        service
+          .promoteQueuedFollowUp(conversation.id, {
+            ...command,
+            commandId: 'promote-unsupported',
+            runId: 'promote-unsupported-run' as never,
+            provisionalAgentSessionId: 'promote-unsupported-session',
+            driverId: 'approval-driver',
+          })
+          .pipe(Effect.flip),
+      )
+      expect(refusedPromotion).toMatchObject({ reason: 'unsupported-access-mode' })
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items).toMatchObject([
+        { commandId: 'queue-unsupported-head' },
+      ])
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toEqual([])
+      await run(service.stopAll())
+    } finally {
       await runtime.dispose()
     }
   })

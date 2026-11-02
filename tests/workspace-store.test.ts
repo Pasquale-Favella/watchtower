@@ -1291,6 +1291,217 @@ describe('WorkspaceStore', () => {
     })
   })
 
+  it('persists the requested access mode on dispatch and applies the fail-safe default when absent', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const full = {
+        ...command,
+        commandId: 'access-full',
+        runId: 'run-access-full' as never,
+        provisionalAgentSessionId: 'session-access-full',
+        accessMode: 'full-access' as const,
+      }
+      await run(store.beginRun(full))
+      expect(await run(store.claimDispatch(full.runId, 7, '2026-10-29T10:00:02Z'))).toMatchObject({
+        accessMode: 'full-access',
+      })
+      await run(
+        store.failDispatch(full.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:03Z',
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+
+      const defaulted = {
+        ...command,
+        commandId: 'access-default',
+        runId: 'run-access-default' as never,
+        provisionalAgentSessionId: 'session-access-default',
+      }
+      await run(store.beginRun(defaulted))
+      expect(await run(store.claimDispatch(defaulted.runId, 7, '2026-10-29T10:00:04Z'))).toMatchObject({
+        accessMode: 'approval-required',
+      })
+    })
+  })
+
+  it('replays an absent access mode as the default and rejects a changed mode on the same command', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const base = {
+        ...command,
+        commandId: 'access-replay',
+        runId: 'run-access-replay' as never,
+        provisionalAgentSessionId: 'session-access-replay',
+      }
+      const receipt = await run(store.beginRun(base))
+      expect(await run(store.beginRun({ ...base, accessMode: 'approval-required' }))).toEqual({
+        ...receipt,
+        replayed: true,
+      })
+      await expect(run(store.beginRun({ ...base, accessMode: 'full-access' }))).rejects.toMatchObject({
+        code: 'command-conflict',
+      })
+    })
+  })
+
+  it('keeps the persisted fingerprint of a command without an access mode unchanged', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-access-fingerprint-'))
+    const filename = join(directory, 'workspace.db')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const reader = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      await runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
+      await runtime.runPromise(store.createTask({ task, conversation }))
+      const withoutMode = { ...command, commandId: 'access-legacy' }
+      await runtime.runPromise(store.beginRun(withoutMode))
+      const stored = await reader.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          const rows =
+            yield* sql`SELECT fingerprint FROM workspace_command_receipt WHERE command_id = ${'command:"access-legacy"'}`
+          return String(rows[0]?.fingerprint)
+        }),
+      )
+      // Server-assigned fields are excluded from the intent; an absent mode must not add a key to it.
+      const serverFields = ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId']
+      const intent = Object.fromEntries(Object.entries(withoutMode).filter(([field]) => !serverFields.includes(field)))
+      expect(stored).toBe(`v2:${legacyFingerprint({ kind: 'beginRun', intent })}`)
+    } finally {
+      await reader.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('promotes a queued follow-up with its own access mode before the promotion command default', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const followUp = {
+        commandId: 'access-queue-1',
+        taskId: task.id,
+        conversationId: conversation.id,
+        prompt: 'Queued with edits',
+        issuedAt: command.issuedAt,
+        accessMode: 'auto-accept-edits' as const,
+      }
+      await run(store.enqueueFollowUp(followUp))
+      await run(
+        store.enqueueFollowUp({
+          ...followUp,
+          commandId: 'access-queue-2',
+          prompt: 'Queued with the command default',
+          accessMode: undefined,
+        }),
+      )
+      const first = {
+        ...command,
+        commandId: 'access-promote-1',
+        runId: 'run-access-promote-1' as never,
+        provisionalAgentSessionId: 'session-access-promote-1',
+        accessMode: 'full-access' as const,
+      }
+      expect(await run(store.promoteNextFollowUp(conversation.id, first))).toMatchObject({
+        followUp: { accessMode: 'auto-accept-edits' },
+      })
+      expect(await run(store.claimDispatch(first.runId, 7, command.issuedAt))).toMatchObject({
+        accessMode: 'auto-accept-edits',
+      })
+      await run(
+        store.failDispatch(first.runId, {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+
+      const second = {
+        ...first,
+        commandId: 'access-promote-2',
+        runId: 'run-access-promote-2' as never,
+        provisionalAgentSessionId: 'session-access-promote-2',
+      }
+      expect(await run(store.promoteNextFollowUp(conversation.id, second))).toMatchObject({
+        followUp: { prompt: 'Queued with the command default' },
+      })
+      expect(await run(store.claimDispatch(second.runId, 7, command.issuedAt))).toMatchObject({
+        accessMode: 'full-access',
+      })
+    })
+  })
+
+  it('defaults a dispatch recorded before the access mode migration to approval-required', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-access-upgrade-'))
+    const filename = join(directory, 'workspace.db')
+    let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      await runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
+      await runtime.runPromise(store.createTask({ task, conversation }))
+      const pending = {
+        ...command,
+        commandId: 'access-upgrade',
+        runId: 'run-access-upgrade' as never,
+        provisionalAgentSessionId: 'session-access-upgrade',
+        accessMode: 'full-access' as const,
+      }
+      await runtime.runPromise(store.beginRun(pending))
+      await runtime.dispose()
+
+      const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+      try {
+        await writer.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
+            yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 10`
+          }),
+        )
+      } finally {
+        await writer.dispose()
+      }
+
+      runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      const upgraded = await runtime.runPromise(WorkspaceStore)
+      expect(await runtime.runPromise(upgraded.claimDispatch(pending.runId, 7, command.issuedAt))).toMatchObject({
+        accessMode: 'approval-required',
+      })
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses to claim a dispatch whose stored access mode fails validation', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-access-invalid-'))
+    const filename = join(directory, 'workspace.db')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      await runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
+      await runtime.runPromise(store.createTask({ task, conversation }))
+      await runtime.runPromise(store.beginRun({ ...command, commandId: 'access-invalid' }))
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_dispatch_intent SET access_mode = ${'unsafe-mode'} WHERE run_id = ${command.runId}`
+        }),
+      )
+      await expect(runtime.runPromise(store.claimDispatch(command.runId, 7, command.issuedAt))).rejects.toMatchObject({
+        code: 'invalid-data',
+      })
+    } finally {
+      await writer.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('records steering before delivery and rejects a terminal run', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
@@ -2228,6 +2439,7 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE workspace_follow_up_queue`
             yield* sql`ALTER TABLE workspace_command_receipt DROP COLUMN promotion_payload`
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN attachments`
+            yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN attachments`
             yield* sql`ALTER TABLE workspace_agent_session DROP COLUMN capabilities`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`

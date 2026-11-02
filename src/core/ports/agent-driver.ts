@@ -5,6 +5,7 @@ import type * as Scope from 'effect/Scope'
 import type * as Stream from 'effect/Stream'
 
 import type {
+  AgentAccessMode,
   AgentCapabilities,
   AgentConnectionIdentity,
   AgentDriverEvent,
@@ -12,6 +13,7 @@ import type {
   AgentRequestDecision,
   AgentSessionIdentity,
 } from '@/shared/schemas/execution.js'
+import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type {
   AgentRunId,
@@ -53,6 +55,8 @@ export interface AgentSessionContext {
   readonly generation: number
   readonly modelId?: string | undefined
   readonly modeId?: string | undefined
+  /** Absent is treated as the fail-safe default; drivers never widen a missing value. */
+  readonly accessMode?: AgentAccessMode | undefined
 }
 
 export interface NativeSessionReference {
@@ -157,5 +161,12 @@ export class AgentDriver extends Context.Service<
   {
     readonly driverId: string
     readonly connect: AgentDriverConnect
+    /** Access modes the driver enforces natively. Omission declares approval-required only. */
+    readonly accessModes?: ReadonlyArray<AgentAccessMode> | undefined
   }
 >()('watchtower/core/AgentDriver') {}
+
+/** Declared access modes as a fresh array; an undeclared driver can only prove the fail-safe default. */
+export const agentDriverAccessModes = (driver: {
+  readonly accessModes?: ReadonlyArray<AgentAccessMode> | undefined
+}): Array<AgentAccessMode> => [...(driver.accessModes ?? [DEFAULT_AGENT_ACCESS_MODE])]

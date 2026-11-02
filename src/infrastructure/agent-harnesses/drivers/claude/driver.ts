@@ -31,11 +31,13 @@ import {
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import { executablePathEnv } from '@/infrastructure/process/executable.js'
 import type {
+  AgentAccessMode,
   AgentCapabilities,
   AgentDriverEvent,
   AgentRequest,
   AgentRequestDecision,
 } from '@/shared/schemas/execution.js'
+import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
 const DRIVER_ID = 'claude-agent-sdk'
@@ -268,6 +270,35 @@ const claudeProcessEnvironment = (apiKey: string): Record<string, string | undef
   return env
 }
 
+/** Defers each tool call to the held permission callback, optionally only for tools with the given name. */
+const askBeforeTool = (matcher?: string): NonNullable<Options['hooks']> => ({
+  PreToolUse: [
+    {
+      ...(matcher === undefined ? {} : { matcher }),
+      hooks: [async () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } })],
+    },
+  ],
+})
+
+/** Native SDK policy for an access mode. Only approval-required asks before every tool. The other modes keep
+ * AskUserQuestion on the held callback so a question is never answered without the user. */
+const claudePermissionOptions = (
+  accessMode: AgentAccessMode,
+): Pick<Options, 'permissionMode' | 'allowDangerouslySkipPermissions' | 'hooks'> => {
+  switch (accessMode) {
+    case 'approval-required':
+      return { permissionMode: 'default', hooks: askBeforeTool() }
+    case 'auto-accept-edits':
+      return { permissionMode: 'acceptEdits', hooks: askBeforeTool('AskUserQuestion') }
+    case 'full-access':
+      return {
+        permissionMode: 'bypassPermissions',
+        allowDangerouslySkipPermissions: true,
+        hooks: askBeforeTool('AskUserQuestion'),
+      }
+  }
+}
+
 const modeOptions = (
   context: AgentSessionContext,
   native: NativeSessionReference | undefined,
@@ -277,19 +308,12 @@ const modeOptions = (
   return {
     cwd: context.workspacePath,
     ...(context.modelId !== undefined ? { model: context.modelId } : {}),
-    permissionMode: 'default',
+    ...claudePermissionOptions(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE),
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
     includePartialMessages: true,
     ...(native ? { resume: native.nativeSessionId } : { sessionId: nativeSessionId }),
     env: claudeProcessEnvironment(apiKey),
-    hooks: {
-      PreToolUse: [
-        {
-          hooks: [async () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } })],
-        },
-      ],
-    },
   }
 }
 
@@ -915,6 +939,7 @@ export const makeClaudeAgentDriver = (dependencies: ClaudeDriverDependencies = {
     AgentDriver,
     AgentDriver.of({
       driverId: DRIVER_ID,
+      accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
       connect: (options: AgentDriverConnectOptions) =>
         Effect.gen(function* () {
           const key = apiKey()

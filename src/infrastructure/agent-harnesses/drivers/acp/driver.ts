@@ -47,6 +47,7 @@ import type {
   AgentRequestDecision,
   AgentSessionIdentity,
 } from '@/shared/schemas/execution.js'
+import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
 const MAX_FRAME_BYTES = 1024 * 1024
@@ -1179,6 +1180,13 @@ function createConnection(
             message: 'ACP session requires a valid generation and resolved workspace path.',
           })
         }
+        // ACP has no standard access control; only the interactive approval flow can honour a Run.
+        if ((context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE) !== DEFAULT_AGENT_ACCESS_MODE) {
+          return yield* unsupported(
+            native ? 'loadSession' : 'openSession',
+            'ACP has no native access control; only approval-required is supported.',
+          )
+        }
         if (native && !connectionState.loadSessionSupported) {
           return yield* unsupported('loadSession', 'The ACP agent did not advertise session/load.')
         }
@@ -1281,6 +1289,7 @@ function createConnection(
 export function makeAcpDriver(dependencies: AcpDriverDependencies): AgentDriver['Service'] {
   return AgentDriver.of({
     driverId: 'acp',
+    accessModes: ['approval-required'],
     connect: options =>
       dependencies.transportFactory(options).pipe(
         Effect.mapError(error =>

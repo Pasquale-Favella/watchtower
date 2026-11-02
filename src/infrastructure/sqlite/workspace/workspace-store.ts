@@ -15,7 +15,13 @@ import {
   UnsupportedLedgerSchemaVersion,
 } from '@/infrastructure/sqlite/sqlite-migrations.js'
 import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
-import { agentCapabilitiesSchema, agentDriverEventSchema, agentRunSchema } from '@/shared/schemas/execution.js'
+import {
+  agentAccessModeSchema,
+  agentCapabilitiesSchema,
+  agentDriverEventSchema,
+  agentRunSchema,
+  DEFAULT_AGENT_ACCESS_MODE,
+} from '@/shared/schemas/execution.js'
 import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
 import {
   agentSessionIdSchema,
@@ -243,6 +249,13 @@ const migrations = [
       ALTER TABLE workspace_agent_session ADD COLUMN capabilities TEXT;
     `),
   },
+  {
+    version: 10,
+    name: 'persist_run_access_mode',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_dispatch_intent ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'approval-required';
+    `),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
@@ -309,6 +322,10 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
       task: { projectId: creation.task.projectId, title: creation.task.title, description: creation.task.description },
       conversation: { title: creation.conversation.title },
     }
+  }
+  // An absent access mode means the default, so omitting the default keeps pre-migration receipts replayable.
+  if (intent.accessMode === undefined || intent.accessMode === DEFAULT_AGENT_ACCESS_MODE) {
+    intent = Object.fromEntries(Object.entries(intent).filter(([field]) => field !== 'accessMode'))
   }
   return `v2:${fingerprint({ kind, intent })}`
 }
@@ -611,7 +628,7 @@ const makeService = Effect.gen(function* () {
             }
             yield* sql`INSERT INTO workspace_agent_run (id, task_id, checkout_id, generation, status, submitted_at, payload) VALUES (${run.id}, ${run.taskId}, ${command.checkoutId}, ${run.generation}, 'queued', ${run.submittedAt}, ${encode(run)})`
             yield* sql`INSERT INTO workspace_message (id, run_id, conversation_id, role, content, created_at) VALUES (${`user:${run.id}`}, ${run.id}, ${command.conversationId}, 'user', ${command.prompt}, ${command.issuedAt})`
-            yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.nativeSessionId ?? null}, 'pending')`
+            yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, access_mode, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.accessMode ?? DEFAULT_AGENT_ACCESS_MODE}, ${command.nativeSessionId ?? null}, 'pending')`
             yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
             yield* sql`UPDATE workspace_message SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
             yield* appendEvent(run, 'runQueued', command.issuedAt, { conversationId: command.conversationId })
@@ -689,6 +706,9 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(
                 safeError('membership-conflict', 'Dispatch checkout payload does not match stored membership'),
               )
+            const accessMode = yield* Schema.decodeUnknownEffect(agentAccessModeSchema)(intent.access_mode).pipe(
+              Effect.mapError(() => safeError('invalid-data', 'Stored access mode failed validation')),
+            )
             const knownSessions = intent.requested_native_session_id
               ? yield* sql`SELECT id, task_id, conversation_id, checkout_id, generation FROM workspace_agent_session WHERE driver_id = ${intent.driver_id} AND connection_id = ${intent.connection_id} AND native_session_id = ${intent.requested_native_session_id}`
               : []
@@ -729,6 +749,7 @@ const makeService = Effect.gen(function* () {
               attachments: yield* decodeJson(promptAttachmentsSchema)(String(intent.attachments ?? '[]')),
               modelId: intent.model_id as string | null,
               modeId: intent.mode_id as string | null,
+              accessMode,
               nativeSessionId: intent.requested_native_session_id as string | null,
             } as DispatchClaim
           }),
@@ -1624,6 +1645,7 @@ const makeService = Effect.gen(function* () {
               connectionId: followUp.connectionId ?? command.connectionId,
               modelId: followUp.modelId === undefined ? command.modelId : followUp.modelId,
               modeId: followUp.modeId === undefined ? command.modeId : followUp.modeId,
+              accessMode: followUp.accessMode === undefined ? command.accessMode : followUp.accessMode,
             })
             if (receipt.replayed)
               return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
