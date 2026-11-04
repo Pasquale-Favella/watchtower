@@ -66,3 +66,23 @@ export const removeWorktreeRequestSchema = Schema.Struct({
 })
 export type RemoveWorktreeRequest = Schema.Schema.Type<typeof removeWorktreeRequestSchema>
 export const removeWorktreeResponseSchema = Schema.Void
+
+export const CHECKOUT_BRANCH_LIMIT = 200
+export const checkoutBranchSchema = Schema.Struct({
+  name: Schema.String,
+  /** Checked out in the inspected checkout. */
+  current: Schema.Boolean,
+  /** The repository's default branch, from origin/HEAD or the usual names. */
+  isDefault: Schema.Boolean,
+  /** Another worktree that has this branch checked out. Git refuses to check it out twice. */
+  worktreePath: Schema.NullOr(Schema.String),
+})
+export type CheckoutBranch = Schema.Schema.Type<typeof checkoutBranchSchema>
+export const checkoutBranchesSchema = Schema.Struct({
+  current: Schema.NullOr(Schema.String),
+  branches: Schema.Array(checkoutBranchSchema),
+  truncated: Schema.Boolean,
+})
+export type CheckoutBranches = Schema.Schema.Type<typeof checkoutBranchesSchema>
+export const switchBranchRequestSchema = Schema.Struct({ checkoutPath: path, branch: ref })
+export type SwitchBranchRequest = Schema.Schema.Type<typeof switchBranchRequestSchema>

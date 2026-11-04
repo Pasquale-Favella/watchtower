@@ -13,7 +13,7 @@ import type { PtyProcess, PtySpawner } from '../src/infrastructure/terminal/pty.
 import { TerminalScrollback } from '../src/infrastructure/terminal/scrollback.js'
 import { resolveTerminalShell } from '../src/infrastructure/terminal/shell.js'
 import { terminalHostLayer, type TerminalHostOptions } from '../src/infrastructure/terminal/terminal-host.js'
-import type { TerminalFrame, TerminalId } from '../src/shared/schemas/terminal.js'
+import type { DraftTerminalTarget, TerminalFrame, TerminalId } from '../src/shared/schemas/terminal.js'
 import { type TaskId, taskIdSchema } from '../src/shared/schemas/workspace.js'
 
 const taskA = taskIdSchema.make('task-a')
@@ -480,5 +480,75 @@ describe('terminal stream end', () => {
       }),
     )
     expect(Exit.isSuccess(collected)).toBe(true)
+  })
+})
+
+describe('draft terminal adoption', () => {
+  const draft: DraftTerminalTarget = { kind: 'draft', draftId: 'draft-a', projectId: null }
+  it('moves live shells and scrollback to a Task without spawning or killing a process', async () => {
+    const fake = fakeSpawner()
+    await run(hostOptions({ spawner: fake.spawner }), host =>
+      Effect.gen(function* () {
+        yield* host.open({ target: draft, terminalId: 'term-1', cwd: 'C:\\work\\repo', cols: 120, rows: 30 })
+        firstPty(fake).emit('before first message')
+        yield* host.adoptDraft(draft, taskA, 'C:\\work\\repo')
+        expect(yield* host.list(draft)).toEqual([])
+        expect(yield* host.open(request('term-1'))).toMatchObject({ data: 'before first message', status: 'running' })
+        yield* host.write(taskA, 'term-1', 'after first message')
+        expect(firstPty(fake).writes).toEqual(['after first message'])
+        expect(fake.calls).toHaveLength(1)
+        expect(firstPty(fake).kills).toBe(0)
+        yield* host.adoptDraft(draft, taskA, 'C:\\work\\repo')
+        expect(yield* host.list(taskA)).toHaveLength(1)
+      }),
+    )
+  })
+  it('adopts an opening shell whose spawn reaches the host after the first message', async () => {
+    const fake = fakeSpawner()
+    await run(hostOptions({ spawner: fake.spawner }), host =>
+      Effect.gen(function* () {
+        yield* host.adoptDraft(draft, taskA, 'C:\\work\\repo')
+        yield* host.open({ target: draft, terminalId: 'term-1', cwd: 'C:\\work\\repo', cols: 120, rows: 30 })
+        yield* host.write(taskA, 'term-1', 'same process')
+        yield* host.write(draft, 'term-1', 'pending old input')
+        expect(yield* host.list(taskA)).toHaveLength(1)
+        expect(fake.calls).toHaveLength(1)
+        expect(firstPty(fake).writes).toEqual(['same process', 'pending old input'])
+        expect(yield* Effect.flip(host.adoptDraft(draft, taskB, 'C:\\work\\repo'))).toMatchObject({
+          reason: 'conflict',
+        })
+      }),
+    )
+  })
+  it('retains the draft shell when the new Task uses a different checkout', async () => {
+    const fake = fakeSpawner()
+    await run(hostOptions({ spawner: fake.spawner }), host =>
+      Effect.gen(function* () {
+        yield* host.open({ target: draft, terminalId: 'term-1', cwd: 'C:\\work\\repo', cols: 120, rows: 30 })
+        expect(yield* Effect.flip(host.adoptDraft(draft, taskA, 'C:\\work\\worktree'))).toMatchObject({
+          reason: 'conflict',
+        })
+        yield* host.write(draft, 'term-1', 'still accessible')
+        expect(firstPty(fake).writes).toEqual(['still accessible'])
+        expect(yield* host.list(taskA)).toEqual([])
+        expect(yield* host.list(draft)).toHaveLength(1)
+        expect(firstPty(fake).kills).toBe(0)
+      }),
+    )
+  })
+  it('checks all destination conflicts before moving any draft session', async () => {
+    const fake = fakeSpawner()
+    await run(hostOptions({ spawner: fake.spawner }), host =>
+      Effect.gen(function* () {
+        yield* host.open({ target: draft, terminalId: 'term-1', cwd: 'C:\\work\\repo', cols: 120, rows: 30 })
+        yield* host.open({ target: draft, terminalId: 'term-2', cwd: 'C:\\work\\repo', cols: 120, rows: 30 })
+        yield* host.open(request('term-2'))
+        expect(yield* Effect.flip(host.adoptDraft(draft, taskA, 'C:\\work\\repo'))).toMatchObject({
+          reason: 'conflict',
+        })
+        expect(yield* host.list(draft)).toHaveLength(2)
+        expect(yield* host.list(taskA)).toHaveLength(1)
+      }),
+    )
   })
 })

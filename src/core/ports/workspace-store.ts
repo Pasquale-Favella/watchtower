@@ -4,12 +4,14 @@ import * as Effect from 'effect/Effect'
 import type { AgentRunId, ConversationId, ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type {
   BeginRunCommand,
+  CheckoutRegistrationReceipt,
   CommandReceipt,
   CreateTaskCommand,
   DispatchClaim,
   DispatchFailureCommand,
   EnqueueFollowUpCommand,
   FollowUpReceipt,
+  QueuedFollowUpHeadPage,
   NativeSessionBinding,
   OwnerEpochAcquisition,
   ProjectRegistrationReceipt,
@@ -18,6 +20,7 @@ import type {
   RecordDriverEventCommand,
   RecordRequestResponseCommand,
   RecordSteerCommand,
+  RegisterCheckoutCommand,
   RegisterProjectCommand,
   RequestResponsePage,
   SettleDeliveryCommand,
@@ -55,6 +58,9 @@ export class WorkspaceStore extends Context.Service<
     readonly registerProject: (
       command: RegisterProjectCommand,
     ) => Effect.Effect<ProjectRegistrationReceipt, WorkspaceStoreError>
+    readonly registerCheckout: (
+      command: RegisterCheckoutCommand,
+    ) => Effect.Effect<CheckoutRegistrationReceipt, WorkspaceStoreError>
     readonly createTask: (command: CreateTaskCommand) => Effect.Effect<TaskCreationReceipt, WorkspaceStoreError>
     readonly beginRun: (command: BeginRunCommand) => Effect.Effect<CommandReceipt, WorkspaceStoreError>
     readonly claimDispatch: (
@@ -106,6 +112,13 @@ export class WorkspaceStore extends Context.Service<
       conversationId: ConversationId,
       options?: WorkspaceReadPageOptions,
     ) => Effect.Effect<QueuedFollowUpPage, WorkspaceStoreError>
+    readonly listQueuedFollowUpHeads: (
+      options?: WorkspaceReadPageOptions,
+    ) => Effect.Effect<QueuedFollowUpHeadPage, WorkspaceStoreError>
+    readonly holdQueuedFollowUps: (
+      conversationId: ConversationId,
+      ownerEpoch: number,
+    ) => Effect.Effect<void, WorkspaceStoreError>
     readonly listRequestResponses: (
       taskId: TaskId,
       options?: WorkspaceReadPageOptions,
@@ -119,6 +132,12 @@ export class WorkspaceStore extends Context.Service<
       command: BeginRunCommand,
     ) => Effect.Effect<PromotedFollowUp | null, WorkspaceStoreError>
     readonly recoverWorker: (replacedEpoch: number, recoveredAt: string) => Effect.Effect<number, WorkspaceStoreError>
+    /** Release only the reservation; the Run's uncertain delivery outcome remains in history. */
+    readonly releaseDispatchAfterCleanup: (
+      runId: AgentRunId,
+      ownerEpoch: number,
+    ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly releaseRetiredDispatches: (ownerEpoch: number) => Effect.Effect<void, WorkspaceStoreError>
     readonly acquireOwnerEpoch: (recoveredAt: string) => Effect.Effect<OwnerEpochAcquisition, WorkspaceStoreError>
     readonly pageEvents: (
       afterSequence: number,

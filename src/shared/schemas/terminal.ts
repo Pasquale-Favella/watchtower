@@ -1,9 +1,10 @@
 import * as Schema from 'effect/Schema'
 
-import { type TaskId, taskIdSchema } from '@/shared/schemas/workspace.js'
+import { projectIdSchema, type TaskId, taskIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 
 /** Terminal limits shared by the RPC boundary, the host and the renderer drawer. */
-export const TERMINAL_MAX_PER_TASK = 4
+export const TERMINAL_MAX_PER_TASK = 32
+export const TERMINAL_MAX_PER_GROUP = 4
 export const TERMINAL_MAX_LIVE_SESSIONS = 32
 export const TERMINAL_SCROLLBACK_BYTES = 512 * 1024
 export const TERMINAL_WRITE_MAX_CHARS = 65_536
@@ -13,9 +14,93 @@ export const TERMINAL_MAX_COLS = 1000
 export const TERMINAL_MAX_ROWS = 500
 
 /** Tab ids are allocated lowest-first per Task, so a Task never names more than TERMINAL_MAX_PER_TASK tabs. */
-export const TERMINAL_IDS = ['term-1', 'term-2', 'term-3', 'term-4'] as const
+export const TERMINAL_IDS = [
+  'term-1',
+  'term-2',
+  'term-3',
+  'term-4',
+  'term-5',
+  'term-6',
+  'term-7',
+  'term-8',
+  'term-9',
+  'term-10',
+  'term-11',
+  'term-12',
+  'term-13',
+  'term-14',
+  'term-15',
+  'term-16',
+  'term-17',
+  'term-18',
+  'term-19',
+  'term-20',
+  'term-21',
+  'term-22',
+  'term-23',
+  'term-24',
+  'term-25',
+  'term-26',
+  'term-27',
+  'term-28',
+  'term-29',
+  'term-30',
+  'term-31',
+  'term-32',
+] as const
 export const terminalIdSchema = Schema.Literals(TERMINAL_IDS)
 export type TerminalId = Schema.Schema.Type<typeof terminalIdSchema>
+
+export const draftTerminalTargetSchema = Schema.Struct({
+  kind: Schema.Literal('draft'),
+  draftId: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(200), Schema.isPattern(/^[A-Za-z0-9_-]+$/)),
+  projectId: Schema.NullOr(projectIdSchema),
+  checkoutId: Schema.optional(workspaceCheckoutIdSchema),
+})
+export type DraftTerminalTarget = Schema.Schema.Type<typeof draftTerminalTargetSchema>
+export const terminalTargetSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal('task'), taskId: taskIdSchema }),
+  draftTerminalTargetSchema,
+])
+export type TerminalTarget = Schema.Schema.Type<typeof terminalTargetSchema>
+export type TerminalOwner = TaskId | TerminalTarget
+
+export function terminalTarget(owner: TerminalOwner): TerminalTarget {
+  return typeof owner === 'string' ? { kind: 'task', taskId: owner } : owner
+}
+
+/** Stable namespace for shell ownership, distinct from Task identity for an unsent draft. */
+export function terminalOwnerKey(owner: TerminalOwner): string {
+  const target = terminalTarget(owner)
+  return target.kind === 'task'
+    ? target.taskId
+    : JSON.stringify(['draft', target.draftId, target.projectId, target.checkoutId ?? null])
+}
+
+export const terminalOwnerRequestFields = {
+  taskId: Schema.optional(taskIdSchema),
+  target: Schema.optional(terminalTargetSchema),
+}
+
+export interface TerminalOwnerRequest {
+  readonly taskId?: TaskId | undefined
+  readonly target?: TerminalTarget | undefined
+}
+
+export function terminalRequestTarget(request: TerminalOwnerRequest): TerminalTarget {
+  if (request.target) return request.target
+  if (request.taskId) return { kind: 'task', taskId: request.taskId }
+  throw new Error('A terminal owner is required')
+}
+
+export function terminalTargetPayload(owner: TerminalOwner): { readonly target: TerminalTarget } {
+  return { target: terminalTarget(owner) }
+}
+
+export const terminalOwnerRequestCheck = Schema.makeFilter<TerminalOwnerRequest>(
+  request => Boolean(request.taskId) !== Boolean(request.target) || 'Exactly one terminal owner is required.',
+)
+export const terminalOwnerRequestSchema = Schema.Struct(terminalOwnerRequestFields).check(terminalOwnerRequestCheck)
 
 const terminalColsSchema = Schema.Number.check(
   Schema.isInt(),
@@ -78,16 +163,16 @@ export type TerminalFrame = Schema.Schema.Type<typeof terminalFrameSchema>
 
 /** Requests name a Task and a tab. The working directory is resolved by the server, never supplied here. */
 export const terminalRefSchema = Schema.Struct({
-  taskId: taskIdSchema,
+  ...terminalOwnerRequestFields,
   terminalId: terminalIdSchema,
-})
+}).check(terminalOwnerRequestCheck)
 
 export const openTerminalRequestSchema = Schema.Struct({
-  taskId: taskIdSchema,
+  ...terminalOwnerRequestFields,
   terminalId: terminalIdSchema,
   cols: Schema.optional(terminalColsSchema),
   rows: Schema.optional(terminalRowsSchema),
-})
+}).check(terminalOwnerRequestCheck)
 export type OpenTerminalRequest = Schema.Schema.Type<typeof openTerminalRequestSchema>
 
 export const terminalListSchema = Schema.Struct({
@@ -95,6 +180,6 @@ export const terminalListSchema = Schema.Struct({
 })
 
 /** The key a session is registered under, in the host and in the renderer. */
-export function terminalSessionKey(taskId: TaskId, terminalId: TerminalId): string {
-  return JSON.stringify([taskId, terminalId])
+export function terminalSessionKey(owner: TerminalOwner, terminalId: TerminalId): string {
+  return JSON.stringify([terminalOwnerKey(owner), terminalId])
 }

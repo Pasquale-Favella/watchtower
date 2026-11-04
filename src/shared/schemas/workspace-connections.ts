@@ -1,6 +1,11 @@
 import * as Schema from 'effect/Schema'
 
-import { agentAccessModeSchema, agentModelChoiceSchema } from './execution.js'
+import {
+  agentAccessModeSchema,
+  agentAccountSchema,
+  agentModelChoiceSchema,
+  MAX_AGENT_CATALOG_CHOICES,
+} from './execution.js'
 
 /** Renderer-safe description of a detected Harness Connection.
  * Launch commands, arguments, environment and credential references are intentionally absent.
@@ -30,10 +35,11 @@ const capabilitySchema = Schema.Struct({
 })
 const choiceFactsSchema = Schema.Struct({
   state: Schema.Literals(['unknown', 'session-scoped', 'connection-scoped']),
-  items: Schema.Array(agentModelChoiceSchema).check(Schema.isMaxLength(256)),
+  items: Schema.Array(agentModelChoiceSchema).check(Schema.isMaxLength(MAX_AGENT_CATALOG_CHOICES)),
 })
 
-/** Connection inspection never opens a native session. Choice catalogs can remain session-scoped. */
+/** Connection inspection does not open a native session for a Run. A driver may probe its catalogs with a
+ *  disposable one; choices it cannot list stay session-scoped. */
 export const workspaceConnectionInspectionSchema = Schema.Struct({
   connectionId: workspaceConnectionSchema.fields.connectionId,
   driverId: workspaceConnectionSchema.fields.driverId,
@@ -41,7 +47,12 @@ export const workspaceConnectionInspectionSchema = Schema.Struct({
     state: Schema.Literals(['initialized', 'not-established']),
     version: Schema.optional(Schema.String),
   }),
-  authentication: Schema.Literal('unknown'),
+  /** Sign-in as the agent reported it. Most agents cannot report one, so it stays unknown. */
+  authentication: Schema.Literals(['unknown', 'authenticated', 'unauthenticated']),
+  /** The signed-in account, such as "Claude Max Subscription" and its email, when the agent reports one. */
+  account: Schema.optional(agentAccountSchema),
+  /** Why the agent needs attention, phrased for the user (for example how to sign in). */
+  statusMessage: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
   /** Access modes the connection can enforce natively. Absent means only approval-required is known. */
   accessModes: Schema.optional(Schema.Array(agentAccessModeSchema)),
   capabilities: Schema.Struct({

@@ -1,23 +1,26 @@
-import { PanelRight, SquareTerminal } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
-import { SidebarTrigger } from '@/renderer/components/ui/sidebar'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
-import type { ConversationId, ProjectId, TaskId } from '@/shared/schemas/workspace.js'
+import type { DraftTerminalTarget, TerminalTarget } from '@/shared/schemas/terminal.js'
+import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
-import { useWorkspaceTask } from './hooks.js'
-import { useRightPanel } from './right-panel/use-right-panel.js'
-import { WorkspaceRightPanel } from './right-panel/WorkspaceRightPanel.js'
+import { useWorkspaceProject, useWorkspaceTask, useWorkspaceTaskSnapshot } from './hooks.js'
+import { usePromptAttachments } from './prompt-context-hooks.js'
+import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
+import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
-import { useDraftReference } from './use-workspace-draft.js'
+import { useDraftAppend, useDraftReference } from './use-workspace-draft.js'
 import { useWorkspaceNavigation } from './use-workspace-navigation.js'
+import { useTaskPanelResourceKey } from './use-workspace-panel-context.js'
+import { useWorkspacePanelResources } from './use-workspace-panel-resources.js'
+import { WorkspaceChatHeader } from './WorkspaceChatHeader.js'
 import { WorkspaceComposer } from './WorkspaceComposer.js'
 import { WorkspaceConversation } from './WorkspaceConversation.js'
 import { WorkspaceNewChat } from './WorkspaceNewChat.js'
+import { WorkspacePanelHost } from './WorkspacePanelHost.js'
 import { WorkspaceProjectDialog } from './WorkspaceProjectDialog.js'
-import { WorkspaceRequests } from './WorkspaceRequests.js'
+import { WorkspaceRunDetails } from './WorkspaceRunDetails.js'
 
 export function WorkspaceView() {
   const { navigation, selectProject, selectTask, selectConversation } = useWorkspaceNavigation()
@@ -26,10 +29,6 @@ export function WorkspaceView() {
     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label="Agent workspace">
       <WorkspaceProjectDialog />
       <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" aria-label="Selected task">
-        <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-          <SidebarTrigger aria-label="Toggle workspace navigation" />
-          <span className="text-muted-foreground truncate text-xs">{navigation.taskId ? 'Chat' : 'Workspace'}</span>
-        </header>
         {navigation.taskId ? (
           <TaskConversation
             key={navigation.taskId}
@@ -66,12 +65,20 @@ function TaskConversation({
   onSelectConversation: (conversationId: ConversationId | null) => void
 }) {
   const [afterConversationId, setAfterConversationId] = useState<string | undefined>()
-  const terminal = useTerminalDrawer(taskId)
+  const [detailsOpen, setDetailsOpen] = useState(false)
+  const retainedTerminalTarget = useRetainedTaskTerminalTarget(taskId)
+  const terminalTarget = useMemo<TerminalTarget>(() => ({ kind: 'task', taskId }), [taskId])
+  const terminal = useTerminalDrawer(terminalTarget)
   const panel = useRightPanel(taskId)
+  const ownerKey = useTaskPanelResourceKey(taskId)
+  const resources = useWorkspacePanelResources(ownerKey, panel)
+  const appendDraft = useDraftAppend()
+  const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
   const detail = useWorkspaceTask({
     taskId,
     options: { limit: 30, ...(afterConversationId ? { afterId: afterConversationId } : {}) },
   })
+  const project = useWorkspaceProject(detail.data ? { projectId: detail.data.task.projectId } : null)
 
   useEffect(() => {
     const conversations = detail.data?.conversations
@@ -85,21 +92,40 @@ function TaskConversation({
     onSelectConversation(conversations[0]?.id ?? null)
   }, [afterConversationId, detail.data, onSelectConversation, selectedConversationId])
 
+  const header = (
+    <WorkspaceChatHeader
+      project={project.data?.project.name ?? 'Loading project…'}
+      title={detail.data?.task.title ?? 'Loading chat…'}
+      terminalOpen={terminal.open}
+      onToggleTerminal={detail.data ? terminal.toggle : undefined}
+      panelOpen={panel.open}
+      onTogglePanel={detail.data ? panel.toggle : undefined}
+      detailsOpen={detailsOpen}
+      onToggleDetails={() => setDetailsOpen(open => !open)}
+    />
+  )
+
   if (detail.error) {
     return (
-      <div className="m-4 space-y-2" role="alert">
-        <p>Could not load this Task. Choose another Task from the navigator.</p>
-        <Button type="button" variant="outline" onClick={() => onSelectTask(null)}>
-          Back to Tasks
-        </Button>
-      </div>
+      <>
+        {header}
+        <div className="m-4 space-y-2" role="alert">
+          <p>Could not load this Task. Choose another Task from the navigator.</p>
+          <Button type="button" variant="outline" onClick={() => onSelectTask(null)}>
+            Back to Tasks
+          </Button>
+        </div>
+      </>
     )
   }
   if (!detail.data)
     return (
-      <p role="status" className="p-4">
-        Loading Task…
-      </p>
+      <>
+        {header}
+        <p role="status" className="p-4">
+          Loading Task…
+        </p>
+      </>
     )
 
   const conversations = detail.data.conversations
@@ -107,123 +133,115 @@ function TaskConversation({
   const nextConversationId = detail.data.nextAfterConversationId
   const task = detail.data.task
   const hasSeveral = detail.data.totalConversations > 1
+  const runContext = snapshot.data?.runContexts?.find(context => context.conversationId === conversation?.id)
+  const checkoutId = runContext?.checkoutId
+  const addToChat = conversation
+    ? (excerpt: {
+        readonly label: string
+        readonly lineStart: number
+        readonly lineEnd: number
+        readonly text: string
+      }) => {
+        appendDraft(
+          conversation.id,
+          `${excerpt.label}, lines ${excerpt.lineStart}-${excerpt.lineEnd}:\n${excerpt.text}`,
+        )
+      }
+    : undefined
 
   return (
-    <div className="flex min-h-0 flex-1 overflow-hidden">
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <header className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b px-4 py-2">
-          <div className="min-w-0 flex-1">
-            <h1 className="truncate text-sm font-semibold">{task.title}</h1>
-            <p className="text-muted-foreground text-xs">
-              {task.status}
-              {task.description ? ` · ${task.description}` : ''}
-            </p>
-            {task.payloadRef && (
-              <p className="text-muted-foreground text-[10px]">
-                Task details are summarized; full details remain stored locally.
-              </p>
+    <>
+      {header}
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div
+          role="region"
+          aria-label="Main conversation"
+          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${panel.maximized ? 'min-[980px]:hidden' : ''}`}
+        >
+          <WorkspaceRunDetails
+            open={detailsOpen}
+            onOpenChange={setDetailsOpen}
+            task={task}
+            conversationId={conversation?.id ?? null}
+          >
+            {hasSeveral && (
+              <label className="flex items-center gap-2 text-xs">
+                Conversation
+                <select
+                  className="bg-background max-w-56 rounded-md border px-2 py-1"
+                  value={conversation?.id ?? ''}
+                  onChange={event => onSelectConversation(event.target.value as ConversationId)}
+                >
+                  {conversations.map((item, index) => (
+                    <option key={item.id} value={item.id}>
+                      {item.title ?? `Conversation ${index + 1}`}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {nextConversationId && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onSelectConversation(null)
+                  setAfterConversationId(nextConversationId)
+                }}
+              >
+                More conversations
+              </Button>
+            )}
+          </WorkspaceRunDetails>
+          <div className="min-h-0 flex-1 overflow-hidden [&>section]:h-full">
+            {conversation ? (
+              <WorkspaceConversation
+                conversationId={conversation.id}
+                workspacePath={runContext?.workspacePath}
+                onOpenFile={panel.openFile}
+                scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
+              />
+            ) : (
+              <div className="p-5 text-sm">No conversation activity yet.</div>
             )}
           </div>
-          {hasSeveral && (
-            <label className="flex items-center gap-2 text-xs">
-              Conversation
-              <select
-                className="bg-background max-w-56 rounded-md border px-2 py-1"
-                value={conversation?.id ?? ''}
-                onChange={event => onSelectConversation(event.target.value as ConversationId)}
-              >
-                {conversations.map((item, index) => (
-                  <option key={item.id} value={item.id}>
-                    {item.title ?? `Conversation ${index + 1}`}
-                  </option>
-                ))}
-              </select>
-            </label>
+          {conversation && (
+            <div key={conversation.id} className="shrink-0">
+              <WorkspaceComposer task={task} conversationId={conversation.id} />
+            </div>
           )}
-          {nextConversationId && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                onSelectConversation(null)
-                setAfterConversationId(nextConversationId)
-              }}
-            >
-              More conversations
-            </Button>
-          )}
-          <div className="flex items-center gap-1">
-            <PanelToggle label="Terminal" shortcut="Ctrl+J" pressed={terminal.open} onClick={terminal.toggle}>
-              <SquareTerminal className="size-4" />
-            </PanelToggle>
-            <PanelToggle label="Changes and files" shortcut="Ctrl+Alt+B" pressed={panel.open} onClick={panel.toggle}>
-              <PanelRight className="size-4" />
-            </PanelToggle>
-          </div>
-        </header>
-        <div className="min-h-0 flex-1 overflow-hidden [&>section]:h-full">
-          {conversation ? (
-            <WorkspaceConversation conversationId={conversation.id} />
-          ) : (
-            <div className="p-5 text-sm">No conversation activity yet.</div>
-          )}
+          <WorkspaceTerminalDrawer
+            target={terminalTarget}
+            open={terminal.open}
+            onOpenLink={url => resources.openBrowser(url)}
+            onAddToChat={addToChat}
+          />
         </div>
-        {conversation && (
-          <div key={conversation.id} className="shrink-0">
-            <WorkspaceRequests taskId={task.id} conversationId={conversation.id} />
-            <WorkspaceComposer task={task} conversationId={conversation.id} />
-          </div>
-        )}
-        <WorkspaceTerminalDrawer taskId={task.id} open={terminal.open} onOpenChange={terminal.setOpen} />
+        <TaskRightPanel
+          projectId={task.projectId}
+          conversationId={conversation?.id ?? null}
+          taskStatus={task.status}
+          checkoutId={checkoutId}
+          panel={panel}
+          resources={resources}
+          ownerKey={ownerKey}
+          terminalTarget={terminalTarget}
+          retainedTerminalTarget={retainedTerminalTarget}
+          onToggleTerminal={terminal.toggle}
+          onAddToChat={addToChat}
+          parent={
+            conversation && snapshot.data?.runContexts?.some(context => context.conversationId === conversation.id)
+              ? { taskId, conversationId: conversation.id }
+              : undefined
+          }
+          onOpenTask={(nextTaskId, nextConversationId) => {
+            onSelectTask(nextTaskId)
+            onSelectConversation(nextConversationId)
+          }}
+        />
       </div>
-      <TaskRightPanel
-        projectId={task.projectId}
-        conversationId={conversation?.id ?? null}
-        taskStatus={task.status}
-        open={panel.open}
-        onOpenChange={panel.setOpen}
-        tab={panel.tab}
-        onTabChange={panel.setTab}
-      />
-    </div>
-  )
-}
-
-function PanelToggle({
-  label,
-  shortcut,
-  pressed,
-  onClick,
-  children,
-}: {
-  readonly label: string
-  readonly shortcut: string
-  readonly pressed: boolean
-  readonly onClick: () => void
-  readonly children: React.ReactNode
-}) {
-  return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label={label}
-            aria-pressed={pressed}
-            className={pressed ? 'bg-primary/10 text-primary' : 'text-muted-foreground'}
-            onClick={onClick}
-          >
-            {children}
-          </Button>
-        }
-      />
-      <TooltipContent>
-        {label} <span className="text-muted-foreground">{shortcut}</span>
-      </TooltipContent>
-    </Tooltip>
+    </>
   )
 }
 
@@ -237,13 +255,21 @@ function TaskRightPanel({
   readonly projectId: ProjectId
   readonly conversationId: ConversationId | null
   readonly taskStatus: string
-  readonly open: boolean
-  readonly onOpenChange: (open: boolean) => void
-  readonly tab: ReturnType<typeof useRightPanel>['tab']
-  readonly onTabChange: ReturnType<typeof useRightPanel>['setTab']
+  readonly checkoutId?: WorkspaceCheckoutId | undefined
+  readonly panel: RightPanelControls
+  readonly resources: ReturnType<typeof useWorkspacePanelResources>
+  readonly ownerKey: string
+  readonly terminalTarget: TerminalTarget
+  readonly retainedTerminalTarget?: DraftTerminalTarget | undefined
+  readonly onToggleTerminal: () => void
+  readonly onAddToChat?: React.ComponentProps<typeof WorkspacePanelHost>['onAddToChat']
+  readonly parent?: React.ComponentProps<typeof WorkspacePanelHost>['parent']
+  readonly onOpenTask?: React.ComponentProps<typeof WorkspacePanelHost>['onOpenTask']
 }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const referenceInDraft = useDraftReference()
+  const appendDraft = useDraftAppend()
+  const attachments = usePromptAttachments(conversationId ?? 'new-chat')
   const lastStatus = useRef(taskStatus)
   useEffect(() => {
     if (lastStatus.current === taskStatus) return
@@ -251,11 +277,25 @@ function TaskRightPanel({
     setRefreshKey(key => key + 1)
   }, [taskStatus])
   return (
-    <WorkspaceRightPanel
+    <WorkspacePanelHost
       {...panel}
       projectId={projectId}
       refreshKey={refreshKey}
       onReferencePath={path => conversationId && referenceInDraft(conversationId, path)}
+      onReferenceText={text => conversationId && appendDraft(conversationId, text)}
+      onAddImage={
+        conversationId
+          ? async image => {
+              const item = await attachments.importFile({
+                name: 'workspace-screenshot.png',
+                mediaType: 'image/png',
+                data: image.dataUrl.slice(image.dataUrl.indexOf(',') + 1),
+              })
+              attachments.add(item)
+              appendDraft(conversationId, image.text)
+            }
+          : undefined
+      }
     />
   )
 }

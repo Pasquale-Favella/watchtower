@@ -15,17 +15,23 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
+import { WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
+import { WorkspaceSideChats, WorkspaceSideChatsLive } from '@/core/application/commands/workspace-side-chats.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
+import type { CheckoutActions } from '@/core/ports/checkout-actions.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import type { TerminalHost } from '@/core/ports/terminal-host.js'
+import type { WorkspaceDevices } from '@/core/ports/workspace-devices.js'
+import type { WorkspacePullRequests } from '@/core/ports/workspace-pull-requests.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { createDetectedHarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
 import { discoverNativeHarnessExecutables } from '@/infrastructure/agent-harnesses/native-executables.js'
 import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
 import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
+import { CheckoutBranchesLive } from '@/infrastructure/filesystem/checkout-branches.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
 import { ProjectProvisionerLive } from '@/infrastructure/filesystem/project-provisioner.js'
 import {
@@ -37,6 +43,10 @@ import {
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import { TerminalHostLive } from '@/infrastructure/terminal/terminal-host.js'
 import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
+import { CheckoutActionsLive } from '@/infrastructure/workspace/checkout-actions.js'
+import { WorkspaceDevicesLive } from '@/infrastructure/workspace/devices.js'
+import { WorkspacePullRequestsLive } from '@/infrastructure/workspace/pull-requests.js'
+import { sideChatPersistenceLayer } from '@/infrastructure/workspace/side-chat-store.js'
 import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
 import {
@@ -46,9 +56,12 @@ import {
 } from '@/platform/electron/main/background-shell.js'
 import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
 import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
+import { createElectronWorkspacePreviewManager } from '@/platform/electron/main/preview/electron-preview.js'
 import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
 import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
 import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
+import { checkoutActionsHandlers } from '@/platform/electron/main/rpc/checkout-actions-handlers.js'
+import { checkoutNavigationHandlers } from '@/platform/electron/main/rpc/checkout-navigation-handlers.js'
 import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
 import { analyticsHandlers, configHandlers } from '@/platform/electron/main/rpc/handlers.js'
@@ -64,6 +77,10 @@ import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
 import { terminalHandlers } from '@/platform/electron/main/rpc/terminal-handlers.js'
 import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
+import { workspacePreviewHandlers } from '@/platform/electron/main/rpc/workspace-preview-handlers.js'
+import { workspaceDeviceHandlers } from '@/platform/electron/main/rpc/workspace-device-handlers.js'
+import { workspacePullRequestHandlers } from '@/platform/electron/main/rpc/workspace-pull-request-handlers.js'
+import { workspaceSideChatHandlers } from '@/platform/electron/main/rpc/workspace-side-chat-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
 import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
@@ -75,6 +92,7 @@ import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc
 import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
 import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
 import { TerminalRpcError } from '@/shared/rpc/terminal.js'
+import { WorkspacePullRequestRpcError, pullRequestRpcMessages } from '@/shared/rpc/workspace-pull-requests.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 /**
@@ -158,6 +176,7 @@ const workspaceHostLayer = Layer.effect(
               }),
           }),
         filename: join(app.getPath('userData'), 'workspace.db'),
+        prewarmConnections: true,
         workerPath: join(__dirname, 'workspace-worker.js'),
         runtimeExecutable: process.execPath,
         // Leave headroom inside the 15-second quit ceiling for the worker and ledger drain.
@@ -191,7 +210,22 @@ const workspaceStoreLayer = Layer.effect(
 const workspaceLayer = WorkspaceProjectSetupLive.pipe(
   Layer.provideMerge(WorkspaceProjectsLive),
   Layer.provideMerge(
-    Layer.mergeAll(CheckoutResolverLive, CheckoutInspectionLive, ProjectProvisionerLive, workspaceStoreLayer),
+    WorkspaceSideChatsLive.pipe(
+      Layer.provide(sideChatPersistenceLayer(join(app.getPath('userData'), 'workspace', 'side-chats'))),
+    ),
+  ),
+  Layer.provideMerge(WorkspaceCheckoutsLive(join(app.getPath('userData'), 'worktrees'))),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      CheckoutResolverLive,
+      CheckoutBranchesLive,
+      CheckoutInspectionLive,
+      CheckoutActionsLive,
+      WorkspaceDevicesLive,
+      WorkspacePullRequestsLive,
+      ProjectProvisionerLive,
+      workspaceStoreLayer,
+    ),
   ),
   Layer.provideMerge(workspaceHostLayer),
 )
@@ -351,9 +385,13 @@ function createWindow(): BrowserWindow {
   return mainWindow
 }
 
+let workspacePreviewManager: ReturnType<typeof createElectronWorkspacePreviewManager> | undefined
+
 app.whenReady().then(async () => {
   if (!hasInstanceLock) return
   const dataDir = app.getPath('userData')
+  const previews = createElectronWorkspacePreviewManager()
+  workspacePreviewManager = previews
   try {
     await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
   } catch {
@@ -442,7 +480,11 @@ app.whenReady().then(async () => {
         | WorkspaceProjects
         | CheckoutResolver
         | CheckoutInspection
+        | CheckoutActions
         | TerminalHost
+        | WorkspaceDevices
+        | WorkspacePullRequests
+        | WorkspaceSideChats
       >
       switch (role) {
         case 'app':
@@ -450,7 +492,11 @@ app.whenReady().then(async () => {
             Effect.provide(
               Layer.mergeAll(
                 coachHandlers(agents.native),
-                workspaceHandlers({
+                workspaceHandlers<WorkspaceSideChats | Effect.Services<ReturnType<typeof ensureScratchProject>>>({
+                  enrichPrompt: (taskId, prompt, nativeSessionId) =>
+                    Effect.flatMap(WorkspaceSideChats, sideChats =>
+                      sideChats.enrichPrompt(taskId, prompt, nativeSessionId),
+                    ),
                   attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
                   chooseProjectDirectory: () =>
                     Effect.tryPromise({
@@ -469,8 +515,32 @@ app.whenReady().then(async () => {
                 Layer.unwrap(
                   Effect.map(WorkspaceHost, host =>
                     terminalHandlers({
-                      resolveTaskCwd: taskId =>
-                        resolveTaskCheckoutPath(taskId).pipe(
+                      resolveTaskCwd: (taskId, checkoutId) =>
+                        resolveTaskCheckoutPath(taskId, checkoutId).pipe(
+                          Effect.provideService(WorkspaceHost, host),
+                          Effect.mapError(
+                            () =>
+                              new TerminalRpcError({
+                                code: 'cwd-unavailable',
+                                message: 'The Task checkout is unavailable.',
+                              }),
+                          ),
+                        ),
+                      resolveDraftCwd: target =>
+                        Effect.gen(function* () {
+                          yield* host.ensureOpen
+                          if (target.projectId) {
+                            return yield* resolveCheckoutPath({
+                              projectId: target.projectId,
+                              ...(target.checkoutId ? { checkoutId: target.checkoutId } : {}),
+                            })
+                          }
+                          const scratch = yield* ensureScratchProject(
+                            host.store,
+                            join(app.getPath('userData'), 'workspace', 'scratch'),
+                          )
+                          return scratch.mainCheckout.path
+                        }).pipe(
                           Effect.provideService(WorkspaceHost, host),
                           Effect.mapError(
                             () =>
@@ -493,6 +563,23 @@ app.whenReady().then(async () => {
                       ),
                     ),
                 }),
+                checkoutActionsHandlers({ resolveCheckoutPath }),
+                checkoutNavigationHandlers({ resolveCheckoutPath }),
+                workspacePreviewHandlers(previews, sender),
+                workspaceDeviceHandlers(),
+                workspacePullRequestHandlers({
+                  resolveCheckoutPath: scope =>
+                    resolveCheckoutPath(scope).pipe(
+                      Effect.mapError(
+                        () =>
+                          new WorkspacePullRequestRpcError({
+                            code: 'not-found',
+                            message: pullRequestRpcMessages['not-found'],
+                          }),
+                      ),
+                    ),
+                }),
+                workspaceSideChatHandlers,
               ),
             ),
             provideHandlers,
@@ -572,6 +659,7 @@ const quitCoordinator = createQuitCoordinator({
   markQuitting: () => backgroundShell?.markQuitting(),
   cleanup: async () => {
     disposeRendererRpc?.()
+    workspacePreviewManager?.dispose()
     await Promise.all(Array.from(rendererRpcFibers, fiber => mainRuntime.runPromise(Fiber.interrupt(fiber))))
     try {
       await closeMainResources({

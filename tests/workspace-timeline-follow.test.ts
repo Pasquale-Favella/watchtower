@@ -148,6 +148,15 @@ describe('page keys from the composer', () => {
       expect(scrollBy).toHaveBeenCalledWith({ top: -450, behavior: 'smooth' })
     })
 
+    it('releases automatic following before a page key scrolls from the composer', () => {
+      const release = vi.fn()
+      attachTimelineViewport({ clientHeight: 500, isConnected: true, scrollBy } as unknown as HTMLElement, release)
+      const { event } = keyEvent('PageUp', { scrollTop: 0, scrollHeight: 100, clientHeight: 200 })
+      expect(handleTimelinePageKey(event)).toBe(true)
+      expect(release).toHaveBeenCalledOnce()
+      expect(release.mock.invocationCallOrder[0]).toBeLessThan(scrollBy.mock.invocationCallOrder[0] ?? Infinity)
+    })
+
     it('ignores other keys', () => {
       const { event, preventDefault } = keyEvent('Enter', null)
       expect(handleTimelinePageKey(event)).toBe(false)

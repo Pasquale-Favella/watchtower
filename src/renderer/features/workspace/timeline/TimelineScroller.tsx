@@ -1,192 +1,201 @@
+import { LegendList, type LegendListRef, type MaintainScrollAtEndOptions } from '@legendapp/list/react'
 import { ArrowDownIcon } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
-import {
-  MessageScroller,
-  MessageScrollerContent,
-  MessageScrollerProvider,
-  MessageScrollerViewport,
-  useMessageScroller,
-} from '@/renderer/components/ui/message-scroller'
 
 import { readScrollAnchor, type TimelineScrollAnchor, writeScrollAnchor } from './conversation-memory.js'
 import { initialTimelineFollow, reduceTimelineFollow, SCROLL_PILL_SHOW_DELAY_MS } from './follow-state.js'
 import { attachTimelineViewport, prefersReducedMotion } from './scroll-keys.js'
 
-/** Distance from the bottom that still counts as the end, absorbing sub-pixel rounding. */
-const AT_END_SLACK_PX = 8
+const MAINTAIN_END = {
+  animated: false,
+  on: { dataChange: true, itemLayout: true, layout: true },
+} satisfies MaintainScrollAtEndOptions
 
-/**
- * The chat timeline on the shared MessageScroller primitives. The primitive keeps the viewport following
- * the end, holds the reading anchor when older rows are prepended, and provides programmatic scrolling.
- * Reader release, the remembered reading position and the "Scroll to end" pill are coordinated here.
- * Rows are passed as children.
- */
-export function TimelineScroller({
-  conversationId,
-  restoreKey,
-  children,
-}: {
-  readonly conversationId: string
-  /** Changes whenever rows change, so a remembered anchor can be retried once its row is rendered. */
-  readonly restoreKey: number
-  readonly children: React.ReactNode
-}): React.JSX.Element {
-  const viewportRef = useRef<HTMLDivElement | null>(null)
-  // Read once per mount: the Conversation view remounts when the Conversation changes.
-  const [remembered] = useState(() => readScrollAnchor(conversationId))
-  const setViewport = useCallback((element: HTMLDivElement | null) => {
-    viewportRef.current = element
-    attachTimelineViewport(element)
-  }, [])
-  return (
-    <MessageScrollerProvider autoScroll defaultScrollPosition="end" scrollPreviousItemPeek={64}>
-      <MessageScroller className="flex-1">
-        <MessageScrollerViewport ref={setViewport}>
-          <MessageScrollerContent aria-live="polite" className="gap-5 p-4">
-            {children}
-          </MessageScrollerContent>
-        </MessageScrollerViewport>
-        <TimelineFollowControls
-          conversationId={conversationId}
-          restoreKey={restoreKey}
-          remembered={remembered}
-          viewportRef={viewportRef}
-        />
-      </MessageScroller>
-    </MessageScrollerProvider>
+function rowKey(row: { readonly id: string }): string {
+  return row.id
+}
+
+function rowPosition(list: LegendListRef, key: string) {
+  const viewport = list.getScrollableNode()
+  if (!viewport) return null
+  const row = [...viewport.querySelectorAll<HTMLElement>('[data-message-id]')].find(
+    element => element.dataset.messageId === key,
   )
+  return row ? { viewport, offset: row.getBoundingClientRect().top - viewport.getBoundingClientRect().top } : null
 }
 
-function findRow(viewport: HTMLElement, messageId: string): HTMLElement | null {
-  for (const row of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
-    if (row.dataset.messageId === messageId) return row
+async function restorePosition(
+  list: LegendListRef,
+  anchor: TimelineScrollAnchor,
+  isCurrent: () => boolean,
+): Promise<void> {
+  await list.scrollToKey({ key: anchor.messageId, viewOffset: anchor.offset, animated: false })
+  for (let frame = 0; frame < 6; frame++) {
+    await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+    if (!isCurrent()) return
+    const position = rowPosition(list, anchor.messageId)
+    if (!position) continue
+    const delta = position.offset - anchor.offset
+    if (Math.abs(delta) > 0.5)
+      await list.scrollToOffset({ offset: position.viewport.scrollTop + delta, animated: false })
   }
-  return null
 }
 
-/** The first row whose bottom edge is inside the viewport, measured from the viewport top. */
-function anchorAt(viewport: HTMLElement): TimelineScrollAnchor | null {
-  const top = viewport.getBoundingClientRect().top
-  for (const row of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
-    const rect = row.getBoundingClientRect()
-    if (rect.bottom > top && row.dataset.messageId) return { messageId: row.dataset.messageId, offset: rect.top - top }
-  }
-  return null
-}
-
-function isAtEnd(viewport: HTMLElement): boolean {
-  return viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop <= AT_END_SLACK_PX
-}
-
-function TimelineFollowControls({
+/** The list owns measurement, prepend anchoring and live following. React owns the reader controls. */
+export function TimelineScroller<Row extends { readonly id: string }>({
   conversationId,
-  restoreKey,
-  remembered,
-  viewportRef,
+  rows,
+  renderRow,
+  getRowType,
+  extraData,
+  historyExhausted = false,
 }: {
   readonly conversationId: string
-  readonly restoreKey: number
-  readonly remembered: TimelineScrollAnchor | null
-  readonly viewportRef: React.RefObject<HTMLDivElement | null>
-}): React.JSX.Element | null {
-  const { scrollToEnd, scrollToMessage } = useMessageScroller()
+  readonly rows: readonly Row[]
+  readonly renderRow: (row: Row) => React.ReactNode
+  readonly getRowType: (row: Row) => string
+  readonly extraData?: unknown
+  readonly historyExhausted?: boolean
+}): React.JSX.Element {
+  const listRef = useRef<LegendListRef | null>(null)
+  const readyRef = useRef(false)
+  const [remembered] = useState(() => readScrollAnchor(conversationId))
+  const restoredRef = useRef(remembered === null)
+  const restoringRef = useRef(false)
+  const [restorationPending, setRestorationPending] = useState(remembered !== null)
+  const [openingIndex] = useState(() => rows.findIndex(row => row.id === remembered?.messageId))
   const [follow, dispatch] = useReducer(reduceTimelineFollow, remembered !== null, initialTimelineFollow)
-  const followRef = useRef(follow)
+
+  const rememberPosition = useCallback(() => {
+    const list = listRef.current
+    if (!list || !readyRef.current || !restoredRef.current) return
+    const state = list.getState()
+    if (state.isFollowingEnd && state.isAtEnd) {
+      writeScrollAnchor(conversationId, null)
+      return
+    }
+    if (state.isFollowingEnd) return
+    const anchor = list.anchorVisibleContent({ hold: false })
+    if (anchor) {
+      const offset = rowPosition(list, anchor.key)?.offset ?? -anchor.offset
+      writeScrollAnchor(conversationId, { messageId: anchor.key, offset })
+    }
+  }, [conversationId])
+
+  const setList = useCallback((list: LegendListRef | null) => {
+    listRef.current = list
+    attachTimelineViewport(list?.getScrollableNode() ?? null, () => list?.cancelScroll())
+  }, [])
+
   useEffect(() => {
-    followRef.current = follow
-  }, [follow])
+    const list = listRef.current
+    if (!list) return
+    const state = list.getState()
+    const stopEnd = state.listen('isAtEnd', atEnd => {
+      dispatch({ type: 'atEndChanged', atEnd })
+    })
+    const stopFollow = state.listen('isFollowingEnd', following => {
+      dispatch({ type: following ? 'resume' : 'scrolledUp' })
+    })
+    return () => {
+      rememberPosition()
+      stopEnd()
+      stopFollow()
+    }
+  }, [rememberPosition])
 
   useEffect(() => {
     if (follow.pill !== 'pending') return
-    const id = window.setTimeout(() => {
-      dispatch({ type: 'pillDelayElapsed' })
-    }, SCROLL_PILL_SHOW_DELAY_MS)
-    return () => {
-      window.clearTimeout(id)
-    }
+    const id = window.setTimeout(() => dispatch({ type: 'pillDelayElapsed' }), SCROLL_PILL_SHOW_DELAY_MS)
+    return () => window.clearTimeout(id)
   }, [follow.pill])
 
-  // Set once the remembered row has been restored; until then, reporting must not replace the memory.
-  const restoredRef = useRef(false)
-
-  // The viewport geometry is the source of truth. The primitive's own end snapshot is stale until its
-  // first scroll commit, which would otherwise release a position that has just been restored.
-  useEffect(() => {
-    const viewport = viewportRef.current
-    if (!viewport) return
-    let lastTop = viewport.scrollTop
-    let frame = 0
-    let movedUp = false
-    let reportedAtEnd: boolean | null = null
-    const measure = () => {
-      frame = 0
-      const atEnd = isAtEnd(viewport)
-      if (atEnd !== reportedAtEnd) {
-        reportedAtEnd = atEnd
-        dispatch({ type: 'atEndChanged', atEnd })
+  // An older page can supply a remembered row that was outside the opening page.
+  const restoreAnchor = useCallback(() => {
+    if (!readyRef.current || restoredRef.current || restoringRef.current || !remembered) return
+    if (!rows.some(row => row.id === remembered.messageId)) {
+      if (historyExhausted) {
+        restoredRef.current = true
+        setRestorationPending(false)
+        writeScrollAnchor(conversationId, null)
       }
-      const released = movedUp || followRef.current.released
-      movedUp = false
-      // A remembered row that has not loaded yet still owns the memory; never overwrite it with a guess.
-      if (!released || (remembered !== null && !restoredRef.current)) return
-      if (atEnd) {
-        if (followRef.current.released) writeScrollAnchor(conversationId, null)
-        return
-      }
-      const anchor = anchorAt(viewport)
-      if (anchor) writeScrollAnchor(conversationId, anchor)
+      return
     }
-    const schedule = () => {
-      if (frame === 0) frame = window.requestAnimationFrame(measure)
+    const list = listRef.current
+    if (!list) return
+    restoringRef.current = true
+    function finish(): void {
+      restoringRef.current = false
+      if (listRef.current !== list) return
+      restoredRef.current = true
+      setRestorationPending(false)
     }
-    const onScroll = () => {
-      const top = viewport.scrollTop
-      if (top < lastTop - 1) {
-        movedUp = true
-        dispatch({ type: 'scrolledUp' })
-      }
-      lastTop = top
-      schedule()
-    }
-    // Streamed output and older pages change the height without a scroll event.
-    const content = viewport.firstElementChild
-    const resizeObserver = content && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(schedule) : null
-    if (content) resizeObserver?.observe(content)
-    viewport.addEventListener('scroll', onScroll, { passive: true })
-    schedule()
-    return () => {
-      viewport.removeEventListener('scroll', onScroll)
-      resizeObserver?.disconnect()
-      if (frame !== 0) window.cancelAnimationFrame(frame)
-    }
-  }, [conversationId, remembered, viewportRef])
+    void restorePosition(list, remembered, () => listRef.current === list && !restoredRef.current).then(finish, finish)
+  }, [conversationId, historyExhausted, remembered, rows])
+  useLayoutEffect(restoreAnchor, [restoreAnchor])
 
-  // Restore the remembered reader position once its row is rendered. Scrolling to a row also marks
-  // the primitive's default end position as applied, so that default does not override the restore.
-  useLayoutEffect(() => {
-    const viewport = viewportRef.current
-    if (!remembered || restoredRef.current || !viewport) return
-    if (!findRow(viewport, remembered.messageId)) return
-    restoredRef.current = true
-    scrollToMessage(remembered.messageId, { align: 'start', behavior: 'auto' })
-  }, [remembered, restoreKey, scrollToMessage, viewportRef])
-
-  if (follow.pill !== 'visible') return null
   return (
-    <Button
-      type="button"
-      variant="secondary"
-      size="sm"
-      className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-sm"
-      onClick={() => {
-        dispatch({ type: 'resume' })
-        scrollToEnd({ behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
-      }}
-    >
-      <ArrowDownIcon aria-hidden />
-      Scroll to end
-    </Button>
+    <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+      <LegendList<Row>
+        ref={setList}
+        data={rows}
+        extraData={extraData}
+        keyExtractor={rowKey}
+        getItemType={getRowType}
+        renderItem={({ item }) => (
+          <div data-message-id={item.id} className="min-w-0 px-4 pb-3">
+            <div className="max-w-chat mx-auto w-full">{renderRow(item)}</div>
+          </div>
+        )}
+        estimatedItemSize={90}
+        drawDistance={600}
+        recycleItems={false}
+        initialScrollAtEnd={remembered === null}
+        initialScrollIndex={
+          openingIndex >= 0 && remembered ? { index: openingIndex, viewOffset: remembered.offset } : undefined
+        }
+        maintainVisibleContentPosition
+        maintainScrollAtEnd={MAINTAIN_END}
+        maintainScrollAtEndThreshold={0.01}
+        onReady={() => {
+          readyRef.current = true
+          restoreAnchor()
+          dispatch({ type: 'atEndChanged', atEnd: listRef.current?.getState().isAtEnd ?? false })
+        }}
+        onScroll={rememberPosition}
+        role="region"
+        aria-label="Messages"
+        className="h-full min-h-0 flex-1 scrollbar-thin scrollbar-gutter-stable overflow-x-hidden overscroll-contain [overflow-anchor:none]"
+        style={{ visibility: restorationPending ? 'hidden' : undefined }}
+        aria-busy={restorationPending}
+        ListHeaderComponent={<div aria-hidden className="h-4" />}
+        ListFooterComponent={<div aria-hidden className="h-1" />}
+      />
+      {restorationPending && (
+        <p role="status" className="text-muted-foreground absolute inset-x-4 top-4 text-sm">
+          Restoring reading position…
+        </p>
+      )}
+      {follow.pill === 'visible' && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-sm"
+          onClick={() => {
+            restoredRef.current = true
+            setRestorationPending(false)
+            writeScrollAnchor(conversationId, null)
+            dispatch({ type: 'resume' })
+            void listRef.current?.scrollToEnd({ animated: !prefersReducedMotion() })
+          }}
+        >
+          <ArrowDownIcon aria-hidden />
+          Scroll to end
+        </Button>
+      )}
+    </div>
   )
 }

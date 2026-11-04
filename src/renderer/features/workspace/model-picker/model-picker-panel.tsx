@@ -1,14 +1,15 @@
-import { useRef, useState } from 'react'
+import { type ReactNode, type RefObject, useRef, useState } from 'react'
 
 import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
 
 import type { AgentChoice } from '../agent-preferences.js'
 import { useWorkspaceConnectionCatalog, type WorkspaceConnectionCatalog } from '../connection-hooks.js'
-import { catalogView, connectionStatus, type ModelChoice } from './catalog.js'
+import { catalogView, connectionDetail, connectionStatus, type ModelChoice } from './catalog.js'
 import { ConnectionRail } from './connection-rail.js'
 import { ModelList } from './model-list.js'
 
-/** Body of the agent picker popover. Preview, search and highlight are local to one opening. */
+/** Body of the agent picker popover. Preview, search and highlight are local to one opening. The effort column and
+ *  footer are rendered by the owner, since they describe the committed choice rather than the previewed agent. */
 export function ModelPickerPanel({
   connections,
   activeConnectionId,
@@ -19,6 +20,9 @@ export function ModelPickerPanel({
   rememberedFor,
   onCommit,
   onClose,
+  searchRef,
+  effortColumn,
+  footer,
 }: {
   readonly connections: readonly WorkspaceConnection[]
   readonly activeConnectionId: string
@@ -30,12 +34,16 @@ export function ModelPickerPanel({
   readonly rememberedFor: (connectionId: string) => AgentChoice | undefined
   readonly onCommit: (connectionId: string, modelId: string) => void
   readonly onClose: () => void
+  readonly searchRef?: RefObject<HTMLInputElement | null>
+  readonly effortColumn?: ReactNode
+  readonly footer?: ReactNode
 }) {
   const [draftId, setDraftId] = useState<string | null>(null)
   const [query, setQuery] = useState('')
   const [highlightedId, setHighlightedId] = useState<string | null>(null)
   const railRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const ownInputRef = useRef<HTMLInputElement>(null)
+  const inputRef = searchRef ?? ownInputRef
 
   const previewId = draftId ?? activeConnectionId
   const previewIsActive = previewId === activeConnectionId
@@ -56,36 +64,44 @@ export function ModelPickerPanel({
   }
 
   return (
-    <div className="flex h-[320px] overflow-hidden">
-      <ConnectionRail
-        railRef={railRef}
-        connections={connections}
-        previewId={previewId}
-        lockedId={lockedConnectionId}
-        statusOf={connectionId => {
-          if (connectionId === previewId) return connectionStatus(catalog)
-          if (connectionId === activeConnectionId) return connectionStatus(activeCatalog)
-          return 'ready'
-        }}
-        onPreview={previewConnection}
-        onLeaveRail={() => inputRef.current?.focus()}
-      />
-      <ModelList
-        inputRef={inputRef}
-        view={view}
-        query={query}
-        onQueryChange={value => {
-          setQuery(value)
-          setHighlightedId(null)
-        }}
-        checkedId={checkedId}
-        highlightedId={highlightedId}
-        onHighlight={setHighlightedId}
-        onPick={modelId => onCommit(previewId, modelId)}
-        onRetry={catalog.retry}
-        onClose={onClose}
-        onLeaveSearch={() => railRef.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus()}
-      />
+    <div className="flex max-h-(--available-height) flex-col">
+      <div className="flex h-[320px] min-h-0 overflow-hidden">
+        <ConnectionRail
+          railRef={railRef}
+          connections={connections}
+          previewId={previewId}
+          lockedId={lockedConnectionId}
+          readingOf={connectionId => (connectionId === activeConnectionId ? activeCatalog : undefined)}
+          onPreview={previewConnection}
+          onLeaveRail={() => inputRef.current?.focus()}
+        />
+        <ModelList
+          inputRef={inputRef}
+          view={view}
+          query={query}
+          onQueryChange={value => {
+            setQuery(value)
+            setHighlightedId(null)
+          }}
+          checkedId={checkedId}
+          highlightedId={highlightedId}
+          onHighlight={setHighlightedId}
+          onPick={modelId => onCommit(previewId, modelId)}
+          onRetry={catalog.retry}
+          notice={
+            connectionStatus(catalog) === 'pending'
+              ? null
+              : {
+                  tone: connectionStatus(catalog) === 'ready' ? 'info' : 'attention',
+                  text: connectionDetail(catalog),
+                }
+          }
+          onClose={onClose}
+          onLeaveSearch={() => railRef.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus()}
+        />
+        {effortColumn}
+      </div>
+      {footer}
     </div>
   )
 }

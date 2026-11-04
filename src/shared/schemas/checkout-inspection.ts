@@ -144,6 +144,12 @@ export const fileContentSchema = Schema.Struct({
   binary: Schema.Boolean,
   /** UTF-8 text, or null when the file is binary or not valid UTF-8. */
   content: Schema.NullOr(Schema.String.check(Schema.isMaxLength(CHECKOUT_FILE_MAX_BYTES * 4))),
+  previewDataUrl: Schema.optional(
+    Schema.String.check(
+      Schema.isMaxLength(Math.ceil(CHECKOUT_FILE_MAX_BYTES / 3) * 4 + 64),
+      Schema.isPattern(/^data:image\/(?:png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+={0,2}$/),
+    ),
+  ),
   truncated: Schema.Boolean,
 })
 export type FileContent = Schema.Schema.Type<typeof fileContentSchema>

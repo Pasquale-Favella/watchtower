@@ -18,6 +18,7 @@ import {
   unexpectedCoachHandlers,
   unexpectedShellRpcs,
   unexpectedWorkspaceHandlers,
+  unexpectedWorkspacePanelHandlers,
 } from './fixtures/unexpected-native-rpc.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native operation in a settings RPC test'))
@@ -64,6 +65,7 @@ export function makeSettingsRpcTestClient(
   const handlers = Layer.mergeAll(
     unexpectedCoachHandlers,
     unexpectedWorkspaceHandlers,
+    unexpectedWorkspacePanelHandlers,
     unexpectedCheckoutInspectionHandlers,
     unexpectedTerminalHandlers,
     ShellRpcGroup.toLayer({ ...unexpectedShellRpcs, 'shell:open-settings': shellOverrides.openSettings ?? unexpected }),

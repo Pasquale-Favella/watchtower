@@ -1,6 +1,9 @@
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
+import type { ConversationId } from '@/shared/schemas/workspace.js'
+import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
+
 import {
   capturePendingStart,
   clearPendingStart,
@@ -11,6 +14,7 @@ import {
   type PendingStartStore,
   readPendingStartStore,
 } from './pending-start-state.js'
+import { type ConversationSubmission, submissionEcho } from './submission-state.js'
 
 export const pendingStartStoreAtom = Atom.keepAlive(
   Atom.make<PendingStartStore>({
@@ -18,6 +22,10 @@ export const pendingStartStoreAtom = Atom.keepAlive(
     error: 'Checking saved Run intents…',
   }),
 )
+export const conversationSubmissionsAtom = Atom.keepAlive(
+  Atom.make<Readonly<Record<string, ConversationSubmission>>>({}),
+)
+export const submissionMessageKeysAtom = Atom.keepAlive(Atom.make<Readonly<Record<string, string>>>({}))
 const pendingStartStorageAtom = Atom.keepAlive(Atom.make<PendingStartStorage | null>(null))
 const hydratedRegistries = new WeakSet<AtomRegistry.AtomRegistry>()
 
@@ -29,6 +37,16 @@ export function hydratePendingStartStore(
   hydratedRegistries.add(registry)
   registry.set(pendingStartStorageAtom, storage)
   registry.set(pendingStartStoreAtom, readPendingStartStore(storage))
+  const saved = registry.get(pendingStartStoreAtom)
+  registry.set(
+    conversationSubmissionsAtom,
+    Object.fromEntries(
+      Object.entries(saved.records).map(([id, record]) => [
+        id,
+        { record, runId: null, state: 'reconnecting' as const, error: null },
+      ]),
+    ),
+  )
 }
 
 type PendingStartAction =
@@ -56,5 +74,41 @@ export const updatePendingStartStoreAtom = Atom.writable(
           ? markPendingStartUncertain(storage, current, action.conversationId, action.commandId)
           : clearPendingStart(storage, current, action.conversationId, action.commandId)
     context.set(pendingStartStoreAtom, next)
+    if (action.kind === 'capture' && !next.error) {
+      const record = next.records[action.record.conversationId]
+      if (record)
+        context.set(conversationSubmissionsAtom, {
+          ...context.get(conversationSubmissionsAtom),
+          [record.conversationId]: { record, runId: null, state: 'sending', error: null },
+        })
+    }
   },
 )
+
+export function reconcileConversationSubmission(
+  registry: AtomRegistry.AtomRegistry,
+  conversationId: ConversationId,
+  items: readonly WorkspaceConversationPageItem[],
+): void {
+  const current = registry.get(conversationSubmissionsAtom)[conversationId]
+  if (!current) return
+  const echo = submissionEcho(current, items)
+  if (!echo?.userMessage) return
+  registry.set(
+    submissionMessageKeysAtom,
+    Object.fromEntries(
+      Object.entries({
+        ...registry.get(submissionMessageKeysAtom),
+        [echo.userMessage.id]: `message:pending:${current.record.command.commandId}`,
+      }).slice(-200),
+    ),
+  )
+  registry.set(updatePendingStartStoreAtom, {
+    kind: 'clear',
+    conversationId,
+    commandId: current.record.command.commandId,
+  })
+  const { [conversationId]: removed, ...remaining } = registry.get(conversationSubmissionsAtom)
+  void removed
+  registry.set(conversationSubmissionsAtom, remaining)
+}

@@ -53,7 +53,12 @@ export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
   readonly closeDeadlineMs?: number
   readonly connectionInspectionDeadlineMs?: number
   readonly connectionCleanupDeadlineMs?: number
+  /** Inspect every detected connection once the app starts. Off by default so tests stay deterministic. */
+  readonly prewarmConnections?: boolean
 }
+
+/** How long a successful connection inspection is reused before it is inspected again. */
+const INSPECTION_TTL = '10 minutes'
 
 type SupervisorContext = Context.Context<WorkspaceWorkerSupervisor>
 type Execution = ExecutionService['Service']
@@ -72,7 +77,7 @@ export class WorkspaceHost extends Context.Service<
   {
     readonly store: WorkspaceStore['Service']
     /** The first opening failure is sticky; retry requires a new application host. */
-    readonly ensureOpen: Effect.Effect<void, WorkspaceStoreError>
+    readonly ensureOpen: Effect.Effect<void, WorkspaceStoreError, ChildProcessSpawner.ChildProcessSpawner>
     readonly withExecution: <A, E, R>(
       use: (execution: Execution, ownerEpoch: number) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<
@@ -84,11 +89,14 @@ export class WorkspaceHost extends Context.Service<
     readonly listConnections?: Effect.Effect<ReadonlyArray<WorkspaceConnection>, WorkspaceHostError>
     readonly inspectConnection?: (
       connectionId: string,
+      request?: { readonly refresh?: boolean },
     ) => Effect.Effect<
       WorkspaceConnectionInspection,
       WorkspaceHostError | ConnectionInspectionError | HarnessConnectionResolutionError | AgentDriverError,
       ChildProcessSpawner.ChildProcessSpawner
     >
+    /** Starts inspecting every connection in the background, so model choices are ready when a picker opens. */
+    readonly prewarmConnections?: Effect.Effect<void, never, ChildProcessSpawner.ChildProcessSpawner>
     readonly eventHighWatermark: SubscriptionRef.SubscriptionRef<number>
     readonly status: SubscriptionRef.SubscriptionRef<WorkspaceHostStatus>
   }
@@ -128,6 +136,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         | undefined
       let checkoutResolver: CheckoutResolver['Service'] | undefined
       let opening: Deferred.Deferred<SupervisorContext, WorkspaceStoreError> | undefined
+      let queuedRecoveryEpoch: number | undefined
       let stopped = false
 
       const retireExecution = Effect.fn('WorkspaceHost.retireExecution')(function* () {
@@ -260,6 +269,41 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       // Effect.cached also coalesces concurrent callers and retries an interrupted first load.
       const getConnectionCatalog = yield* Effect.cached(catalogLoad)
 
+      const inspectOnce = (connectionId: string) =>
+        Effect.flatMap(getConnectionCatalog, catalog =>
+          Effect.flatMap(getDrivers(), drivers =>
+            inspectWorkspaceConnection(catalog.connections, drivers, connectionId, {
+              initializeDeadlineMs: options.connectionInspectionDeadlineMs,
+              cleanupDeadlineMs: options.connectionCleanupDeadlineMs,
+            }),
+          ),
+        ).pipe(
+          Effect.mapError(error =>
+            error instanceof WorkspaceHostError ||
+            error instanceof ConnectionInspectionError ||
+            error instanceof HarnessConnectionResolutionError
+              ? error
+              : new WorkspaceHostError({ message: 'Connection inspection failed.' }),
+          ),
+        )
+      type CachedInspection = readonly [get: ReturnType<typeof inspectOnce>, invalidate: Effect.Effect<void>]
+      // One shared inspection per connection: a picker opened after startup reads
+      // the warm result instead of spawning the agent again. Failures are never kept, so a retry inspects anew.
+      const inspections = new Map<string, CachedInspection>()
+      const inspectConnection = (connectionId: string, request: { readonly refresh?: boolean } = {}) =>
+        Effect.gen(function* () {
+          let cached = inspections.get(connectionId)
+          if (!cached) {
+            const created = yield* inspectOnce(connectionId).pipe(
+              Effect.cachedInvalidateWithTTL(exit => (Exit.isSuccess(exit) ? INSPECTION_TTL : 0)),
+            )
+            cached = inspections.get(connectionId) ?? created
+            inspections.set(connectionId, cached)
+          }
+          if (request.refresh) yield* cached[1]
+          return yield* cached[0]
+        })
+
       const getDrivers = Effect.fn('WorkspaceHost.getDrivers')(function* () {
         if (driverRegistry) return driverRegistry
         if (!loadingDrivers) {
@@ -302,6 +346,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         yield* retireExecution().pipe(
           Effect.catch(error => (error.nativeCleanup === 'confirmed' ? Effect.void : Effect.fail(error))),
         )
+        yield* owner.store.releaseRetiredDispatches(ownerEpoch)
         const scope = hostScope
         if (!scope) return yield* new WorkspaceHostError({ message: 'Workspace application scope is unavailable.' })
         driverRegistry = yield* getDrivers()
@@ -388,7 +433,54 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             )
         },
       })
-      const ensureOpen: WorkspaceHost['Service']['ensureOpen'] = getSupervisor().pipe(Effect.asVoid)
+      const ensureOpen: WorkspaceHost['Service']['ensureOpen'] = Effect.gen(function* () {
+        const context = yield* getSupervisor()
+        const owner = Context.get(context, WorkspaceWorkerSupervisor)
+        const ownerEpoch = yield* SubscriptionRef.get(owner.ownerEpoch)
+        if (ownerEpoch === undefined || queuedRecoveryEpoch === ownerEpoch) return
+        queuedRecoveryEpoch = ownerEpoch
+        yield* Effect.forkIn(
+          Effect.gen(function* () {
+            let afterPosition = 0
+            let hasEligibleQueue = false
+            while (!hasEligibleQueue) {
+              const page = yield* owner.store.listQueuedFollowUpHeads({ afterPosition, limit: 50 })
+              for (const head of page.items) {
+                afterPosition = head.position
+                if (!head.held) {
+                  const runStatus = head.context?.runStatus
+                  if (runStatus === 'completed') {
+                    hasEligibleQueue = true
+                    break
+                  }
+                  if (
+                    runStatus !== 'queued' &&
+                    runStatus !== 'starting' &&
+                    runStatus !== 'running' &&
+                    runStatus !== 'awaitingInput' &&
+                    runStatus !== 'interruptRequested'
+                  )
+                    yield* owner.store.holdQueuedFollowUps(head.conversationId, ownerEpoch)
+                }
+              }
+              if (hasEligibleQueue || !page.nextAfterPosition) break
+            }
+            if (!hasEligibleQueue) return
+            const currentEpoch = yield* SubscriptionRef.get(owner.ownerEpoch)
+            if (stopped || ownerEpoch !== currentEpoch || (yield* SubscriptionRef.get(owner.status)).state !== 'ready')
+              return
+            yield* executionGate.withPermit(
+              Effect.gen(function* () {
+                const current = yield* SubscriptionRef.get(owner.ownerEpoch)
+                if (stopped || ownerEpoch !== current) return
+                const owned = yield* getExecution()
+                yield* owned.service.wakeQueuedFollowUps().pipe(Effect.catchCause(() => Effect.void))
+              }),
+            )
+          }).pipe(Effect.catchCause(() => Effect.void)),
+          appScope,
+        )
+      })
       // Admission is serialized; each callback holds an independently interruptible epoch lease.
       const withExecution: WorkspaceHost['Service']['withExecution'] = use =>
         Effect.gen(function* () {
@@ -459,23 +551,17 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         ensureOpen,
         withExecution,
         listConnections: getConnectionCatalog.pipe(Effect.map(catalog => catalog.rows)),
-        inspectConnection: connectionId =>
-          Effect.flatMap(getConnectionCatalog, catalog =>
-            Effect.flatMap(getDrivers(), drivers =>
-              inspectWorkspaceConnection(catalog.connections, drivers, connectionId, {
-                initializeDeadlineMs: options.connectionInspectionDeadlineMs,
-                cleanupDeadlineMs: options.connectionCleanupDeadlineMs,
-              }),
-            ),
-          ).pipe(
-            Effect.mapError(error =>
-              error instanceof WorkspaceHostError ||
-              error instanceof ConnectionInspectionError ||
-              error instanceof HarnessConnectionResolutionError
-                ? error
-                : new WorkspaceHostError({ message: 'Connection inspection failed.' }),
-            ),
-          ),
+        inspectConnection,
+        ...(options.prewarmConnections
+          ? {
+              prewarmConnections: Effect.flatMap(getConnectionCatalog, catalog =>
+                Effect.forEach(catalog.rows, row => Effect.ignore(inspectConnection(row.connectionId)), {
+                  concurrency: 2,
+                  discard: true,
+                }),
+              ).pipe(Effect.ignore, Effect.forkIn(appScope), Effect.asVoid),
+            }
+          : {}),
         eventHighWatermark,
         status,
       })

@@ -1,7 +1,7 @@
 import type { ConversationTurnBlock } from '../conversation-view.js'
 
 export type ToolBlock = Extract<ConversationTurnBlock, { readonly kind: 'tool' }>
-export type ToolCategory = 'command' | 'search' | 'read' | 'edit' | 'other'
+export type ToolCategory = 'command' | 'search' | 'read' | 'edit' | 'web' | 'subagent' | 'mcp' | 'other'
 
 export interface WorkSummary {
   /** Sentence fragment such as `Ran 3 commands, edited 2 files`. */
@@ -13,11 +13,29 @@ export interface WorkSummary {
 /** Classify a tool by the name its driver reports. Unrecognized names stay `other`. */
 export function toolCategory(name: string): ToolCategory {
   const normalized = name.toLowerCase()
+  if (/^mcp(?:[._:/-]|$)|mcptoolcall/.test(normalized)) return 'mcp'
+  if (/subagent|collabagent|spawn_agent|delegate|^task$|^agent$/.test(normalized)) return 'subagent'
+  if (/web.?search|browse|fetch|open.?url/.test(normalized)) return 'web'
   if (/bash|shell|terminal|command|\bexec|\brun\b|powershell/.test(normalized)) return 'command'
   if (/grep|search|glob|find|lookup/.test(normalized)) return 'search'
-  if (/edit|write|patch|create|replace|notebook/.test(normalized)) return 'edit'
+  if (/edit|write|patch|create|replace|notebook|filechange/.test(normalized)) return 'edit'
   if (/read|view|\bcat\b/.test(normalized)) return 'read'
   return 'other'
+}
+
+const metadataCategories = {
+  command: 'command',
+  fileRead: 'read',
+  fileWrite: 'edit',
+  search: 'search',
+  web: 'web',
+  subagent: 'subagent',
+  mcp: 'mcp',
+  other: 'other',
+} as const satisfies Record<NonNullable<ToolBlock['category']>, ToolCategory>
+
+export function toolCategoryFor(tool: ToolBlock): ToolCategory {
+  return tool.category ? metadataCategories[tool.category] : toolCategory(tool.name)
 }
 
 const pathKeys = ['file_path', 'filePath', 'notebook_path', 'path'] as const
@@ -52,12 +70,15 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
   let searches = 0
   let reads = 0
   let others = 0
+  let webSearches = 0
+  let agents = 0
+  let integrations = 0
   const editedPaths = new Set<string>()
   let unnamedEdits = 0
   let failedCount = 0
   for (const tool of tools) {
     if (tool.status === 'failed') failedCount += 1
-    switch (toolCategory(tool.name)) {
+    switch (toolCategoryFor(tool)) {
       case 'command':
         commands += 1
         break
@@ -68,11 +89,22 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
         reads += 1
         break
       case 'edit': {
+        const paths = tool.paths?.length ? tool.paths : tool.changes?.map(change => change.path)
         const path = toolPath(tool.input)
-        if (path) editedPaths.add(path)
+        if (paths?.length) for (const changed of paths) editedPaths.add(changed)
+        else if (path) editedPaths.add(path)
         else unnamedEdits += 1
         break
       }
+      case 'web':
+        webSearches += 1
+        break
+      case 'subagent':
+        agents += 1
+        break
+      case 'mcp':
+        integrations += 1
+        break
       case 'other':
         others += 1
         break
@@ -84,9 +116,12 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
   if (searches > 0) parts.push(plural(searches, 'search'))
   if (reads > 0) parts.push(`read ${plural(reads, 'file')}`)
   if (edits > 0) parts.push(`edited ${plural(edits, 'file')}`)
+  if (webSearches > 0) parts.push(`${plural(webSearches, 'web lookup')}`)
+  if (agents > 0) parts.push(`${plural(agents, 'agent call')}`)
+  if (integrations > 0) parts.push(`${plural(integrations, 'MCP call')}`)
   if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`)
   const toolCount = tools.length
-  const onlyOthers = commands + searches + reads + edits === 0
+  const onlyOthers = commands + searches + reads + edits + webSearches + agents + integrations === 0
   const text = onlyOthers ? plural(toolCount, 'tool call') : parts.join(', ')
   const label = text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : 'Tool activity'
   return { label, toolCount, failedCount }

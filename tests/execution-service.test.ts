@@ -1386,6 +1386,202 @@ describe('ExecutionService', () => {
     }
   })
 
+  it('automatically sends persisted FIFO follow-ups one at a time with captured choices', async () => {
+    const turnReleases = await Effect.runPromise(
+      Effect.all([Deferred.make<undefined>(), Deferred.make<undefined>(), Deferred.make<undefined>()]),
+    )
+    const submitSignals = await Effect.runPromise(
+      Effect.all([Deferred.make<undefined>(), Deferred.make<undefined>(), Deferred.make<undefined>()]),
+    )
+    const prompts: Array<string | undefined> = []
+    const loadedSessions: Array<string> = []
+    const loadedContexts: Array<{ modelId?: string; modeId?: string }> = []
+    let eventIndex = 0
+    const session = makeSession({
+      events: () => {
+        const index = eventIndex++
+        return Stream.fromEffect(Deferred.await(turnReleases[index]!)).pipe(
+          Stream.map(() => ({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }) as const),
+        )
+      },
+      submit: input =>
+        Effect.gen(function* () {
+          const index = prompts.length
+          prompts.push(input.messages[0]?.content)
+          yield* Deferred.succeed(submitSignals[index]!, undefined)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+    })
+    const runtime = makeRuntime(
+      () =>
+        Effect.succeed(
+          makeConnection(session, {
+            loadSession: (context, identity) =>
+              Effect.sync(() => {
+                loadedSessions.push(identity.nativeSessionId)
+                loadedContexts.push({ modelId: context.modelId, modeId: context.modeId })
+                return session
+              }),
+          }),
+        ),
+      { maxConcurrentRuns: 1 },
+    )
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'fifo-first' }))
+      await run(Deferred.await(submitSignals[0]!))
+      for (const [commandId, prompt] of [
+        ['fifo-1', 'First queued prompt'],
+        ['fifo-2', 'Second queued prompt'],
+      ] as const) {
+        await run(
+          service.enqueueFollowUp({
+            commandId,
+            issuedAt: '2026-10-29T10:00:02Z',
+            taskId: task.id,
+            conversationId: conversation.id,
+            checkoutId: checkout.id,
+            driverId: 'test-driver',
+            connectionId: 'connection-1',
+            modelId: 'captured-model',
+            modeId: 'captured-mode',
+            prompt,
+          }),
+        )
+      }
+
+      await run(Deferred.succeed(turnReleases[0]!, undefined))
+      await run(Deferred.await(submitSignals[1]!))
+      expect(prompts).toEqual([command.prompt, 'First queued prompt'])
+      expect(loadedSessions).toEqual(['native-session'])
+      expect(loadedContexts).toEqual([{ modelId: 'captured-model', modeId: 'captured-mode' }])
+
+      await run(Deferred.succeed(turnReleases[1]!, undefined))
+      await run(Deferred.await(submitSignals[2]!))
+      expect(prompts).toEqual([command.prompt, 'First queued prompt', 'Second queued prompt'])
+      await run(Deferred.succeed(turnReleases[2]!, undefined))
+      await run(service.stopAll())
+      expect(loadedSessions).toEqual(['native-session', 'native-session'])
+    } finally {
+      for (const release of turnReleases) await Effect.runPromise(Deferred.succeed(release, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('waits for native cleanup before promoting a queued run on the same checkout', async () => {
+    const firstCloseStarted = await Effect.runPromise(Deferred.make<undefined>())
+    const releaseFirstClose = await Effect.runPromise(Deferred.make<undefined>())
+    const secondSubmit = await Effect.runPromise(Deferred.make<undefined>())
+    let submitCalls = 0
+    let closeCalls = 0
+    const session = makeSession({
+      submit: () =>
+        Effect.gen(function* () {
+          submitCalls += 1
+          if (submitCalls === 2) yield* Deferred.succeed(secondSubmit, undefined)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+      events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const),
+    })
+    const runtime = makeRuntime(
+      () =>
+        Effect.succeed(
+          makeConnection(session, {
+            close: () =>
+              Effect.gen(function* () {
+                closeCalls += 1
+                if (closeCalls === 1) {
+                  yield* Deferred.succeed(firstCloseStarted, undefined)
+                  yield* Deferred.await(releaseFirstClose)
+                }
+              }),
+          }),
+        ),
+      { maxConcurrentRuns: 3 },
+    )
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'cleanup-gate-first' }))
+      await run(Deferred.await(firstCloseStarted))
+      await run(
+        service.enqueueFollowUp({
+          commandId: 'cleanup-gate-queued',
+          issuedAt: '2026-10-29T10:00:02Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Wait for native close',
+        }),
+      )
+      await run(Effect.sleep('50 millis'))
+      expect(submitCalls).toBe(1)
+      await run(Deferred.succeed(releaseFirstClose, undefined))
+      await run(Deferred.await(secondSubmit))
+      expect(submitCalls).toBe(2)
+      await run(service.stopAll())
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseFirstClose, undefined))
+      await runtime.dispose()
+    }
+  })
+
+  it('holds queued work when Stop receives an immediate completed event', async () => {
+    const submitted = await Effect.runPromise(Deferred.make<undefined>())
+    const completeOnInterrupt = await Effect.runPromise(Deferred.make<undefined>())
+    let submitCalls = 0
+    const session = makeSession({
+      submit: () =>
+        Effect.gen(function* () {
+          submitCalls += 1
+          yield* Deferred.succeed(submitted, undefined)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+      events: () =>
+        Stream.fromEffect(Deferred.await(completeOnInterrupt)).pipe(
+          Stream.as({ kind: 'turnCompleted' as const, nativeTurnId: 'native-turn' }),
+        ),
+      interrupt: () =>
+        Effect.as(Deferred.succeed(completeOnInterrupt, undefined), {
+          acknowledged: true as const,
+          termination: 'stillRunning' as const,
+        }),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)))
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'stop-hold-first' }))
+      await run(Deferred.await(submitted))
+      await run(
+        service.enqueueFollowUp({
+          commandId: 'stop-hold-queued',
+          issuedAt: '2026-10-29T10:00:02Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Stay held after Stop',
+        }),
+      )
+      await run(service.interrupt(command.runId))
+      await expect
+        .poll(async () => (await run(store.listQueuedFollowUps(conversation.id, { limit: 10 }))).items[0]?.held)
+        .toBe(true)
+      expect(submitCalls).toBe(1)
+      await run(service.stopAll())
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('passes the requested access mode into the driver context and applies the fail-safe default when absent', async () => {
     const openContextFor = async (accessMode: AgentAccessMode | undefined): Promise<AgentSessionContext> => {
       const opened = await Effect.runPromise(Deferred.make<AgentSessionContext>())
@@ -2239,6 +2435,48 @@ describe('ExecutionService', () => {
       expect(snapshot.runs[0]).toMatchObject({ status: 'uncertain', failure: 'event-stream-ended' })
     } finally {
       await runtime.dispose()
+    }
+  })
+
+  it.each([true, false])('releases a lost stream reservation only when cleanup is confirmed: %s', async confirmed => {
+    const endStream = Deferred.makeUnsafe<undefined>()
+    const session = makeSession({
+      events: () =>
+        Stream.fromEffect(Deferred.await(endStream)).pipe(Stream.as({ kind: 'textDelta', text: 'partial' } as const)),
+    })
+    const runtime = makeRuntime(() =>
+      Effect.succeed(
+        makeConnection(session, {
+          close: () =>
+            confirmed
+              ? Effect.void
+              : Effect.fail(new AgentDriverError({ code: 'disconnected', message: 'Cleanup could not be confirmed.' })),
+        }),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('running')
+      await run(Deferred.succeed(endStream, undefined))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('uncertain')
+      const next = {
+        ...command,
+        commandId: 'after-lost-stream',
+        runId: 'after-lost-stream' as never,
+        provisionalAgentSessionId: 'session-after-lost-stream',
+      }
+      if (confirmed) {
+        await expect.poll(async () => (await run(Effect.exit(store.beginRun(next))))._tag).toBe('Success')
+      } else {
+        await expect(run(store.beginRun(next))).rejects.toMatchObject({ code: 'admission-conflict' })
+        await expect(run(service.stopAll())).rejects.toMatchObject({ nativeCleanup: 'unconfirmed' })
+      }
+    } finally {
+      await runtime.dispose().catch(() => {})
     }
   })
 

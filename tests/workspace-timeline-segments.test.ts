@@ -162,6 +162,12 @@ describe('turn folds', () => {
     })
   })
 
+  it('keeps an opened work row in place after its Run completes', () => {
+    const completedTurn = turn('completed', [tool(1, 'Bash'), tool(2, 'Edit', 'completed', '{"file_path":"a.ts"}')])
+    expect(buildTurnSegments(completedTurn).map(segment => segment.kind)).toEqual(['fold'])
+    expect(buildTurnSegments(completedTurn, true).map(segment => segment.kind)).toEqual(['work'])
+  })
+
   it('keeps failed calls visible while folding the routine calls of a completed Run', () => {
     const segments = buildTurnSegments(
       turn('completed', [tool(1, 'Bash'), tool(2, 'Bash', 'failed'), tool(3, 'Read'), text(4, 'Recovered.')]),
@@ -205,6 +211,26 @@ describe('turn folds', () => {
 })
 
 describe('turn output helpers', () => {
+  it('preserves plans between surrounding text and keeps them visible as content', () => {
+    const plan: ConversationTurnBlock = {
+      kind: 'plan',
+      entries: [
+        { content: 'Inspect', status: 'completed' },
+        { content: 'Verify', status: 'pending' },
+      ],
+      explanation: 'Approach',
+      itemId: 'plan-1',
+      sequence: 2,
+    }
+    expect(turnCopyText(turn('completed', [text(1, 'Starting.'), plan, text(3, 'Done.')]))).toBe(
+      'Starting.\n\nApproach\n\n- [x] Inspect\n- [ ] Verify\n\nDone.',
+    )
+    expect(isEmptySettledTurn(turn('completed', [plan]))).toBe(false)
+    expect(
+      buildTurnSegments(turn('completed', [tool(1, 'Bash'), plan, tool(3, 'Read')])).map(segment => segment.kind),
+    ).toEqual(['fold', 'block'])
+  })
+
   it('copies only non-empty text blocks, separated by blank lines', () => {
     expect(
       turnCopyText(turn('completed', [text(1, 'First.'), text(2, '  '), tool(3, 'Bash'), text(4, 'Second.')])),

@@ -1,6 +1,7 @@
 import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useCallback, useContext, useEffect } from 'react'
 
+import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
 import {
@@ -35,6 +36,7 @@ export function useWorkspaceDraft(conversationId: ConversationId) {
       readonly connectionId?: string
       readonly modelId?: string
       readonly modeId?: string
+      readonly accessMode?: AgentAccessMode
       readonly resumeNativeContext?: boolean
       readonly resumeSessionId?: string
     }) => updatePreference({ conversationId, preference }),
@@ -58,6 +60,18 @@ export function useDraftReference() {
       const text = drafts[conversationId]?.text ?? ''
       const separator = text && !/\s$/.test(text) ? ' ' : ''
       update({ conversationId, text: `${text}${separator}@${path} ` })
+    },
+    [drafts, update],
+  )
+}
+
+export function useDraftAppend() {
+  const drafts = useAtomValue(workspaceDraftsAtom)
+  const update = useAtomSet(updateWorkspaceDraftAtom)
+  return useCallback(
+    (conversationId: ConversationId, addition: string) => {
+      const text = drafts[conversationId]?.text ?? ''
+      update({ conversationId, text: `${text}${text ? '\n\n' : ''}${addition}` })
     },
     [drafts, update],
   )

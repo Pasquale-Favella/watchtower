@@ -1458,6 +1458,7 @@ describe('WorkspaceStore', () => {
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
+            yield* sql`ALTER TABLE workspace_follow_up_queue DROP COLUMN held`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 10`
           }),
         )
@@ -1708,6 +1709,60 @@ describe('WorkspaceStore', () => {
       await expect(
         run(store.beginRun({ ...command, commandId: 'cmd-2', runId: 'run-2' as never })),
       ).rejects.toMatchObject({ code: 'admission-conflict' })
+    })
+  })
+
+  it('releases retired reservations explicitly without changing uncertain history or admitting two live writers', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(store.beginRun(command))
+      await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))
+      const owner = await run(store.acquireOwnerEpoch('2026-10-29T10:00:03Z'))
+      await expect(run(store.releaseRetiredDispatches(7))).rejects.toMatchObject({ code: 'stale-epoch' })
+      await run(store.releaseRetiredDispatches(owner.ownerEpoch))
+      const next = {
+        ...command,
+        commandId: 'after-cleanup',
+        runId: 'run-after-cleanup' as never,
+        provisionalAgentSessionId: 'session-after-cleanup',
+      }
+      await expect(run(store.beginRun(next))).resolves.toMatchObject({ runId: next.runId })
+      await run(store.releaseRetiredDispatches(owner.ownerEpoch))
+      await expect(
+        run(store.beginRun({ ...next, commandId: 'concurrent', runId: 'concurrent' as never })),
+      ).rejects.toMatchObject({ code: 'admission-conflict' })
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: command.runId, status: 'uncertain' })]),
+      )
+      await expect(run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:04Z'))).rejects.toMatchObject({
+        code: 'stale-epoch',
+      })
+    })
+  })
+
+  it('releases an uncertain dispatch only for the owner that confirmed its native cleanup', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(store.beginRun(command))
+      await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))
+      await run(
+        store.failDispatch(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:03Z',
+          outcome: 'uncertain',
+          reason: 'dispatch-uncertain',
+        }),
+      )
+      await expect(run(store.releaseDispatchAfterCleanup(command.runId, 8))).rejects.toMatchObject({
+        code: 'stale-epoch',
+      })
+      await run(store.releaseDispatchAfterCleanup(command.runId, 7))
+      await expect(
+        run(store.beginRun({ ...command, commandId: 'another-send', runId: 'another-run' as never })),
+      ).resolves.toMatchObject({ replayed: false })
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toEqual(
+        expect.arrayContaining([expect.objectContaining({ id: command.runId, status: 'uncertain' })]),
+      )
     })
   })
 
@@ -3134,6 +3189,7 @@ describe('WorkspaceStore', () => {
           checkoutId: activeTwo.checkoutId,
           driverId: activeTwo.driverId,
           connectionId: activeTwo.connectionId,
+          workspacePath: 'C:/repo/co-2',
         },
         {
           runId: activeOne.runId,
@@ -3141,6 +3197,7 @@ describe('WorkspaceStore', () => {
           checkoutId: activeOne.checkoutId,
           driverId: activeOne.driverId,
           connectionId: activeOne.connectionId,
+          workspacePath: checkout.path,
         },
       ])
       expect(limited.runs.every(run => run.sessionId == null)).toBe(true)

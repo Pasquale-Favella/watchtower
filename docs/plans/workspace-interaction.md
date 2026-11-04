@@ -55,9 +55,11 @@ area. The existing Workspace route bypasses the Analytics dashboard layout.
   choices. Preserve the draft if creation or dispatch
   fails. If Task creation commits before Run dispatch fails, keep the Task and
   show the failure there; do not silently create duplicates on retry.
-- The conversation header shows Task title, checkout/branch and current state,
-  with actions for changes, terminal and Task details. Controls must read real
-  state; do not add decorative tabs for unimplemented services.
+- One top header shows Project and chat title, including New chat. Its actions
+  toggle the terminal, right panel and Agent run details. The new-chat welcome
+  keeps its central Project picker, No project choice and existing draft.
+  Checkout controls stay beside the composer; detailed execution state opens
+  from the header.
 - On smaller windows, open navigation and inspector as dismissible panels while
   retaining the conversation and input area. Resize panes within minimum sizes.
 
@@ -109,8 +111,9 @@ does not establish authentication or support for a control.
   follow-up while busy; Shift+Enter adds a line. Provide a separate labeled
   steering action and keyboard binding when negotiated support exists.
 - Show queued prompts above the composer with their order and delivery state.
-  Support cancel and explicit dispatch through existing commands. Editing and
-  reordering require new durable commands before their UI can be enabled.
+  Dispatch the FIFO head automatically after a confirmed completion and when an
+  idle Conversation has a persisted queue. Keep cancel available. Stop and failed
+  or uncertain delivery hold the queue until the user explicitly resumes it.
 - Stop targets the active Run. Navigating away, hiding a panel or disconnecting
   the renderer never stops application-owned execution.
 - After an uncertain delivery, preserve the input and explain the unresolved
@@ -145,6 +148,31 @@ must not send input to the previous checkout. Reopening a drawer preserves its
 owned terminal where supported; closing a pane and terminating a process are
 separate actions. Browser preview and file inspection use the same explicit
 checkout context and isolated resource ownership.
+
+The right panel has persistent, reorderable tabs for browser pages, terminals,
+files, diffs, pull requests, devices and side chats. Closing a tab releases its
+owned resource; hiding the panel preserves it. Bulk close confirms all running
+terminal groups before disposing any of them. Its stored width and maximized
+state apply to wide windows; narrow windows use a sheet and retain the composer.
+
+Browser tabs use sandboxed Electron WebContentsViews. Native pages hide behind
+application dialogs and menus. Navigation, address editing, history, zoom,
+mute, developer tools and screenshot annotations retain their tab identity.
+Local development links from terminal output open in these tabs. File tabs
+support bounded text and image previews, references, external editor opening
+and reveal actions through server-resolved checkout paths.
+
+Pull request tabs use the repository's GitHub CLI context. Reads have bounded
+responses; comments, reviews and lifecycle commands require the repository
+identity shown in the tab. Reviews and merges also validate the displayed head
+revision. Device tabs discover installed local Android and iOS toolchains and
+report actual capabilities before enabling input or simulator controls.
+
+Side chats create an independent Task from an immutable parent conversation
+snapshot. A persisted receipt binds retries to that snapshot. Embedded
+composers keep independent query selections and inspection focus while sharing
+the window's event subscription. Bringing a finished reply back appends it to
+the parent draft and leaves its execution under the parent's controls.
 
 Worktree selection must resolve and revalidate real paths. Concurrent writers
 use existing exclusive-write admission or separate worktrees. A worktree is not
@@ -246,7 +274,8 @@ ordinary checkout revalidation and exclusive-write admission. The internal
 Project stays out of the picker. These chats currently share that checkout;
 separate working trees remain part of the checkout work.
 
-The pinned composer supports explicit native resume, queue/cancel/dispatch,
+The pinned composer supports explicit native resume, queue/cancel, automatic
+FIFO delivery and explicit resume for held queues,
 capability-gated steering and Stop, exact approval options, and structured
 questions. Only adapters that expose cancellation offer a question cancel
 control. Ordinary launch records and native identifiers stay in collapsed
@@ -328,11 +357,13 @@ beside the selected agent. Agent choices are remembered by connection; a
 Conversation retains its own model and mode choices. The model picker is also
 available through `/model` and Mod+Shift+M.
 
-Follow-ups default to the latest validated native context belonging to the
-Conversation, connection and checkout, with a visible continuation notice.
-Run settings offers an explicit fresh-context choice. A failed or unavailable
-resume never silently starts a new native conversation. Explicit queue dispatch
-uses the selected validated context and keeps its original attachment snapshots.
+Follow-ups keep their captured checkout, connection, model, mode, access and
+attachment choices. The worker advances one FIFO item after cleanup confirms a
+completed turn. Stop, failure, uncertain delivery or unconfirmed cleanup holds
+the queue; only held queues show an explicit Resume action. On workspace open,
+the worker checks bounded persisted queue heads and resumes eligible completed
+queues without loading every Task. A failed or unavailable session never silently
+starts a different native session.
 Dispatch keeps an existing Agent Session's durable identity when loading its
 native context, so resumed approval requests do not inherit a new provisional
 identity and fail membership checks.

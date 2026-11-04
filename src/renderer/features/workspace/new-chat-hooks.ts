@@ -5,6 +5,7 @@ import { useCallback, useContext, useEffect } from 'react'
 
 import { hydrateWorkspaceDrafts, updateWorkspaceDraftAtom } from '@/renderer/features/workspace/draft-atoms.js'
 import { pinWindowAtom, querySnapshot, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query.js'
+import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
 import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
@@ -78,8 +79,22 @@ export function useNewChatDraft() {
     [clearConversationDraftIfUnchanged],
   )
   const saveConversationPreference = useCallback(
-    (conversationId: ConversationId, checkoutId: string, connectionId: string, modelId = '', modeId = '') =>
-      saveComposerPreference({ conversationId, checkoutId, connectionId, modelId, modeId }),
+    (
+      conversationId: ConversationId,
+      checkoutId: string,
+      connectionId: string,
+      modelId = '',
+      modeId = '',
+      accessMode?: AgentAccessMode,
+    ) =>
+      saveComposerPreference({
+        conversationId,
+        checkoutId,
+        connectionId,
+        modelId,
+        modeId,
+        ...(accessMode ? { accessMode } : {}),
+      }),
     [saveComposerPreference],
   )
   return {

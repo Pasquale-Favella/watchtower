@@ -25,12 +25,16 @@ import {
   TERMINAL_WRITE_MAX_CHARS,
   type TerminalFrame,
   type TerminalId,
-  terminalSessionKey,
+  type TerminalOwner,
+  terminalOwnerKey,
+  terminalRequestTarget,
+  terminalSessionKey as rawTerminalSessionKey,
   type TerminalSnapshot,
   type TerminalStatus,
   type TerminalSummary,
+  type TerminalTarget,
+  terminalTarget,
 } from '@/shared/schemas/terminal.js'
-import type { TaskId } from '@/shared/schemas/workspace.js'
 
 const KILL_GRACE_MS = 1000
 const COALESCE_MS = 8
@@ -62,7 +66,8 @@ interface Subscriber {
 }
 
 interface Session {
-  readonly taskId: TaskId
+  owner: TerminalTarget
+  readonly cwd: string
   readonly terminalId: TerminalId
   readonly scrollback: TerminalScrollback
   readonly subscribers: Set<Subscriber>
@@ -118,10 +123,15 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
     const maxPerTask = options.maxPerTask ?? TERMINAL_MAX_PER_TASK
 
     const sessions = new Map<string, Session>()
+    const adoptions = new Map<string, { readonly target: TerminalTarget; readonly cwd: string }>()
+    const resolvedOwner = (owner: TerminalOwner): TerminalTarget =>
+      adoptions.get(terminalOwnerKey(owner))?.target ?? terminalTarget(owner)
+    const sessionKey = (owner: TerminalOwner, terminalId: TerminalId): string =>
+      rawTerminalSessionKey(resolvedOwner(owner), terminalId)
     const gate = Semaphore.makeUnsafe(1)
 
-    const countForTask = (taskId: TaskId): number =>
-      [...sessions.values()].filter(session => session.taskId === taskId).length
+    const countForTask = (taskId: TerminalOwner): number =>
+      [...sessions.values()].filter(session => terminalOwnerKey(session.owner) === terminalOwnerKey(taskId)).length
     const countLive = (): number => [...sessions.values()].filter(session => session.status === 'running').length
     const summaryOf = (session: Session): TerminalSummary => ({
       terminalId: session.terminalId,
@@ -135,8 +145,8 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
       ...summaryOf(session),
       data: session.scrollback.snapshot(),
     })
-    const lookup = (taskId: TaskId, terminalId: TerminalId): Effect.Effect<Session, TerminalHostError> => {
-      const session = sessions.get(terminalSessionKey(taskId, terminalId))
+    const lookup = (taskId: TerminalOwner, terminalId: TerminalId): Effect.Effect<Session, TerminalHostError> => {
+      const session = sessions.get(sessionKey(taskId, terminalId))
       return session ? Effect.succeed(session) : Effect.fail(failure('not-found'))
     }
     const requireDimensions = (cols: number, rows: number): Effect.Effect<void, TerminalHostError> =>
@@ -221,7 +231,7 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
 
     /** Synchronously removes the session from service and ends its streams. Returns the process still to stop. */
     const detach = (session: Session): PtyProcess | undefined => {
-      const key = terminalSessionKey(session.taskId, session.terminalId)
+      const key = sessionKey(session.owner, session.terminalId)
       if (sessions.get(key) === session) sessions.delete(key)
       session.closed = true
       cancelFlush(session)
@@ -262,14 +272,17 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
       gate.withPermit(
         Effect.gen(function* () {
           yield* requireDimensions(request.cols, request.rows)
-          const existing = sessions.get(terminalSessionKey(request.taskId, request.terminalId))
+          const adopted = adoptions.get(terminalOwnerKey(terminalRequestTarget(request)))
+          if (adopted && adopted.cwd !== request.cwd) return yield* failure('conflict')
+          const existing = sessions.get(sessionKey(terminalRequestTarget(request), request.terminalId))
           if (existing) return snapshotOf(existing)
-          if (countForTask(request.taskId) >= maxPerTask || countLive() >= maxLiveSessions) {
+          if (countForTask(terminalRequestTarget(request)) >= maxPerTask || countLive() >= maxLiveSessions) {
             return yield* Effect.fail(failure('limit-reached'))
           }
           yield* requireDirectory(request.cwd)
           const session: Session = {
-            taskId: request.taskId,
+            owner: resolvedOwner(terminalRequestTarget(request)),
+            cwd: request.cwd,
             terminalId: request.terminalId,
             scrollback: new TerminalScrollback(scrollbackBytes),
             subscribers: new Set(),
@@ -289,7 +302,7 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
             try: () => startProcess(session, request.cwd, request.cols, request.rows, false),
             catch: () => failure('spawn-failed'),
           })
-          sessions.set(terminalSessionKey(request.taskId, request.terminalId), session)
+          sessions.set(sessionKey(terminalRequestTarget(request), request.terminalId), session)
           return snapshotOf(session)
         }),
       )
@@ -298,7 +311,7 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
       gate.withPermit(
         Effect.gen(function* () {
           yield* requireDimensions(request.cols, request.rows)
-          const session = yield* lookup(request.taskId, request.terminalId)
+          const session = yield* lookup(terminalRequestTarget(request), request.terminalId)
           if (session.status !== 'exited') return yield* Effect.fail(failure('conflict'))
           yield* requireDirectory(request.cwd)
           yield* Effect.try({
@@ -309,12 +322,12 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
         }),
       )
 
-    const attach = (taskId: TaskId, terminalId: TerminalId): Stream.Stream<TerminalFrame, TerminalHostError> =>
+    const attach = (taskId: TerminalOwner, terminalId: TerminalId): Stream.Stream<TerminalFrame, TerminalHostError> =>
       Stream.unwrap(
         Effect.gen(function* () {
           const queue = yield* Queue.bounded<TerminalFrame, TerminalHostError | Cause.Done>(SUBSCRIBER_CAPACITY)
           // The lookup, registration and snapshot run without yielding, so no output can fall between them.
-          const session = sessions.get(terminalSessionKey(taskId, terminalId))
+          const session = sessions.get(sessionKey(taskId, terminalId))
           if (!session) return Stream.fail(failure('not-found'))
           const subscriber: Subscriber = { queue, bytes: 0 }
           session.subscribers.add(subscriber)
@@ -348,6 +361,29 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
       )
 
     return TerminalHost.of({
+      adoptDraft: (draft, taskId, cwd) =>
+        gate.withPermit(
+          Effect.gen(function* () {
+            const already = adoptions.get(terminalOwnerKey(draft))
+            if (already) {
+              if (terminalOwnerKey(already.target) !== taskId || already.cwd !== cwd) return yield* failure('conflict')
+              return
+            }
+            const owned = [...sessions.values()].filter(
+              session => terminalOwnerKey(session.owner) === terminalOwnerKey(draft),
+            )
+            if (owned.some(session => session.cwd !== cwd || sessions.has(sessionKey(taskId, session.terminalId)))) {
+              return yield* failure('conflict')
+            }
+            if (countForTask(taskId) + owned.length > maxPerTask) return yield* failure('limit-reached')
+            for (const session of owned) {
+              sessions.delete(sessionKey(session.owner, session.terminalId))
+              session.owner = terminalTarget(taskId)
+              sessions.set(sessionKey(taskId, session.terminalId), session)
+            }
+            adoptions.set(terminalOwnerKey(draft), { target: terminalTarget(taskId), cwd })
+          }),
+        ),
       open,
       restart,
       attach,
@@ -387,7 +423,7 @@ export const makeTerminalHost = (options: TerminalHostOptions = {}) =>
       list: taskId =>
         Effect.sync(() =>
           [...sessions.values()]
-            .filter(session => session.taskId === taskId)
+            .filter(session => terminalOwnerKey(session.owner) === terminalOwnerKey(taskId))
             .sort((left, right) => left.terminalId.localeCompare(right.terminalId))
             .map(summaryOf),
         ),

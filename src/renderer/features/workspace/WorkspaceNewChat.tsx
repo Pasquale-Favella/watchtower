@@ -2,25 +2,48 @@ import { ArrowUp } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
-import { useCreateTask, useStartRun } from '@/renderer/features/workspace/hooks.js'
+import {
+  useCreateTask,
+  useCreateWorktree,
+  useStartRun,
+  useSwitchBranch,
+  useWorkspaceBranches,
+} from '@/renderer/features/workspace/hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
+import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
+import type { DraftTerminalTarget } from '@/shared/schemas/terminal.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectRegistration } from '@/shared/schemas/workspace-projects.js'
 import type { WorkspaceProjectReadPage } from '@/shared/schemas/workspace-store.js'
 
 import { useWorkspaceAgentPreferences } from './agent-preferences.js'
+import type { CheckoutMode } from './checkout-strip-state.js'
 import { shouldSubmitComposerKey } from './composer-state.js'
 import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connection-hooks.js'
+import { resolveAccessMode } from './model-picker/access-mode.js'
+import { PermissionsChip } from './model-picker/permissions.js'
 import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChatProjects } from './new-chat-hooks.js'
 import { NEW_CHAT_DRAFT_MAX_LENGTH, newChatTaskTitle } from './new-chat-state.js'
-import { canClearCapturedDraft } from './pending-start-state.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { promptWithAttachments } from './prompt-editor.js'
+import { rememberRightPanelSurface, resourceSurface, transferRightPanelState } from './right-panel/right-panel-state.js'
+import { useRightPanel } from './right-panel/use-right-panel.js'
+import { useTerminalAdoption } from './terminal/use-terminal-adoption.js'
+import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
+import { PREVIOUS_CHECKOUT_DRAWER } from './terminal/use-terminal-group-context.js'
+import { type TerminalExcerpt, WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
 import { usePendingStart } from './use-pending-start.js'
+import { transferDraftPanelContext, useDraftPanelContext } from './use-workspace-panel-context.js'
+import { useWorkspacePanelResources } from './use-workspace-panel-resources.js'
 import { WorkspaceAgentPicker } from './WorkspaceAgentPicker.js'
+import { WorkspaceChatHeader } from './WorkspaceChatHeader.js'
+import type { WorkspaceImageContext } from './WorkspaceImageAnnotation.js'
+import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
+import { WorkspacePanelHost } from './WorkspacePanelHost.js'
 import { WorkspaceProjectPicker } from './WorkspaceProjectPicker.js'
 import { WorkspacePromptInput } from './WorkspacePromptInput.js'
+import { WorkspaceRunDetails } from './WorkspaceRunDetails.js'
 
 type Props = {
   readonly projectId: ProjectId | null
@@ -36,17 +59,28 @@ type CreationIntent = {
   readonly driverId: string
   readonly modelId: string | null
   readonly modeId: string | null
+  readonly accessMode: AgentAccessMode
+  /** Set when the chat runs in a new worktree created from this base branch. */
+  readonly worktree: { readonly commandId: string; readonly baseBranch: string } | null
   readonly title: string
   readonly prompt: string
   readonly draftValue: string
   readonly attachments: readonly PromptAttachment[]
   readonly startCommandId: string
+  readonly terminalTarget: DraftTerminalTarget
+  readonly panelKey: string
 }
 
 const projectRequest = (projectId: ProjectId | null): WorkspaceRequest<'workspace:getProject'> | null =>
   projectId ? { projectId } : null
 
 export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Props) {
+  const panelContext = useDraftPanelContext(projectId)
+  const panel = useRightPanel(panelContext.key)
+  const terminal = useTerminalDrawer(panelContext.target)
+  const terminalAdoption = useTerminalAdoption()
+  const resources = useWorkspacePanelResources(panelContext.key, panel)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const { draft, setDraft, clearDraft, copyDraftToConversation, clearConversationDraft, saveConversationPreference } =
     useNewChatDraft()
   const attachments = usePromptAttachments('new-chat')
@@ -54,7 +88,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const agentPickerRef = useRef<{ open: () => void }>(null)
   const creationLock = useRef(false)
-  const { connectionId, setConnectionId, modelId, setModelId, modeId, setModeId } = useWorkspaceAgentPreferences()
+  const { connectionId, setConnectionId, modelId, setModelId, modeId, setModeId, accessMode, setAccessMode } =
+    useWorkspaceAgentPreferences()
   const inspectedConnection = useRef('')
   const [projectCursor, setProjectCursor] = useState<string | undefined>()
   const [priorProjectPages, setPriorProjectPages] = useState<WorkspaceProjectReadPage['items']>([])
@@ -74,6 +109,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   const inspect = useInspectWorkspaceConnection()
   const ensureScratch = useEnsureScratchProject()
   const createTask = useCreateTask()
+  const createWorktree = useCreateWorktree()
+  const switchBranch = useSwitchBranch()
   const startRun = useStartRun()
   const pendingStarts = usePendingStart()
   const inspected = inspect.data?.connectionId === connectionId ? inspect.data : null
@@ -86,9 +123,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     capabilities?.openSession.support === 'supported' &&
     capabilities.submit.support === 'supported',
   )
-  let connectionStatus = ''
-  if (inspect.pending) connectionStatus = 'Checking connection…'
-  else if (canSubmit) connectionStatus = 'Ready to send'
+  const access = resolveAccessMode(accessMode, inspected?.accessModes)
   const attachmentBlocked = attachments.items.some(item =>
     item.mediaType.startsWith('image/') ? !capabilities?.promptContent?.images : !capabilities?.promptContent?.files,
   )
@@ -111,6 +146,31 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     return [selectedProject, ...registeredProjects]
   }, [registeredProjects, selectedProject])
   const archivedProject = selectedProject?.archivedAt ? selectedProject : null
+  // Keyed by Project, so choosing another Project starts again from its current checkout.
+  const [checkoutChoice, setCheckoutChoice] = useState<{
+    readonly projectId: ProjectId | null
+    readonly mode: CheckoutMode
+    readonly baseBranch: string | null
+  }>({ projectId, mode: 'local', baseBranch: null })
+  const checkout =
+    checkoutChoice.projectId === projectId ? checkoutChoice : { projectId, mode: 'local' as const, baseBranch: null }
+  const [branchError, setBranchError] = useState<string | null>(null)
+  const gitProject = Boolean(projectId && selectedProject && !archivedProject)
+  const branchRequest = useMemo(() => (gitProject && projectId ? { projectId } : null), [gitProject, projectId])
+  const branches = useWorkspaceBranches(branchRequest)
+  const currentBranch = branches.data?.current ?? null
+  const shownBranch = checkout.mode === 'worktree' ? (checkout.baseBranch ?? currentBranch) : currentBranch
+  const selectBranch = (branch: string) => {
+    setBranchError(null)
+    if (checkout.mode === 'worktree') {
+      setCheckoutChoice({ projectId, mode: 'worktree', baseBranch: branch })
+      return
+    }
+    if (!projectId || !project.data) return
+    switchBranch
+      .execute({ projectId, checkoutId: project.data.mainCheckout.id, branch })
+      .catch(cause => setBranchError(cause instanceof Error ? cause.message : 'Could not switch branches.'))
+  }
 
   useEffect(() => {
     draftRef.current = draft
@@ -122,14 +182,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     inspectedConnection.current = connectionId
     void inspectSelectedConnection({ connectionId }).catch(() => {})
   }, [selectedConnection, inspected, inspectingConnection, connectionId, inspectSelectedConnection])
-
-  const inspectConnection = () => {
-    if (!connectionId) return
-    setError(null)
-    inspect.execute({ connectionId }).catch(cause => {
-      setError(cause instanceof Error ? cause.message : 'Connection inspection failed.')
-    })
-  }
 
   const loadMoreProjects = () => {
     const page = projects.data
@@ -155,6 +207,14 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         target = await ensureScratch.execute()
         targetProjectId = target.project.id
       }
+      // The worktree is made on send, before the Task, so a refused worktree leaves nothing behind.
+      const worktree = creation.worktree
+        ? await createWorktree.execute({
+            commandId: creation.worktree.commandId,
+            projectId: targetProjectId,
+            baseBranch: creation.worktree.baseBranch,
+          })
+        : null
       const receipt = await createTask.execute({
         commandId: creation.commandId,
         projectId: targetProjectId,
@@ -164,7 +224,21 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       setCreating(false)
       creationLock.current = false
 
-      const checkoutId = target?.mainCheckout.id ?? creation.checkoutId
+      const checkoutId = worktree?.id ?? target?.mainCheckout.id ?? creation.checkoutId
+      const adoptedTerminals = await terminalAdoption.adopt(
+        creation.terminalTarget,
+        receipt.taskId,
+        checkoutId ?? undefined,
+      )
+      transferRightPanelState(creation.panelKey, receipt.taskId)
+      const previousDrawer = terminalAdoption.drawerState(creation.terminalTarget)
+      if (!adoptedTerminals && previousDrawer?.terminals?.length)
+        rememberRightPanelSurface(
+          receipt.taskId,
+          resourceSurface('terminal', PREVIOUS_CHECKOUT_DRAWER),
+          previousDrawer.open,
+        )
+      transferDraftPanelContext(creation.terminalTarget, creation.panelKey, receipt.taskId)
       if (!checkoutId) {
         const retained = draftRef.current
         copyDraftToConversation(receipt.conversationId, retained)
@@ -181,6 +255,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         creation.connectionId,
         creation.modelId ?? '',
         creation.modeId ?? '',
+        creation.accessMode,
       )
       const command: WorkspaceRequest<'workspace:startRun'> = {
         commandId: creation.startCommandId,
@@ -194,6 +269,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         attachments: creation.attachments,
         modelId: creation.modelId,
         modeId: creation.modeId,
+        accessMode: creation.accessMode,
         nativeSessionId: null,
         retryOfRunId: null,
       }
@@ -208,23 +284,15 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         return
       }
       setStarting(true)
+      clearDraft(creation.draftValue)
+      clearConversationDraft(receipt.conversationId, creation.draftValue)
+      attachments.clearCaptured(creation.attachments)
       onStarted(targetProjectId, receipt.taskId, receipt.conversationId)
       try {
         await startRun.execute(command)
-        const cleared = pendingStarts.clear(receipt.conversationId, command.commandId)
-        if (cleared.error || cleared.records[receipt.conversationId]) {
-          setError(cleared.error ?? 'The Run completed, but its saved receipt could not be cleared.')
-        } else if (canClearCapturedDraft(draftRef.current, creation.draftValue)) {
-          clearDraft(creation.draftValue)
-          clearConversationDraft(receipt.conversationId, creation.draftValue)
-          attachments.clearCaptured(creation.attachments)
-          attachments.clearIn(receipt.conversationId, creation.attachments)
-        }
-      } catch (cause) {
-        pendingStarts.markUncertain(receipt.conversationId, command.commandId)
-        setError(
-          cause instanceof Error ? cause.message : 'Run delivery is uncertain. Retry the saved command explicitly.',
-        )
+        attachments.clearIn(receipt.conversationId, creation.attachments)
+      } catch {
+        // The Conversation owns delivery errors after navigation.
       } finally {
         setStarting(false)
       }
@@ -258,11 +326,18 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       driverId: selectedConnection.driverId,
       modelId: modelId || null,
       modeId: modeId || null,
+      accessMode: access.mode,
+      worktree:
+        projectId && checkout.mode === 'worktree'
+          ? { commandId: crypto.randomUUID(), baseBranch: shownBranch ?? 'HEAD' }
+          : null,
       title: newChatTaskTitle(prompt),
       prompt,
       draftValue: draft,
       attachments: [...attachments.items],
       startCommandId: crypto.randomUUID(),
+      terminalTarget: panelContext.target,
+      panelKey: panelContext.key,
     }
     void createAndStart(creation)
   }
@@ -289,186 +364,228 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     onProjectChange(projectId)
     promptRef.current?.focus()
   }
+  const permissionsChip = (
+    <PermissionsChip size="xs" mode={access.mode} options={access.options} onChange={setAccessMode} />
+  )
+  function writeDraft(text: string): void {
+    draftRef.current = text
+    setDraft(text)
+  }
+  function appendToDraft(addition: string): void {
+    writeDraft(`${draftRef.current}${draftRef.current ? '\n\n' : ''}${addition}`)
+    promptRef.current?.focus()
+  }
+  function addTerminalExcerpt(excerpt: TerminalExcerpt & { readonly label: string }): void {
+    appendToDraft(`${excerpt.label}, lines ${excerpt.lineStart}-${excerpt.lineEnd}:\n${excerpt.text}`)
+  }
+  function referencePath(path: string): void {
+    const text = draftRef.current
+    writeDraft(`${text}${text && !/\s$/.test(text) ? ' ' : ''}@${path} `)
+    promptRef.current?.focus()
+  }
+  async function addImage(image: WorkspaceImageContext): Promise<void> {
+    const separator = image.dataUrl.indexOf(',')
+    const item = await attachments.importFile({
+      name: 'workspace-screenshot.png',
+      mediaType: 'image/png',
+      data: image.dataUrl.slice(separator + 1),
+    })
+    attachments.add(item)
+    appendToDraft(image.text)
+  }
 
   return (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-8">
-      <section className="w-full max-w-3xl" aria-label="New chat">
-        <div className="mb-8 flex flex-col items-center gap-2 text-center">
-          {projectId && selectedProject && !archivedProject ? (
-            <>
-              <h1 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
-                <span>What should we build in</span>
-                <WorkspaceProjectPicker
-                  projectId={projectId}
-                  label={selectedProject.name}
-                  projects={pickerProjects}
-                  hasMore={Boolean(projects.data?.nextAfterId)}
-                  disabled={creating || starting}
-                  onSelect={selectProject}
-                  onLoadMore={loadMoreProjects}
-                  onRefresh={projects.refresh}
-                />
-                <span>?</span>
-              </h1>
-              <button
-                type="button"
-                disabled={creating || starting}
-                className="text-muted-foreground hover:text-foreground rounded text-sm outline-none focus-visible:ring-2"
-                onClick={() => selectProject(null)}
-              >
-                or start without a project
-              </button>
-            </>
-          ) : (
-            <>
-              <h1 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h1>
-              <div className="text-muted-foreground text-sm">
-                <WorkspaceProjectPicker
-                  projectId={null}
-                  label="No project"
-                  projects={pickerProjects}
-                  hasMore={Boolean(projects.data?.nextAfterId)}
-                  disabled={creating || starting}
-                  onSelect={selectProject}
-                  onLoadMore={loadMoreProjects}
-                  onRefresh={projects.refresh}
-                />
-              </div>
-            </>
-          )}
-        </div>
-        <WorkspacePromptInput
-          value={draft}
-          onChange={value => {
-            draftRef.current = value
-            setDraft(value)
-          }}
-          onKeyDown={keyDown}
-          inputRef={promptRef}
-          autoFocus
-          attachments={attachments}
-          projectId={projectId}
-          maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
-          onOpenModelPicker={() => agentPickerRef.current?.open()}
-          hint="Enter sends · Shift+Enter adds a line · Drop files or paste an image"
-          controls={
-            <>
-              <WorkspaceAgentPicker
-                controlRef={agentPickerRef}
-                connections={connections.data?.items ?? []}
-                connectionId={connectionId}
-                modelId={modelId}
-                modeId={modeId}
-                inspection={inspected}
-                pending={inspect.pending}
-                onConnectionChange={selected => {
-                  setConnectionId(selected)
-                }}
-                onModelChange={id => {
-                  setModelId(id)
-                  setModeId('')
-                }}
-                onModeChange={setModeId}
-              />
-              <span className="text-muted-foreground text-[11px]" role="status">
-                {connectionStatus}
-              </span>
-            </>
-          }
-          actions={
-            <Button
-              type="button"
-              size="icon-sm"
-              className="rounded-full"
-              aria-label="Send"
-              title="Send"
-              disabled={
-                !promptWithAttachments(draft, attachments.items) ||
-                attachmentBlocked ||
-                !canSubmit ||
-                creating ||
-                starting ||
-                !projectReady ||
-                Boolean(intent)
-              }
-              onClick={submit}
-            >
-              <ArrowUp />
-            </Button>
-          }
-        />
-        {attachmentBlocked && (
-          <p className="text-muted-foreground mt-2 text-xs" role="status">
-            The selected agent has not confirmed support for these attachments. Choose a compatible agent or remove
-            them.
-          </p>
-        )}
-        <details className="mt-3">
-          <summary className="text-muted-foreground cursor-pointer text-xs">Run settings</summary>
-          <div className="mt-2 flex flex-wrap items-center gap-3">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={!connectionId || inspect.pending}
-              onClick={inspectConnection}
-            >
-              Check connection
-            </Button>
-            <p className="text-muted-foreground text-xs">Sign-in has not been verified.</p>
-            {project.data?.nextAfterCheckoutId && (
-              <span className="text-muted-foreground text-xs">
-                Checkout list is paged; the main checkout will be used.
-              </span>
-            )}
-          </div>
-          {capabilities &&
-            (capabilities.openSession.restrictions.length > 0 || capabilities.submit.restrictions.length > 0) && (
-              <p className="text-muted-foreground mt-2 text-xs" role="status">
-                Restrictions:{' '}
-                {[...new Set([...capabilities.openSession.restrictions, ...capabilities.submit.restrictions])].join(
-                  ' · ',
+    <>
+      <WorkspaceChatHeader
+        project={selectedProject?.name ?? 'No project'}
+        title="New chat"
+        terminalOpen={terminal.open}
+        onToggleTerminal={terminal.toggle}
+        panelOpen={panel.open}
+        onTogglePanel={panel.toggle}
+        detailsOpen={detailsOpen}
+        onToggleDetails={() => setDetailsOpen(open => !open)}
+      />
+      <WorkspaceRunDetails open={detailsOpen} onOpenChange={setDetailsOpen} />
+      <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div
+          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${panel.maximized ? 'min-[980px]:hidden' : ''}`}
+        >
+          <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-8">
+            <section className="max-w-chat w-full" aria-label="New chat">
+              <div className="mb-8 flex flex-col items-center gap-2 text-center">
+                {projectId && selectedProject && !archivedProject ? (
+                  <>
+                    <h2 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
+                      <span>What should we build in</span>
+                      <WorkspaceProjectPicker
+                        projectId={projectId}
+                        label={selectedProject.name}
+                        projects={pickerProjects}
+                        hasMore={Boolean(projects.data?.nextAfterId)}
+                        disabled={creating || starting}
+                        onSelect={selectProject}
+                        onLoadMore={loadMoreProjects}
+                        onRefresh={projects.refresh}
+                      />
+                      <span>?</span>
+                    </h2>
+                    <button
+                      type="button"
+                      disabled={creating || starting}
+                      className="text-muted-foreground hover:text-foreground rounded text-sm outline-none focus-visible:ring-2"
+                      onClick={() => selectProject(null)}
+                    >
+                      or start without a project
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
+                    <div className="text-muted-foreground text-sm">
+                      <WorkspaceProjectPicker
+                        projectId={null}
+                        label="No project"
+                        projects={pickerProjects}
+                        hasMore={Boolean(projects.data?.nextAfterId)}
+                        disabled={creating || starting}
+                        onSelect={selectProject}
+                        onLoadMore={loadMoreProjects}
+                        onRefresh={projects.refresh}
+                      />
+                    </div>
+                  </>
                 )}
-              </p>
-            )}
-        </details>
-        {inspected && !canSubmit && (
-          <p className="text-muted-foreground mt-3 text-center text-xs" role="status">
-            This agent cannot start a conversation with the selected setup.
-          </p>
-        )}
-        {(error || inspect.error) && (
-          <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="alert">
-            <span className="text-destructive">{error ?? inspect.error}</span>
-            {intent && !creating && (
-              <Button type="button" size="sm" variant="outline" onClick={retryCreation}>
-                Retry
-              </Button>
-            )}
+              </div>
+              <WorkspacePromptInput
+                value={draft}
+                onChange={writeDraft}
+                onKeyDown={keyDown}
+                inputRef={promptRef}
+                autoFocus
+                attachments={attachments}
+                projectId={projectId}
+                maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
+                onOpenModelPicker={() => agentPickerRef.current?.open()}
+                controls={
+                  <WorkspaceAgentPicker
+                    controlRef={agentPickerRef}
+                    connections={connections.data?.items ?? []}
+                    connectionId={connectionId}
+                    modelId={modelId}
+                    modeId={modeId}
+                    inspection={inspected}
+                    pending={inspect.pending}
+                    access={{ ...access, onChange: setAccessMode }}
+                    onConnectionChange={selected => {
+                      setConnectionId(selected)
+                    }}
+                    onModelChange={id => {
+                      setModelId(id)
+                      setModeId('')
+                    }}
+                    onModeChange={setModeId}
+                  />
+                }
+                contextStrip={
+                  gitProject ? (
+                    <CheckoutStrip
+                      mode={checkout.mode}
+                      onModeChange={mode => {
+                        setBranchError(null)
+                        setCheckoutChoice({ projectId, mode, baseBranch: checkout.baseBranch })
+                      }}
+                      branch={shownBranch}
+                      branches={branches.data}
+                      pending={switchBranch.pending}
+                      disabled={creating || starting || switchBranch.pending}
+                      onBranchSelect={selectBranch}
+                      error={branchError ?? branches.error}
+                      trailing={permissionsChip}
+                    />
+                  ) : (
+                    <div className="ms-auto">{permissionsChip}</div>
+                  )
+                }
+                actions={
+                  <Button
+                    type="button"
+                    size="icon-sm"
+                    className="rounded-full"
+                    aria-label="Send"
+                    title="Send"
+                    disabled={
+                      !promptWithAttachments(draft, attachments.items) ||
+                      attachmentBlocked ||
+                      !canSubmit ||
+                      creating ||
+                      starting ||
+                      !projectReady ||
+                      Boolean(intent)
+                    }
+                    onClick={submit}
+                  >
+                    <ArrowUp />
+                  </Button>
+                }
+              />
+              {attachmentBlocked && (
+                <p className="text-muted-foreground mt-2 text-xs" role="status">
+                  The selected agent has not confirmed support for these attachments. Choose a compatible agent or
+                  remove them.
+                </p>
+              )}
+              {inspected && !canSubmit && (
+                <p className="text-muted-foreground mt-3 text-center text-xs" role="status">
+                  This agent cannot start a conversation with the selected setup.
+                </p>
+              )}
+              {(error || inspect.error) && (
+                <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="alert">
+                  <span className="text-destructive">{error ?? inspect.error}</span>
+                  {intent && !creating && (
+                    <Button type="button" size="sm" variant="outline" onClick={retryCreation}>
+                      Retry
+                    </Button>
+                  )}
+                </div>
+              )}
+              {(projects.error || connections.error || project.error) && (
+                <p className="text-destructive mt-3 text-center text-sm" role="alert">
+                  {projects.error || connections.error || project.error}
+                </p>
+              )}
+              {archivedProject && (
+                <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="status">
+                  <span>This Project is archived.</span>
+                  <Button type="button" size="sm" variant="outline" onClick={() => onProjectChange(null)}>
+                    Continue with No project
+                  </Button>
+                </div>
+              )}
+            </section>
           </div>
-        )}
-        {(projects.error || connections.error || project.error) && (
-          <p className="text-destructive mt-3 text-center text-sm" role="alert">
-            {projects.error || connections.error || project.error}
-          </p>
-        )}
-        {projectId && !project.data && !project.error && (
-          <p className="text-muted-foreground mt-3 text-center text-xs" role="status">
-            Loading selected Project…
-          </p>
-        )}
-        {archivedProject && (
-          <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="status">
-            <span>This Project is archived.</span>
-            <Button type="button" size="sm" variant="outline" onClick={() => onProjectChange(null)}>
-              Continue with No project
-            </Button>
-          </div>
-        )}
-        <p className="text-muted-foreground mt-3 text-center text-xs">
-          Enter sends · Shift+Enter adds a line. Drafts stay in this new chat until you send.
-        </p>
-      </section>
-    </div>
+          <WorkspaceTerminalDrawer
+            target={panelContext.target}
+            open={terminal.open}
+            onOpenLink={url => resources.openBrowser(url)}
+            onAddToChat={addTerminalExcerpt}
+          />
+        </div>
+        <WorkspacePanelHost
+          projectId={projectReady ? (projectId ?? undefined) : undefined}
+          panel={panel}
+          resources={resources}
+          ownerKey={panelContext.key}
+          terminalTarget={panelContext.target}
+          onToggleTerminal={terminal.toggle}
+          onAddImage={addImage}
+          onReferenceText={appendToDraft}
+          refreshKey={0}
+          onReferencePath={referencePath}
+          onAddToChat={addTerminalExcerpt}
+        />
+      </div>
+    </>
   )
 }

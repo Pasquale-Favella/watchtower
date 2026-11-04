@@ -73,17 +73,34 @@ export function questionDecision(
   if (request.kind !== 'question' || request.questions.length === 0) return null
   const result: Record<string, string | string[]> = {}
   for (const question of request.questions) {
-    const answer = answers[question.id]
-    if (answer === undefined) return null
-    const values: string | string[] = typeof answer === 'string' ? answer : [...answer]
-    const isMultiple = typeof values !== 'string'
-    if (isMultiple !== question.multiSelect) return null
-    if (isMultiple ? values.length === 0 : values.trim().length === 0) return null
-    if (question.options.length > 0) {
-      const selections = isMultiple ? values : [values]
-      if (selections.some(value => !question.options.some(option => option.id === value))) return null
-    }
-    result[question.id] = values
+    const answer = validatedQuestionAnswer(question, answers[question.id])
+    if (answer === null) return null
+    result[question.id] = answer
   }
   return { kind: 'answers', answers: result }
+}
+
+export function validatedQuestionAnswer(
+  question: AgentRequest['questions'][number],
+  answer: string | readonly string[] | undefined,
+): string | string[] | null {
+  if (answer === undefined || Array.isArray(answer) !== question.multiSelect) return null
+  const values = typeof answer === 'string' ? [answer] : [...answer]
+  if (values.length === 0 || values.some(value => value.trim().length === 0)) return null
+  if (new Set(values).size !== values.length) return null
+  const customAllowed = question.options.length === 0 || question.allowCustomAnswer === true
+  if (!customAllowed && values.some(value => !question.options.some(option => option.id === value))) return null
+  return question.multiSelect ? values : (values[0] ?? null)
+}
+
+export function questionAnswerLabels(
+  question: AgentRequest['questions'][number],
+  decision: AgentRequestDecision | undefined,
+): readonly string[] {
+  if (decision?.kind !== 'answers') return []
+  const answer = decision.answers[question.id]
+  if (answer === undefined) return []
+  if (question.isSecret) return ['Hidden answer']
+  const values = typeof answer === 'string' ? [answer] : answer
+  return values.map(value => question.options.find(option => option.id === value)?.label ?? value)
 }

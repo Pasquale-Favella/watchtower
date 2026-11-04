@@ -2,16 +2,19 @@ import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
 import {
+  draftTerminalTargetSchema,
   openTerminalRequestSchema,
   terminalColsField,
   terminalFrameSchema,
   terminalListSchema,
+  terminalOwnerRequestCheck,
+  terminalOwnerRequestSchema,
   terminalRefSchema,
   terminalRowsField,
   terminalSnapshotSchema,
   terminalWriteSchema,
 } from '@/shared/schemas/terminal.js'
-import { taskIdSchema } from '@/shared/schemas/workspace.js'
+import { taskIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 
 /** The fixed message for each failure code. Messages never include paths, process output or platform error text. */
 export const terminalRpcMessages = {
@@ -60,12 +63,14 @@ export const TerminalRpcGroup = RpcGroup.make(
     stream: true,
   }),
   Rpc.make('terminal:write', {
-    payload: Schema.Struct({ ...terminalRefSchema.fields, data: terminalWriteSchema }),
+    payload: Schema.Struct({ ...terminalRefSchema.fields, data: terminalWriteSchema }).check(terminalOwnerRequestCheck),
     success: Schema.Void,
     error,
   }),
   Rpc.make('terminal:resize', {
-    payload: Schema.Struct({ ...terminalRefSchema.fields, cols: terminalColsField, rows: terminalRowsField }),
+    payload: Schema.Struct({ ...terminalRefSchema.fields, cols: terminalColsField, rows: terminalRowsField }).check(
+      terminalOwnerRequestCheck,
+    ),
     success: Schema.Void,
     error,
   }),
@@ -80,8 +85,17 @@ export const TerminalRpcGroup = RpcGroup.make(
     error,
   }),
   Rpc.make('terminal:list', {
-    payload: Schema.Struct({ taskId: taskIdSchema }),
+    payload: terminalOwnerRequestSchema,
     success: terminalListSchema,
+    error,
+  }),
+  Rpc.make('terminal:adoptDraft', {
+    payload: Schema.Struct({
+      draft: draftTerminalTargetSchema,
+      taskId: taskIdSchema,
+      checkoutId: Schema.optional(workspaceCheckoutIdSchema),
+    }),
+    success: Schema.Void,
     error,
   }),
 )

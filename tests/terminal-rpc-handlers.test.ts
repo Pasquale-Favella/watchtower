@@ -11,6 +11,7 @@ import type { PtySpawner } from '../src/infrastructure/terminal/pty.js'
 import { terminalHostLayer } from '../src/infrastructure/terminal/terminal-host.js'
 import { terminalHandlers } from '../src/platform/electron/main/rpc/terminal-handlers.js'
 import { TerminalRpcError, TerminalRpcGroup } from '../src/shared/rpc/terminal.js'
+import type { DraftTerminalTarget } from '../src/shared/schemas/terminal.js'
 import { type TaskId, taskIdSchema } from '../src/shared/schemas/workspace.js'
 
 const taskId = taskIdSchema.make('task-rpc')
@@ -67,10 +68,16 @@ function makeSpawner(throws?: Error) {
 
 type ResolveTaskCwd = (taskId: TaskId) => Effect.Effect<string, TerminalRpcError>
 
-function harness(options: { readonly resolveTaskCwd?: ResolveTaskCwd; readonly spawnError?: Error } = {}) {
+function harness(
+  options: {
+    readonly resolveTaskCwd?: ResolveTaskCwd
+    readonly resolveDraftCwd?: (target: DraftTerminalTarget) => Effect.Effect<string, TerminalRpcError>
+    readonly spawnError?: Error
+  } = {},
+) {
   const fake = makeSpawner(options.spawnError)
   const resolveTaskCwd: ResolveTaskCwd = options.resolveTaskCwd ?? (() => Effect.succeed(checkout))
-  const handlers = terminalHandlers({ resolveTaskCwd }).pipe(
+  const handlers = terminalHandlers({ resolveTaskCwd, resolveDraftCwd: options.resolveDraftCwd }).pipe(
     Layer.provide(
       terminalHostLayer({
         spawner: fake.spawner,
@@ -153,7 +160,7 @@ describe('terminal RPC handlers', () => {
         yield* client['terminal:open'](ref)
         expect(Exit.isFailure(yield* Effect.exit(client['terminal:open']({ ...ref, cols: 1001 })))).toBe(true)
         expect(Exit.isFailure(yield* Effect.exit(client['terminal:open']({ ...ref, rows: 0 })))).toBe(true)
-        const unknownTab = { taskId, terminalId: 'term-5' } as unknown as typeof ref
+        const unknownTab = { taskId, terminalId: 'term-33' } as unknown as typeof ref
         expect(Exit.isFailure(yield* Effect.exit(client['terminal:open'](unknownTab)))).toBe(true)
         expect(Exit.isFailure(yield* Effect.exit(client['terminal:resize']({ ...ref, cols: 1, rows: 501 })))).toBe(true)
         expect(Exit.isFailure(yield* Effect.exit(client['terminal:write']({ ...ref, data: 'x'.repeat(65_537) })))).toBe(
@@ -246,5 +253,47 @@ describe('terminal RPC handlers', () => {
       ),
     )
     expect(count).toBe(1)
+  })
+})
+
+describe('draft terminal RPC ownership', () => {
+  const target: DraftTerminalTarget = { kind: 'draft', draftId: 'new-chat-a', projectId: null }
+  it('resolves a draft checkout without requiring or creating a Task', async () => {
+    const tasks: string[] = []
+    const drafts: DraftTerminalTarget[] = []
+    const setup = harness({
+      resolveTaskCwd: id => {
+        tasks.push(id)
+        return Effect.succeed(checkout)
+      },
+      resolveDraftCwd: draft => {
+        drafts.push(draft)
+        return Effect.succeed(checkout)
+      },
+    })
+    await withClient(setup, client =>
+      Effect.gen(function* () {
+        yield* client['terminal:open']({ target, terminalId: 'term-1' })
+        expect(yield* client['terminal:list']({ target })).toMatchObject({ items: [{ terminalId: 'term-1' }] })
+        expect(tasks).toEqual([])
+        expect(drafts).toEqual([target])
+        yield* client['terminal:adoptDraft']({ draft: target, taskId })
+        expect(yield* client['terminal:list']({ taskId })).toMatchObject({ items: [{ terminalId: 'term-1' }] })
+        expect(yield* client['terminal:list']({ target })).toEqual({ items: [] })
+        expect(setup.fake.spawned).toHaveLength(1)
+      }),
+    )
+  })
+  it('rejects requests with missing or ambiguous ownership before spawning', async () => {
+    const setup = harness({ resolveDraftCwd: () => Effect.succeed(checkout) })
+    await withClient(setup, client =>
+      Effect.gen(function* () {
+        expect(Exit.isFailure(yield* Effect.exit(client['terminal:open']({ terminalId: 'term-1' })))).toBe(true)
+        expect(
+          Exit.isFailure(yield* Effect.exit(client['terminal:open']({ taskId, target, terminalId: 'term-1' }))),
+        ).toBe(true)
+        expect(setup.fake.spawned).toHaveLength(0)
+      }),
+    )
   })
 })

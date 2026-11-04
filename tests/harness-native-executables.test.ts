@@ -279,7 +279,7 @@ describe('native Harness executable discovery', () => {
     expect(commands).toEqual(['codex'])
     expect(claudeNativeAvailability).toMatchObject({
       driverId: 'claude-agent-sdk',
-      availability: 'release-gated',
+      availability: 'available',
       distribution: 'bundled-sdk-cli',
       requiresHostExecutable: false,
     })

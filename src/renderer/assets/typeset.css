@@ -4,6 +4,66 @@
  */
 
 @layer components {
+  .watchtower-markdown {
+    --color-foreground: var(--foreground);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-border: var(--border);
+    --color-muted: var(--muted);
+    color: var(--foreground);
+    min-width: 0;
+
+    & > :first-child {
+      margin-block-start: 0;
+    }
+
+    & [data-streamdown='code-block'] {
+      margin-block: 0;
+    }
+
+    & .markdown-code {
+      margin-block: var(--typeset-flow, 1em);
+      font-size: 0.8125rem;
+      line-height: 1.6;
+    }
+
+    & [data-streamdown='code-block-header'] {
+      padding-inline: 0.5rem;
+    }
+
+    & [data-streamdown='code-block-actions'] {
+      gap: 0.125rem;
+      padding: 0.125rem;
+      border-color: var(--color-border);
+      background: var(--color-muted);
+      box-shadow: none;
+    }
+
+    & [data-streamdown='code-block-body'] {
+      background: var(--color-muted);
+      border-radius: var(--radius-lg);
+      font-size: inherit;
+    }
+
+    & .markdown-code[data-wrap='true'] pre,
+    & .markdown-code[data-wrap='true'] pre code {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    & [data-streamdown='table-wrapper'] {
+      font-size: inherit;
+    }
+
+    & .katex-display {
+      max-width: 100%;
+      overflow-x: auto;
+      overflow-y: hidden;
+      padding-block: 0.25rem;
+    }
+  }
+}
+
+@layer components {
   .typeset {
     --typeset-font-body: inherit;
     --typeset-font-heading: var(--font-heading);

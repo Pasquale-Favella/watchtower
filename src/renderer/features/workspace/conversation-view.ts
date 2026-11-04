@@ -1,7 +1,15 @@
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
-import { type AgentDriverEvent, agentDriverEventSchema } from '@/shared/schemas/execution.js'
+import {
+  type AgentDriverEvent,
+  agentDriverEventSchema,
+  type AgentPlanEntry,
+  type AgentRequest,
+  type AgentRequestDecision,
+  type AgentToolMetadata,
+  agentToolMetadataSchema,
+} from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 import {
   workspaceConversationMessageSchema,
@@ -29,7 +37,7 @@ export function mergeConversationItems(
 export type ConversationTurnBlock =
   | { readonly kind: 'text'; readonly text: string; readonly itemId: string | null; readonly sequence: number }
   | { readonly kind: 'thinking'; readonly text: string; readonly itemId: string | null; readonly sequence: number }
-  | {
+  | ({
       readonly kind: 'tool'
       readonly toolCallId: string
       readonly name: string
@@ -39,14 +47,54 @@ export type ConversationTurnBlock =
       readonly status: 'running' | 'completed' | 'failed' | 'unknown'
       readonly continued: boolean
       readonly sequence: number
+    } & AgentToolMetadata)
+  | {
+      readonly kind: 'plan'
+      readonly entries: readonly AgentPlanEntry[]
+      readonly explanation: string | null
+      readonly itemId: string | null
+      readonly sequence: number
+    }
+  | {
+      readonly kind: 'media'
+      readonly itemId: string | null
+      readonly mediaType: string
+      readonly url: string
+      readonly alt: string
+      readonly sequence: number
     }
   | {
       readonly kind: 'unavailable'
       readonly sequence: number
       readonly reference: WorkspacePayloadReference | null
     }
-  | { readonly kind: 'request'; readonly event: AgentDriverEvent; readonly sequence: number }
+  | {
+      readonly kind: 'request'
+      readonly requestId: string
+      /** Null when the pending record was not loaded and only its resolution is known. */
+      readonly requestKind: 'approval' | 'question' | null
+      readonly prompt: string | null
+      readonly outcome: ConversationRequestOutcome
+      readonly request?: AgentRequest
+      readonly decision?: AgentRequestDecision
+      readonly sequence: number
+    }
   | { readonly kind: 'notice'; readonly event: AgentDriverEvent; readonly sequence: number }
+
+export type ConversationRequestOutcome = 'pending' | 'approved' | 'declined' | 'cancelled' | 'answered'
+
+function requestOutcome(decision: AgentRequestDecision): ConversationRequestOutcome {
+  switch (decision.kind) {
+    case 'approve':
+      return 'approved'
+    case 'deny':
+      return 'declined'
+    case 'cancel':
+      return 'cancelled'
+    case 'answers':
+      return 'answered'
+  }
+}
 
 export interface ConversationUserMessage {
   readonly kind: 'user'
@@ -143,11 +191,13 @@ interface MutableRun {
   lastSequence: number
 }
 
-type MutableAssistantTurn = Omit<ConversationAssistantTurn, 'blocks' | 'audit' | 'run'> & {
+type MutableAssistantTurn = Omit<ConversationAssistantTurn, 'blocks' | 'audit' | 'run' | 'nativeTurnId'> & {
   readonly blocks: ConversationTurnBlock[]
   readonly audit: WorkspaceExecutionEvent[]
-  readonly identityKey: string
+  identityKey: string
   readonly runKey: string
+  nativeTurnId: string | null
+  terminal: boolean
 }
 
 function runKeyFor(event: WorkspaceExecutionEvent): string {
@@ -294,8 +344,9 @@ export function projectConversationView(
   const users = new Map<string, ConversationUserMessage>()
   const activeNativeTurns = new Map<string, string>()
   const toolStates = new Map<string, Extract<ConversationTurnBlock, { readonly kind: 'tool' }>>()
+  const requestBlocks: RequestBlockIndex = new Map()
   const runs = new Map<string, MutableRun>()
-  let lastTurn: MutableAssistantTurn | null = null
+  const lastTurn = { current: null as MutableAssistantTurn | null }
 
   for (const item of ordered) {
     const { event } = item
@@ -308,13 +359,12 @@ export function projectConversationView(
       }
       users.set(item.userMessage.id, user)
       entries.push(user)
-      lastTurn = null
+      lastTurn.current = null
     }
 
     if (isConversationStatusEvent(event)) {
       observeRun(runs, event, null)
       entries.push({ kind: 'status', id: `status:${event.sequence}`, sequence: event.sequence, event })
-      lastTurn = null
       continue
     }
     if (event.kind !== 'driverEvent') continue
@@ -330,7 +380,16 @@ export function projectConversationView(
       activeNativeTurns.get(runGeneration) ??
       null
     const identityKey = `${event.runId}:${event.generation}:${nativeTurnId ?? 'unidentified'}`
-    let turn: MutableAssistantTurn | null = lastTurn?.identityKey === identityKey ? lastTurn : null
+    if (
+      nativeTurnId &&
+      lastTurn.current?.runKey === runGeneration &&
+      lastTurn.current.nativeTurnId === null &&
+      !lastTurn.current.terminal
+    ) {
+      lastTurn.current.nativeTurnId = nativeTurnId
+      lastTurn.current.identityKey = identityKey
+    }
+    let turn: MutableAssistantTurn | null = lastTurn.current?.identityKey === identityKey ? lastTurn.current : null
     if (!turn) {
       turn = {
         kind: 'assistant',
@@ -344,12 +403,13 @@ export function projectConversationView(
         occurredAt: event.occurredAt,
         blocks: [],
         audit: [],
+        terminal: false,
       }
       entries.push(turn)
-      lastTurn = turn
+      lastTurn.current = turn
     }
     if (driver) {
-      appendTurnBlock(turn.blocks, driver, event.sequence, toolStates, identityKey)
+      appendTurnBlock(turn.blocks, driver, event.sequence, toolStates, identityKey, requestBlocks, runGeneration)
     } else {
       turn.blocks.push({
         kind: 'unavailable',
@@ -358,6 +418,11 @@ export function projectConversationView(
       })
     }
     turn.audit.push(event)
+    if (
+      driver &&
+      (driver.kind === 'turnCompleted' || driver.kind === 'turnInterrupted' || driver.kind === 'turnFailed')
+    )
+      turn.terminal = true
   }
 
   const projected = entries.map((entry): ConversationEntry => {
@@ -410,12 +475,17 @@ function isConversationStatusEvent(event: WorkspaceExecutionEvent): boolean {
   )
 }
 
+/** Where each request's block lives, so its resolution updates the row in place, even across turns. */
+type RequestBlockIndex = Map<string, { readonly blocks: ConversationTurnBlock[]; readonly index: number }>
+
 function appendTurnBlock(
   blocks: ConversationTurnBlock[],
   event: AgentDriverEvent,
   sequence: number,
   toolStates: Map<string, Extract<ConversationTurnBlock, { readonly kind: 'tool' }>>,
   identityKey: string,
+  requestBlocks: RequestBlockIndex,
+  runKey: string,
 ): void {
   const previous = blocks.at(-1)
   if (event.kind === 'textDelta' || event.kind === 'reasoningDelta') {
@@ -435,21 +505,27 @@ function appendTurnBlock(
     const prior = localPrior ?? toolStates.get(`${identityKey}:${event.toolCallId}`)
     const index = localPrior ? blocks.indexOf(localPrior) : -1
     const continued = localPrior?.continued ?? (!localPrior && prior !== undefined)
+    let output = prior?.output ?? null
+    let input = event.input ?? prior?.input ?? null
+    if (event.kind !== 'toolStarted' && event.output !== undefined) {
+      output = event.output
+      if (event.kind === 'toolUpdated' && event.append) output = `${prior?.output ?? ''}${event.output}`
+    }
+    if (event.kind === 'toolUpdated' && event.append && event.input !== undefined)
+      input = `${prior?.input ?? ''}${event.input}`
+    let status = prior?.status ?? 'unknown'
+    if (event.kind === 'toolStarted') status = 'running'
+    if (event.kind === 'toolCompleted') status = event.error ? 'failed' : 'completed'
     const tool: ConversationTurnBlock & { readonly kind: 'tool' } = {
+      ...prior,
+      ...Schema.decodeUnknownSync(agentToolMetadataSchema)(event),
       kind: 'tool',
       toolCallId: event.toolCallId,
-      name: event.kind === 'toolStarted' ? event.name : (prior?.name ?? 'Tool'),
-      input: event.kind === 'toolStarted' ? (event.input ?? null) : (prior?.input ?? null),
-      output: event.kind === 'toolUpdated' && event.output !== undefined ? event.output : (prior?.output ?? null),
+      name: event.name ?? prior?.name ?? 'Tool',
+      input,
+      output,
       error: event.kind === 'toolCompleted' ? (event.error ?? null) : (prior?.error ?? null),
-      status:
-        event.kind === 'toolCompleted'
-          ? event.error
-            ? 'failed'
-            : 'completed'
-          : event.kind === 'toolStarted'
-            ? 'running'
-            : (prior?.status ?? 'unknown'),
+      status,
       continued,
       sequence: localPrior?.sequence ?? sequence,
     }
@@ -458,12 +534,72 @@ function appendTurnBlock(
     toolStates.set(`${identityKey}:${event.toolCallId}`, tool)
     return
   }
-  if (event.kind === 'requestPending' || event.kind === 'requestResolved') {
-    blocks.push({ kind: 'request', event, sequence })
+  if (event.kind === 'requestPending') {
+    const key = `${runKey}:${event.request.requestId}`
+    if (requestBlocks.has(key)) return
+    requestBlocks.set(key, { blocks, index: blocks.length })
+    blocks.push({
+      kind: 'request',
+      requestId: event.request.requestId,
+      requestKind: event.request.kind,
+      prompt: event.request.prompt,
+      outcome: 'pending',
+      request: event.request,
+      sequence,
+    })
+    return
+  }
+  if (event.kind === 'requestResolved') {
+    const key = `${runKey}:${event.requestId}`
+    const located = requestBlocks.get(key)
+    const prior = located?.blocks[located.index]
+    if (located && prior?.kind === 'request') {
+      located.blocks[located.index] = { ...prior, outcome: requestOutcome(event.decision), decision: event.decision }
+      return
+    }
+    requestBlocks.set(key, { blocks, index: blocks.length })
+    blocks.push({
+      kind: 'request',
+      requestId: event.requestId,
+      requestKind: null,
+      prompt: null,
+      outcome: requestOutcome(event.decision),
+      decision: event.decision,
+      sequence,
+    })
     return
   }
   if (event.kind === 'nativeNotice' || event.kind === 'turnFailed') {
     blocks.push({ kind: 'notice', event, sequence })
+  }
+  if (event.kind === 'planUpdated') {
+    const priorIndex = blocks.findIndex(block => block.kind === 'plan' && block.itemId === (event.itemId ?? null))
+    const prior = blocks[priorIndex]
+    const plan: ConversationTurnBlock = {
+      kind: 'plan',
+      entries: event.entries,
+      explanation: event.explanation ?? null,
+      itemId: event.itemId ?? null,
+      sequence: prior?.sequence ?? sequence,
+    }
+    if (priorIndex >= 0) blocks[priorIndex] = plan
+    else blocks.push(plan)
+  }
+  if (event.kind === 'media') {
+    const priorIndex = event.itemId
+      ? blocks.findIndex(block => block.kind === 'media' && block.itemId === event.itemId)
+      : -1
+    const prior = blocks[priorIndex]
+    const media: ConversationTurnBlock = {
+      kind: 'media',
+      itemId: event.itemId ?? null,
+      mediaType: event.mediaType,
+      url: event.url,
+      alt: event.alt ?? 'Agent attachment',
+      sequence: prior?.sequence ?? sequence,
+    }
+    if (priorIndex >= 0) blocks[priorIndex] = media
+    else blocks.push(media)
   }
 }
 
@@ -570,6 +706,10 @@ export function driverEventSummary(event: AgentDriverEvent): string {
       return 'Tool output'
     case 'toolCompleted':
       return event.error ? 'Tool failed' : 'Tool completed'
+    case 'planUpdated':
+      return 'Plan updated'
+    case 'media':
+      return 'Agent attachment'
     case 'requestPending':
       return event.request.kind === 'approval' ? 'Approval requested' : 'Question requested'
     case 'requestResolved':

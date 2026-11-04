@@ -213,6 +213,110 @@ const fakeRegistry = (
   ])
 
 describe('lazy application WorkspaceHost', () => {
+  it('resumes an eligible durable queue during workspace opening without a mounted composer', async () => {
+    const suffix = 'durable-queue-recovery'
+    const input = workspace(suffix)
+    const first = fixture(
+      suffix,
+      undefined,
+      fakeRegistry([], [], Effect.void, {
+        events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+      }),
+    )
+    try {
+      const host = await first.runtime.runPromise(WorkspaceHost)
+      await first.runtime.runPromise(
+        host.store.registerProject({ project: input.project, mainCheckout: input.checkout }),
+      )
+      await first.runtime.runPromise(host.store.createTask({ task: input.task, conversation: input.conversation }))
+      await first.runtime.runPromise(host.withExecution(service => service.start(beginCommand(suffix))))
+      await expect
+        .poll(
+          async () => (await first.runtime.runPromise(host.store.readTaskSnapshot(input.task.id, 10))).runs[0]?.status,
+        )
+        .toBe('completed')
+      await first.runtime.runPromise(
+        host.store.enqueueFollowUp({
+          commandId: `durable-queue-${suffix}`,
+          issuedAt: '2026-10-29T10:00:02Z',
+          taskId: input.task.id,
+          conversationId: input.conversation.id,
+          prompt: 'Resume this durable queue',
+        }),
+      )
+    } finally {
+      await first.runtime.dispose()
+    }
+
+    const submissions: Array<string> = []
+    const second = fixture(
+      suffix,
+      undefined,
+      fakeRegistry(submissions, [], Effect.void, {
+        events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+      }),
+    )
+    try {
+      const host = await second.runtime.runPromise(WorkspaceHost)
+      await second.runtime.runPromise(host.ensureOpen)
+      await expect.poll(() => submissions).toHaveLength(1)
+      expect(submissions[0]).toMatch(/^queued-run:durable-queue-/)
+    } finally {
+      await second.runtime.dispose()
+    }
+  }, 20_000)
+
+  it.each(['continue', 'new'] as const)(
+    'starts a %s conversation after a retired owner left an uncertain dispatch',
+    async mode => {
+      const suffix = `retired-${mode}`
+      const input = workspace(suffix)
+      const first = fixture(suffix)
+      try {
+        const host = await first.runtime.runPromise(WorkspaceHost)
+        await first.runtime.runPromise(
+          host.store.registerProject({ project: input.project, mainCheckout: input.checkout }),
+        )
+        await first.runtime.runPromise(host.store.createTask({ task: input.task, conversation: input.conversation }))
+        await first.runtime.runPromise(host.store.beginRun(beginCommand(suffix)))
+        const owner = (await first.runtime.runPromise(SubscriptionRef.get(host.status))).ownerEpoch
+        if (owner === undefined) throw new Error('Worker owner missing')
+        await first.runtime.runPromise(
+          host.store.claimDispatch(beginCommand(suffix).runId, owner, input.task.createdAt),
+        )
+      } finally {
+        await first.runtime.dispose()
+      }
+      const submissions: string[] = []
+      const second = fixture(suffix, undefined, fakeRegistry(submissions, [], Effect.void))
+      try {
+        const host = await second.runtime.runPromise(WorkspaceHost)
+        const next = {
+          ...beginCommand(suffix),
+          commandId: `next-${suffix}`,
+          runId: `next-${suffix}` as never,
+          provisionalAgentSessionId: `next-${suffix}`,
+        }
+        if (mode === 'new') {
+          next.taskId = `next-task-${suffix}` as never
+          next.conversationId = `next-conversation-${suffix}` as never
+          await second.runtime.runPromise(
+            host.store.createTask({
+              task: { ...input.task, id: next.taskId },
+              conversation: { ...input.conversation, id: next.conversationId },
+            }),
+          )
+        }
+        await second.runtime.runPromise(host.withExecution(service => service.start(next)))
+        await expect.poll(() => submissions).toEqual([next.runId])
+        expect((await second.runtime.runPromise(host.store.readTaskSnapshot(input.task.id, 10))).runs).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: beginCommand(suffix).runId, status: 'uncertain' })]),
+        )
+      } finally {
+        await second.runtime.dispose()
+      }
+    },
+  )
   it('does not start the SQLite worker during layer acquisition', async () => {
     const { runtime, workers } = fixture('lazy')
     try {

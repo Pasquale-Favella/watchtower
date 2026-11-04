@@ -46,6 +46,7 @@ export default defineConfig({
     },
     plugins: [react(), tailwindcss()],
     build: {
+      assetsInlineLimit: 0,
       rollupOptions: {
         // Three pages: the full app, the floating background orb, and the
         // orb's spend panel (its own window, so the orb never resizes).

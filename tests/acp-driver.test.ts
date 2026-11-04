@@ -1,9 +1,12 @@
+import { tmpdir } from 'node:os'
+
 import {
   type Agent,
   AgentSideConnection,
   ndJsonStream,
   type PermissionOption,
   PROTOCOL_VERSION,
+  type SessionUpdate,
 } from '@agentclientprotocol/sdk'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
@@ -15,6 +18,7 @@ import { describe, expect, it } from 'vitest'
 import { AgentDriver, AgentDriverError } from '../src/core/ports/agent-driver.js'
 import {
   acpSpawnEnvironment,
+  automaticPermission,
   layerAcpAgentDriver,
   makeAcpDriver,
 } from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
@@ -45,6 +49,10 @@ interface FakeAcpState {
   onPrompt?: () => void
   mode: PromptMode
   allowLoad: boolean
+  /** Report OpenCode-style model and thought-level config options. */
+  openCodeOptions?: boolean
+  readonly configCalls: Array<{ readonly configId: string; readonly value: unknown }>
+  updates?: readonly SessionUpdate[]
 }
 
 function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpState {
@@ -62,6 +70,7 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     blockCancelWrite: false,
     mode,
     allowLoad,
+    configCalls: [],
   }
   let peer: AgentSideConnection | undefined
   let cancelPrompt: (() => void) | undefined
@@ -75,10 +84,36 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     }),
     newSession: async params => {
       state.newSessionCalls.push(state.newSessionCalls.length + 1)
-      if (params.cwd !== 'C:/workspace/project') throw new Error('wrong workspace path')
+      if (params.cwd !== 'C:/workspace/project' && params.cwd !== tmpdir()) throw new Error('wrong workspace path')
       return {
         sessionId: `native-${state.newSessionCalls.length}`,
         configOptions: [
+          ...(state.openCodeOptions
+            ? [
+                {
+                  type: 'select' as const,
+                  id: 'model',
+                  name: 'Model',
+                  category: 'model',
+                  currentValue: 'anthropic/sonnet',
+                  options: [
+                    { name: 'Anthropic/Sonnet', value: 'anthropic/sonnet' },
+                    { name: 'OpenAI/GPT', value: 'openai/gpt' },
+                  ],
+                },
+                {
+                  type: 'select' as const,
+                  id: 'effort',
+                  name: 'Effort',
+                  category: 'thought_level',
+                  currentValue: 'medium',
+                  options: [
+                    { name: 'Low', value: 'low' },
+                    { name: 'High', value: 'high' },
+                  ],
+                },
+              ]
+            : []),
           {
             type: 'select',
             id: 'mode',
@@ -93,6 +128,10 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
         ],
       }
     },
+    setSessionConfigOption: async params => {
+      state.configCalls.push({ configId: params.configId, value: params.value })
+      return { configOptions: [] }
+    },
     loadSession: async params => {
       state.loadedSessionIds.push(params.sessionId)
       await peer?.sessionUpdate({
@@ -104,6 +143,10 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     prompt: async params => {
       state.promptCalls.push({ cwd: 'C:/workspace/project', prompt: JSON.stringify(params.prompt) })
       state.onPrompt?.()
+      if (state.updates) {
+        for (const update of state.updates) await peer?.sessionUpdate({ sessionId: params.sessionId, update })
+        return { stopReason: 'end_turn' }
+      }
       if (state.mode === 'events') {
         await peer?.sessionUpdate({
           sessionId: params.sessionId,
@@ -223,7 +266,231 @@ const context = {
   generation: 3,
 } as const
 
+function collectUpdates(updates: readonly SessionUpdate[]) {
+  const fake = makeFakeAcp()
+  fake.updates = updates
+  return Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const connection = yield* fake.driver.connect({ connectionId: 'acp-rich-events' })
+        const session = yield* connection.openSession(context)
+        const id = runId('run-rich-events')
+        const submit = yield* Effect.forkScoped(
+          session.submit({ runId: id, messages: [{ role: 'user', content: 'Inspect' }], attachmentIds: [] }),
+        )
+        const events = yield* Stream.runCollect(session.events(id))
+        yield* Fiber.join(submit)
+        return events
+      }),
+    ),
+  )
+}
+
 describe('generic ACP driver', () => {
+  it('retains native plan content and all execution statuses', async () => {
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'plan',
+        entries: [
+          { content: 'Inspect **the project**', priority: 'high', status: 'completed' },
+          { content: 'Update the implementation', priority: 'medium', status: 'in_progress' },
+          { content: 'Verify the result', priority: 'low', status: 'pending' },
+        ],
+      },
+    ])
+    expect(events).toContainEqual({
+      kind: 'planUpdated',
+      entries: [
+        { content: 'Inspect **the project**', status: 'completed' },
+        { content: 'Update the implementation', status: 'inProgress' },
+        { content: 'Verify the result', status: 'pending' },
+      ],
+    })
+  })
+
+  it('preserves tool inputs, file locations, output replacements and execution metadata through completion', async () => {
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'shell',
+        title: 'Run checks',
+        kind: 'execute',
+        status: 'in_progress',
+        rawInput: { command: ['npm', 'test'], cwd: '/project' },
+        locations: [{ path: '/project/package.json' }],
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'shell',
+        title: 'Run focused checks',
+        rawInput: { command: 'npm test -- --run' },
+        content: [{ type: 'content', content: { type: 'text', text: 'Running checks' } }],
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'shell',
+        status: 'completed',
+        rawOutput: { stdout: 'All checks passed', exitCode: 0, durationMs: 42 },
+      },
+    ])
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolStarted',
+        toolCallId: 'shell',
+        category: 'command',
+        command: 'npm test',
+        cwd: '/project',
+        paths: ['/project/package.json'],
+      }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolUpdated',
+        name: 'Run focused checks',
+        input: '{"command":"npm test -- --run"}',
+        command: 'npm test -- --run',
+        output: 'Running checks',
+        append: false,
+      }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolCompleted',
+        output: '{"stdout":"All checks passed","exitCode":0,"durationMs":42}',
+        exitCode: 0,
+        durationMs: 42,
+      }),
+    )
+    expect(events.some(event => event.kind === 'nativeNotice')).toBe(false)
+  })
+
+  it('retains completed diffs, text and inline images even when no progress update preceded completion', async () => {
+    const image = 'iVBORw0KGgo='
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'edit',
+        title: 'Update source',
+        kind: 'edit',
+        status: 'completed',
+        rawInput: { path: 'src/main.ts' },
+        content: [
+          { type: 'content', content: { type: 'text', text: 'Updated the implementation' } },
+          { type: 'diff', path: 'src/main.ts', oldText: 'before\n', newText: 'after\n' },
+          { type: 'diff', path: 'src/new.ts', oldText: null, newText: 'created\n' },
+          { type: 'content', content: { type: 'image', data: image, mimeType: 'image/png' } },
+        ],
+      },
+    ])
+    const completed = events.find(event => event.kind === 'toolCompleted')
+    expect(completed).toMatchObject({
+      name: 'Update source',
+      category: 'fileWrite',
+      input: '{"path":"src/main.ts"}',
+      output: 'Updated the implementation',
+      paths: ['src/main.ts', 'src/new.ts'],
+      changes: [
+        { path: 'src/main.ts', kind: 'update', diff: expect.stringContaining('-before\n+after') },
+        { path: 'src/new.ts', kind: 'add', diff: expect.stringContaining('+created') },
+      ],
+    })
+    expect(events).toContainEqual({
+      kind: 'media',
+      itemId: 'edit:image:3',
+      mediaType: 'image/png',
+      url: `data:image/png;base64,${image}`,
+      alt: 'Update source',
+    })
+  })
+
+  it('keeps failed tool output and deletion patches instead of reducing completion to its status', async () => {
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'remove',
+        kind: 'delete',
+        status: 'failed',
+        title: 'Delete old file',
+        rawOutput: 'Permission denied',
+        content: [{ type: 'diff', path: 'old.ts', oldText: 'old\n', newText: '' }],
+      },
+    ])
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolCompleted',
+        name: 'Delete old file',
+        category: 'fileWrite',
+        output: 'Permission denied',
+        error: 'Permission denied',
+        changes: [{ path: 'old.ts', kind: 'delete', diff: expect.stringContaining('-old') }],
+      }),
+    )
+  })
+
+  it('bounds native output and diffs and rejects unsafe or oversized inline images', async () => {
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png', uri: 'javascript:alert(1)' },
+      },
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'image', data: 'PHN2Zy8+', mimeType: 'image/svg+xml' } },
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: { type: 'image', data: 'A'.repeat(524_292), mimeType: 'image/png' },
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'large',
+        status: 'completed',
+        rawOutput: 'x'.repeat(100_000),
+        content: [{ type: 'diff', path: 'large.txt', oldText: 'x'.repeat(100_000), newText: 'y'.repeat(100_000) }],
+      },
+    ])
+    const media = events.filter(event => event.kind === 'media')
+    expect(media).toHaveLength(1)
+    expect(media[0]).toMatchObject({ url: 'data:image/png;base64,aGVsbG8=' })
+    const completed = events.find(event => event.kind === 'toolCompleted')
+    expect(completed?.kind === 'toolCompleted' && completed.output?.length).toBe(65_536)
+    expect(completed?.kind === 'toolCompleted' && completed.output).toContain('… [truncated]')
+    expect(completed?.kind === 'toolCompleted' && completed.changes?.[0]?.diff?.length).toBeLessThanOrEqual(65_536)
+  })
+
+  it('marks every tool text truncation path in the final native snapshot', async () => {
+    const events = await collectUpdates([
+      { sessionUpdate: 'tool_call', toolCallId: 'input', title: 'Input', rawInput: { command: 'x'.repeat(100000) } },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'text',
+        status: 'completed',
+        content: [{ type: 'content', content: { type: 'text', text: 'y'.repeat(100000) } }],
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'combined',
+        status: 'completed',
+        rawOutput: 'raw'.repeat(20000),
+        content: [{ type: 'content', content: { type: 'text', text: 'content'.repeat(2000) } }],
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'items',
+        status: 'completed',
+        content: Array.from({ length: 65 }, () => ({
+          type: 'content' as const,
+          content: { type: 'text' as const, text: 'item' },
+        })),
+      },
+    ])
+    expect(events.find(event => event.kind === 'toolStarted' && event.toolCallId === 'input')).toMatchObject({
+      input: expect.stringContaining('… [truncated]'),
+    })
+    for (const id of ['text', 'combined', 'items']) {
+      const event = events.find(event => event.kind === 'toolCompleted' && event.toolCallId === id)
+      expect(event).toMatchObject({ output: expect.stringContaining('… [truncated]') })
+      expect(event?.kind === 'toolCompleted' && event.output?.length).toBeLessThanOrEqual(65536)
+    }
+  })
+
   it('sets Electron Node mode only for bundled ACP entries and clears inherited mode for PATH tools', () => {
     const scrubbed = acpSpawnEnvironment(['OPENAI_API_KEY'])
     const bundled = acpSpawnEnvironment(['OPENAI_API_KEY'], 'electron')
@@ -333,6 +600,54 @@ describe('generic ACP driver', () => {
     expect(command.options.extendEnv).toBe(true)
   })
 
+  it('offers OpenCode thought levels as the effort and selects the model before the effort', async () => {
+    const fake = makeFakeAcp()
+    fake.openCodeOptions = true
+    const probed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-opencode' })
+          if (!connection.probeCatalog) return yield* Effect.die(new Error('ACP must offer a catalog probe'))
+          const catalog = yield* connection.probeCatalog()
+          yield* connection.openSession({ ...context, modelId: 'openai/gpt', modeId: 'high' })
+          return catalog
+        }),
+      ),
+    )
+    expect(probed.models.map(model => model.id)).toEqual(['anthropic/sonnet', 'openai/gpt'])
+    expect(probed.modes).toEqual([
+      { id: 'low', label: 'Low' },
+      { id: 'high', label: 'High' },
+    ])
+    expect(fake.configCalls).toEqual([
+      { configId: 'model', value: 'openai/gpt' },
+      { configId: 'effort', value: 'high' },
+    ])
+  })
+
+  it('probes the model and mode catalogs with a disposable session that never occupies the connection', async () => {
+    const fake = makeFakeAcp()
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-probe' })
+          const passive = yield* connection.discover()
+          if (!connection.probeCatalog) return yield* Effect.die(new Error('ACP must offer a catalog probe'))
+          const probed = yield* connection.probeCatalog()
+          const session = yield* connection.openSession(context)
+          return { passive, probed, identity: session.identity }
+        }),
+      ),
+    )
+    expect(result.passive.modes).toEqual([])
+    expect(result.probed.modes).toEqual([
+      { id: 'code', label: 'Code' },
+      { id: 'plan', label: 'Plan' },
+    ])
+    expect(result.identity.nativeSessionId).toBe('native-2')
+    expect(fake.promptCalls).toHaveLength(0)
+  })
+
   it('uses the official SDK lifecycle, streams events while prompt waits, and never treats unsupported inputs as text', async () => {
     const fake = makeFakeAcp()
     const result = await Effect.runPromise(
@@ -383,7 +698,6 @@ describe('generic ACP driver', () => {
       'textDelta',
       'reasoningDelta',
       'toolStarted',
-      'nativeNotice',
       'toolCompleted',
       'usageReported',
       'turnCompleted',
@@ -710,23 +1024,31 @@ describe('generic ACP driver', () => {
     expect(fake.closeCalls).toHaveLength(1)
   })
 
-  it('declares approval-required as its only access mode and refuses wider modes before any native session', async () => {
-    const fake = makeFakeAcp()
-    expect(fake.driver.accessModes).toEqual(['approval-required'])
-    const result = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const connection = yield* fake.driver.connect({ connectionId: 'acp-access-mode' })
-          const refused = yield* connection.openSession({ ...context, accessMode: 'full-access' }).pipe(Effect.flip)
-          const sessionsAfterRefusal = fake.newSessionCalls.length
-          const opened = yield* connection.openSession({ ...context, accessMode: 'approval-required' })
-          return { refused, sessionsAfterRefusal, opened }
-        }),
-      ),
+  it('declares every access mode, applied through the permission callback', () => {
+    expect(makeFakeAcp().driver.accessModes).toEqual(['approval-required', 'auto-accept-edits', 'full-access'])
+  })
+
+  it.each([
+    { accessMode: 'approval-required' as const, kind: 'read', expected: 'allow-once' },
+    { accessMode: 'approval-required' as const, kind: 'edit', expected: undefined },
+    { accessMode: 'auto-accept-edits' as const, kind: 'edit', expected: 'allow-once' },
+    { accessMode: 'auto-accept-edits' as const, kind: 'execute', expected: undefined },
+    { accessMode: 'full-access' as const, kind: 'execute', expected: 'allow-once' },
+  ])('answers a $kind request in $accessMode with $expected', ({ accessMode, kind, expected }) => {
+    const options: PermissionOption[] = [
+      { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+    ]
+    const answer = automaticPermission(accessMode, { options, toolCall: { toolCallId: 't', kind: kind as never } })
+    expect(answer?.outcome).toEqual(expected ? { outcome: 'selected', optionId: expected } : undefined)
+  })
+
+  it('asks instead of choosing a persistent approval for the user', () => {
+    const options: PermissionOption[] = [{ optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' }]
+    expect(automaticPermission('full-access', { options, toolCall: { toolCallId: 't', kind: 'execute' } })).toBe(
+      undefined,
     )
-    expect(result.refused).toMatchObject({ _tag: 'UnsupportedAgentOperation', operation: 'openSession' })
-    expect(result.sessionsAfterRefusal).toBe(0)
-    expect(result.opened.identity.nativeSessionId).toBe('native-1')
   })
 
   it('closes an opened native session when the requested mode is absent from the catalog', async () => {

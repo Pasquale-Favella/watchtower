@@ -7,6 +7,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
@@ -40,6 +41,7 @@ import {
   type EnqueueFollowUpCommand,
   type FollowUpReceipt,
   type PromotedFollowUp,
+  type QueuedFollowUpHead,
   type RecordRequestResponseCommand,
   type RecordSteerCommand,
   type SettleDeliveryCommand,
@@ -92,10 +94,12 @@ interface ManagedRun {
   acknowledged: boolean
   turnObserved: boolean
   terminal: boolean
+  terminalEventKind?: AgentDriverEvent['kind'] | undefined
   settled: boolean
   interruptRequested: boolean
   interruptSent: boolean
   shuttingDown: boolean
+  cleanupConfirmed: boolean
   eventCounter: number
 }
 
@@ -139,6 +143,7 @@ export class ExecutionService extends Context.Service<
       conversationId: BeginRunCommand['conversationId'],
       commandId: string,
     ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly wakeQueuedFollowUps: () => Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError>
     readonly promoteQueuedFollowUp: (
       conversationId: BeginRunCommand['conversationId'],
       command: BeginRunCommand,
@@ -180,6 +185,9 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const workers = new Map<AgentRunId, ManagedRun>()
     const controlFibers = new Set<Fiber.Fiber<unknown, unknown>>()
     const backgroundFailures: Array<Cause.Cause<unknown>> = []
+    const queuePumpWake = yield* Queue.bounded<undefined>(1)
+    let holdAllQueuedFollowUps: Effect.Effect<void, WorkspaceStoreError> = Effect.void
+    let pumpQueuedFollowUps: Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError> = Effect.void
     let stopping = false
     let workerScopeClosed = false
     let nativeCleanupUnconfirmed = false
@@ -226,6 +234,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           reason,
         })
         state.settled = true
+        yield* store.holdQueuedFollowUps(state.claim.conversationId, state.claim.ownerEpoch)
       })
 
     const revalidateCheckout = Effect.fn('ExecutionService.revalidateCheckout')(
@@ -309,7 +318,16 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
           )
         }
-        if (isTerminalEvent(event)) state.terminal = true
+        if (isTerminalEvent(event)) {
+          state.terminal = true
+          state.terminalEventKind = event.kind
+        }
+        if (
+          event.kind === 'turnInterrupted' ||
+          event.kind === 'turnFailed' ||
+          (event.kind === 'turnCompleted' && state.interruptRequested)
+        )
+          yield* store.holdQueuedFollowUps(state.claim.conversationId, state.claim.ownerEpoch)
         if (input.publishCommittedEvent) yield* input.publishCommittedEvent(committed)
         return !state.terminal
       })
@@ -341,6 +359,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
               Effect.catchCause(cause =>
                 Effect.sync(() => {
                   nativeCleanupUnconfirmed = true
+                  state.cleanupConfirmed = false
                   backgroundFailures.push(cause)
                 }),
               ),
@@ -355,6 +374,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
               Effect.catchCause(cause =>
                 Effect.sync(() => {
                   nativeCleanupUnconfirmed = true
+                  state.cleanupConfirmed = false
                   backgroundFailures.push(cause)
                 }),
               ),
@@ -496,8 +516,24 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           Effect.gen(function* () {
             const result = yield* Effect.exit(supervise(state))
             if (Exit.isFailure(result)) backgroundFailures.push(result.cause)
+            if (state.settled && !state.terminal && state.cleanupConfirmed) {
+              const released = yield* Effect.exit(
+                store.releaseDispatchAfterCleanup(state.claim.runId, state.claim.ownerEpoch),
+              )
+              if (Exit.isFailure(released)) backgroundFailures.push(released.cause)
+            }
           }),
         )
+        if ((state.terminal || state.settled) && !stopping) {
+          workers.delete(state.claim.runId)
+          if (!state.cleanupConfirmed || nativeCleanupUnconfirmed) {
+            yield* holdAllQueuedFollowUps.pipe(
+              Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
+            )
+          } else {
+            yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
+          }
+        }
       }).pipe(Effect.ensuring(Effect.sync(() => workers.delete(state.claim.runId))))
 
     const launchClaim = (claim: DispatchClaim) =>
@@ -515,6 +551,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           interruptRequested: false,
           interruptSent: false,
           shuttingDown: false,
+          cleanupConfirmed: true,
           eventCounter: 0,
         }
         workers.set(claim.runId, state)
@@ -747,14 +784,17 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const enqueueFollowUp = Effect.fn('ExecutionService.enqueueFollowUp')(function* (command: EnqueueFollowUpCommand) {
       // A queued follow-up names its driver only when the caller knows it; promotion re-checks the rest.
       if (command.driverId !== undefined) yield* requireAccessModeSupport(command.driverId, command.accessMode)
-      return yield* store.enqueueFollowUp(command)
+      const receipt = yield* store.enqueueFollowUp(command)
+      yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
+      return receipt
     })
 
     const cancelQueuedFollowUp = Effect.fn('ExecutionService.cancelQueuedFollowUp')(function* (
       conversationId: BeginRunCommand['conversationId'],
       commandId: string,
     ) {
-      return yield* store.cancelQueuedFollowUp(conversationId, commandId)
+      yield* store.cancelQueuedFollowUp(conversationId, commandId)
+      yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
     })
 
     const promoteQueuedFollowUp = Effect.fn('ExecutionService.promoteQueuedFollowUp')(function* (
@@ -769,13 +809,25 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 reason: 'service-stopped',
                 message: 'Execution service is stopping and cannot promote a queued run',
               })
+            const next = (yield* store.listQueuedFollowUps(conversationId, { limit: 1 })).items[0]
+            const targetCheckoutId = next?.checkoutId ?? command.checkoutId
+            if (
+              Array.from(workers.values()).some(
+                state =>
+                  state.claim.runId !== command.runId &&
+                  (state.claim.conversationId === conversationId || state.claim.checkoutId === targetCheckoutId),
+              )
+            )
+              return yield* new WorkspaceStoreError({
+                code: 'admission-conflict',
+                message: 'A native run still owns this Conversation or Workspace Checkout',
+              })
             if (workers.size >= maxConcurrentRuns + maxQueuedRuns)
               return yield* new ExecutionServiceError({
                 reason: 'background-failure',
                 message: 'Execution queue is full; queued follow-up remains queued',
               })
             // Check the head the store will promote, using the same driver and mode precedence it applies.
-            const next = (yield* store.listQueuedFollowUps(conversationId, { limit: 1 })).items[0]
             if (next)
               yield* requireAccessModeSupport(next.driverId ?? command.driverId, next.accessMode ?? command.accessMode)
             const promoted = yield* store.promoteNextFollowUp(conversationId, command)
@@ -803,6 +855,126 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
       )
     })
 
+    const isActiveQueueRun = (status: string): boolean =>
+      status === 'queued' ||
+      status === 'starting' ||
+      status === 'running' ||
+      status === 'awaitingInput' ||
+      status === 'interruptRequested'
+
+    const commandForQueuedHead = (head: QueuedFollowUpHead): BeginRunCommand | null => {
+      const context = head.context
+      if (!context) return null
+      const driverId = head.driverId ?? context.driverId
+      const connectionId = head.connectionId ?? context.connectionId
+      const checkoutId = head.checkoutId ?? context.checkoutId
+      const sameSession =
+        checkoutId === context.checkoutId && driverId === context.driverId && connectionId === context.connectionId
+      if (head.nativeSessionId && head.nativeSessionId !== context.nativeSessionId) return null
+      const nativeSessionId =
+        sameSession &&
+        (context.sessionStatus === 'active' || context.sessionStatus === 'suspended') &&
+        (head.nativeSessionId === undefined ||
+          head.nativeSessionId === null ||
+          head.nativeSessionId === context.nativeSessionId)
+          ? context.nativeSessionId
+          : null
+      return {
+        commandId: `promote:${head.commandId}`,
+        issuedAt: head.issuedAt,
+        runId: `queued-run:${head.commandId}` as AgentRunId,
+        taskId: head.taskId,
+        conversationId: head.conversationId,
+        checkoutId,
+        provisionalAgentSessionId: `queued-session:${head.commandId}`,
+        generation: nativeSessionId ? (head.generation ?? context.generation) : 1,
+        driverId,
+        connectionId,
+        prompt: head.prompt,
+        attachments: head.attachments ?? [],
+        modelId: head.modelId,
+        modeId: head.modeId,
+        accessMode: head.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+        nativeSessionId,
+        retryOfRunId: null,
+      }
+    }
+
+    const scanQueuedFollowUps = Effect.gen(function* () {
+      let afterPosition = 0
+      while (workers.size < maxConcurrentRuns && !stopping && !nativeCleanupUnconfirmed) {
+        const page = yield* store.listQueuedFollowUpHeads({ afterPosition, limit: 50 })
+        if (page.items.length === 0) return
+        for (const head of page.items) {
+          afterPosition = head.position
+          if (head.held || workers.size >= maxConcurrentRuns || nativeCleanupUnconfirmed) continue
+          const targetCheckoutId = head.checkoutId ?? head.context?.checkoutId
+          if (
+            Array.from(workers.values()).some(
+              state =>
+                state.claim.conversationId === head.conversationId ||
+                (targetCheckoutId !== undefined && state.claim.checkoutId === targetCheckoutId),
+            )
+          )
+            continue
+          const runStatus = head.context?.runStatus
+          if (runStatus && isActiveQueueRun(runStatus)) continue
+          if (runStatus !== 'completed') {
+            yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+            continue
+          }
+          const command = commandForQueuedHead(head)
+          if (!command) {
+            yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+            continue
+          }
+          const result = yield* Effect.exit(promoteQueuedFollowUp(head.conversationId, command))
+          if (Exit.isFailure(result)) {
+            const failure = result.cause.reasons.find(Cause.isFailReason)?.error
+            if (
+              (failure instanceof WorkspaceStoreError && failure.code === 'admission-conflict') ||
+              (failure instanceof ExecutionServiceError &&
+                failure.reason === 'background-failure' &&
+                failure.message.includes('queue is full'))
+            )
+              continue
+            yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+          }
+        }
+        if (!page.nextAfterPosition) return
+      }
+    })
+    pumpQueuedFollowUps = Effect.suspend(() =>
+      stopping || nativeCleanupUnconfirmed
+        ? Effect.void
+        : Effect.sync(() => Queue.offerUnsafe(queuePumpWake, undefined)).pipe(Effect.asVoid),
+    )
+    yield* Effect.forkIn(
+      Effect.forever(
+        Queue.take(queuePumpWake).pipe(
+          Effect.andThen(
+            scanQueuedFollowUps.pipe(
+              Effect.catchCause(cause => (stopping ? Effect.void : Effect.sync(() => backgroundFailures.push(cause)))),
+            ),
+          ),
+        ),
+      ),
+      workerScope,
+      { startImmediately: true },
+    )
+
+    holdAllQueuedFollowUps = Effect.gen(function* () {
+      let afterPosition = 0
+      while (true) {
+        const page = yield* store.listQueuedFollowUpHeads({ afterPosition, limit: 50 })
+        for (const head of page.items) {
+          afterPosition = head.position
+          if (!head.held) yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+        }
+        if (!page.nextAfterPosition) return
+      }
+    })
+
     const interrupt = Effect.fn('ExecutionService.interrupt')(function* (
       runId: AgentRunId,
     ): Effect.fn.Return<
@@ -815,23 +987,30 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
       return yield* runOwnedControl(
         Effect.uninterruptibleMask(restoreNative =>
           Effect.gen(function* () {
+            let failure: Cause.Cause<WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation> | undefined
+            const held = state
+              ? yield* Effect.exit(store.holdQueuedFollowUps(state.claim.conversationId, parsedOptions.ownerEpoch))
+              : Exit.void
+            if (Exit.isFailure(held)) failure = held.cause
+            if (state) {
+              state.interruptRequested = true
+            }
             const requested = yield* Effect.exit(
               store.requestInterrupt(runId, parsedOptions.ownerEpoch, yield* timestamp),
             )
             const interrupted = state
               ? yield* Effect.exit(
                   Effect.gen(function* () {
-                    state.interruptRequested = true
                     yield* restoreNative(sendNativeInterrupt(state))
                   }),
                 )
               : Exit.void
             if (Exit.isFailure(requested)) {
-              return yield* Effect.failCause(
-                Exit.isFailure(interrupted) ? Cause.combine(requested.cause, interrupted.cause) : requested.cause,
-              )
+              failure = failure ? Cause.combine(failure, requested.cause) : requested.cause
             }
-            if (Exit.isFailure(interrupted)) return yield* Effect.failCause(interrupted.cause)
+            if (Exit.isFailure(interrupted))
+              failure = failure ? Cause.combine(failure, interrupted.cause) : interrupted.cause
+            if (failure) return yield* Effect.failCause(failure)
           }),
         ),
       )
@@ -998,6 +1177,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
       steer,
       enqueueFollowUp,
       cancelQueuedFollowUp,
+      wakeQueuedFollowUps: () => pumpQueuedFollowUps,
       promoteQueuedFollowUp,
       stopAll,
     })

@@ -6,6 +6,7 @@ import type * as Stream from 'effect/Stream'
 
 import type {
   AgentAccessMode,
+  AgentAccount,
   AgentCapabilities,
   AgentConnectionIdentity,
   AgentDriverEvent,
@@ -128,9 +129,27 @@ export interface AgentDriverSession {
   readonly reconcile: () => Stream.Stream<AgentReconcileEvent, AgentDriverError | UnsupportedAgentOperation>
 }
 
+/** What a catalog probe learned. `signIn` is present only when the agent reports its account. */
+export interface AgentCatalogProbe extends Pick<AgentCapabilities, 'models' | 'modes'> {
+  readonly signIn?:
+    | {
+        readonly status: 'authenticated' | 'unauthenticated'
+        readonly account?: AgentAccount | undefined
+        /** Shown to the user when the agent needs attention. */
+        readonly message?: string | undefined
+      }
+    | undefined
+}
+
 export interface AgentDriverConnection {
   readonly identity: AgentConnectionIdentity
   readonly discover: () => Effect.Effect<AgentCapabilities, AgentDriverError>
+  /**
+   * Disposable probe for the model and mode catalogs a passive discover cannot report, and the signed-in account
+   * when the agent exposes one. It may open a throwaway native session, so only connection inspection calls it,
+   * on a connection it closes right after.
+   */
+  readonly probeCatalog?: () => Effect.Effect<AgentCatalogProbe, AgentDriverError>
   /** Start a fresh native conversation. No implicit fallback from loadSession. */
   readonly openSession: (
     context: AgentSessionContext,

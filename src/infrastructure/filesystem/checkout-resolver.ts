@@ -1,18 +1,14 @@
 import { realpath } from 'node:fs'
 
-import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
-import * as Option from 'effect/Option'
 import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
-import * as Stream from 'effect/Stream'
 
-import { CheckoutResolver, CheckoutResolverError } from '@/core/ports/checkout-resolver.js'
+import { CheckoutResolver, type CheckoutResolverError } from '@/core/ports/checkout-resolver.js'
 import { CommandRunner } from '@/core/ports/process.js'
 import {
-  type CheckoutResolverErrorCode,
   type CreateIsolatedWorktreeRequest,
   createIsolatedWorktreeRequestSchema,
   type RemoveWorktreeRequest,
@@ -21,9 +17,7 @@ import {
   type ResolvedCheckout,
 } from '@/shared/schemas/checkout.js'
 
-const failure = (code: CheckoutResolverErrorCode, message: string) => new CheckoutResolverError({ code, message })
-const MAX_GIT_OUTPUT_BYTES = 1024 * 1024
-const GIT_TIMEOUT_MS = 10_000
+import { gitFailure as failure, makeGitRunner } from './git-runner.js'
 
 export const CheckoutResolverLive = Layer.effect(
   CheckoutResolver,
@@ -31,6 +25,7 @@ export const CheckoutResolverLive = Layer.effect(
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const runner = yield* CommandRunner
+    const { runGit, gitText } = makeGitRunner(runner)
 
     // Node's native implementation preserves the on-disk case on Windows.
     const canonical = (directory: string) =>
@@ -41,55 +36,6 @@ export const CheckoutResolverLive = Layer.effect(
           ),
         catch: () => failure('filesystem-unavailable', 'Cannot canonicalize the checkout path'),
       })
-    const runGit = Effect.fn('CheckoutResolver.runGit')(function* (cwd: string, args: readonly string[]) {
-      const operation = Effect.scoped(
-        Effect.gen(function* () {
-          const handle = yield* runner
-            .start('git', ['--no-optional-locks', ...args], {
-              cwd,
-              windowsHide: true,
-              extendEnv: true,
-              // Ambient Git overrides must not redirect identity or writes to another checkout.
-              env: {
-                GIT_DIR: undefined,
-                GIT_WORK_TREE: undefined,
-                GIT_COMMON_DIR: undefined,
-                GIT_INDEX_FILE: undefined,
-                GIT_OBJECT_DIRECTORY: undefined,
-                GIT_ALTERNATE_OBJECT_DIRECTORIES: undefined,
-              },
-            })
-            .pipe(
-              Effect.mapError(error =>
-                failure(error.reason === 'spawn' ? 'git-unavailable' : 'git-failed', error.message),
-              ),
-            )
-          const chunks: Uint8Array[] = []
-          let size = 0
-          yield* Stream.runForEach(handle.stdout, chunk => {
-            size += chunk.byteLength
-            if (size > MAX_GIT_OUTPUT_BYTES) return Effect.fail(failure('git-failed', 'Git output exceeded 1 MiB'))
-            chunks.push(chunk)
-            return Effect.void
-          }).pipe(
-            Effect.mapError(error =>
-              error instanceof CheckoutResolverError ? error : failure('git-failed', error.message),
-            ),
-          )
-          const exitCode = yield* handle.exitCode.pipe(Effect.mapError(error => failure('git-failed', error.message)))
-          return { exitCode, stdout: Buffer.concat(chunks).toString('utf8') }
-        }),
-      )
-      const result = yield* operation.pipe(Effect.timeoutOption(Duration.millis(GIT_TIMEOUT_MS)))
-      if (Option.isNone(result)) return yield* failure('git-failed', 'Git command timed out')
-      return result.value
-    })
-    const gitText = Effect.fn('CheckoutResolver.gitText')(function* (cwd: string, args: readonly string[]) {
-      const result = yield* runGit(cwd, args)
-      if (result.exitCode !== 0)
-        return yield* failure('git-failed', `Git ${args[0]} failed with exit code ${result.exitCode}`)
-      return result.stdout.replace(/\r?\n$/, '')
-    })
     const resolve = Effect.fn('CheckoutResolver.resolve')(function* (
       input: string,
     ): Effect.fn.Return<ResolvedCheckout, CheckoutResolverError> {

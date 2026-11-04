@@ -8,6 +8,7 @@ import * as Scope from 'effect/Scope'
 import { agentDriverAccessModes, AgentDriverError } from '@/core/ports/agent-driver.js'
 import type { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
+import { MAX_AGENT_CATALOG_CHOICES } from '@/shared/schemas/execution.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
 import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
 
@@ -89,13 +90,43 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
       const discovered = yield* Effect.exit(
         timed(connection.discover(), initializeDeadlineMs, 'Connection inspection timed out.'),
       )
+      // The picker lists choices before the first message, so probe catalogs the passive discover left empty.
+      // A failed or slow probe keeps the passive result and says so.
+      const probing =
+        discovered._tag === 'Success' &&
+        connection.probeCatalog !== undefined &&
+        (discovered.value.models.length === 0 || discovered.value.modes.length === 0)
+      const probed =
+        probing && connection.probeCatalog
+          ? yield* connection.probeCatalog().pipe(
+              Effect.timeoutOption(`${Math.min(initializeDeadlineMs, 12_000)} millis`),
+              Effect.map(Option.getOrUndefined),
+              Effect.catch(() => Effect.succeed(undefined)),
+            )
+          : undefined
       yield* closeConnection()
       if (discovered._tag === 'Failure') return yield* Effect.failCause(discovered.cause)
 
-      const capabilities = discovered.value
+      const capabilities = {
+        ...discovered.value,
+        models: (discovered.value.models.length ? discovered.value.models : (probed?.models ?? [])).slice(
+          0,
+          MAX_AGENT_CATALOG_CHOICES,
+        ),
+        modes: (discovered.value.modes.length ? discovered.value.modes : (probed?.modes ?? [])).slice(
+          0,
+          MAX_AGENT_CATALOG_CHOICES,
+        ),
+      }
+      // The Claude SDK only starts its CLI in a probe, so a probe that answered is the protocol evidence.
       const protocolState: 'initialized' | 'not-established' =
-        selected.driverId === 'claude-agent-sdk' ? 'not-established' : 'initialized'
+        selected.driverId === 'claude-agent-sdk' && probed === undefined ? 'not-established' : 'initialized'
       const choices: 'unknown' | 'session-scoped' = selected.driverId === 'acp' ? 'session-scoped' : 'unknown'
+      const signIn = probed?.signIn
+      let statusMessage = signIn?.message
+      if (probing && probed === undefined) statusMessage = "Could not read this agent's models and sign-in status."
+      else if (!signIn && selected.driverId === 'claude-agent-sdk')
+        statusMessage = 'Could not verify the Claude sign-in status.'
       return {
         connectionId,
         driverId: selected.driverId,
@@ -105,7 +136,9 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
             ? { version: connection.identity.protocolVersion }
             : {}),
         },
-        authentication: 'unknown' as const,
+        authentication: signIn?.status ?? ('unknown' as const),
+        ...(signIn?.account && (signIn.account.label || signIn.account.email) ? { account: signIn.account } : {}),
+        ...(statusMessage ? { statusMessage } : {}),
         accessModes: agentDriverAccessModes(driver),
         capabilities: {
           openSession: capabilities.openSession,

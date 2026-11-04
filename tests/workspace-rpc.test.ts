@@ -299,6 +299,28 @@ const seed = Effect.gen(function* () {
   }
 })
 
+it('explains a live checkout reservation without reporting a command identity conflict', async () => {
+  const { runtime, close } = makeWorkspace()
+  try {
+    const rejected = await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { request } = yield* seed
+          const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+          yield* client['workspace:startRun'](request)
+          return yield* client['workspace:startRun']({ ...request, commandId: 'another-message' }).pipe(Effect.flip)
+        }),
+      ),
+    )
+    expect(rejected).toMatchObject({
+      code: 'checkout-in-use',
+      message: 'Another agent is still using this checkout. Stop it or choose a different worktree.',
+    })
+  } finally {
+    await close()
+  }
+})
+
 it('registers Projects and creates Tasks with stable identities across reconnects and rejects conflicting reuse', async () => {
   const { runtime, close } = makeWorkspace()
   try {

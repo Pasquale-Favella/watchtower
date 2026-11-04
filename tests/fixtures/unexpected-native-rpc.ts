@@ -9,6 +9,13 @@ import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
 import { TerminalRpcGroup } from '../../src/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '../../src/shared/rpc/workspace.js'
 
+import { CheckoutNavigationRpcGroup } from '../../src/shared/rpc/checkout-navigation.js'
+import { CheckoutActionsRpcGroup } from '../../src/shared/rpc/checkout-actions.js'
+import { WorkspacePreviewRpcGroup } from '../../src/shared/rpc/workspace-preview.js'
+import { WorkspaceDeviceRpcGroup } from '../../src/shared/rpc/workspace-devices.js'
+import { WorkspacePullRequestRpcGroup } from '../../src/shared/rpc/workspace-pull-requests.js'
+import { WorkspaceSideChatRpcGroup } from '../../src/shared/rpc/workspace-side-chats.js'
+
 const unexpected = () => Effect.die(new Error('Unexpected native RPC operation in a data-query test'))
 
 export const unexpectedShellRpcs = ShellRpcGroup.of({
@@ -35,6 +42,7 @@ export const unexpectedCheckoutInspectionHandlers = CheckoutInspectionRpcGroup.t
 
 export const unexpectedTerminalHandlers = TerminalRpcGroup.toLayer({
   'terminal:open': unexpected,
+  'terminal:adoptDraft': unexpected,
   'terminal:attach': () => Stream.die(new Error('Unexpected terminal subscription in a data-query test')),
   'terminal:write': unexpected,
   'terminal:resize': unexpected,
@@ -42,6 +50,71 @@ export const unexpectedTerminalHandlers = TerminalRpcGroup.toLayer({
   'terminal:close': unexpected,
   'terminal:list': unexpected,
 })
+
+const unexpectedCheckoutNavigationHandlers = CheckoutNavigationRpcGroup.toLayer({
+  'checkout:openFile': unexpected,
+  'checkout:revealFile': unexpected,
+})
+
+const unexpectedCheckoutActionsRpcGroupHandlers = CheckoutActionsRpcGroup.toLayer({
+  'checkout:gitStatus': unexpected,
+  'checkout:stage': unexpected,
+  'checkout:unstage': unexpected,
+  'checkout:commit': unexpected,
+})
+
+const unexpectedWorkspacePreviewRpcGroupHandlers = WorkspacePreviewRpcGroup.toLayer({
+  'preview:capture': unexpected,
+  'preview:focusApp': unexpected,
+  'preview:open': unexpected,
+  'preview:navigate': unexpected,
+  'preview:command': unexpected,
+  'preview:layout': unexpected,
+  'preview:close': unexpected,
+  'preview:adopt': unexpected,
+  'preview:events': () => Stream.die(new Error('Unexpected resource subscription in a data-query test')),
+})
+
+const unexpectedWorkspaceDeviceRpcGroupHandlers = WorkspaceDeviceRpcGroup.toLayer({
+  'devices:connect': unexpected,
+  'devices:list': unexpected,
+  'devices:boot': unexpected,
+  'devices:shutdown': unexpected,
+  'devices:screenshot': unexpected,
+  'devices:action': unexpected,
+  'devices:install': unexpected,
+})
+
+const unexpectedWorkspacePullRequestRpcGroupHandlers = WorkspacePullRequestRpcGroup.toLayer({
+  'pull-requests:list': unexpected,
+  'pull-requests:detail': unexpected,
+  'pull-requests:checks': unexpected,
+  'pull-requests:diff': unexpected,
+  'pull-requests:threads': unexpected,
+  'pull-requests:comment': unexpected,
+  'pull-requests:review': unexpected,
+  'pull-requests:reply': unexpected,
+  'pull-requests:resolveThread': unexpected,
+  'pull-requests:action': unexpected,
+  'pull-requests:update': unexpected,
+  'pull-requests:create': unexpected,
+})
+
+const unexpectedWorkspaceSideChatRpcGroupHandlers = WorkspaceSideChatRpcGroup.toLayer({
+  'sideChat:create': unexpected,
+  'sideChat:get': unexpected,
+  'sideChat:list': unexpected,
+  'sideChat:bringBack': unexpected,
+})
+
+export const unexpectedWorkspacePanelHandlers = Layer.mergeAll(
+  unexpectedCheckoutNavigationHandlers,
+  unexpectedCheckoutActionsRpcGroupHandlers,
+  unexpectedWorkspacePreviewRpcGroupHandlers,
+  unexpectedWorkspaceDeviceRpcGroupHandlers,
+  unexpectedWorkspacePullRequestRpcGroupHandlers,
+  unexpectedWorkspaceSideChatRpcGroupHandlers,
+)
 
 export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:status': unexpected,
@@ -60,6 +133,9 @@ export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:cloneProject': unexpected,
   'workspace:registerProject': unexpected,
   'workspace:createTask': unexpected,
+  'workspace:listBranches': unexpected,
+  'workspace:switchBranch': unexpected,
+  'workspace:createWorktree': unexpected,
   'workspace:listProjects': unexpected,
   'workspace:getProject': unexpected,
   'workspace:listTasks': unexpected,
@@ -109,4 +185,5 @@ export const unexpectedNativeHandlers = Layer.mergeAll(
   unexpectedWorkspaceHandlers,
   unexpectedCheckoutInspectionHandlers,
   unexpectedTerminalHandlers,
+  unexpectedWorkspacePanelHandlers,
 )

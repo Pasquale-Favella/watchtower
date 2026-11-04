@@ -9,6 +9,8 @@ export interface EffortChoice {
 export interface ModelChoice {
   readonly id: string
   readonly label: string
+  /** What the model is for, shown under its name. */
+  readonly description?: string | undefined
   /** Effort choices this model offers. Absent when the agent declares none for it. */
   readonly modes?: readonly EffortChoice[] | undefined
 }
@@ -71,7 +73,15 @@ export function effortFor(input: {
   return model.modes ?? input.connectionEffort ?? []
 }
 
-/** Rail status from the picker's own inspection state. Detection alone reports the agent as ready. */
+const REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+
+/** "Effort" for reasoning levels (Claude, Codex, OpenCode); "Mode" for agent-defined session modes. */
+export function effortTitleFor(options: readonly EffortChoice[] | null): 'Effort' | 'Mode' {
+  return !options?.length || options.every(option => REASONING_LEVELS.has(option.id.toLowerCase())) ? 'Effort' : 'Mode'
+}
+
+/** Rail status from the picker's own inspection state. Detection alone reports the agent as ready. A
+ *  signed-out agent is unavailable and an agent whose sign-in could not be verified needs attention. */
 export function connectionStatus(reading: {
   readonly inspection: WorkspaceConnectionInspection | null
   readonly pending: boolean
@@ -79,6 +89,24 @@ export function connectionStatus(reading: {
 }): CoachHarnessRow['status'] {
   if (reading.pending && !reading.inspection) return 'pending'
   if (reading.failed) return 'error'
-  if (reading.inspection) return reading.inspection.protocol.state === 'initialized' ? 'ready' : 'warning'
+  const inspection = reading.inspection
+  if (!inspection) return 'ready'
+  if (inspection.authentication === 'unauthenticated') return 'error'
+  if (inspection.statusMessage || inspection.protocol.state !== 'initialized') return 'warning'
   return 'ready'
+}
+
+/** What the rail and model list say about an agent: its account when signed in, otherwise what to do. */
+export function connectionDetail(reading: {
+  readonly inspection: WorkspaceConnectionInspection | null
+  readonly pending: boolean
+  readonly failed: boolean
+}): string | null {
+  if (reading.pending && !reading.inspection) return 'Checking…'
+  if (reading.failed) return 'Could not be checked. Try again.'
+  const inspection = reading.inspection
+  if (!inspection) return null
+  if (inspection.statusMessage) return inspection.statusMessage
+  const account = [inspection.account?.label, inspection.account?.email].filter(Boolean).join(' · ')
+  return account || null
 }

@@ -1,9 +1,14 @@
 import { RegistryContext, useAtomSet } from '@effect/atom-react'
-import { useContext, useEffect, useMemo, useRef } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 
 import { openExternalAtom } from '@/renderer/shared/lib/native-capabilities.js'
-import { TERMINAL_WRITE_MAX_CHARS, type TerminalId } from '@/shared/schemas/terminal.js'
-import type { TaskId } from '@/shared/schemas/workspace.js'
+import {
+  TERMINAL_WRITE_MAX_CHARS,
+  type TerminalId,
+  type TerminalOwner,
+  terminalOwnerKey,
+  terminalTargetPayload,
+} from '@/shared/schemas/terminal.js'
 
 import {
   restartTerminalAtom,
@@ -26,10 +31,14 @@ export interface TerminalSessionController {
  * detaches it while the process keeps running. Input and resize are ordered per session.
  */
 export function useTerminalSession(
-  taskId: TaskId,
+  taskId: TerminalOwner,
   terminalId: TerminalId,
   onEvent: (event: TerminalSessionEvent) => void,
 ): TerminalSessionController {
+  const ownerKey = terminalOwnerKey(taskId)
+  const [identity, setIdentity] = useState({ key: ownerKey, owner: taskId })
+  if (identity.key !== ownerKey) setIdentity({ key: ownerKey, owner: taskId })
+  const owner = identity.key === ownerKey ? identity.owner : taskId
   const registry = useContext(RegistryContext)
   const listenerRef = useRef(onEvent)
   // Setters from useAtomSet change identity on every render. They are read through refs so the
@@ -46,27 +55,27 @@ export function useTerminalSession(
   })
 
   useEffect(() => {
-    const unsubscribe = subscribeTerminalSession(taskId, terminalId, event => listenerRef.current(event))
-    const unmount = registry.mount(terminalSessionAtom(taskId, terminalId))
+    const unsubscribe = subscribeTerminalSession(owner, terminalId, event => listenerRef.current(event))
+    const unmount = registry.mount(terminalSessionAtom(owner, terminalId))
     return () => {
       unmount()
       unsubscribe()
     }
-  }, [registry, taskId, terminalId])
+  }, [registry, owner, terminalId])
 
   return useMemo<TerminalSessionController>(
     () => ({
       input: data => {
         for (const chunk of terminalInputChunks(data, TERMINAL_WRITE_MAX_CHARS)) {
-          sendTerminalCommand(taskId, terminalId, { _tag: 'write', data: chunk })
+          sendTerminalCommand(owner, terminalId, { _tag: 'write', data: chunk })
         }
       },
       resize: (cols, rows) => {
-        sendTerminalCommand(taskId, terminalId, { _tag: 'resize', cols, rows })
+        sendTerminalCommand(owner, terminalId, { _tag: 'resize', cols, rows })
       },
-      restart: (cols, rows) => restartRef.current({ taskId, terminalId, cols, rows }),
+      restart: (cols, rows) => restartRef.current({ ...terminalTargetPayload(owner), terminalId, cols, rows }),
       openLink: url => openExternalRef.current(url),
     }),
-    [taskId, terminalId],
+    [owner, terminalId],
   )
 }

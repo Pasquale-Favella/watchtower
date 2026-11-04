@@ -142,6 +142,43 @@ describe('workspace connection catalog RPC', () => {
     ).toThrow()
   })
 
+  it('shares one inspection per connection, inspects again on refresh, and prewarms when asked', async () => {
+    const fixture = makeInspectionRegistry(() => Effect.void)
+    const runtime = ManagedRuntime.make(
+      Layer.mergeAll(
+        WorkspaceHostLive({
+          filename: 'unused-workspace.db',
+          workerPath: 'unused-workspace-worker.js',
+          workerFactory: () => {
+            throw new Error('Inspection must not open workspace storage')
+          },
+          loadConnectionCatalog: () => Effect.succeed({ connections: [harnessConnection], rows }),
+          loadDrivers: () => Effect.succeed(fixture.registry),
+          prewarmConnections: true,
+        }),
+        NodeServices.layer,
+      ),
+    )
+    try {
+      await runtime.runPromise(
+        Effect.gen(function* () {
+          const host = yield* WorkspaceHost
+          if (!host.inspectConnection || !host.prewarmConnections)
+            return yield* Effect.die(new Error('The host must inspect and prewarm connections'))
+          yield* host.prewarmConnections
+          const warmed = yield* host.inspectConnection(rows[0]!.connectionId)
+          yield* host.inspectConnection(rows[0]!.connectionId)
+          expect(warmed.connectionId).toBe(rows[0]!.connectionId)
+          expect(fixture.counts().connects).toBe(1)
+          yield* host.inspectConnection(rows[0]!.connectionId, { refresh: true })
+          expect(fixture.counts().connects).toBe(2)
+        }),
+      )
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('inspects only the selected connection, without opening the worker or a native session', async () => {
     let workerStarts = 0
     let closes = 0

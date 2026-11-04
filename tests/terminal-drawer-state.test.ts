@@ -15,9 +15,10 @@ import {
   TERMINAL_DRAWER_RETENTION_MS,
   terminalDrawerHeightBounds,
   terminalInputChunks,
+  transferTerminalDrawerState,
   writeTerminalDrawerEntry,
 } from '@/renderer/features/workspace/terminal/terminal-storage.js'
-import type { TerminalFrame } from '@/shared/schemas/terminal.js'
+import { TERMINAL_IDS, type TerminalFrame } from '@/shared/schemas/terminal.js'
 import { taskIdSchema } from '@/shared/schemas/workspace.js'
 
 const key = 'watchtower.workspace.terminal-drawer.v1'
@@ -109,11 +110,12 @@ describe('terminal tabs and layout', () => {
     ).toEqual({ terminals: ['term-2'], active: 'term-2' })
   })
 
-  it('allocates the lowest free id and stops at four tabs', () => {
+  it('allocates the lowest free id across groups and stops at the owner limit', () => {
     expect(nextTerminalId([])).toBe('term-1')
     expect(nextTerminalId(['term-1', 'term-3'])).toBe('term-2')
     expect(nextTerminalId(['term-1', 'term-2', 'term-3'])).toBe('term-4')
-    expect(nextTerminalId(['term-1', 'term-2', 'term-3', 'term-4'])).toBeNull()
+    expect(nextTerminalId(['term-1', 'term-2', 'term-3', 'term-4'])).toBe('term-5')
+    expect(nextTerminalId(TERMINAL_IDS)).toBeNull()
   })
 
   it('bounds height at 180px minimum and the lesser of 75% viewport or container minus chrome', () => {
@@ -197,4 +199,24 @@ describe('terminal keyboard handling', () => {
     expect(isTextEntryOutsideTerminal(button)).toBe(false)
     expect(isTextEntryOutsideTerminal(null)).toBe(false)
   })
+})
+
+it('transfers drawer and panel layouts without storage access', () => {
+  const drawer = {
+    open: true,
+    height: 320,
+    terminals: ['term-1' as const],
+    activeTerminal: 'term-1' as const,
+    updatedAt: 1,
+  }
+  const panel = { ...drawer, terminals: ['term-2' as const], activeTerminal: 'term-2' as const }
+  const result = transferTerminalDrawerState(null, 'draft-owner', 'task-owner', {
+    'draft-owner': drawer,
+    'draft-owner::panel::left': panel,
+    'another-owner': drawer,
+  })
+  expect(result['draft-owner']).toBeUndefined()
+  expect(result['task-owner']).toEqual(drawer)
+  expect(result['task-owner::panel::left']).toEqual(panel)
+  expect(result['another-owner']).toEqual(drawer)
 })

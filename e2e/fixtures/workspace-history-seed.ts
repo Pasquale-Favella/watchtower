@@ -83,7 +83,12 @@ export async function seedWorkspaceHistory(profile: string, checkoutPath: string
           occurredAt: at,
           event: {
             kind: 'textDelta',
-            text: index === 0 ? 'OLDEST_ACTIVITY_MARKER' : index === 349 ? 'CURRENT_REPLY_VISIBLE' : '.',
+            text:
+              index === 0
+                ? 'OLDEST_ACTIVITY_MARKER'
+                : index === 349
+                  ? 'CURRENT_REPLY_VISIBLE\n\n[Open chat file](chat-link.txt:1)'
+                  : '.',
             itemId: `message-${index}`,
           },
         }),

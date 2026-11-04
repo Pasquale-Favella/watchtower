@@ -479,6 +479,33 @@ const isListedFile = Effect.fn('CheckoutInspection.isListedFile')(function* (
   return listed.exitCode === 0 && !listed.truncated && parseNulList(listed.stdout).includes(path)
 })
 
+/** Image formats are recognized from their bytes, never from a repository-controlled extension. */
+export function checkoutImagePreviewDataUrl(bytes: Uint8Array, truncated: boolean): string | null {
+  if (truncated || bytes.byteLength === 0 || bytes.byteLength > CHECKOUT_FILE_MAX_BYTES) return null
+  const header = Buffer.from(bytes.subarray(0, 16))
+  let mediaType: string | null = null
+  if (
+    bytes.length >= 33 &&
+    header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) &&
+    header.toString('ascii', 12, 16) === 'IHDR'
+  )
+    mediaType = 'image/png'
+  else if (bytes.length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) mediaType = 'image/jpeg'
+  else if (
+    bytes.length >= 13 &&
+    (header.toString('ascii', 0, 6) === 'GIF87a' || header.toString('ascii', 0, 6) === 'GIF89a')
+  )
+    mediaType = 'image/gif'
+  else if (
+    bytes.length >= 16 &&
+    header.toString('ascii', 0, 4) === 'RIFF' &&
+    header.toString('ascii', 8, 12) === 'WEBP'
+  )
+    mediaType = 'image/webp'
+  else if (bytes.length >= 26 && header.toString('ascii', 0, 2) === 'BM') mediaType = 'image/bmp'
+  return mediaType ? `data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}` : null
+}
+
 const readFile = Effect.fn('CheckoutInspection.readFile')(function* (
   runner: CommandRunnerService,
   root: string,
@@ -491,7 +518,15 @@ const readFile = Effect.fn('CheckoutInspection.readFile')(function* (
   if (!(yield* isListedFile(runner, root, path))) return yield* fail('path-not-found', 'The file is not listed')
   const read = yield* readBoundedFile(target.absolute, CHECKOUT_FILE_MAX_BYTES)
   const text = looksBinary(read.bytes) ? null : decodeUtf8(read.bytes, read.truncated)
-  return { path, size: read.size, binary: text === null, content: text, truncated: read.truncated }
+  const previewDataUrl = checkoutImagePreviewDataUrl(read.bytes, read.truncated)
+  return {
+    path,
+    size: read.size,
+    binary: text === null || previewDataUrl !== null,
+    content: previewDataUrl ? null : text,
+    truncated: read.truncated,
+    ...(previewDataUrl ? { previewDataUrl } : {}),
+  }
 })
 
 /** Pure repository inspection over the user's git CLI. Callers pass canonical checkout paths. */

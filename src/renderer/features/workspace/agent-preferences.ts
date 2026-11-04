@@ -4,11 +4,15 @@ import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Schema from 'effect/Schema'
 import { useContext } from 'react'
 
+import { type AgentAccessMode, agentAccessModeSchema, DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
+
 const STORAGE_KEY = 'watchtower.workspace.agent-preferences.v1'
 const choiceSchema = Schema.Struct({ modelId: Schema.String, modeId: Schema.String })
 const preferencesSchema = Schema.Struct({
   connectionId: Schema.String,
   choices: Schema.Record(Schema.String, choiceSchema),
+  /** The permissions a new chat starts with. Absent means the fail-safe default. */
+  accessMode: Schema.optional(agentAccessModeSchema),
 })
 export type AgentChoice = Schema.Schema.Type<typeof choiceSchema>
 export type AgentPreferences = Schema.Schema.Type<typeof preferencesSchema>
@@ -76,9 +80,11 @@ export function useWorkspaceAgentPreferences() {
     connectionId: preferences.connectionId,
     modelId: selected?.modelId ?? '',
     modeId: selected?.modeId ?? '',
+    accessMode: preferences.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
     setConnectionId: (connectionId: string) => save(registry, { ...registry.get(preferencesAtom), connectionId }),
     setModelId: (modelId: string) => updateChoice({ modelId, modeId: '' }),
     setModeId: (modeId: string) => updateChoice({ modeId }),
+    setAccessMode: (accessMode: AgentAccessMode) => save(registry, { ...registry.get(preferencesAtom), accessMode }),
   }
 }
 

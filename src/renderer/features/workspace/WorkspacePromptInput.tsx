@@ -1,4 +1,4 @@
-import { AtSign, File, FileImage, LoaderCircle, Paperclip, Slash, X } from 'lucide-react'
+import { File, FileImage, LoaderCircle, Paperclip, Slash, X } from 'lucide-react'
 import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
@@ -28,8 +28,13 @@ type Props = {
   readonly actions: ReactNode
   readonly maxLength: number
   readonly autoFocus?: boolean
-  readonly hint: string
+  /** Keyboard hint under the composer. Omitted, only transient status is shown there. */
+  readonly hint?: string
+  /** Row under the composer card, such as the permissions of a new chat. */
+  readonly contextStrip?: ReactNode
 }
+
+const DEFAULT_PROMPT_PLACEHOLDER = 'Ask anything. @ files, / skills and commands'
 const commandKindLabels = {
   file: 'file',
   native: 'agent command',
@@ -120,18 +125,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   function update(value: string, caret: number): void {
     props.onChange(value)
     setTrigger(promptTrigger(value, caret))
-  }
-  function insertTrigger(marker: string): void {
-    const input = inputRef.current
-    const start = input?.selectionStart ?? props.value.length
-    const end = input?.selectionEnd ?? start
-    const prefix = start > 0 && !/\s/.test(props.value[start - 1]) ? ' ' : ''
-    const value = props.value.slice(0, start) + prefix + marker + props.value.slice(end)
-    update(value, start + prefix.length + 1)
-    requestAnimationFrame(() => {
-      input?.focus()
-      input?.setSelectionRange(start + prefix.length + 1, start + prefix.length + 1)
-    })
   }
 
   async function intake(files: readonly globalThis.File[]): Promise<void> {
@@ -265,7 +258,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     <div className="min-w-0">
       <div
         aria-busy={working}
-        className={`border-border bg-card focus-within:border-ring focus-within:ring-ring/50 relative rounded-xl border shadow-[var(--card-shadow)] transition-colors focus-within:ring-3 ${dragging ? 'ring-ring ring-2' : ''}`}
+        className={`border-border bg-card focus-within:border-ring focus-within:ring-ring/50 relative rounded-2xl border shadow-[var(--card-shadow)] transition-colors focus-within:ring-3 ${dragging ? 'ring-ring ring-2' : ''}`}
         onDragOver={event => {
           if (event.dataTransfer.types.includes('Files')) {
             event.preventDefault()
@@ -380,7 +373,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         <textarea
           ref={inputRef}
           aria-label="Prompt"
-          aria-describedby={hintId}
+          aria-describedby={working || props.hint ? hintId : undefined}
           aria-controls={trigger ? menuId : undefined}
           aria-expanded={Boolean(trigger)}
           aria-autocomplete="list"
@@ -389,8 +382,8 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           rows={3}
           value={props.value}
           maxLength={props.maxLength}
-          className="text-foreground placeholder:text-muted-foreground max-h-60 min-h-24 w-full resize-none overflow-y-auto rounded-t-xl bg-transparent p-3.5 text-[13px] leading-relaxed outline-none"
-          placeholder={props.placeholder ?? 'Describe the work, @ reference a file, or / choose a skill…'}
+          className="text-foreground placeholder:text-muted-foreground max-h-60 min-h-24 w-full resize-none overflow-y-auto rounded-t-2xl bg-transparent p-3.5 text-[13px] leading-relaxed outline-none"
+          placeholder={props.placeholder ?? DEFAULT_PROMPT_PLACEHOLDER}
           onChange={event => update(event.target.value, event.target.selectionStart)}
           onClick={event => setTrigger(promptTrigger(props.value, event.currentTarget.selectionStart))}
           onKeyDown={keyDown}
@@ -405,7 +398,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
             }
           }}
         />
-        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2.5">
+        <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
           <input
             ref={fileRef}
             type="file"
@@ -428,26 +421,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           >
             {working ? <LoaderCircle className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
           </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Reference a file"
-            title="Reference a file (@)"
-            onClick={() => insertTrigger('@')}
-          >
-            <AtSign className="size-4" />
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Skills and commands"
-            title="Skills and commands (/)"
-            onClick={() => insertTrigger('/')}
-          >
-            <Slash className="size-4" />
-          </Button>
           {props.controls}
           <div
             className="ml-auto flex items-center gap-2"
@@ -458,14 +431,19 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           </div>
         </div>
         {dragging && (
-          <div className="bg-card/95 pointer-events-none absolute inset-0 flex items-center justify-center rounded-xl text-sm">
+          <div className="bg-card/95 pointer-events-none absolute inset-0 flex items-center justify-center rounded-2xl text-sm">
             Drop files to attach
           </div>
         )}
       </div>
-      <p id={hintId} className="text-muted-foreground mt-2 px-0.5 text-[11px]">
-        {working ? 'Preparing context…' : props.hint}
-      </p>
+      {props.contextStrip && (
+        <div className="text-muted-foreground flex w-full items-center gap-2 px-2 pt-2">{props.contextStrip}</div>
+      )}
+      {(working || props.hint) && (
+        <p id={hintId} className="text-muted-foreground mt-2 px-0.5 text-[11px]">
+          {working ? 'Preparing context…' : props.hint}
+        </p>
+      )}
       {error && (
         <p className="text-destructive mt-2 text-xs" role="alert">
           {error}

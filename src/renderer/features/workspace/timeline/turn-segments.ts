@@ -1,5 +1,6 @@
 import type { ConversationAssistantTurn, ConversationRun, ConversationTurnBlock } from '../conversation-view.js'
 import { elapsedBetween, formatRunDuration } from './duration.js'
+import { planCopyText } from './plan-text.js'
 import { summarizeToolCalls, type ToolBlock, type WorkSummary } from './work-log.js'
 
 export interface WorkGroup {
@@ -50,6 +51,14 @@ function groupFor(tools: readonly ToolBlock[]): WorkGroup {
   return { key: `work:${tools[0]?.sequence ?? 0}`, tools, summary: summarizeToolCalls(tools) }
 }
 
+export function toolDisclosureKey(turnId: string, tool: ToolBlock): string {
+  return `tool:${turnId}:${tool.sequence}:${tool.toolCallId}`
+}
+
+export function workDisclosureKey(turnId: string, groupKey: string): string {
+  return `work:${turnId}:${groupKey}`
+}
+
 function blockSegment(block: NonToolBlock): TurnSegment {
   return { kind: 'block', key: `block:${block.sequence}`, block }
 }
@@ -78,10 +87,13 @@ export function foldLabelFor(run: ConversationRun, blocks: readonly Conversation
 }
 
 /** Chronological segments for one turn, with routine tool activity folded into one row when its Run settled. */
-export function buildTurnSegments(turn: Pick<ConversationAssistantTurn, 'id' | 'run' | 'blocks'>): TurnSegment[] {
+export function buildTurnSegments(
+  turn: Pick<ConversationAssistantTurn, 'id' | 'run' | 'blocks'>,
+  preserveWorkLayout = false,
+): TurnSegment[] {
   const raw = rawSegments(turn.blocks)
   const foldLabel = foldLabelFor(turn.run, turn.blocks)
-  if (foldLabel === null) {
+  if (foldLabel === null || preserveWorkLayout) {
     return raw.map((segment): TurnSegment =>
       segment.kind === 'block' ? blockSegment(segment.block) : workSegment(segment.tools),
     )
@@ -117,9 +129,16 @@ export function buildTurnSegments(turn: Pick<ConversationAssistantTurn, 'id' | '
   return segments.filter((segment): segment is TurnSegment => segment !== null)
 }
 
-/** Turn text that the message actions copy: every non-empty text block, in order. */
+/** Turn text that the message actions copy: non-empty text and plan blocks, in order. */
 export function turnCopyText(turn: Pick<ConversationAssistantTurn, 'blocks'>): string {
-  return turn.blocks.flatMap(block => (block.kind === 'text' && block.text.trim() ? [block.text] : [])).join('\n\n')
+  return turn.blocks
+    .flatMap(block => {
+      if (block.kind === 'text' && block.text.trim()) return [block.text]
+      if (block.kind === 'plan') return [planCopyText(block.entries, block.explanation)]
+      return []
+    })
+    .filter(text => text.trim())
+    .join('\n\n')
 }
 
 /** A settled turn with no visible output: no text, no tool activity, no request or notice. */

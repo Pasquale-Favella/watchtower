@@ -1,109 +1,93 @@
-import { useAtomSet } from '@effect/atom-react'
-import { useCallback, useState } from 'react'
+import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
+import * as Schema from 'effect/Schema'
+import { useCallback, useContext, useEffect, useState } from 'react'
 
-import type { TerminalId } from '@/shared/schemas/terminal.js'
-import type { TaskId } from '@/shared/schemas/workspace.js'
+import { TerminalRpcError } from '@/shared/rpc/terminal.js'
+import {
+  type TerminalId,
+  type TerminalOwner,
+  terminalOwnerKey,
+  terminalTargetPayload,
+} from '@/shared/schemas/terminal.js'
 
 import { closeTerminalAtom } from './terminal-atoms.js'
 import {
-  browserTerminalStorage,
-  initialTerminalTabs,
+  hydrateTerminalLayouts,
+  type LayoutAction,
+  ownerTerminalIds,
+  terminalLayoutKey,
+  terminalLayoutsAtom,
+  updateTerminalLayoutAtom,
+} from './terminal-layout-atoms.js'
+import {
+  initialTerminalLayout,
+  layoutTerminals,
   nextTerminalId,
-  readTerminalDrawerState,
   TERMINAL_DRAWER_DEFAULT_HEIGHT,
-  type TerminalDrawerPatch,
   type TerminalPaneStatus,
-  writeTerminalDrawerEntry,
+  type TerminalSplitDirection,
 } from './terminal-storage.js'
 
-interface TabState {
-  readonly terminals: ReadonlyArray<TerminalId>
-  readonly active: TerminalId | null
-  readonly height: number
-}
-
-function readTabState(taskId: TaskId): TabState {
-  const entry = readTerminalDrawerState(browserTerminalStorage())[taskId]
-  return { ...initialTerminalTabs(entry), height: entry?.height ?? TERMINAL_DRAWER_DEFAULT_HEIGHT }
-}
-
-/** Tab list, active tab, height and reported statuses for one Task's drawer. Every change is persisted for that Task. */
-export function useTerminalTabs(taskId: TaskId) {
+/** Shared owner allocation prevents drawer and side-panel shells from sharing a terminal id. */
+export function useTerminalTabs(owner: TerminalOwner, groupId = 'drawer') {
+  const registry = useContext(RegistryContext)
+  const ownerKey = terminalOwnerKey(owner)
+  const key = terminalLayoutKey(ownerKey, groupId)
+  const entries = useAtomValue(terminalLayoutsAtom)
+  const update = useAtomSet(updateTerminalLayoutAtom)
   const closeTerminal = useAtomSet(closeTerminalAtom, { mode: 'promise' })
-  const [state, setState] = useState<TabState>(() => readTabState(taskId))
   const [statuses, setStatuses] = useState<Partial<Record<TerminalId, TerminalPaneStatus>>>({})
-
-  const persist = useCallback(
-    (patch: TerminalDrawerPatch) => {
-      writeTerminalDrawerEntry(browserTerminalStorage(), taskId, patch)
-    },
-    [taskId],
+  const [error, setError] = useState<string | null>(null)
+  const [preview, setPreview] = useState<number | null>(null)
+  useEffect(() => {
+    hydrateTerminalLayouts(registry)
+    registry.set(updateTerminalLayoutAtom, { ownerKey, groupId, action: { kind: 'init' } })
+  }, [groupId, ownerKey, registry])
+  const entry = entries[key]
+  const layout = initialTerminalLayout(
+    entry ?? { open: false, height: TERMINAL_DRAWER_DEFAULT_HEIGHT, terminals: [], activeTerminal: null, updatedAt: 0 },
   )
-
-  const commitTabs = useCallback(
-    (next: { readonly terminals: ReadonlyArray<TerminalId>; readonly active: TerminalId | null }) => {
-      setState(current => ({ ...current, ...next }))
-      persist({ terminals: [...next.terminals], activeTerminal: next.active })
-    },
-    [persist],
-  )
-
-  const select = useCallback(
-    (id: TerminalId) => {
-      setState(current => ({ ...current, active: id }))
-      persist({ activeTerminal: id })
-    },
-    [persist],
-  )
-
-  /** Adds the next free tab. Its pane opens the session when it mounts. */
-  const create = useCallback((): TerminalId | null => {
-    const id = nextTerminalId(state.terminals)
-    if (id === null) return null
-    commitTabs({ terminals: [...state.terminals, id], active: id })
-    return id
-  }, [commitTabs, state.terminals])
-
-  /** Removes the tab, then ends its session. The pane unmounts first, so nothing reattaches to it. */
-  const close = useCallback(
-    (id: TerminalId) => {
-      const index = state.terminals.indexOf(id)
-      if (index < 0) return
-      const remaining = state.terminals.filter(terminal => terminal !== id)
-      const active = state.active === id ? (remaining[Math.min(index, remaining.length - 1)] ?? null) : state.active
-      commitTabs({ terminals: remaining, active })
-      void closeTerminal({ taskId, terminalId: id }).catch(() => undefined)
-    },
-    [closeTerminal, commitTabs, state.active, state.terminals, taskId],
-  )
-
-  /** Live drag feedback; nothing is stored until the drag ends. */
-  const previewHeight = useCallback((height: number) => {
-    setState(current => ({ ...current, height }))
-  }, [])
-
-  const commitHeight = useCallback(
-    (height: number) => {
-      setState(current => ({ ...current, height }))
-      persist({ height })
-    },
-    [persist],
-  )
-
+  const terminals = layoutTerminals(layout)
+  const command = (action: LayoutAction) => update({ ownerKey, groupId, action })
+  const create = () => {
+    command({ kind: 'create' })
+    return registry.get(terminalLayoutsAtom)[key]?.activeTerminal ?? null
+  }
+  const split = (direction: TerminalSplitDirection) => {
+    command({ kind: 'split', direction })
+    return registry.get(terminalLayoutsAtom)[key]?.activeTerminal ?? null
+  }
+  const close = async (id: TerminalId): Promise<void> => {
+    if (!terminals.includes(id)) return
+    setError(null)
+    try {
+      await closeTerminal({ ...terminalTargetPayload(owner), terminalId: id })
+      command({ kind: 'close', id })
+    } catch (cause) {
+      if (Schema.is(TerminalRpcError)(cause) && cause.code === 'not-found') command({ kind: 'close', id })
+      else setError('Could not close this terminal. Try again.')
+    }
+  }
   const reportStatus = useCallback((id: TerminalId, status: TerminalPaneStatus) => {
-    setStatuses(current => (current[id] === status ? current : { ...current, [id]: status }))
+    setStatuses(previous => (previous[id] === status ? previous : { ...previous, [id]: status }))
   }, [])
-
   return {
-    terminals: state.terminals,
-    active: state.active,
-    height: state.height,
+    terminals,
+    canCreate: nextTerminalId(ownerTerminalIds(entries, ownerKey)) !== null,
+    groups: layout.groups,
+    active: layout.active,
+    height: preview ?? entry?.height ?? TERMINAL_DRAWER_DEFAULT_HEIGHT,
     statuses,
-    select,
+    error,
+    select: (id: TerminalId) => command({ kind: 'select', id }),
     create,
+    split,
     close,
-    previewHeight,
-    commitHeight,
+    previewHeight: setPreview,
+    commitHeight: (height: number) => {
+      setPreview(null)
+      command({ kind: 'height', height })
+    },
     reportStatus,
   }
 }

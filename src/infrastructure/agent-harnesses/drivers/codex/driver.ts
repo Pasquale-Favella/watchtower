@@ -32,6 +32,7 @@ import type {
   AgentDriverEvent,
   AgentReconcileEvent,
   AgentRequestDecision,
+  AgentToolMetadata,
 } from '@/shared/schemas/execution.js'
 import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
@@ -58,6 +59,15 @@ const ModelList = Schema.Struct({
   nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
 })
 
+const EFFORT_LABELS: Readonly<Record<string, string>> = {
+  none: 'None',
+  minimal: 'Minimal',
+  low: 'Low',
+  medium: 'Medium',
+  high: 'High',
+  xhigh: 'Extra high',
+}
+
 const discoverModels = Effect.fnUntraced(function* (client: JsonRpcClient): Effect.fn.Return<AgentCapabilities> {
   const models: AgentCapabilities['models'][number][] = []
   let cursor: string | undefined
@@ -72,7 +82,7 @@ const discoverModels = Effect.fnUntraced(function* (client: JsonRpcClient): Effe
     for (const model of result.value.data) {
       const modes = model.supportedReasoningEfforts.map(effort => ({
         id: effort.reasoningEffort,
-        label: effort.reasoningEffort,
+        label: EFFORT_LABELS[effort.reasoningEffort] ?? effort.reasoningEffort,
       }))
       models.push({ id: model.model, label: model.displayName, modes })
       if (model.isDefault) defaultModes = modes
@@ -119,6 +129,33 @@ const ItemNotification = Schema.Struct({
     type: Schema.optional(Schema.String),
     text: Schema.optional(Schema.String),
     name: Schema.optional(Schema.String),
+    command: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+    cwd: Schema.optional(Schema.String),
+    status: Schema.optional(Schema.String),
+    aggregatedOutput: Schema.optional(Schema.NullOr(Schema.String)),
+    exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+    durationMs: Schema.optional(Schema.NullOr(Schema.Number)),
+    arguments: Schema.optional(Schema.Unknown),
+    query: Schema.optional(Schema.String),
+    url: Schema.optional(Schema.String),
+    tool: Schema.optional(Schema.String),
+    path: Schema.optional(Schema.String),
+    savedPath: Schema.optional(Schema.NullOr(Schema.String)),
+    review: Schema.optional(Schema.String),
+    results: Schema.optional(Schema.Unknown),
+    error: Schema.optional(
+      Schema.NullOr(Schema.Union([Schema.String, Schema.Struct({ message: Schema.optional(Schema.String) })])),
+    ),
+    result: Schema.optional(Schema.Unknown),
+    changes: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          path: Schema.String,
+          kind: Schema.Union([Schema.String, Schema.Struct({ type: Schema.String })]),
+          diff: Schema.optional(Schema.String),
+        }),
+      ),
+    ),
   }),
 })
 const DeltaNotification = Schema.Struct({
@@ -132,6 +169,14 @@ const TurnStateNotification = Schema.Struct({
   turnId: Schema.optional(Schema.String),
   turn: Schema.Struct({ id: Schema.optional(Schema.String), status: Schema.optional(Schema.String) }),
 })
+const PlanNotification = Schema.Struct({
+  threadId: Schema.String,
+  turnId: Schema.optional(Schema.String),
+  explanation: Schema.optional(Schema.NullOr(Schema.String)),
+  plan: Schema.Array(
+    Schema.Struct({ step: Schema.String, status: Schema.Literals(['pending', 'inProgress', 'completed']) }),
+  ),
+})
 const RequestDetails = Schema.Struct({
   threadId: Schema.String,
   turnId: Schema.optional(Schema.String),
@@ -144,6 +189,9 @@ const RequestDetails = Schema.Struct({
           id: Schema.String,
           question: Schema.String,
           header: Schema.String,
+          isOther: Schema.optional(Schema.Boolean),
+          isSecret: Schema.optional(Schema.Boolean),
+          multiSelect: Schema.optional(Schema.Boolean),
           options: Schema.optional(
             Schema.NullOr(Schema.Array(Schema.Struct({ label: Schema.String, description: Schema.String }))),
           ),
@@ -185,7 +233,9 @@ const capabilities: AgentCapabilities = {
 }
 
 const MAX_REPLAY_EVENTS = 128
-const MAX_EVENT_TEXT_BYTES = 8 * 1024
+const MAX_EVENT_TEXT_BYTES = 64 * 1024
+const MAX_TOOL_OUTPUT_BYTES = 128 * 1024
+const TOOL_OUTPUT_CHUNK_SIZE = 8192
 const MAX_PENDING_NATIVE_REQUESTS = 128
 const MAX_RETAINED_RUNS = 8
 const MAX_RUN_ID_FENCES = 128
@@ -202,6 +252,7 @@ interface PendingRequest {
   readonly nativeTurnId: string
   readonly method: string
   readonly questionOptions: ReadonlyMap<string, ReadonlyMap<string, string>>
+  readonly customQuestionIds: ReadonlySet<string>
 }
 
 interface ActiveRun {
@@ -752,7 +803,9 @@ function responseFor(pending: PendingRequest, decision: AgentRequestDecision): u
       const values = Array.isArray(answer) ? answer : [answer]
       const nativeValues: string[] = []
       for (const value of values) {
-        const nativeValue = choices.size === 0 ? value : choices.get(value)
+        const nativeValue =
+          choices.get(value) ??
+          ((choices.size === 0 || pending.customQuestionIds.has(questionId)) && value.trim() ? value : undefined)
         if (nativeValue === undefined) return undefined
         nativeValues.push(nativeValue)
       }
@@ -894,7 +947,25 @@ function handleEvent(
       if (nativeTurnId) run.nativeTurnId = nativeTurnId
       const translated = notificationEvent(event.method, event.params, nativeTurnId)
       if (translated) {
-        yield* offerEvent(state, run, translated)
+        if (
+          translated.kind === 'toolCompleted' &&
+          translated.output !== undefined &&
+          (new TextEncoder().encode(translated.output).byteLength > 16000 ||
+            new TextEncoder().encode(JSON.stringify(translated)).byteLength > MAX_EVENT_TEXT_BYTES)
+        ) {
+          const { output, ...completed } = translated
+          for (let offset = 0; offset < output.length; offset += TOOL_OUTPUT_CHUNK_SIZE) {
+            yield* offerEvent(state, run, {
+              kind: 'toolUpdated',
+              toolCallId: completed.toolCallId,
+              output: output.slice(offset, offset + TOOL_OUTPUT_CHUNK_SIZE),
+              append: offset > 0,
+            })
+          }
+          yield* offerEvent(state, run, completed)
+        } else {
+          yield* offerEvent(state, run, translated)
+        }
         if (state.activeRun?.id !== run.id) return
         if (translated.kind === 'nativeNotice' && event.method === 'turn/completed') {
           yield* failRun(
@@ -969,16 +1040,25 @@ function handleEvent(
       nativeTurnId: run.nativeTurnId,
       method: event.method,
       questionOptions,
+      customQuestionIds: new Set(
+        (details.questions ?? [])
+          .filter(question => question.isOther === true || !question.options?.length)
+          .map(question => question.id),
+      ),
     })
     const questionRequest = event.method === 'item/tool/requestUserInput'
     const questions = questionRequest
       ? (details.questions ?? []).map(question => ({
           id: question.id,
           prompt: question.question,
-          multiSelect: false,
+          header: question.header,
+          allowCustomAnswer: question.isOther === true || !question.options?.length,
+          ...(question.isSecret !== undefined ? { isSecret: question.isSecret } : {}),
+          multiSelect: question.multiSelect ?? false,
           options: (question.options ?? []).map((option, optionIndex) => ({
             id: `${option.label}:${optionIndex}`,
             label: option.label,
+            description: option.description,
           })),
         }))
       : []
@@ -1019,6 +1099,15 @@ function handleEvent(
 }
 
 function notificationEvent(method: string, params: unknown, turnId: string | undefined): AgentDriverEvent | undefined {
+  if (method === 'turn/plan/updated') {
+    const plan = decode(PlanNotification, params)
+    if (plan)
+      return {
+        kind: 'planUpdated',
+        entries: plan.plan.map(entry => ({ content: entry.step, status: entry.status })),
+        ...(plan.explanation ? { explanation: plan.explanation } : {}),
+      }
+  }
   if (method === 'turn/started') return { kind: 'turnStarted', ...(turnId ? { nativeTurnId: turnId } : {}) }
   if (method === 'turn/completed') {
     const turn = decode(TurnStateNotification, params)?.turn
@@ -1042,16 +1131,127 @@ function notificationEvent(method: string, params: unknown, turnId: string | und
   const delta = decode(DeltaNotification, params)
   if (method === 'item/agentMessage/delta' && delta)
     return { kind: 'textDelta', text: delta.delta, ...(delta.itemId ? { itemId: delta.itemId } : {}) }
-  if (method === 'item/reasoning/summaryTextDelta' && delta)
+  if ((method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') && delta)
     return { kind: 'reasoningDelta', text: delta.delta, ...(delta.itemId ? { itemId: delta.itemId } : {}) }
+  if (method === 'item/commandExecution/outputDelta' && delta?.itemId)
+    return { kind: 'toolUpdated', toolCallId: delta.itemId, output: delta.delta, append: true }
   const item = decode(ItemNotification, params)
-  const toolTypes = new Set(['commandExecution', 'mcpToolCall', 'dynamicToolCall', 'collabAgentToolCall', 'webSearch'])
-  if (method === 'item/started' && item?.item.id && item.item.type && toolTypes.has(item.item.type)) {
-    return { kind: 'toolStarted', toolCallId: item.item.id, name: item.item.name?.trim() || item.item.type }
+  if (method === 'item/completed' && item?.item.type) {
+    const completed = item.item
+    if (completed.type === 'imageView' || completed.type === 'imageGeneration') {
+      if (completed.status === 'failed') return { kind: 'nativeNotice', message: 'Image generation failed.' }
+      const path = completed.savedPath ?? completed.path
+      if (path)
+        return {
+          kind: 'media',
+          mediaType: 'image/png',
+          url: path,
+          ...(completed.id ? { itemId: completed.id } : {}),
+          alt: completed.type === 'imageView' ? 'Viewed image' : 'Generated image',
+        }
+      if (
+        typeof completed.result === 'string' &&
+        completed.result.length < 60000 &&
+        /^[A-Za-z0-9+/]+={0,2}$/.test(completed.result)
+      )
+        return {
+          kind: 'media',
+          mediaType: 'image/png',
+          url: `data:image/png;base64,${completed.result}`,
+          ...(completed.id ? { itemId: completed.id } : {}),
+          alt: 'Generated image',
+        }
+      return { kind: 'nativeNotice', message: 'Generated image has no available preview.' }
+    }
+    if (completed.type === 'contextCompaction') return { kind: 'nativeNotice', message: 'Agent context compacted.' }
+    if (completed.type === 'enteredReviewMode' || completed.type === 'exitedReviewMode')
+      return {
+        kind: 'nativeNotice',
+        message:
+          (completed.review ? boundedNativeText(completed.review, 16000) : undefined) ||
+          (completed.type === 'enteredReviewMode' ? 'Agent started a review.' : 'Agent finished the review.'),
+      }
   }
-  if (method === 'item/completed' && item?.item.id && item.item.type && toolTypes.has(item.item.type))
-    return { kind: 'toolCompleted', toolCallId: item.item.id }
+  const toolTypes = new Set([
+    'commandExecution',
+    'fileChange',
+    'mcpToolCall',
+    'dynamicToolCall',
+    'collabAgentToolCall',
+    'webSearch',
+  ])
+  if (method === 'item/started' && item?.item.id && item.item.type && toolTypes.has(item.item.type)) {
+    return {
+      kind: 'toolStarted',
+      toolCallId: item.item.id,
+      name: item.item.name?.trim() || item.item.type,
+      ...codexToolDetails(item.item),
+    }
+  }
+  if (method === 'item/completed' && item?.item.id && item.item.type && toolTypes.has(item.item.type)) {
+    const completed = item.item
+    let output = completed.aggregatedOutput ?? undefined
+    if (output === undefined && completed.result !== undefined) output = JSON.stringify(completed.result)
+    if (output === undefined && completed.results !== undefined) output = JSON.stringify(completed.results)
+    const failed =
+      completed.status === 'failed' ||
+      (completed.exitCode != null && completed.exitCode !== 0) ||
+      completed.error != null
+    return {
+      kind: 'toolCompleted',
+      toolCallId: item.item.id,
+      name: completed.name?.trim() || item.item.type,
+      ...codexToolDetails(completed),
+      ...(output !== undefined ? { output: boundedNativeText(output, MAX_TOOL_OUTPUT_BYTES) } : {}),
+      ...(failed
+        ? {
+            error:
+              typeof completed.error === 'string'
+                ? completed.error
+                : (completed.error?.message ?? 'Tool execution failed.'),
+          }
+        : {}),
+    }
+  }
   return undefined
+}
+
+function boundedNativeText(value: string, limit = 8000): string {
+  if (new TextEncoder().encode(value).byteLength <= limit) return value
+  let end = Math.min(value.length, limit)
+  while (new TextEncoder().encode(value.slice(0, end)).byteLength > limit - 32) end -= Math.max(1, Math.floor(end / 8))
+  return `${value.slice(0, end)}\n… [truncated]`
+}
+
+function codexToolDetails(
+  item: Schema.Schema.Type<typeof ItemNotification>['item'],
+): AgentToolMetadata & { input?: string } {
+  const categoryByType = {
+    commandExecution: 'command',
+    fileChange: 'fileWrite',
+    mcpToolCall: 'mcp',
+    dynamicToolCall: 'mcp',
+    collabAgentToolCall: 'subagent',
+    webSearch: 'web',
+  } as const
+  const category = categoryByType[item.type as keyof typeof categoryByType]
+  const command = typeof item.command === 'string' ? item.command : item.command?.join(' ')
+  const changes = item.changes?.slice(0, 16).flatMap((change): NonNullable<AgentToolMetadata['changes']>[number][] => {
+    const kind = typeof change.kind === 'string' ? change.kind : change.kind.type
+    if (kind !== 'add' && kind !== 'delete' && kind !== 'update') return []
+    return [{ path: change.path, kind, ...(change.diff ? { diff: boundedNativeText(change.diff, 1500) } : {}) }]
+  })
+  return {
+    ...(category ? { category } : {}),
+    ...(command ? { command: boundedNativeText(command) } : {}),
+    ...(item.cwd ? { cwd: item.cwd } : {}),
+    ...(item.arguments !== undefined ? { input: boundedNativeText(JSON.stringify(item.arguments) ?? '') } : {}),
+    ...(item.exitCode !== undefined && item.exitCode !== null ? { exitCode: item.exitCode } : {}),
+    ...(item.durationMs !== undefined && item.durationMs !== null ? { durationMs: item.durationMs } : {}),
+    ...(item.query ? { description: item.query } : {}),
+    ...(item.url ? { url: item.url } : {}),
+    ...(changes?.length ? { changes, paths: changes.map(change => change.path) } : {}),
+  }
 }
 
 function isTerminalEvent(event: AgentDriverEvent): boolean {

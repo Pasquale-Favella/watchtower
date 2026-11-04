@@ -45,13 +45,14 @@ export interface ValidatedNativeHarnessExecutable {
   }
 }
 
-/** The SDK chooses its bundled CLI; finding `claude` on PATH proves neither distribution nor auth permission. */
+/** Claude runs on the SDK's bundled CLI, signed in with the user's Claude Code login or ANTHROPIC_API_KEY.
+ *  It is offered whenever Claude Code is detected; no host executable is launched for it. */
 export const claudeNativeAvailability = Object.freeze({
   driverId: 'claude-agent-sdk',
-  availability: 'release-gated',
+  availability: 'available',
   distribution: 'bundled-sdk-cli',
   requiresHostExecutable: false,
-  reason: 'Authorized authentication and distribution remain unverified; see agent-driver-conformance.md.',
+  reason: 'Uses the Claude Code login; ANTHROPIC_API_KEY takes precedence when set.',
 } as const)
 
 export interface NativeExecutableDiscoveryOptions {
@@ -126,7 +127,7 @@ const probeExecutable = Effect.fnUntraced(function* (
         instanceId: 'codex:path',
         harnessKind: 'codex' as const,
         driverId: 'codex-app-server' as const,
-        displayName: 'Codex (native)',
+        displayName: 'Codex',
         validatedExecutable: executable,
         version: output.slice('codex-cli '.length),
         validation: Object.freeze({

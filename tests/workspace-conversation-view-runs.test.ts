@@ -190,6 +190,59 @@ describe('conversation run projection', () => {
     expect(projection.activity).toBeNull()
   })
 
+  it('keeps a late run acknowledgement inside the assistant turn already in progress', () => {
+    nextSequence = 0
+    const projection = projectConversationView([
+      driver({ kind: 'textDelta', text: 'The answer is complete.' }, 1),
+      status('runStarted', 2),
+      driver({ kind: 'turnCompleted' }, 3),
+      driver({ kind: 'usageReported', semantics: 'final', scope: 'run', inputTokens: 10, outputTokens: 4 }, 4),
+    ])
+    const turns = projection.entries.filter(entry => entry.kind === 'assistant')
+    expect(turns).toHaveLength(1)
+    expect(turns[0]).toMatchObject({
+      kind: 'assistant',
+      run: { status: 'completed' },
+      blocks: [{ kind: 'text', text: 'The answer is complete.' }],
+    })
+  })
+
+  it('adopts a late native turn identity onto the existing answer and its usage footer', () => {
+    nextSequence = 0
+    const projection = projectConversationView([
+      driver({ kind: 'textDelta', text: 'The answer is complete.' }, 1),
+      status('runStarted', 2),
+      driver({ kind: 'turnCompleted', nativeTurnId: 'turn-1' }, 3),
+      driver({ kind: 'usageReported', semantics: 'final', scope: 'run', inputTokens: 10, outputTokens: 4 }, 4),
+    ])
+    const turns = projection.entries.filter(entry => entry.kind === 'assistant')
+    expect(turns).toHaveLength(1)
+    expect(turns[0]).toMatchObject({
+      kind: 'assistant',
+      nativeTurnId: 'turn-1',
+      blocks: [{ kind: 'text', text: 'The answer is complete.' }],
+    })
+    expect(turns[0]?.kind === 'assistant' ? turns[0].audit : []).toHaveLength(3)
+  })
+
+  it('keeps known native turns distinct', () => {
+    nextSequence = 0
+    const projection = projectConversationView([
+      driver({ kind: 'turnStarted', nativeTurnId: 'turn-1' }, 1),
+      driver({ kind: 'textDelta', text: 'First answer.' }, 2),
+      driver({ kind: 'turnCompleted', nativeTurnId: 'turn-1' }, 3),
+      driver({ kind: 'turnStarted', nativeTurnId: 'turn-2' }, 4),
+      driver({ kind: 'textDelta', text: 'Second answer.' }, 5),
+      driver({ kind: 'turnCompleted', nativeTurnId: 'turn-2' }, 6),
+    ])
+    const turns = projection.entries.filter(entry => entry.kind === 'assistant')
+    expect(turns).toHaveLength(2)
+    expect(turns).toMatchObject([
+      { nativeTurnId: 'turn-1', blocks: [{ kind: 'text', text: 'First answer.' }] },
+      { nativeTurnId: 'turn-2', blocks: [{ kind: 'text', text: 'Second answer.' }] },
+    ])
+  })
+
   it('stamps each assistant turn with its first record time', () => {
     nextSequence = 0
     const projection = projectConversationView([status('runStarted', 0), driver({ kind: 'textDelta', text: 'a' }, 3)])

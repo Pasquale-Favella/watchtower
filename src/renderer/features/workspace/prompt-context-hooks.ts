@@ -42,6 +42,13 @@ export function usePromptContextSearch(request: WorkspaceRequest<'workspace:sear
   return useRemoteQuery(contextSearch, request, workspaceQueryKey)
 }
 
+export function usePromptAttachmentPreview() {
+  const registry = useContext(RegistryContext)
+  const preview = useAtomSet(previewAtom, { mode: 'promise' })
+  useEffect(() => pinWindowAtom(registry, previewAtom), [registry])
+  return preview
+}
+
 const STORAGE_KEY = 'watchtower.workspace.prompt-attachments.v1'
 const entrySchema = Schema.Struct({ items: promptAttachmentsSchema, updatedAt: Schema.Number })
 const storageSchema = Schema.Record(Schema.String, entrySchema)

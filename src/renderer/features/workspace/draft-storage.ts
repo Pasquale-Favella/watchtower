@@ -1,5 +1,6 @@
 import * as Schema from 'effect/Schema'
 
+import { agentAccessModeSchema } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
 const STORAGE_KEY = 'watchtower.workspace.drafts.v1'
@@ -14,6 +15,7 @@ const composerPreferenceSchema = Schema.Struct({
   connectionId: Schema.optional(Schema.String),
   modelId: Schema.optional(Schema.String),
   modeId: Schema.optional(Schema.String),
+  accessMode: Schema.optional(agentAccessModeSchema),
   resumeNativeContext: Schema.optional(Schema.Boolean),
   resumeSessionId: Schema.optional(Schema.String),
   updatedAt: Schema.Number,

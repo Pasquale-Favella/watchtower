@@ -26,9 +26,10 @@ import type {
   FilePatch,
 } from '@/shared/schemas/checkout-inspection.js'
 
+import { CheckoutChangeActions } from './CheckoutChangeActions.js'
 import { buildDiffTree, diffFileKey, type DiffTreeNode, folderPaths } from './diff-tree.js'
 import { ChangeStats, InspectionNotice } from './inspection-ui.js'
-import { formatCompactCount, parseUnifiedDiff } from './unified-diff.js'
+import { formatCompactCount, parseUnifiedDiff, splitDiffRows } from './unified-diff.js'
 import {
   type InspectionState,
   useCheckoutBranches,
@@ -82,13 +83,16 @@ function totalsOf(files: readonly DiffFile[]) {
 
 /** Changes in the checkout: uncommitted work, or the branch against a chosen base, with a per-file patch. */
 export function DiffTab({ scope, revision }: DiffTabProps) {
+  const [localRevision, setLocalRevision] = useState(0)
+  const currentRevision = revision + localRevision
   const [scopeKind, setScopeKind] = useState<ScopeKind>('working-tree')
   const [baseRef, setBaseRef] = useState<string | null>(null)
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
   const [wrap, setWrap] = useState(false)
+  const [layout, setLayout] = useState<'unified' | 'split'>('unified')
 
-  const preview = useCheckoutDiffPreview(scope, selectorFor(scopeKind, baseRef), revision)
+  const preview = useCheckoutDiffPreview(scope, selectorFor(scopeKind, baseRef), currentRevision)
   const source = preview.data
   const tree = useMemo(() => buildDiffTree(source?.files ?? []), [source])
   const selected = source?.files.find(file => diffFileKey(file) === selectedKey) ?? null
@@ -98,7 +102,7 @@ export function DiffTab({ scope, revision }: DiffTabProps) {
     source && selected
       ? { source: selectorFor(source.kind, source.baseRef), path: selected.path, previousPath: selected.previousPath }
       : null,
-    revision,
+    currentRevision,
   )
 
   const toggleFolder = (path: string, open: boolean) =>
@@ -123,7 +127,7 @@ export function DiffTab({ scope, revision }: DiffTabProps) {
         {scopeKind === 'branch-range' ? (
           <BaseRefPicker
             scope={scope}
-            revision={revision}
+            revision={currentRevision}
             current={source?.baseRef ?? baseRef}
             onSelect={name => {
               setBaseRef(name)
@@ -132,6 +136,14 @@ export function DiffTab({ scope, revision }: DiffTabProps) {
           />
         ) : null}
       </div>
+      {scopeKind === 'working-tree' && (
+        <CheckoutChangeActions
+          scope={scope}
+          revision={currentRevision}
+          selectedPath={selected?.path ?? null}
+          onChanged={() => setLocalRevision(value => value + 1)}
+        />
+      )}
       <DiffBody
         scope={scope}
         revision={revision}
@@ -148,12 +160,16 @@ export function DiffTab({ scope, revision }: DiffTabProps) {
         selected={selected}
         wrap={wrap}
         onWrapChange={setWrap}
+        layout={layout}
+        onLayoutChange={setLayout}
       />
     </div>
   )
 }
 
 interface DiffBodyProps {
+  readonly layout: 'unified' | 'split'
+  readonly onLayoutChange: (layout: 'unified' | 'split') => void
   readonly scope: CheckoutScope
   readonly revision: number
   readonly preview: InspectionState<DiffSource>
@@ -212,7 +228,14 @@ function DiffBody(props: DiffBodyProps) {
           onSelect={props.onSelect}
         />
       </div>
-      <PatchView file={props.selected} patch={props.patch} wrap={props.wrap} onWrapChange={props.onWrapChange} />
+      <PatchView
+        file={props.selected}
+        patch={props.patch}
+        wrap={props.wrap}
+        onWrapChange={props.onWrapChange}
+        layout={props.layout}
+        onLayoutChange={props.onLayoutChange}
+      />
     </div>
   )
 }
@@ -308,13 +331,15 @@ function FileRow({
 }
 
 interface PatchViewProps {
+  readonly layout: 'unified' | 'split'
+  readonly onLayoutChange: (layout: 'unified' | 'split') => void
   readonly file: DiffFile | null
   readonly patch: InspectionState<FilePatch>
   readonly wrap: boolean
   readonly onWrapChange: (wrap: boolean) => void
 }
 
-function PatchView({ file, patch, wrap, onWrapChange }: PatchViewProps) {
+function PatchView({ file, patch, wrap, onWrapChange, layout, onLayoutChange }: PatchViewProps) {
   if (file === null) return <InspectionNotice>Select a file to see its changes.</InspectionNotice>
   const title = fileLabel(file)
   const data = patch.data
@@ -324,6 +349,14 @@ function PatchView({ file, patch, wrap, onWrapChange }: PatchViewProps) {
         <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={title}>
           {title}
         </span>
+        <SegTabs
+          options={[
+            { value: 'unified', label: 'Unified' },
+            { value: 'split', label: 'Split' },
+          ]}
+          value={layout}
+          onChange={value => onLayoutChange(value === 'split' ? 'split' : 'unified')}
+        />
         <Button
           variant="ghost"
           size="icon-xs"
@@ -346,7 +379,11 @@ function PatchView({ file, patch, wrap, onWrapChange }: PatchViewProps) {
           <InspectionNotice>No textual changes.</InspectionNotice>
         ) : (
           <>
-            <UnifiedPatch patch={data.patch} wrap={wrap} />
+            {layout === 'split' ? (
+              <SplitPatch patch={data.patch} wrap={wrap} />
+            ) : (
+              <UnifiedPatch patch={data.patch} wrap={wrap} />
+            )}
             {data.truncated ? (
               <p className="text-muted-foreground px-2.5 py-2 text-[10.5px]">Diff truncated at 1 MiB.</p>
             ) : null}
@@ -430,6 +467,56 @@ interface BaseRefPickerProps {
   readonly revision: number
   readonly current: string | null
   readonly onSelect: (name: string) => void
+}
+
+function SplitPatch({ patch, wrap }: { readonly patch: string; readonly wrap: boolean }): React.JSX.Element {
+  const rows = useMemo(() => splitDiffRows(parseUnifiedDiff(patch)), [patch])
+  const [limit, setLimit] = useState(RENDERED_ROW_LIMIT)
+  return (
+    <div className={cn('font-mono text-[11px] leading-5', wrap ? 'min-w-full' : 'w-max min-w-full')}>
+      <div className="border-border text-muted-foreground grid grid-cols-2 border-b text-center text-[10px]">
+        <span>Before</span>
+        <span>After</span>
+      </div>
+      {rows.slice(0, limit).map((row, index) =>
+        row.kind !== 'lines' ? (
+          <div key={index} className={cn('px-2 py-0.5', ROW_TONE[row.kind])}>
+            {row.text}
+          </div>
+        ) : (
+          <div key={index} className="grid grid-cols-2">
+            {(['before', 'after'] as const).map(side => {
+              const line = row[side]
+              return (
+                <div
+                  key={side}
+                  className={cn(
+                    'flex min-w-0',
+                    side === 'before' && 'border-border border-r',
+                    line && ROW_TONE[line.kind],
+                  )}
+                >
+                  <span className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums select-none">
+                    {(side === 'before' ? line?.oldNumber : line?.newNumber) ?? ''}
+                  </span>
+                  <span
+                    className={cn('min-w-0 flex-1 pr-3', wrap ? 'break-all whitespace-pre-wrap' : 'whitespace-pre')}
+                  >
+                    {line?.text ?? ''}
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+        ),
+      )}
+      {rows.length > limit && (
+        <Button variant="ghost" size="sm" className="m-2 text-[11.5px]" onClick={() => setLimit(rows.length)}>
+          Show all {formatCompactCount(rows.length)} lines
+        </Button>
+      )}
+    </div>
+  )
 }
 
 /** The badge on a branch row: `remote` for remote refs, `current` for the checked-out branch. */

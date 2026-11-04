@@ -12,7 +12,7 @@ This records the M0.2 protocol spike for [issue #178](https://github.com/Pasqual
 
 The Codex handshake sends no prompt and performs no inference. It establishes process routing and protocol initialization on this host. Its response does not establish an authenticated account or a protocol version, so those identities remain unknown. The opt-in test uses `CODEX_APP_SERVER_SMOKE=1`; ordinary tests do not invoke installed agents.
 
-The Claude candidate requires an explicitly provided API key and checks the native initialization evidence when it arrives. A fake SDK result cannot establish that an authentication route is permitted in a distributed application. Subscription support remains a product goal, and a BYOK-only product scope is not assumed.
+The Claude driver runs on the SDK's bundled CLI and signs in with the user's Claude Code login, or with `ANTHROPIC_API_KEY` when that is set. With a key, the driver still checks the native initialization evidence and refuses any other authentication route. When Claude Code is detected, this driver replaces the Claude ACP adapter in the connection catalog; a validated native Codex binary likewise replaces the Codex ACP adapter. ACP remains the route for every other agent and the fallback when no native Codex is found. A fake SDK result cannot establish that the subscription route works on every host, so real-account turns remain to be verified.
 
 ## Current contract restrictions
 

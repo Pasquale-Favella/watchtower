@@ -1,14 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
+import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { Button } from '@/renderer/components/ui/button'
-import { MessageScrollerItem } from '@/renderer/components/ui/message-scroller'
 import {
   useWorkspaceConversation,
   useWorkspaceEvents,
   useWorkspacePayload,
 } from '@/renderer/features/workspace/hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
+import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 import type {
   WorkspaceConversationPageItem,
@@ -26,13 +27,13 @@ import {
   decodeConversationEvent,
   decodeConversationPayload,
   driverEventSummary,
-  eventPayloadReference,
   eventSummary,
   isActiveRunStatus,
   mergeConversationItems,
   messagePayloadReference,
   projectConversationView,
 } from './conversation-view.js'
+import { useMarkdownImageLoader } from './markdown-navigation-hooks.js'
 import {
   createPayloadCache,
   MAX_DISPLAY_PAYLOAD_BYTES,
@@ -42,18 +43,23 @@ import {
   rememberPayload,
   wasPayloadReleased,
 } from './payload-cache.js'
+import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
-import { readExpandedFolds, setFoldExpanded } from './timeline/conversation-memory.js'
+import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
 import { ExpandableMessage } from './timeline/ExpandableMessage.js'
+import { MediaBlock, MessageAttachments } from './timeline/MediaBlock.js'
 import { isCollapsibleMessage } from './timeline/message-collapse.js'
-import { formatMessageTime } from './timeline/message-time.js'
 import { MessageActions } from './timeline/MessageActions.js'
+import { PlanBlock } from './timeline/PlanBlock.js'
+import { ReasoningBlock } from './timeline/ReasoningBlock.js'
+import { RequestRow } from './timeline/RequestRow.js'
+import { buildTimelineRows, timelineRowType } from './timeline/timeline-rows.js'
 import { TimelineScroller } from './timeline/TimelineScroller.js'
-import { buildTurnSegments, isEmptySettledTurn, turnCopyText } from './timeline/turn-segments.js'
+import { turnCopyText } from './timeline/turn-segments.js'
 import { TurnFoldRow, WorkGroupRow } from './timeline/WorkLog.js'
+import { usePendingStart } from './use-pending-start.js'
 
 const PAGE_SIZE = 100
-const AUDIT_PAGE_SIZE = 300
 const PAYLOAD_CHUNK_SIZE = 65_536
 
 type ResolvedPayload = ReturnType<typeof decodeConversationPayload>
@@ -90,22 +96,50 @@ function payloadCacheKey(owner: string, key: string): string {
 }
 
 /** Read-only durable transcript for one Conversation. */
-export function WorkspaceConversation({ conversationId }: { conversationId: ConversationId }): React.JSX.Element {
-  return <WorkspaceConversationView key={conversationId} conversationId={conversationId} />
+export function WorkspaceConversation({
+  conversationId,
+  workspacePath,
+  onOpenFile,
+  scope,
+}: {
+  readonly conversationId: ConversationId
+  readonly workspacePath?: string | undefined
+  readonly onOpenFile?: ((path: string) => void) | undefined
+  readonly scope?: CheckoutScope | undefined
+}): React.JSX.Element {
+  const loadImage = useMarkdownImageLoader(scope ?? null)
+  const navigation = useMemo(
+    () => ({ workspacePath, openFile: onOpenFile, loadImage }),
+    [workspacePath, onOpenFile, loadImage],
+  )
+  return (
+    <MarkdownNavigationContext value={navigation}>
+      <WorkspaceConversationView key={conversationId} conversationId={conversationId} />
+    </MarkdownNavigationContext>
+  )
 }
 
 function WorkspaceConversationView({ conversationId }: { conversationId: ConversationId }): React.JSX.Element {
   const { projection, stream } = useWorkspaceEvents()
+  const { submissions, messageKeys, reconcile } = usePendingStart()
+  const submission = submissions[conversationId] ?? null
   const [transcript, setTranscript] = useState<Transcript>({ conversationId, items: [] })
+  const [openingAnchor] = useState(() => readScrollAnchor(conversationId))
+  const restoredAnchor = useRef(openingAnchor === null)
   const [highWatermark, setHighWatermark] = useState(0)
   const [hasOlderHistory, setHasOlderHistory] = useState(false)
   const [olderRequest, setOlderRequest] = useState<WorkspaceRequest<'workspace:readConversationPage'> | null>(null)
-  const [auditStart, setAuditStart] = useState<number | null>(null)
   const [activeRequest, setActiveRequest] = useState<WorkspaceRequest<'workspace:readConversationPage'> | null>(() =>
     initialRequest(conversationId),
   )
   const [processedRequest, setProcessedRequest] = useState<string | null>(null)
   const [expandedFolds, setExpandedFolds] = useState<ReadonlySet<string>>(() => readExpandedFolds(conversationId))
+  const [disclosureChoices, setDisclosureChoices] = useState<Readonly<Record<string, boolean>>>({})
+  const [preservedWorkTurns, setPreservedWorkTurns] = useState<ReadonlySet<string>>(() => new Set())
+  const onDisclosureChange = useCallback((key: string, open: boolean, turnId: string, withinFold: boolean) => {
+    setDisclosureChoices(current => ({ ...current, [key]: open }))
+    if (!withinFold) setPreservedWorkTurns(current => new Set(current).add(turnId))
+  }, [])
   const conversationRequest = activeRequest
   const conversation = useWorkspaceConversation(conversationRequest)
   const [activePayload, setActivePayload] = useState<{
@@ -119,6 +153,11 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
   const [payloadResults, setPayloadResults] = useState<PayloadCache<PayloadResult>>(() => createPayloadCache())
   const payloadIdentityRef = useRef<string | null>(null)
   const payload = useWorkspacePayload(payloadRequest)
+  const payloadPending = payloadRequest !== null
+  const timelineExtraData = useMemo(
+    () => ({ activePayload, payloadResults, payloadPending, expandedFolds, disclosureChoices, preservedWorkTurns }),
+    [activePayload, payloadResults, payloadPending, expandedFolds, disclosureChoices, preservedWorkTurns],
+  )
 
   const requestKey = conversationRequest ? JSON.stringify(conversationRequest) : null
   useEffect(() => {
@@ -140,20 +179,6 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
       setActiveRequest(nextRequest)
     }
   }, [conversation.data, conversation.nextRequest, conversationRequest, conversationId, processedRequest, requestKey])
-
-  // Once the fixed-watermark history has drained, catch up from the live stream watermark.
-  useEffect(() => {
-    const request = conversationCatchupRequest(
-      conversationId,
-      highWatermark,
-      projection.lastAppliedSequence,
-      activeRequest !== null,
-      PAGE_SIZE,
-    )
-    if (!request) return
-    setProcessedRequest(null)
-    setActiveRequest(request)
-  }, [activeRequest, conversationId, highWatermark, projection.lastAppliedSequence])
 
   const payloadRequestKey = payloadRequest ? JSON.stringify(payloadRequest) : null
   useEffect(() => {
@@ -300,17 +325,72 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
   ])
 
   const items = transcript.items
-  const hydratedEvents = new Map<number, WorkspaceExecutionEvent>()
-  for (const { value: result } of payloadResults.entries.values()) {
-    if (result.value && 'data' in result.value) hydratedEvents.set(result.value.sequence, result.value)
-  }
-  const { entries: projected, activity } = projectConversationView(items, hydratedEvents)
-  const entries = projected.filter(
-    entry => entry.kind !== 'status' || !['runQueued', 'dispatchClaimed', 'runStarted'].includes(entry.event.kind),
-  )
+  useEffect(() => reconcile(conversationId, items), [conversationId, items, reconcile])
+  const rows = useMemo(() => {
+    const hydratedEvents = new Map<number, WorkspaceExecutionEvent>()
+    for (const { value: result } of payloadResults.entries.values()) {
+      if (result.value && 'data' in result.value) hydratedEvents.set(result.value.sequence, result.value)
+    }
+    const { entries, activity } = projectConversationView(items, hydratedEvents)
+    const timeline = buildTimelineRows(
+      entries.filter(
+        entry => entry.kind !== 'status' || !['runQueued', 'dispatchClaimed', 'runStarted'].includes(entry.event.kind),
+      ),
+      activity,
+      preservedWorkTurns,
+    )
+    const echo = submission ? submissionEcho(submission, items) : undefined
+    for (let index = 0; index < timeline.length; index++) {
+      const row = timeline[index]
+      if (row.kind !== 'user') continue
+      const key =
+        row.entry.message.id === echo?.userMessage?.id && submission
+          ? optimisticUserMessage(submission).id
+          : messageKeys[row.entry.message.id]
+      if (key) timeline[index] = { ...row, id: key }
+    }
+    if (submission && submission.state !== 'failed' && !echo) {
+      const entry = optimisticUserMessage(submission)
+      timeline.push({ kind: 'user', id: entry.id, entry, delivery: submission.state })
+    }
+    return timeline
+  }, [items, payloadResults, submission, messageKeys, preservedWorkTurns])
+  useEffect(() => {
+    if (activeRequest || conversation.error) return
+    if (!restoredAnchor.current) {
+      if (
+        readScrollAnchor(conversationId) === null ||
+        rows.some(row => row.id === openingAnchor?.messageId) ||
+        !olderRequest
+      ) {
+        restoredAnchor.current = true
+      } else {
+        setProcessedRequest(null)
+        setActiveRequest(olderRequest)
+        return
+      }
+    }
+    const request = conversationCatchupRequest(
+      conversationId,
+      highWatermark,
+      projection.lastAppliedSequence,
+      false,
+      PAGE_SIZE,
+    )
+    if (!request) return
+    setProcessedRequest(null)
+    setActiveRequest(request)
+  }, [
+    activeRequest,
+    conversation.error,
+    conversationId,
+    highWatermark,
+    olderRequest,
+    openingAnchor,
+    projection.lastAppliedSequence,
+    rows,
+  ])
   // Rendering follows the loaded pages. Older pages prepend, and the timeline keeps the reader's anchor.
-  const auditOffset = auditStart ?? Math.max(0, items.length - AUDIT_PAGE_SIZE)
-  const shownAuditItems = items.slice(auditOffset, auditOffset + AUDIT_PAGE_SIZE)
   const loadPayload = (reference: WorkspacePayloadReference, owner: string) => {
     payloadIdentityRef.current = `${conversationId}|${referenceKey(reference)}`
     setActivePayload({ reference, owner })
@@ -339,14 +419,14 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
   const wasPayloadPreviouslyReleased = (owner: string, reference: WorkspacePayloadReference): boolean =>
     wasPayloadReleased(payloadResults, payloadCacheKey(owner, referenceKey(reference)))
 
-  if (conversation.status === 'loading' && processedRequest === null && items.length === 0) {
+  if (conversation.status === 'loading' && processedRequest === null && rows.length === 0) {
     return (
       <div className="text-muted-foreground p-5 text-sm" role="status">
         Loading conversation…
       </div>
     )
   }
-  if (conversation.error && items.length === 0) {
+  if (conversation.error && rows.length === 0) {
     return (
       <div className="text-destructive p-5 text-sm" role="alert">
         {conversation.error}
@@ -355,10 +435,19 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
   }
 
   const showsOlderControl = hasOlderHistory && olderRequest !== null
-  const loadingOlder = activeRequest !== null && conversation.status === 'loading' && items.length > 0
+  const loadingOlder =
+    activeRequest?.direction === 'backward' &&
+    activeRequest.beforeSequence !== undefined &&
+    conversation.status === 'loading' &&
+    items.length > 0
 
   return (
-    <section className="flex min-h-0 flex-col" aria-label="Conversation history">
+    <section
+      className="flex min-h-0 flex-col"
+      aria-label="Conversation history"
+      aria-busy={activeRequest !== null}
+      data-history-start={items[0]?.event.sequence}
+    >
       {conversation.error && (
         <p className="text-destructive p-3 text-sm" role="alert">
           {conversation.error}
@@ -376,6 +465,7 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
               type="button"
               variant="outline"
               size="sm"
+              disabled={activeRequest !== null}
               onClick={() => {
                 setProcessedRequest(null)
                 setActiveRequest(olderRequest)
@@ -391,120 +481,75 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
           )}
         </div>
       )}
-      {items.length === 0 && processedRequest !== null ? (
+      {rows.length === 0 && processedRequest !== null ? (
         <p className="text-muted-foreground p-5 text-sm">Send a message to start the conversation.</p>
       ) : (
-        <TimelineScroller conversationId={conversationId} restoreKey={entries.length}>
-          {entries.map(entry => {
-            if (entry.kind === 'user') {
+        <TimelineScroller
+          conversationId={conversationId}
+          rows={rows}
+          getRowType={timelineRowType}
+          extraData={timelineExtraData}
+          historyExhausted={processedRequest !== null && !hasOlderHistory && activeRequest?.direction !== 'backward'}
+          renderRow={row => {
+            if (row.kind === 'user') {
+              const entry = row.entry
               const reference = messagePayloadReference(entry.message)
               return (
-                <MessageScrollerItem key={entry.id} messageId={entry.id} scrollAnchor>
-                  <UserMessageEntry
-                    entry={entry}
-                    activePayload={activePayload}
-                    payloadResult={reference ? getPayloadResult(`message:${entry.message.id}`, reference) : null}
-                    released={
-                      reference ? wasPayloadPreviouslyReleased(`message:${entry.message.id}`, reference) : false
-                    }
-                    payloadPending={Boolean(payloadRequest)}
-                    onLoadPayload={loadPayload}
-                  />
-                </MessageScrollerItem>
+                <UserMessageEntry
+                  entry={entry}
+                  delivery={row.delivery}
+                  activePayload={activePayload}
+                  payloadResult={reference ? getPayloadResult(`message:${entry.message.id}`, reference) : null}
+                  released={reference ? wasPayloadPreviouslyReleased(`message:${entry.message.id}`, reference) : false}
+                  payloadPending={payloadPending}
+                  onLoadPayload={loadPayload}
+                />
               )
             }
-            if (entry.kind === 'assistant') {
-              return (
-                <MessageScrollerItem key={entry.id} messageId={entry.id}>
-                  <AssistantTurnEntry
-                    entry={entry}
-                    activePayload={activePayload}
-                    payloadResults={payloadResults}
-                    payloadPending={Boolean(payloadRequest)}
-                    onLoadPayload={loadPayload}
-                    expandedFolds={expandedFolds}
-                    onFoldOpenChange={toggleFold}
-                  />
-                </MessageScrollerItem>
+            if (row.kind === 'activity') return <ActivityRow activity={row.activity} />
+            if (row.kind === 'status') return <ConversationStatusEntry entry={row.entry} />
+            if (row.kind === 'turnEnd') return <AssistantTurnEnd entry={row.turn} />
+            const segment = row.segment
+            let content: React.ReactNode
+            if (segment.kind === 'work')
+              content = (
+                <WorkGroupRow
+                  group={segment}
+                  turnId={row.turn.id}
+                  disclosureChoices={disclosureChoices}
+                  onDisclosureChange={onDisclosureChange}
+                />
+              )
+            else if (segment.kind === 'fold') {
+              content = (
+                <TurnFoldRow
+                  label={segment.label}
+                  summary={segment.summary}
+                  groups={segment.groups}
+                  turnId={row.turn.id}
+                  disclosureChoices={disclosureChoices}
+                  onDisclosureChange={onDisclosureChange}
+                  open={expandedFolds.has(segment.key)}
+                  onOpenChange={open => toggleFold(segment.key, open)}
+                />
+              )
+            } else {
+              content = (
+                <TurnBlock
+                  block={segment.block}
+                  live={isActiveRunStatus(row.turn.run.status)}
+                  activePayload={activePayload}
+                  payloadResults={payloadResults}
+                  payloadPending={payloadPending}
+                  onLoadPayload={loadPayload}
+                />
               )
             }
-            return (
-              <MessageScrollerItem key={entry.id} messageId={entry.id}>
-                <ConversationStatusEntry entry={entry} />
-              </MessageScrollerItem>
-            )
-          })}
-          {activity && (
-            <MessageScrollerItem messageId={`activity:${activity.runId}:${activity.generation}`}>
-              <ActivityRow activity={activity} />
-            </MessageScrollerItem>
-          )}
-        </TimelineScroller>
+            return <div className="w-full px-1">{content}</div>
+          }}
+        />
       )}
-      <details className="border-t px-4 py-2">
-        <summary className="text-muted-foreground cursor-pointer text-xs">
-          Execution audit · {items.length} durable events
-        </summary>
-        <ol className="mt-2 max-h-80 space-y-2 overflow-auto">
-          {shownAuditItems.map(item => {
-            const reference = eventPayloadReference(item.event)
-            return (
-              <AuditEvent
-                key={item.event.sequence}
-                item={item}
-                activePayload={activePayload}
-                payloadResult={reference ? getPayloadResult(`event:${item.event.sequence}`, reference) : null}
-                released={reference ? wasPayloadPreviouslyReleased(`event:${item.event.sequence}`, reference) : false}
-                payloadPending={Boolean(payloadRequest)}
-                onLoadPayload={loadPayload}
-                hydratedEvent={hydratedEvents.get(item.event.sequence) ?? null}
-              />
-            )
-          })}
-        </ol>
-        <div className="mt-2 flex gap-2">
-          {auditOffset > 0 && (
-            <button
-              type="button"
-              className="rounded-md border px-2 py-1"
-              onClick={() => setAuditStart(Math.max(0, auditOffset - AUDIT_PAGE_SIZE))}
-            >
-              Earlier audit events
-            </button>
-          )}
-          {auditStart !== null && auditOffset + AUDIT_PAGE_SIZE < items.length && (
-            <button
-              type="button"
-              className="rounded-md border px-2 py-1"
-              onClick={() => {
-                const nextOffset = auditOffset + AUDIT_PAGE_SIZE
-                setAuditStart(nextOffset >= Math.max(0, items.length - AUDIT_PAGE_SIZE) ? null : nextOffset)
-              }}
-            >
-              Newer audit events
-            </button>
-          )}
-        </div>
-      </details>
     </section>
-  )
-}
-
-function EventSummary({ event }: { readonly event: WorkspaceConversationPageItem['event'] }) {
-  const reason = event.data.reason
-  const ownerEpoch = event.data.ownerEpoch
-  const replacedEpoch = event.data.replacedEpoch
-  return (
-    <div className="space-y-1 text-sm">
-      <p>
-        {eventSummary(event)} · Run <code>{event.runId}</code>
-      </p>
-      {typeof reason === 'string' && <p className="text-destructive break-words whitespace-pre-wrap">{reason}</p>}
-      {typeof ownerEpoch === 'number' && <p className="text-muted-foreground">Owner epoch {ownerEpoch}</p>}
-      {typeof replacedEpoch === 'number' && (
-        <p className="text-muted-foreground">Recovered after owner epoch {replacedEpoch} was replaced</p>
-      )}
-    </div>
   )
 }
 
@@ -523,6 +568,7 @@ interface PayloadProps {
 
 function UserMessageEntry({
   entry,
+  delivery,
   activePayload,
   payloadResult,
   released,
@@ -530,6 +576,7 @@ function UserMessageEntry({
   onLoadPayload,
 }: PayloadProps & {
   readonly entry: ConversationUserMessage
+  readonly delivery?: 'sending' | 'reconnecting' | 'sent'
 }): React.JSX.Element {
   const message = entry.message
   const reference = messagePayloadReference(message)
@@ -543,7 +590,7 @@ function UserMessageEntry({
   }
   return (
     <article
-      className="group/message bg-primary/10 ml-auto max-w-[85%] space-y-2 rounded-lg p-4"
+      className="group/message bg-primary/10 relative mb-6 ml-auto max-w-[85%] space-y-1 rounded-lg px-3 py-2"
       aria-label="User message"
     >
       {content !== undefined && (
@@ -554,18 +601,7 @@ function UserMessageEntry({
         </ExpandableMessage>
       )}
       {message.attachments && message.attachments.length > 0 && (
-        <ul className="mt-3 flex flex-wrap gap-2" aria-label="Message attachments">
-          {message.attachments.map(attachment => (
-            <li
-              key={attachment.id}
-              className="bg-background/60 max-w-full truncate rounded-md border px-2 py-1 text-xs"
-              title={attachment.name}
-            >
-              {attachment.source === 'skill' || attachment.source === 'command' ? '/' : ''}
-              {attachment.name}
-            </li>
-          ))}
-        </ul>
+        <MessageAttachments attachments={message.attachments} />
       )}
       {reference && content === undefined && (
         <PayloadControl
@@ -584,11 +620,16 @@ function UserMessageEntry({
         </p>
       )}
       <MessageActions
-        className="justify-end"
+        className="bg-popover absolute right-0 -bottom-6 z-20 justify-end rounded-md px-1 shadow-sm"
         copyText={content ? content : null}
         copyLabel="Copy message"
         timestamp={message.createdAt}
       />
+      {delivery && delivery !== 'sent' && (
+        <p className="text-muted-foreground text-xs" role="status">
+          {delivery === 'sending' ? 'Sending…' : 'Reconnecting…'}
+        </p>
+      )}
     </article>
   )
 }
@@ -600,52 +641,11 @@ interface HydratedTurnProps {
   readonly onLoadPayload: (reference: WorkspacePayloadReference, owner: string) => void
 }
 
-function AssistantTurnEntry({
-  entry,
-  activePayload,
-  payloadResults,
-  payloadPending,
-  onLoadPayload,
-  expandedFolds,
-  onFoldOpenChange,
-}: HydratedTurnProps & {
-  readonly entry: ConversationAssistantTurn
-  readonly expandedFolds: ReadonlySet<string>
-  readonly onFoldOpenChange: (key: string, open: boolean) => void
-}): React.JSX.Element {
-  const segments = buildTurnSegments(entry)
+function AssistantTurnEnd({ entry }: { readonly entry: ConversationAssistantTurn }): React.JSX.Element {
   const streaming = isActiveRunStatus(entry.run.status)
   const copyText = streaming ? '' : turnCopyText(entry)
   return (
-    <article className="group/message max-w-[92%] space-y-3 px-1 py-1" aria-label="Assistant turn">
-      {segments.map(segment => {
-        if (segment.kind === 'work') return <WorkGroupRow key={segment.key} group={segment} />
-        if (segment.kind === 'fold') {
-          return (
-            <TurnFoldRow
-              key={segment.key}
-              label={segment.label}
-              summary={segment.summary}
-              groups={segment.groups}
-              open={expandedFolds.has(segment.key)}
-              onOpenChange={open => {
-                onFoldOpenChange(segment.key, open)
-              }}
-            />
-          )
-        }
-        return (
-          <TurnBlock
-            key={segment.key}
-            block={segment.block}
-            activePayload={activePayload}
-            payloadResults={payloadResults}
-            payloadPending={payloadPending}
-            onLoadPayload={onLoadPayload}
-          />
-        )
-      })}
-      {isEmptySettledTurn(entry) && <p className="text-muted-foreground text-sm italic">(empty response)</p>}
+    <article className="group/message w-full space-y-3 px-1 py-1" aria-label="Assistant turn">
       <span className="sr-only">Durable event sequences {entry.audit.map(event => event.sequence).join(', ')}</span>
       <MessageActions copyText={copyText ? copyText : null} copyLabel="Copy response" timestamp={entry.occurredAt}>
         <details className="min-w-0">
@@ -662,29 +662,28 @@ function AssistantTurnEntry({
 
 function TurnBlock({
   block,
+  live,
   activePayload,
   payloadResults,
   payloadPending,
   onLoadPayload,
 }: HydratedTurnProps & {
   readonly block: Exclude<ConversationTurnBlock, { readonly kind: 'tool' }>
+  readonly live: boolean
 }): React.JSX.Element {
   switch (block.kind) {
     case 'text':
       return (
         <div className="typeset break-words">
-          <Markdown>{block.text}</Markdown>
+          <Markdown streaming={live}>{block.text}</Markdown>
         </div>
       )
     case 'thinking':
-      return (
-        <details className="text-muted-foreground rounded border px-3 py-2 text-sm">
-          <summary className="cursor-pointer">Thinking</summary>
-          <div className="typeset mt-2 break-words">
-            <Markdown>{block.text}</Markdown>
-          </div>
-        </details>
-      )
+      return <ReasoningBlock text={block.text} streaming={live} />
+    case 'plan':
+      return <PlanBlock entries={block.entries} explanation={block.explanation} streaming={live} />
+    case 'media':
+      return <MediaBlock mediaType={block.mediaType} url={block.url} alt={block.alt} />
     case 'unavailable': {
       const owner = `event:${block.sequence}`
       const result = block.reference
@@ -715,11 +714,7 @@ function TurnBlock({
       )
     }
     case 'request':
-      return (
-        <div className="rounded border p-3 text-sm">
-          <DriverContent event={block.event} />
-        </div>
-      )
+      return <RequestRow block={block} live={live} />
     case 'notice':
       return <DriverContent event={block.event} />
   }
@@ -737,61 +732,6 @@ function ConversationStatusEntry({ entry }: { readonly entry: ConversationStatus
         <p className="text-destructive mt-1">{entry.event.data.reason}</p>
       )}
     </article>
-  )
-}
-
-function AuditEvent({
-  item,
-  activePayload,
-  payloadResult,
-  payloadPending,
-  onLoadPayload,
-  hydratedEvent,
-  released,
-}: PayloadProps & {
-  readonly item: WorkspaceConversationPageItem
-  readonly hydratedEvent: WorkspaceExecutionEvent | null
-}): React.JSX.Element {
-  const event = item.event
-  const reference = eventPayloadReference(event)
-  const resolved =
-    payloadResult?.owner === `event:${event.sequence}` && reference && payloadResult.key === referenceKey(reference)
-      ? payloadResult.value
-      : null
-  const fullEvent = hydratedEvent ?? (resolved && 'data' in resolved ? resolved : null)
-  const driver = fullEvent ? decodeConversationEvent(fullEvent) : decodeConversationEvent(event)
-  return (
-    <li className="rounded border px-3 py-2 text-xs">
-      <p>
-        <strong>
-          #{event.sequence} · {driver ? driverEventSummary(driver) : eventSummary(event)}
-        </strong>{' '}
-        · Run <code>{event.runId}</code> · generation {event.generation} · {formatMessageTime(event.occurredAt)}
-      </p>
-      {driver && <DriverContent event={driver} />}
-      {reference && !driver && (
-        <PayloadControl
-          reference={reference}
-          owner={`event:${event.sequence}`}
-          active={activePayload}
-          result={payloadResult}
-          released={released}
-          pending={payloadPending}
-          onLoad={onLoadPayload}
-        />
-      )}
-      {event.payloadTruncated && !reference && (
-        <p className="text-muted-foreground mt-2" role="status">
-          Full event detail unavailable: its payload reference is invalid.
-        </p>
-      )}
-      {!driver && !reference && <EventSummary event={event} />}
-      {payloadResult?.owner === `event:${event.sequence}` && payloadResult.error && (
-        <p role="alert" className="text-destructive mt-2">
-          {payloadResult.error}
-        </p>
-      )}
-    </li>
   )
 }
 
@@ -863,6 +803,10 @@ function PayloadControl({
 
 function DriverContent({ event }: { readonly event: import('@/shared/schemas/execution.js').AgentDriverEvent }) {
   switch (event.kind) {
+    case 'planUpdated':
+      return <PlanBlock entries={event.entries} explanation={event.explanation} />
+    case 'media':
+      return <MediaBlock mediaType={event.mediaType} url={event.url} alt={event.alt} />
     case 'textDelta':
     case 'reasoningDelta':
       return (

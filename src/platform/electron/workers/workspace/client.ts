@@ -315,6 +315,10 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           invoke('workspace-worker:registerProject', command, () =>
             rawClient['workspace-worker:registerProject'](command),
           ),
+        registerCheckout: command =>
+          invoke('workspace-worker:registerCheckout', command, () =>
+            rawClient['workspace-worker:registerCheckout'](command),
+          ),
         createTask: (command: CreateTaskCommand) =>
           invoke('workspace-worker:createTask', command, () => rawClient['workspace-worker:createTask'](command)),
         beginRun: (command: BeginRunCommand) =>
@@ -389,6 +393,18 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:listQueuedFollowUps'](payload),
           )
         },
+        listQueuedFollowUpHeads: options => {
+          const payload = { options }
+          return invoke('workspace-worker:listQueuedFollowUpHeads', payload, () =>
+            rawClient['workspace-worker:listQueuedFollowUpHeads'](payload),
+          )
+        },
+        holdQueuedFollowUps: (conversationId, ownerEpoch) => {
+          const payload = { conversationId, ownerEpoch }
+          return invoke('workspace-worker:holdQueuedFollowUps', payload, () =>
+            rawClient['workspace-worker:holdQueuedFollowUps'](payload),
+          )
+        },
         listRequestResponses: (taskId, options) => {
           const payload = { taskId, options }
           return invoke('workspace-worker:listRequestResponses', payload, () =>
@@ -411,6 +427,18 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           const payload = { replacedEpoch, recoveredAt }
           return invoke('workspace-worker:recoverWorker', payload, () =>
             rawClient['workspace-worker:recoverWorker'](payload),
+          )
+        },
+        releaseDispatchAfterCleanup: (runId, ownerEpoch) => {
+          const payload = { runId, ownerEpoch }
+          return invoke('workspace-worker:releaseDispatchAfterCleanup', payload, () =>
+            rawClient['workspace-worker:releaseDispatchAfterCleanup'](payload),
+          )
+        },
+        releaseRetiredDispatches: ownerEpoch => {
+          const payload = { ownerEpoch }
+          return invoke('workspace-worker:releaseRetiredDispatches', payload, () =>
+            rawClient['workspace-worker:releaseRetiredDispatches'](payload),
           )
         },
         acquireOwnerEpoch: recoveredAt => {

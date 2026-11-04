@@ -26,13 +26,24 @@ export const resolveCheckoutPath = Effect.fnUntraced(function* (request: {
   return checkout.path
 })
 
-/** Resolves the checkout a Task works in. Tasks currently work in their Project's main checkout. */
-export const resolveTaskCheckoutPath = Effect.fnUntraced(function* (taskId: TaskId) {
+/** Uses the requested checkout during first submission, then the most recent Run's checkout. */
+export const resolveTaskCheckoutPath = Effect.fnUntraced(function* (
+  taskId: TaskId,
+  requestedCheckoutId?: WorkspaceCheckoutId,
+) {
   const host = yield* WorkspaceHost
   const detail = yield* host.ensureOpen.pipe(
     Effect.andThen(Effect.suspend(() => host.store.readTaskDetail(taskId, { limit: 1 }))),
     Effect.mapError((): CheckoutPathFailure => 'unavailable'),
   )
   if (!detail || detail.task.archivedAt) return yield* Effect.fail<CheckoutPathFailure>('not-found')
-  return yield* resolveCheckoutPath({ projectId: detail.task.projectId })
+  let checkoutId = requestedCheckoutId
+  if (!checkoutId) {
+    const snapshot = yield* host.store
+      .readTaskSnapshot(taskId, 1)
+      .pipe(Effect.mapError((): CheckoutPathFailure => 'unavailable'))
+    const lastRun = snapshot.runs[0]
+    checkoutId = snapshot.runContexts?.find(context => context.runId === lastRun?.id)?.checkoutId
+  }
+  return yield* resolveCheckoutPath({ projectId: detail.task.projectId, ...(checkoutId ? { checkoutId } : {}) })
 })

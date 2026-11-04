@@ -219,6 +219,39 @@ describe('detected Harness connection catalog', () => {
     expect(result.rows[0]).toMatchObject({ driverId: 'acp', harnessKind: 'codex', capabilities: 'unknown' })
   })
 
+  it('offers Codex and Claude Code once, natively, and keeps their ACP adapters only as a fallback', async () => {
+    const instances = [
+      instance(
+        { kind: 'codex', name: 'codex-acp', bin: '/app/codex-acp.js', bundledEntry: '/app/codex-acp.js' },
+        'codex',
+      ),
+      instance(
+        { kind: 'claude', name: 'claude', displayName: 'Claude Code', bin: '/app/acp.js', bundledEntry: '/app/acp.js' },
+        'claude',
+      ),
+    ]
+    const specs = [
+      spec({ kind: 'codex', bundled: { package: '@agentclientprotocol/codex-acp', bin: 'codex-acp' } }),
+      spec({ kind: 'claude', bundled: { package: '@agentclientprotocol/claude-agent-acp', bin: 'claude-agent-acp' } }),
+    ]
+    const preferred = createDetectedHarnessConnectionCatalog({
+      instances,
+      runtimeExecutable: '/app/electron',
+      specs,
+      nativeExecutables: await validatedExecutables('C:\\tools\\codex.exe'),
+    })
+    expect(preferred.rows.map(row => [row.harnessKind, row.driverId, row.label])).toEqual([
+      ['codex', 'codex-app-server', 'Codex'],
+      ['claude', 'claude-agent-sdk', 'Claude Code'],
+    ])
+
+    const fallback = createDetectedHarnessConnectionCatalog({ instances, runtimeExecutable: '/app/electron', specs })
+    expect(fallback.rows.map(row => [row.harnessKind, row.driverId])).toEqual([
+      ['codex', 'acp'],
+      ['claude', 'claude-agent-sdk'],
+    ])
+  })
+
   it('adds native drivers only from validated discovery evidence, never from ACP detection or Claude PATH presence', async () => {
     const nativeExecutables = await validatedExecutables('C:\\tools\\codex.exe')
     const result = catalog([], { nativeExecutables })
@@ -276,7 +309,7 @@ describe('detected Harness connection catalog', () => {
     expect(catalog([instance({ kind: 'unknown' })]).connections).toEqual([])
   })
 
-  it('loads ACP and validated native connections lazily, preserving identity after refresh and binary moves', async () => {
+  it('loads connections lazily, preferring validated native Codex, and keeps identity after refresh and binary moves', async () => {
     let nativeLookups = 0
     let nativePath = 'C:\\tools\\v1\\codex.exe'
     const nativeDiscovery = {
@@ -317,17 +350,11 @@ describe('detected Harness connection catalog', () => {
       }).pipe(Effect.provide(Layer.merge(layer, nativeProbeLayer()))),
     )
 
-    expect(before).toMatchObject([
-      { driverId: 'acp', args: ['C:/app/v1/codex-acp.js'], nodeRuntime: 'electron' },
-      { driverId: 'codex-app-server', command: 'C:\\tools\\v1\\codex.exe' },
-    ])
-    expect(after).toMatchObject([
-      { driverId: 'acp', args: ['C:/app/v2/codex-acp.js'], nodeRuntime: 'electron' },
-      { driverId: 'codex-app-server', command: 'D:\\tools\\v2\\codex.exe' },
-    ])
-    expect(after[1]?.id).toBe(before[1]?.id)
-    expect(nativeLookups).toBe(2)
+    // The validated native binary replaces Codex's ACP wrapper; its identity survives a move.
+    expect(before).toMatchObject([{ driverId: 'codex-app-server', command: 'C:\\tools\\v1\\codex.exe' }])
+    expect(after).toMatchObject([{ driverId: 'codex-app-server', command: 'D:\\tools\\v2\\codex.exe' }])
     expect(after[0]?.id).toBe(before[0]?.id)
+    expect(nativeLookups).toBe(2)
     expect(Object.isFrozen(after)).toBe(true)
   })
 

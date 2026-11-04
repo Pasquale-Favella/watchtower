@@ -1,8 +1,16 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
+import * as Checkout from '@/shared/schemas/checkout.js'
 import * as PromptContext from '@/shared/schemas/prompt-context.js'
-import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
+import {
+  agentRunIdSchema,
+  conversationIdSchema,
+  projectIdSchema,
+  taskIdSchema,
+  workspaceCheckoutIdSchema,
+  workspaceCheckoutSchema,
+} from '@/shared/schemas/workspace.js'
 import * as Connections from '@/shared/schemas/workspace-connections.js'
 import {
   browseWorkspaceDirectoriesSchema,
@@ -33,6 +41,8 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'stream-overflow',
     'cleanup-unconfirmed',
     'unsupported-access-mode',
+    'checkout-busy',
+    'checkout-in-use',
   ]),
   message: Schema.Literals([
     'Workspace is unavailable.',
@@ -44,6 +54,8 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'Workspace stream exceeded its limit. Resume from the last received sequence.',
     'Native connection cleanup could not be confirmed.',
     'The selected access mode is not available for this agent connection.',
+    'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
+    'Another agent is still using this checkout. Stop it or choose a different worktree.',
   ]),
 }) {}
 
@@ -167,7 +179,11 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     error: setupError,
   }),
   Rpc.make('workspace:inspectConnection', {
-    payload: Schema.Struct({ connectionId: Connections.workspaceConnectionSchema.fields.connectionId }),
+    payload: Schema.Struct({
+      connectionId: Connections.workspaceConnectionSchema.fields.connectionId,
+      /** Inspect again instead of reading the result shared since startup. */
+      refresh: Schema.optional(Schema.Boolean),
+    }),
     success: Connections.workspaceConnectionInspectionSchema,
     error,
   }),
@@ -193,6 +209,32 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       conversationId: conversationIdSchema,
       replayed: Schema.Boolean,
     }),
+    error,
+  }),
+  Rpc.make('workspace:listBranches', {
+    payload: Schema.Struct({ projectId: projectIdSchema, checkoutId: Schema.optional(workspaceCheckoutIdSchema) }),
+    success: Checkout.checkoutBranchesSchema,
+    error,
+  }),
+  /** Runs `git switch` in the checkout. Git refuses when uncommitted changes conflict or the branch is in use. */
+  Rpc.make('workspace:switchBranch', {
+    payload: Schema.Struct({
+      commandId,
+      projectId: projectIdSchema,
+      checkoutId: workspaceCheckoutIdSchema,
+      branch: Checkout.switchBranchRequestSchema.fields.branch,
+    }),
+    success: Checkout.checkoutBranchesSchema,
+    error,
+  }),
+  /** Creates an isolated worktree on a new branch from the base branch and registers it as a checkout. Replays. */
+  Rpc.make('workspace:createWorktree', {
+    payload: Schema.Struct({
+      commandId,
+      projectId: projectIdSchema,
+      baseBranch: Checkout.switchBranchRequestSchema.fields.branch,
+    }),
+    success: workspaceCheckoutSchema,
     error,
   }),
   Rpc.make('workspace:listProjects', {
@@ -305,6 +347,9 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       commandId,
       taskId: taskIdSchema,
       conversationId: conversationIdSchema,
+      checkoutId: Store.enqueueFollowUpCommandSchema.fields.checkoutId,
+      generation: Store.enqueueFollowUpCommandSchema.fields.generation,
+      nativeSessionId: Store.enqueueFollowUpCommandSchema.fields.nativeSessionId,
       prompt: Store.enqueueFollowUpCommandSchema.fields.prompt,
       attachments: Store.enqueueFollowUpCommandSchema.fields.attachments,
       driverId: Store.enqueueFollowUpCommandSchema.fields.driverId,

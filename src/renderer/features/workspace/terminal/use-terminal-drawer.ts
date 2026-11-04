@@ -1,35 +1,32 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { RegistryContext, useAtomValue } from '@effect/atom-react'
+import { useCallback, useContext, useEffect } from 'react'
 
 import { isMac } from '@/renderer/features/workspace/platform-labels.js'
-import type { TaskId } from '@/shared/schemas/workspace.js'
+import { type TerminalOwner, terminalOwnerKey } from '@/shared/schemas/terminal.js'
 
-import { isTerminalDrawerShortcut, isTextEntryOutsideTerminal } from './terminal-keys.js'
-import { browserTerminalStorage, readTerminalDrawerState, writeTerminalDrawerEntry } from './terminal-storage.js'
+import { isTerminalDrawerShortcut } from './terminal-keys.js'
+import { hydrateTerminalLayouts, terminalLayoutsAtom, updateTerminalLayoutAtom } from './terminal-layout-atoms.js'
 
-/** Open state for one Task's terminal drawer, persisted per Task, with the Mod+J toggle. */
-export function useTerminalDrawer(taskId: TaskId) {
-  const [local, setLocal] = useState<{ readonly taskId: TaskId; readonly open: boolean } | null>(null)
-  const persisted = useMemo(() => readTerminalDrawerState(browserTerminalStorage())[taskId]?.open ?? false, [taskId])
-  const open = local?.taskId === taskId ? local.open : persisted
-
+/** Mod+J toggles the drawer from the composer too; the focused shell never receives it. */
+export function useTerminalDrawer(owner: TerminalOwner) {
+  const registry = useContext(RegistryContext)
+  const key = terminalOwnerKey(owner)
+  const entries = useAtomValue(terminalLayoutsAtom)
+  const open = entries[key]?.open ?? false
+  useEffect(() => hydrateTerminalLayouts(registry), [registry])
   const setOpen = useCallback(
-    (next: boolean) => {
-      writeTerminalDrawerEntry(browserTerminalStorage(), taskId, { open: next })
-      setLocal({ taskId, open: next })
-    },
-    [taskId],
+    (next: boolean) => registry.set(updateTerminalLayoutAtom, { ownerKey: key, action: { kind: 'open', open: next } }),
+    [key, registry],
   )
   const toggle = useCallback(() => setOpen(!open), [open, setOpen])
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (!isTerminalDrawerShortcut(event, isMac) || isTextEntryOutsideTerminal(event.target)) return
+      if (!isTerminalDrawerShortcut(event, isMac) || event.repeat) return
       event.preventDefault()
       toggle()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [toggle])
-
   return { open, toggle, setOpen }
 }

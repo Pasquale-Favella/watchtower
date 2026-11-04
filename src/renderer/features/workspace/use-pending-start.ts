@@ -2,8 +2,16 @@ import { RegistryContext, useAtomValue } from '@effect/atom-react'
 import { useCallback, useContext, useEffect } from 'react'
 
 import type { ConversationId } from '@/shared/schemas/workspace.js'
+import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
 
-import { hydratePendingStartStore, pendingStartStoreAtom, updatePendingStartStoreAtom } from './pending-start-atoms.js'
+import {
+  conversationSubmissionsAtom,
+  hydratePendingStartStore,
+  pendingStartStoreAtom,
+  reconcileConversationSubmission,
+  submissionMessageKeysAtom,
+  updatePendingStartStoreAtom,
+} from './pending-start-atoms.js'
 import type { PendingStartCommand } from './pending-start-state.js'
 
 function browserStorage(): Storage | null {
@@ -17,6 +25,8 @@ function browserStorage(): Storage | null {
 export function usePendingStart() {
   const registry = useContext(RegistryContext)
   const store = useAtomValue(pendingStartStoreAtom)
+  const submissions = useAtomValue(conversationSubmissionsAtom)
+  const messageKeys = useAtomValue(submissionMessageKeysAtom)
 
   useEffect(() => hydratePendingStartStore(registry, browserStorage()), [registry])
 
@@ -34,20 +44,12 @@ export function usePendingStart() {
     },
     [registry],
   )
-  const markUncertain = useCallback(
-    (conversationId: ConversationId, commandId: string) => {
-      registry.set(updatePendingStartStoreAtom, { kind: 'uncertain', conversationId, commandId })
-      return registry.get(pendingStartStoreAtom)
-    },
-    [registry],
-  )
-  const clear = useCallback(
-    (conversationId: ConversationId, commandId: string) => {
-      registry.set(updatePendingStartStoreAtom, { kind: 'clear', conversationId, commandId })
-      return registry.get(pendingStartStoreAtom)
+  const reconcile = useCallback(
+    (conversationId: ConversationId, items: readonly WorkspaceConversationPageItem[]) => {
+      reconcileConversationSubmission(registry, conversationId, items)
     },
     [registry],
   )
 
-  return { store, capture, markUncertain, clear }
+  return { store, submissions, messageKeys, capture, reconcile }
 }

@@ -3,7 +3,15 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type * as Stream from 'effect/Stream'
 
-import type { TerminalFrame, TerminalId, TerminalSnapshot, TerminalSummary } from '@/shared/schemas/terminal.js'
+import type {
+  DraftTerminalTarget,
+  TerminalFrame,
+  TerminalId,
+  TerminalOwner,
+  TerminalOwnerRequest,
+  TerminalSnapshot,
+  TerminalSummary,
+} from '@/shared/schemas/terminal.js'
 import type { TaskId } from '@/shared/schemas/workspace.js'
 
 /** Reasons a terminal operation can fail. Adapters map platform errors onto these; the RPC boundary sanitizes them. */
@@ -21,8 +29,7 @@ export class TerminalHostError extends Schema.TaggedError<TerminalHostError>()('
   ]),
 }) {}
 
-export interface TerminalSpawnRequest {
-  readonly taskId: TaskId
+export interface TerminalSpawnRequest extends TerminalOwnerRequest {
   readonly terminalId: TerminalId
   /** Resolved by the caller from the Task's checkout. The host verifies it exists before spawning. */
   readonly cwd: string
@@ -42,16 +49,25 @@ export class TerminalHost extends Context.Service<
     /** Re-spawns an exited session under the same id and clears its scrollback. */
     readonly restart: (request: TerminalSpawnRequest) => Effect.Effect<TerminalSnapshot, TerminalHostError>
     /** Snapshot first, then live frames in sequence order. The stream ends when the session closes. */
-    readonly attach: (taskId: TaskId, terminalId: TerminalId) => Stream.Stream<TerminalFrame, TerminalHostError>
-    readonly write: (taskId: TaskId, terminalId: TerminalId, data: string) => Effect.Effect<void, TerminalHostError>
+    readonly attach: (taskId: TerminalOwner, terminalId: TerminalId) => Stream.Stream<TerminalFrame, TerminalHostError>
+    readonly write: (
+      taskId: TerminalOwner,
+      terminalId: TerminalId,
+      data: string,
+    ) => Effect.Effect<void, TerminalHostError>
     readonly resize: (
-      taskId: TaskId,
+      taskId: TerminalOwner,
       terminalId: TerminalId,
       cols: number,
       rows: number,
     ) => Effect.Effect<void, TerminalHostError>
     /** Terminates the process tree and removes the session. */
-    readonly close: (taskId: TaskId, terminalId: TerminalId) => Effect.Effect<void, TerminalHostError>
-    readonly list: (taskId: TaskId) => Effect.Effect<ReadonlyArray<TerminalSummary>, TerminalHostError>
+    readonly close: (taskId: TerminalOwner, terminalId: TerminalId) => Effect.Effect<void, TerminalHostError>
+    readonly adoptDraft: (
+      draft: DraftTerminalTarget,
+      taskId: TaskId,
+      cwd: string,
+    ) => Effect.Effect<void, TerminalHostError>
+    readonly list: (taskId: TerminalOwner) => Effect.Effect<ReadonlyArray<TerminalSummary>, TerminalHostError>
   }
 >()('watchtower/core/TerminalHost') {}

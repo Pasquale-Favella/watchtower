@@ -1,13 +1,13 @@
 import { RegistryContext, useAtomValue } from '@effect/atom-react'
 import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
-import { useContext, useEffect, useRef } from 'react'
+import { useContext, useEffect, useRef, useState } from 'react'
 
 import { ApplicationClient } from '@/renderer/shared/lib/application-rpc.js'
 import { pinWindowAtom, querySnapshot } from '@/renderer/stores/hooks/use-remote-query.js'
 import type { WorkspaceConnection, WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
 
-import { connectionInspectionAtom, idleConnectionInspectionAtom, inspectionFocusAtom } from './connection-atoms.js'
+import { connectionInspectionAtom, idleConnectionInspectionAtom } from './connection-atoms.js'
 import { readInspection } from './model-picker/inspection-family.js'
 
 const connectionListRequest = {}
@@ -66,19 +66,21 @@ function connectionListKey(items: readonly WorkspaceConnection[]): string {
   return items.map(item => [item.connectionId, item.driverId, item.harnessKind].join('\u0000')).join('\u0001')
 }
 
-/** Caller-level inspection of the connection named by the last `execute`. Re-executing the same connection refreshes
+/** Caller-local inspection of the connection named by the last `execute`. Re-executing the same connection refreshes
  *  it. Choosing another connection reuses its cached inspection when there is one. */
 export function useInspectWorkspaceConnection() {
   const registry = useContext(RegistryContext)
-  const focus = useAtomValue(inspectionFocusAtom)
-  const result = useAtomValue(inspectionAtom(focus || null))
+  const [focus, setFocus] = useState<string | null>(null)
+  const requestedConnection = useRef<string | null>(null)
+  const result = useAtomValue(inspectionAtom(focus))
   const reading = readInspection(result)
   return {
     execute: (input: { readonly connectionId: string }): Promise<void> => {
-      if (registry.get(inspectionFocusAtom) === input.connectionId) {
+      if (requestedConnection.current === input.connectionId) {
         registry.refresh(connectionInspectionAtom(input.connectionId))
       } else {
-        registry.set(inspectionFocusAtom, input.connectionId)
+        requestedConnection.current = input.connectionId
+        setFocus(input.connectionId)
       }
       return Promise.resolve()
     },

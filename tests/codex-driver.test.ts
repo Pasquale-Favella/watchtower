@@ -7,6 +7,8 @@ import {
   codexAgentDriverFromTransport,
 } from '@/infrastructure/agent-harnesses/drivers/codex/driver.js'
 import type { JsonRpcTransport } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { projectConversationView } from '@/renderer/features/workspace/conversation-view.js'
+import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
 
 const encoder = new TextEncoder()
 const decoder = new TextDecoder()
@@ -61,6 +63,200 @@ function* connect(server: ReturnType<typeof fakeServer>) {
 }
 
 describe('Codex native App Server driver', () => {
+  it.each([
+    { size: 40000, control: false },
+    { size: 40000, control: true },
+    { size: 200000, control: false },
+  ])(
+    'preserves the final native command snapshot within its output limit, size $size, controls $control',
+    async ({ size, control }) => {
+      const server = fakeServer()
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* connect(server)
+            const opening = yield* Effect.forkScoped(connection.openSession(context))
+            const thread = yield* server.read
+            yield* server.send({ id: thread.id, result: { thread: { id: 'thread-output' } } })
+            const session = yield* Fiber.join(opening)
+            const runId = 'run-output' as Parameters<typeof session.submit>[0]['runId']
+            const submitting = yield* Effect.forkScoped(
+              session.submit({ runId, messages: [{ role: 'user', content: 'Print output' }], attachmentIds: [] }),
+            )
+            const start = yield* server.read
+            yield* server.send({ id: start.id, result: { turn: { id: 'turn-output', status: 'inProgress' } } })
+            yield* Fiber.join(submitting)
+            const reading = yield* Effect.forkScoped(session.events(runId).pipe(Stream.runCollect))
+            const notify = (method: string, extra: Record<string, unknown>) =>
+              server.send({ method, params: { threadId: 'thread-output', turnId: 'turn-output', ...extra } })
+            const output = `head\n${(control ? '\0' : 'x').repeat(size)}\ntail`
+            yield* notify('item/started', { item: { id: 'shell', type: 'commandExecution', command: 'print' } })
+            for (let offset = 0; offset < output.length; offset += 8192)
+              yield* notify('item/commandExecution/outputDelta', {
+                itemId: 'shell',
+                delta: output.slice(offset, offset + 8192),
+              })
+            yield* notify('item/completed', {
+              item: {
+                id: 'shell',
+                type: 'commandExecution',
+                aggregatedOutput: output,
+                exitCode: 0,
+                status: 'completed',
+              },
+            })
+            yield* notify('turn/completed', { turn: { id: 'turn-output', status: 'completed' } })
+            const events = yield* Fiber.join(reading)
+            const items: WorkspaceConversationPageItem[] = events.map((event, index) => ({
+              event: {
+                schemaVersion: 1,
+                sequence: index + 1,
+                kind: 'driverEvent',
+                runId,
+                taskId: context.taskId,
+                generation: context.generation,
+                occurredAt: new Date(Date.UTC(2026, 10, 4, 12, 0, index)).toISOString(),
+                data: { event },
+              },
+            }))
+            const tool = projectConversationView(items)
+              .entries.flatMap(entry => (entry.kind === 'assistant' ? entry.blocks : []))
+              .find(block => block.kind === 'tool')
+            expect(tool).toMatchObject({ kind: 'tool', status: 'completed' })
+            if (tool?.kind !== 'tool') throw new Error('Expected projected tool output')
+            if (size < 128 * 1024) expect(tool.output).toBe(output)
+            else {
+              expect(tool.output).toContain('… [truncated]')
+              expect(new TextEncoder().encode(tool.output ?? '').byteLength).toBeLessThanOrEqual(128 * 1024)
+            }
+            expect(events.every(event => new TextEncoder().encode(JSON.stringify(event)).byteLength <= 64 * 1024)).toBe(
+              true,
+            )
+            expect(events.filter(event => event.kind === 'toolCompleted')).toEqual([
+              expect.not.objectContaining({ output: expect.any(String) }),
+            ])
+          }),
+        ),
+      )
+    },
+  )
+
+  it('preserves native plans, streamed command output and file changes with failed exit status', async () => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-rich' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-rich' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: 'Check files' }], attachmentIds: [] }),
+          )
+          const start = yield* server.read
+          yield* server.send({ id: start.id, result: { turn: { id: 'turn-rich', status: 'inProgress' } } })
+          yield* Fiber.join(submitting)
+          const reading = yield* Effect.forkScoped(session.events(runId).pipe(Stream.runCollect))
+          const notify = (method: string, extra: Record<string, unknown>) =>
+            server.send({ method, params: { threadId: 'thread-rich', turnId: 'turn-rich', ...extra } })
+          yield* notify('turn/plan/updated', {
+            explanation: 'Check before editing',
+            plan: [
+              { step: 'Inspect', status: 'completed' },
+              { step: 'Fix', status: 'inProgress' },
+            ],
+          })
+          yield* notify('item/started', {
+            item: { id: 'shell', type: 'commandExecution', command: ['npm', 'test'], cwd: context.workspacePath },
+          })
+          yield* notify('item/commandExecution/outputDelta', { itemId: 'shell', delta: '\u001b[31mFailed\u001b[0m\n' })
+          yield* notify('item/completed', {
+            item: {
+              id: 'shell',
+              type: 'commandExecution',
+              command: 'npm test',
+              status: 'completed',
+              aggregatedOutput: 'Failed\n',
+              exitCode: 1,
+              durationMs: 42,
+            },
+          })
+          yield* notify('item/completed', {
+            item: {
+              id: 'patch',
+              type: 'fileChange',
+              status: 'completed',
+              changes: [{ path: 'src/app.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-old\n+new' }],
+            },
+          })
+          yield* notify('item/completed', {
+            item: {
+              id: 'image',
+              type: 'imageGeneration',
+              status: 'completed',
+              result: '',
+              savedPath: 'C:\\workspace\\result.png',
+            },
+          })
+          yield* notify('item/completed', { item: { id: 'compact', type: 'contextCompaction' } })
+          yield* notify('turn/completed', { turn: { id: 'turn-rich', status: 'completed' } })
+          const events = yield* Fiber.join(reading)
+          expect(events).toContainEqual({
+            kind: 'media',
+            itemId: 'image',
+            mediaType: 'image/png',
+            url: 'C:\\workspace\\result.png',
+            alt: 'Generated image',
+          })
+          expect(events).toContainEqual({ kind: 'nativeNotice', message: 'Agent context compacted.' })
+          expect(events).toContainEqual({
+            kind: 'planUpdated',
+            explanation: 'Check before editing',
+            entries: [
+              { content: 'Inspect', status: 'completed' },
+              { content: 'Fix', status: 'inProgress' },
+            ],
+          })
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolStarted',
+              toolCallId: 'shell',
+              category: 'command',
+              command: 'npm test',
+              cwd: context.workspacePath,
+            }),
+          )
+          expect(events).toContainEqual({
+            kind: 'toolUpdated',
+            toolCallId: 'shell',
+            output: '\u001b[31mFailed\u001b[0m\n',
+            append: true,
+          })
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolCompleted',
+              toolCallId: 'shell',
+              output: 'Failed\n',
+              exitCode: 1,
+              durationMs: 42,
+              error: 'Tool execution failed.',
+            }),
+          )
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolCompleted',
+              toolCallId: 'patch',
+              category: 'fileWrite',
+              changes: [{ path: 'src/app.ts', kind: 'update', diff: '@@ -1 +1 @@\n-old\n+new' }],
+            }),
+          )
+        }),
+      ),
+    )
+  })
+
   it('discovers native models and effort without opening a thread and sends resolved image and file context', async () => {
     const server = fakeServer()
     await Effect.runPromise(
@@ -87,7 +283,7 @@ describe('Codex native App Server driver', () => {
           })
           const capabilities = yield* Fiber.join(inspecting)
           expect(capabilities.models).toEqual([
-            { id: 'native-model', label: 'Native model', modes: [{ id: 'high', label: 'high' }] },
+            { id: 'native-model', label: 'Native model', modes: [{ id: 'high', label: 'High' }] },
           ])
           expect(capabilities.promptContent).toEqual({ images: true, files: true })
           expect(yield* Queue.size(server.output)).toBe(0)
@@ -398,6 +594,48 @@ describe('Codex native App Server driver', () => {
             try: () => iterator.next(),
             catch: () => new Error('event stream failed'),
           })
+
+          yield* server.send({
+            id: 'native-question-custom',
+            method: 'item/tool/requestUserInput',
+            params: {
+              threadId: 'thread-native-1',
+              turnId: accepted.nativeTurnId,
+              questions: [
+                {
+                  id: 'checks',
+                  header: 'Checks',
+                  question: 'What should run?',
+                  isOther: true,
+                  isSecret: true,
+                  multiSelect: true,
+                  options: [{ label: 'Lint', description: 'Check source style' }],
+                },
+              ],
+            },
+          })
+          const customEvent = yield* Effect.tryPromise({
+            try: () => iterator.next(),
+            catch: () => new Error('event stream failed'),
+          })
+          const custom = customEvent.value?.kind === 'requestPending' ? customEvent.value.request : undefined
+          expect(custom?.questions[0]).toMatchObject({
+            header: 'Checks',
+            allowCustomAnswer: true,
+            isSecret: true,
+            multiSelect: true,
+            options: [{ label: 'Lint', description: 'Check source style' }],
+          })
+          if (!custom) throw new Error('Expected custom question')
+          yield* session.respond(runId, custom.requestId, context.generation, {
+            kind: 'answers',
+            answers: { checks: ['Lint', 'Build Windows'] },
+          })
+          expect(yield* server.read).toEqual({
+            id: 'native-question-custom',
+            result: { answers: { checks: { answers: ['Lint', 'Build Windows'] } } },
+          })
+          yield* Effect.tryPromise({ try: () => iterator.next(), catch: () => new Error('event stream failed') })
 
           yield* server.send({
             method: 'turn/completed',

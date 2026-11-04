@@ -17,12 +17,24 @@ export const TERMINAL_DRAWER_MIN_HEIGHT = 180
 export const TERMINAL_DRAWER_CHROME_RESERVE = 240
 export const TERMINAL_DRAWER_MAX_VIEWPORT_FRACTION = 0.75
 
+export const terminalSplitDirectionSchema = Schema.Literals(['horizontal', 'vertical'])
+export type TerminalSplitDirection = Schema.Schema.Type<typeof terminalSplitDirectionSchema>
+
+/** Terminals shown together. Horizontal places them side by side, vertical stacks them. */
+const groupSchema = Schema.Struct({
+  terminals: Schema.Array(terminalIdSchema),
+  direction: terminalSplitDirectionSchema,
+})
+export type TerminalGroup = Schema.Schema.Type<typeof groupSchema>
+
 const entrySchema = Schema.Struct({
   open: Schema.Boolean,
   height: Schema.Finite,
   /** null until the Task first records its tabs, so a drawer opened without tabs still opens one terminal. */
   terminals: Schema.NullOr(Schema.Array(terminalIdSchema)),
   activeTerminal: Schema.NullOr(terminalIdSchema),
+  /** Absent in entries written before splits existed; each terminal then stands alone. */
+  groups: Schema.optionalKey(Schema.Array(groupSchema)),
   updatedAt: Schema.Finite,
 })
 const stateSchema = Schema.Record(Schema.String, entrySchema)
@@ -122,6 +134,73 @@ export function initialTerminalTabs(entry: TerminalDrawerEntry | undefined): {
   return { terminals, active }
 }
 
+/** The drawer's split groups and the focused terminal. Terminal order is the groups' order, flattened. */
+export interface TerminalLayout {
+  readonly groups: ReadonlyArray<TerminalGroup>
+  readonly active: TerminalId | null
+}
+
+export function layoutTerminals(layout: TerminalLayout): ReadonlyArray<TerminalId> {
+  return layout.groups.flatMap(group => group.terminals)
+}
+
+/**
+ * The layout a Task opens with. Stored groups are kept when they name exactly the stored terminals;
+ * otherwise, as for entries from before splits existed, each terminal gets a group of its own.
+ */
+export function initialTerminalLayout(entry: TerminalDrawerEntry | undefined): TerminalLayout {
+  const { terminals, active } = initialTerminalTabs(entry)
+  const stored = entry?.groups?.filter(group => group.terminals.length > 0)
+  const storedIds = stored?.flatMap(group => group.terminals)
+  const matches =
+    storedIds !== undefined &&
+    storedIds.length === terminals.length &&
+    new Set(storedIds).size === storedIds.length &&
+    storedIds.every(id => terminals.includes(id))
+  const groups: ReadonlyArray<TerminalGroup> =
+    matches && stored ? stored : terminals.map(id => ({ terminals: [id], direction: 'horizontal' as const }))
+  return { groups, active }
+}
+
+/** Adds a terminal in a new group of its own and focuses it. */
+export function addTerminalGroup(layout: TerminalLayout, id: TerminalId): TerminalLayout {
+  return { groups: [...layout.groups, { terminals: [id], direction: 'horizontal' }], active: id }
+}
+
+/**
+ * Splits the focused terminal's group: the new terminal goes right after the focused one and the whole
+ * group takes the direction. With nothing focused it starts a group of its own.
+ */
+export function splitTerminal(
+  layout: TerminalLayout,
+  id: TerminalId,
+  direction: TerminalSplitDirection,
+): TerminalLayout {
+  const index = layout.groups.findIndex(group => layout.active !== null && group.terminals.includes(layout.active))
+  const group = layout.groups[index]
+  if (!group || layout.active === null) return addTerminalGroup(layout, id)
+  const terminals = [...group.terminals]
+  terminals.splice(terminals.indexOf(layout.active) + 1, 0, id)
+  const groups = layout.groups.map((item, itemIndex) => (itemIndex === index ? { terminals, direction } : item))
+  return { groups, active: id }
+}
+
+/**
+ * Removes a terminal and any group it leaves empty. When it was focused, the terminal that takes its
+ * place in the flattened order is focused, or the one before it when it was last.
+ */
+export function removeTerminal(layout: TerminalLayout, id: TerminalId): TerminalLayout {
+  const order = layoutTerminals(layout)
+  const index = order.indexOf(id)
+  if (index < 0) return layout
+  const groups = layout.groups
+    .map(group => ({ ...group, terminals: group.terminals.filter(terminal => terminal !== id) }))
+    .filter(group => group.terminals.length > 0)
+  const remaining = order.filter(terminal => terminal !== id)
+  const active = layout.active === id ? (remaining[Math.min(index, remaining.length - 1)] ?? null) : layout.active
+  return { groups, active }
+}
+
 /** The lowest unused terminal id, or null when the Task already has the maximum number of tabs. */
 export function nextTerminalId(terminals: ReadonlyArray<TerminalId>): TerminalId | null {
   if (terminals.length >= TERMINAL_MAX_PER_TASK) return null
@@ -165,4 +244,26 @@ export function terminalInputChunks(data: string, maxChars: number): string[] {
     index = end
   }
   return chunks
+}
+
+/** Transfers drawer and side-panel layouts with their live sessions after the first submission. */
+export function transferTerminalDrawerState(
+  storage: TerminalDrawerStorage | null,
+  source: string,
+  destination: string,
+  current?: TerminalDrawerState,
+): TerminalDrawerState {
+  const state = current ?? readTerminalDrawerState(storage)
+  const next: Record<string, TerminalDrawerEntry> = Object.fromEntries(
+    Object.entries(state).map(([key, entry]) => {
+      if (key !== source && !key.startsWith(`${source}::panel::`)) return [key, entry]
+      return [`${destination}${key.slice(source.length)}`, entry]
+    }),
+  )
+  try {
+    storage?.setItem(STORAGE_KEY, JSON.stringify(next))
+  } catch {
+    /* The in-memory state still transfers. */
+  }
+  return next
 }

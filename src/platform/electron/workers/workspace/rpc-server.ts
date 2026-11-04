@@ -175,6 +175,8 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       ),
     'workspace-worker:registerProject': command =>
       execute('workspace-worker:registerProject', command, () => options.store.registerProject(command), true),
+    'workspace-worker:registerCheckout': command =>
+      execute('workspace-worker:registerCheckout', command, () => options.store.registerCheckout(command), true),
     'workspace-worker:createTask': command =>
       execute('workspace-worker:createTask', command, () => options.store.createTask(command), true),
     'workspace-worker:beginRun': command =>
@@ -226,6 +228,20 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         'workspace-worker:recoverWorker',
         { replacedEpoch, recoveredAt },
         () => options.store.recoverWorker(replacedEpoch, recoveredAt),
+        true,
+      ),
+    'workspace-worker:releaseDispatchAfterCleanup': ({ runId, ownerEpoch }) =>
+      execute(
+        'workspace-worker:releaseDispatchAfterCleanup',
+        { runId, ownerEpoch },
+        () => options.store.releaseDispatchAfterCleanup(runId, ownerEpoch),
+        true,
+      ),
+    'workspace-worker:releaseRetiredDispatches': ({ ownerEpoch }) =>
+      execute(
+        'workspace-worker:releaseRetiredDispatches',
+        { ownerEpoch },
+        () => options.store.releaseRetiredDispatches(ownerEpoch),
         true,
       ),
     'workspace-worker:acquireOwnerEpoch': ({ recoveredAt }) =>
@@ -321,6 +337,17 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
     'workspace-worker:listQueuedFollowUps': ({ conversationId, options: pageOptions }) =>
       execute('workspace-worker:listQueuedFollowUps', { conversationId, options: pageOptions }, () =>
         options.store.listQueuedFollowUps(conversationId, pageOptions),
+      ),
+    'workspace-worker:listQueuedFollowUpHeads': ({ options: pageOptions }) =>
+      execute('workspace-worker:listQueuedFollowUpHeads', { options: pageOptions }, () =>
+        options.store.listQueuedFollowUpHeads(pageOptions),
+      ),
+    'workspace-worker:holdQueuedFollowUps': ({ conversationId, ownerEpoch }) =>
+      execute(
+        'workspace-worker:holdQueuedFollowUps',
+        { conversationId, ownerEpoch },
+        () => options.store.holdQueuedFollowUps(conversationId, ownerEpoch),
+        true,
       ),
     'workspace-worker:listRequestResponses': ({ taskId, options: pageOptions }) =>
       execute('workspace-worker:listRequestResponses', { taskId, options: pageOptions }, () =>

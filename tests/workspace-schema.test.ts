@@ -168,6 +168,7 @@ describe('agent workspace domain schemas', () => {
       conversationId: 'conversation',
       issuedAt: '2026-10-29T10:00:00Z',
       position: 1,
+      held: false,
       promptByteLength: 900000,
       promptPreview: 'Short preview',
     }
@@ -177,6 +178,9 @@ describe('agent workspace domain schemas', () => {
     ).not.toHaveProperty('prompt')
     expect(
       Result.isFailure(Schema.decodeUnknownResult(queuedFollowUpPreviewSchema)({ ...preview, promptByteLength: -1 })),
+    ).toBe(true)
+    expect(
+      Result.isFailure(Schema.decodeUnknownResult(queuedFollowUpPreviewSchema)({ ...preview, held: 'false' })),
     ).toBe(true)
   })
 
@@ -487,7 +491,10 @@ describe('agent workspace domain schemas', () => {
     expect([...WorkspaceWorkerRpcGroup.requests.keys()].sort()).toEqual(
       [
         'workspace-worker:ready',
+        'workspace-worker:releaseDispatchAfterCleanup',
+        'workspace-worker:releaseRetiredDispatches',
         'workspace-worker:registerProject',
+        'workspace-worker:registerCheckout',
         'workspace-worker:createTask',
         'workspace-worker:beginRun',
         'workspace-worker:claimDispatch',
@@ -515,6 +522,8 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:enqueueFollowUp',
         'workspace-worker:cancelQueuedFollowUp',
         'workspace-worker:listQueuedFollowUps',
+        'workspace-worker:listQueuedFollowUpHeads',
+        'workspace-worker:holdQueuedFollowUps',
         'workspace-worker:listRequestResponses',
         'workspace-worker:listSteerIntents',
         'workspace-worker:promoteNextFollowUp',

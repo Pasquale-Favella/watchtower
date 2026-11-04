@@ -1,21 +1,32 @@
-import { ChevronDown, LoaderCircle } from 'lucide-react'
+import { LoaderCircle } from 'lucide-react'
 import { type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
 
-import { Button } from '@/renderer/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
 import { HarnessIcon } from '@/renderer/features/coach-skills/harness-icon.js'
+import { cn } from '@/renderer/shared/lib/utils'
+import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { WorkspaceConnection, WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
 
 import { useRememberedAgentChoices } from './agent-preferences.js'
 import { useWorkspaceConnectionCatalog } from './connection-hooks.js'
-import { catalogView, connectionEffort, effortFor, knownModels, type ModelChoice } from './model-picker/catalog.js'
-import { EffortControl } from './model-picker/effort-control.js'
+import type { AccessModeOption } from './model-picker/access-mode.js'
+import {
+  catalogView,
+  connectionEffort,
+  effortFor,
+  effortTitleFor,
+  knownModels,
+  type ModelChoice,
+} from './model-picker/catalog.js'
+import { composerControlClass } from './model-picker/composer-control.js'
+import { EffortColumn } from './model-picker/effort-column.js'
 import { ModelPickerPanel } from './model-picker/model-picker-panel.js'
+import { PermissionsFooter } from './model-picker/permissions.js'
 import { normalizationFor, resolveAgentChoice } from './model-picker/selection.js'
 
 export interface WorkspaceAgentPickerControl {
   readonly open: () => void
-  /** Opens the effort menu. It does nothing while the selected model offers no effort choices. */
+  /** Opens the picker with focus on the effort column. */
   readonly openEffort?: () => void
 }
 
@@ -33,6 +44,12 @@ type Props = {
   readonly sessionModels?: readonly ModelChoice[]
   /** Set for a Conversation bound to a native session. Other agents are then disabled. */
   readonly lockedConnectionId?: string
+  /** Permissions the next message uses. The picker's footer offers them when given. */
+  readonly access?: {
+    readonly mode: AgentAccessMode
+    readonly options: readonly AccessModeOption[]
+    readonly onChange: (mode: AgentAccessMode) => void
+  }
   readonly onConnectionChange: (id: string) => void
   readonly onModelChange: (id: string) => void
   readonly onModeChange: (id: string) => void
@@ -44,17 +61,34 @@ type Props = {
   }) => void
 }
 
-/** Agent and model picker in the Coach & Skills style. One trigger opens a popover with the agent rail on the left
- *  and the searchable model list on the right. The selected agent's catalog is inspected as soon as the picker
- *  mounts and cached per connection for the session. Remembered choices and the Conversation's own choice are
- *  resolved here, and the parent is kept in step with the choice that is shown. */
+function focusEffort(popup: HTMLElement | null) {
+  const column = popup?.querySelector('[data-effort-column]')
+  const row =
+    column?.querySelector<HTMLElement>('[data-effort-row][aria-checked="true"]') ??
+    column?.querySelector<HTMLElement>('[data-effort-row]')
+  row?.focus({ preventScroll: true })
+  return row != null
+}
+
+/** The composer's model picker: one trigger names the model and its effort. Its popover holds the
+ *  agent rail, the searchable models, the effort column of the chosen model and the permissions footer. The selected
+ *  agent's catalog is inspected as soon as the picker mounts and cached per connection for the session. Remembered
+ *  choices and the Conversation's own choice are resolved here, and the parent is kept in step with what is shown. */
 export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
   const { connectionId, onModelChange, onModeChange } = props
   const [open, setOpen] = useState(false)
-  const [effortOpen, setEffortOpen] = useState(false)
+  const openTarget = useRef<'effort' | null>(null)
+  const popupRef = useRef<HTMLDivElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
   useImperativeHandle(
     props.controlRef,
-    () => ({ open: () => setOpen(true), openEffort: () => setEffortOpen(true) }),
+    () => ({
+      open: () => setOpen(true),
+      openEffort: () => {
+        openTarget.current = 'effort'
+        setOpen(true)
+      },
+    }),
     [],
   )
 
@@ -106,77 +140,90 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
       if (targetConnectionId !== connectionId) props.onConnectionChange(targetConnectionId)
       onModelChange(modelId)
     }
-    setEffortOpen(false)
-    setOpen(false)
+    // A model pick leaves the picker open on the new model's effort levels.
+    requestAnimationFrame(() => {
+      if (!focusEffort(popupRef.current)) setOpen(false)
+    })
   }
 
   function chooseEffort(modeId: string) {
     remembered.remember(connectionId, { modelId: resolved.modelId, modeId })
     onModeChange(modeId)
-    setEffortOpen(false)
+    setOpen(false)
   }
 
   const listed = view.kind === 'listed' || view.kind === 'session' ? view.models : []
   const modelName = resolved.modelId
     ? (listed.find(model => model.id === resolved.modelId)?.label ?? resolved.modelId)
-    : 'default'
-  let triggerLabel = 'Choose an agent'
-  if (selectedConnection) triggerLabel = `${selectedConnection.label} · ${modelName}`
-  else if (props.connections.length === 0) triggerLabel = 'No agent detected'
+    : 'Default model'
+  const effortLabel = resolved.modeId
+    ? (effortOptions?.find(option => option.id === resolved.modeId)?.label ?? resolved.modeId)
+    : null
+  const effortTitle = effortTitleFor(effortOptions)
+  let triggerLabel = modelName
+  if (props.connections.length === 0) triggerLabel = 'No agent detected'
+  else if (!selectedConnection) triggerLabel = 'Choose an agent'
+  const triggerTitle = selectedConnection
+    ? [selectedConnection.label, modelName, effortLabel].filter(Boolean).join(' · ')
+    : triggerLabel
 
   return (
-    <>
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger
-          render={
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              aria-label="Agent and model"
-              title={triggerLabel}
-              disabled={props.connections.length === 0}
-              className="border-border h-7 max-w-56 min-w-0 gap-1.5 pr-1.5 text-[11.5px] font-normal"
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      onOpenChangeComplete={isOpen => {
+        if (isOpen && openTarget.current === 'effort') focusEffort(popupRef.current)
+        openTarget.current = null
+      }}
+    >
+      <PopoverTrigger
+        aria-label="Agent and model"
+        title={triggerTitle}
+        disabled={props.connections.length === 0}
+        className={composerControlClass('max-w-64 min-w-0 shrink justify-start')}
+      >
+        {selectedConnection && <HarnessIcon kind={selectedConnection.harnessKind} className="size-4 shrink-0" />}
+        <span className="min-w-0 truncate">{triggerLabel}</span>
+        {effortLabel && (
+          <span className="text-muted-foreground max-w-24 shrink-0 truncate font-normal">{effortLabel}</span>
+        )}
+        {activeCatalog.pending && (
+          <LoaderCircle aria-hidden className={cn('text-muted-foreground size-3 shrink-0 animate-spin')} />
+        )}
+      </PopoverTrigger>
+      <PopoverContent
+        ref={popupRef}
+        side="top"
+        align="start"
+        sideOffset={8}
+        initialFocus={searchRef}
+        className="w-[556px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0"
+        aria-label="Choose agent and model"
+      >
+        <ModelPickerPanel
+          connections={props.connections}
+          activeConnectionId={connectionId}
+          activeCatalog={activeCatalog}
+          activeChoice={resolved}
+          sessionModels={props.sessionModels}
+          lockedConnectionId={props.lockedConnectionId}
+          rememberedFor={remembered.choiceFor}
+          onCommit={commit}
+          onClose={() => setOpen(false)}
+          searchRef={searchRef}
+          effortColumn={
+            <EffortColumn
+              title={effortTitle}
+              modelLabel={modelName}
+              options={effortOptions}
+              value={resolved.modeId}
+              onPick={chooseEffort}
+              onLeave={() => searchRef.current?.focus()}
             />
           }
-        >
-          {selectedConnection && <HarnessIcon kind={selectedConnection.harnessKind} className="size-3.5 shrink-0" />}
-          <span className="min-w-0 flex-1 truncate text-left">{triggerLabel}</span>
-          {activeCatalog.pending ? (
-            <LoaderCircle className="text-muted-foreground size-3 shrink-0 animate-spin" />
-          ) : (
-            <ChevronDown className="text-muted-foreground size-3.5 shrink-0 opacity-50" />
-          )}
-        </PopoverTrigger>
-        <PopoverContent
-          side="top"
-          align="start"
-          sideOffset={8}
-          className="w-[380px] max-w-[calc(100vw-2rem)] p-0"
-          aria-label="Choose agent and model"
-        >
-          <ModelPickerPanel
-            connections={props.connections}
-            activeConnectionId={connectionId}
-            activeCatalog={activeCatalog}
-            activeChoice={resolved}
-            sessionModels={props.sessionModels}
-            lockedConnectionId={props.lockedConnectionId}
-            rememberedFor={remembered.choiceFor}
-            onCommit={commit}
-            onClose={() => setOpen(false)}
-          />
-        </PopoverContent>
-      </Popover>
-      {effortOptions && effortOptions.length > 0 && (
-        <EffortControl
-          options={effortOptions}
-          value={resolved.modeId}
-          open={effortOpen}
-          onOpenChange={setEffortOpen}
-          onChange={chooseEffort}
+          footer={props.access ? <PermissionsFooter {...props.access} /> : undefined}
         />
-      )}
-    </>
+      </PopoverContent>
+    </Popover>
   )
 }

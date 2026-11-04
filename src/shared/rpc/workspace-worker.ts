@@ -4,6 +4,7 @@ import * as Schema from 'effect/Schema'
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import {
   beginRunCommandSchema,
+  checkoutRegistrationReceiptSchema,
   commandReceiptSchema,
   createTaskCommandSchema,
   dispatchClaimSchema,
@@ -15,9 +16,11 @@ import {
   projectRegistrationReceiptSchema,
   promotedFollowUpSchema,
   queuedFollowUpPageSchema,
+  queuedFollowUpHeadPageSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
+  registerCheckoutCommandSchema,
   registerProjectCommandSchema,
   requestResponsePageSchema,
   settleDeliveryCommandSchema,
@@ -46,7 +49,7 @@ import {
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 10
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 13
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -75,6 +78,11 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:registerProject', {
     payload: registerProjectCommandSchema,
     success: projectRegistrationReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:registerCheckout', {
+    payload: registerCheckoutCommandSchema,
+    success: checkoutRegistrationReceiptSchema,
     error,
   }),
   Rpc.make('workspace-worker:createTask', {
@@ -120,6 +128,16 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:recoverWorker', {
     payload: Schema.Struct({ replacedEpoch: workerEpochSchema, recoveredAt: timestamp }),
     success: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+    error,
+  }),
+  Rpc.make('workspace-worker:releaseDispatchAfterCleanup', {
+    payload: Schema.Struct({ runId: agentRunIdSchema, ownerEpoch: workerEpochSchema }),
+    success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:releaseRetiredDispatches', {
+    payload: Schema.Struct({ ownerEpoch: workerEpochSchema }),
+    success: Schema.Void,
     error,
   }),
   Rpc.make('workspace-worker:acquireOwnerEpoch', {
@@ -216,6 +234,16 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
       options: Schema.optional(workspaceReadPageOptionsSchema),
     }),
     success: queuedFollowUpPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:listQueuedFollowUpHeads', {
+    payload: Schema.Struct({ options: Schema.optional(workspaceReadPageOptionsSchema) }),
+    success: queuedFollowUpHeadPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:holdQueuedFollowUps', {
+    payload: Schema.Struct({ conversationId: conversationIdSchema, ownerEpoch: workerEpochSchema }),
+    success: Schema.Void,
     error,
   }),
   Rpc.make('workspace-worker:listRequestResponses', {

@@ -15,7 +15,8 @@ import type { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
 import { createWorkspaceIntent, retryWorkspaceIntent } from './commands.js'
 import { applyWorkspaceFrame, createWorkspaceProjection, workspaceResume } from './events.js'
 import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
-import { createWorkspaceQueryPolling } from './polling.js'
+import { createWorkspaceQueryPolling, type WorkspaceQueryRefreshTarget } from './polling.js'
+import { deliverConversationSubmission } from './submission-lifecycle.js'
 
 export interface WorkspaceStreamState {
   readonly status: 'inactive' | 'connecting' | 'live' | 'reconnecting' | 'error'
@@ -128,6 +129,11 @@ export function createWorkspaceAtoms(
     query: (request: WorkspaceRequest<'workspace:readWorkspacePayload'>, id: string) =>
       client.query('workspace:readWorkspacePayload', request, queryOptions(id)),
   })
+  const workspaceBranches = createRpcQuerySlot({
+    key: workspaceQueryKey,
+    query: (request: WorkspaceRequest<'workspace:listBranches'>, id: string) =>
+      client.query('workspace:listBranches', request, queryOptions(id)),
+  })
   const workspaceProjectionAtom = Atom.keepAlive(Atom.make(createWorkspaceProjection()))
   const workspaceStreamStateAtom = Atom.keepAlive(Atom.make<WorkspaceStreamState>({ status: 'inactive', error: null }))
   const workspaceRuntime = client.runtime.factory(get =>
@@ -146,10 +152,22 @@ export function createWorkspaceAtoms(
     workspaceFollowUps,
     workspaceRequestResponses,
     workspaceSteerIntents,
+    // Branches change outside the app too, so a mounted strip keeps them current.
+    workspaceBranches,
   ]
+  const scopedQueries = new Set<WorkspaceQueryRefreshTarget>()
+  const registerScopedWorkspaceQueries = (targets: readonly WorkspaceQueryRefreshTarget[]): (() => void) => {
+    for (const target of targets) scopedQueries.add(target)
+    return () => {
+      for (const target of targets) scopedQueries.delete(target)
+    }
+  }
   const queryPolling = createWorkspaceQueryPolling(
     (options.runtime ?? client.runtime.factory)(options.layer ?? ApplicationProtocolLayer),
-    { targets: () => [...fallbackTargets, ...sidebarTaskSlots.values()], beforeRefresh: waitForWorkspaceConnection },
+    {
+      targets: () => [...fallbackTargets, ...sidebarTaskSlots.values(), ...scopedQueries],
+      beforeRefresh: waitForWorkspaceConnection,
+    },
   )
   const retainWorkspaceSidebarQuery = (registry: AtomRegistry.AtomRegistry, slot: typeof workspaceTasks) => {
     sidebarTaskReaders.set(slot, (sidebarTaskReaders.get(slot) ?? 0) + 1)
@@ -177,25 +195,30 @@ export function createWorkspaceAtoms(
             workspaceSteerIntents,
             ...sidebarTaskSlots.values(),
           ]
-    queryPolling.refresh(registry, targets)
+    queryPolling.refresh(registry, [...targets, ...scopedQueries])
     const conversation = registry.get(workspaceConversation.requestAtom)
     if (conversation && conversation.throughSequence === undefined)
       queryPolling.refresh(registry, [workspaceConversation])
   }
 
+  const executeCommand = Effect.fnUntraced(function* <Request extends { readonly commandId: string }, Value>(
+    input: Omit<Request, 'commandId'> & { readonly commandId?: string },
+    send: (rpc: Client, request: Request) => Effect.Effect<Value, CommandError>,
+    registry: AtomRegistry.AtomRegistry,
+  ) {
+    const intent = createWorkspaceIntent(input) as Request
+    const rpc = yield* client
+    const reconnect = Effect.sleep(100).pipe(Effect.andThen(waitForWorkspaceConnection))
+    const result = yield* retryWorkspaceIntent(intent, request => send(rpc, request), reconnect)
+    refreshWorkspace(registry, 'command')
+    return result
+  })
+
   const makeCommand = <Request extends { readonly commandId: string }, Value>(
     send: (rpc: Client, request: Request) => Effect.Effect<Value, CommandError>,
   ) =>
     workspaceRuntime.fn<Omit<Request, 'commandId'> & { readonly commandId?: string }>()(
-      (input, get) =>
-        Effect.gen(function* () {
-          const intent = createWorkspaceIntent(input) as Request
-          const rpc = yield* client
-          const reconnect = Effect.sleep(100).pipe(Effect.andThen(waitForWorkspaceConnection))
-          const result = yield* retryWorkspaceIntent(intent, request => send(rpc, request), reconnect)
-          refreshWorkspace(get.registry, 'command')
-          return result
-        }),
+      (input, get) => executeCommand(input, send, get.registry),
       { concurrent: true },
     )
 
@@ -211,8 +234,18 @@ export function createWorkspaceAtoms(
   const createTaskAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createTask'>) =>
     rpc('workspace:createTask', request),
   )
-  const startRunAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:startRun'>) =>
-    rpc('workspace:startRun', request),
+  const startRunAtom = workspaceRuntime.fn<WorkspaceRequest<'workspace:startRun'>>()(
+    (input, get) =>
+      deliverConversationSubmission(
+        get.registry,
+        input,
+        executeCommand(
+          input,
+          (rpc, request: WorkspaceRequest<'workspace:startRun'>) => rpc('workspace:startRun', request),
+          get.registry,
+        ),
+      ),
+    { concurrent: true },
   )
   const interruptAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:interrupt'>) =>
     rpc('workspace:interrupt', request),
@@ -229,6 +262,12 @@ export function createWorkspaceAtoms(
   )
   const promoteQueuedFollowUpAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:promoteQueuedFollowUp'>) =>
     rpc('workspace:promoteQueuedFollowUp', request),
+  )
+  const switchBranchAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:switchBranch'>) =>
+    rpc('workspace:switchBranch', request),
+  )
+  const createWorktreeAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createWorktree'>) =>
+    rpc('workspace:createWorktree', request),
   )
 
   const makeSubscription = Effect.fnUntraced(function* (
@@ -278,6 +317,7 @@ export function createWorkspaceAtoms(
       )
 
   return {
+    registerScopedWorkspaceQueries,
     retainWorkspaceQuery: queryPolling.retain,
     retainWorkspaceSidebarQuery,
     workspaceStatus,
@@ -294,6 +334,7 @@ export function createWorkspaceAtoms(
     workspaceSteerIntents,
     workspaceFollowUps,
     workspacePayload,
+    workspaceBranches,
     workspaceProjectionAtom,
     workspaceStreamStateAtom,
     workspaceSubscriptionAtom,
@@ -308,10 +349,13 @@ export function createWorkspaceAtoms(
     enqueueFollowUpAtom,
     cancelQueuedFollowUpAtom,
     promoteQueuedFollowUpAtom,
+    switchBranchAtom,
+    createWorktreeAtom,
   }
 }
 
 export const {
+  registerScopedWorkspaceQueries,
   retainWorkspaceQuery,
   retainWorkspaceSidebarQuery,
   workspaceStatus,
@@ -328,6 +372,7 @@ export const {
   workspaceSteerIntents,
   workspaceFollowUps,
   workspacePayload,
+  workspaceBranches,
   workspaceProjectionAtom,
   workspaceStreamStateAtom,
   workspaceSubscriptionAtom,
@@ -342,4 +387,6 @@ export const {
   enqueueFollowUpAtom,
   cancelQueuedFollowUpAtom,
   promoteQueuedFollowUpAtom,
+  switchBranchAtom,
+  createWorktreeAtom,
 } = createWorkspaceAtoms()

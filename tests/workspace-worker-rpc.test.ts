@@ -14,8 +14,8 @@ import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import { workspaceWorkerRpcServerLayer } from '@/platform/electron/workers/workspace/rpc-server.js'
 import {
-  WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY,
   WORKSPACE_WORKER_PROTOCOL_VERSION,
+  WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY,
   WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY,
   workspaceWorkerReadySchema,
   WorkspaceWorkerRpcGroup,
@@ -76,7 +76,13 @@ describe('workspace worker RPC server', () => {
     expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 9 })).toThrow()
     expect(
       Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION }),
-    ).toEqual({ protocolVersion: 10 })
+    ).toEqual({ protocolVersion: WORKSPACE_WORKER_PROTOCOL_VERSION })
+  })
+  it('rejects a worker that cannot register worktree checkouts', () => {
+    expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 10 })).toThrow()
+  })
+  it('rejects a worker that cannot release confirmed execution cleanup', () => {
+    expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 11 })).toThrow()
   })
   it('round-trips registration reuse and task receipts with command conflicts', async () => {
     const result = await Effect.runPromise(

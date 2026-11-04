@@ -7,9 +7,11 @@ import {
   agentRequestDecisionSchema,
   agentRequestSchema,
   agentRunSchema,
+  agentRunStatusSchema,
 } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
+  agentSessionSchema,
   agentSessionIdSchema,
   conversationIdSchema,
   projectIdSchema,
@@ -83,6 +85,26 @@ export const registerProjectCommandSchema = Schema.Struct({
   }),
 })
 export type RegisterProjectCommand = Schema.Schema.Type<typeof registerProjectCommandSchema>
+
+/** Registers an isolated worktree created for a Project. The main checkout is only registered with its Project. */
+export const registerCheckoutCommandSchema = Schema.Struct({
+  commandId: text,
+  checkout: Schema.Struct({
+    id: workspaceCheckoutIdSchema,
+    projectId: projectIdSchema,
+    kind: Schema.Literal('worktree'),
+    path: text,
+    branch: optionalText,
+    createdAt: timestamp,
+  }),
+})
+export type RegisterCheckoutCommand = Schema.Schema.Type<typeof registerCheckoutCommandSchema>
+export const checkoutRegistrationReceiptSchema = Schema.Struct({
+  commandId: text,
+  checkout: workspaceCheckoutSchema,
+  replayed: Schema.Boolean,
+})
+export type CheckoutRegistrationReceipt = Schema.Schema.Type<typeof checkoutRegistrationReceiptSchema>
 
 export const createTaskCommandSchema = Schema.Struct({
   commandId: Schema.optional(text),
@@ -256,6 +278,9 @@ export const enqueueFollowUpCommandSchema = Schema.Struct({
   issuedAt: timestamp,
   taskId: taskIdSchema,
   conversationId: conversationIdSchema,
+  checkoutId: Schema.optional(workspaceCheckoutIdSchema),
+  generation: Schema.optional(beginRunCommandSchema.fields.generation),
+  nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
   prompt: Schema.String,
   attachments: Schema.optional(promptAttachmentsSchema),
   driverId: Schema.optional(text),
@@ -277,8 +302,26 @@ export type FollowUpReceipt = Schema.Schema.Type<typeof followUpReceiptSchema>
 export const queuedFollowUpSchema = Schema.Struct({
   ...enqueueFollowUpCommandSchema.fields,
   position: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+  held: Schema.optional(Schema.Boolean),
 })
 export type QueuedFollowUp = Schema.Schema.Type<typeof queuedFollowUpSchema>
+
+export const queuedFollowUpHeadSchema = Schema.Struct({
+  ...queuedFollowUpSchema.fields,
+  context: Schema.NullOr(
+    Schema.Struct({
+      projectId: projectIdSchema,
+      checkoutId: workspaceCheckoutIdSchema,
+      driverId: text,
+      connectionId: text,
+      generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+      nativeSessionId: Schema.NullOr(text),
+      sessionStatus: Schema.NullOr(agentSessionSchema.fields.status),
+      runStatus: agentRunStatusSchema,
+    }),
+  ),
+})
+export type QueuedFollowUpHead = Schema.Schema.Type<typeof queuedFollowUpHeadSchema>
 
 export const WORKSPACE_STORE_COMMAND_BYTE_CAPACITY = 1024 * 1024
 export const workspaceReadPageOptionsSchema = Schema.Struct({
@@ -310,6 +353,11 @@ const readPageFields = {
 }
 export const queuedFollowUpPageSchema = Schema.Struct({ ...readPageFields, items: Schema.Array(queuedFollowUpSchema) })
 export type QueuedFollowUpPage = Schema.Schema.Type<typeof queuedFollowUpPageSchema>
+export const queuedFollowUpHeadPageSchema = Schema.Struct({
+  ...readPageFields,
+  items: Schema.Array(queuedFollowUpHeadSchema),
+})
+export type QueuedFollowUpHeadPage = Schema.Schema.Type<typeof queuedFollowUpHeadPageSchema>
 export const requestResponseHistoryItemSchema = Schema.Struct({
   ...requestResponseIntentSchema.fields,
   position: queuedFollowUpSchema.fields.position,
@@ -334,6 +382,7 @@ export const queuedFollowUpPreviewSchema = Schema.Struct({
   position: queuedFollowUpSchema.fields.position,
   promptByteLength: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   promptPreview: Schema.String,
+  held: Schema.Boolean,
 })
 const snapshotSectionSummarySchema = Schema.Struct({
   total: readPageFields.total,
@@ -588,6 +637,7 @@ export const workspaceRunContextSchema = Schema.Struct({
   checkoutId: workspaceCheckoutIdSchema,
   driverId: text,
   connectionId: text,
+  workspacePath: Schema.optional(text),
 })
 export type WorkspaceRunContext = Schema.Schema.Type<typeof workspaceRunContextSchema>
 export const workspaceRunCoverageSchema = Schema.Struct({

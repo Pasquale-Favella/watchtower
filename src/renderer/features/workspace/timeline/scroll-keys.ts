@@ -19,9 +19,11 @@ const PAGE_SCROLL_RATIO = 0.9
 
 /** Lets the timeline's scroll position answer for PageUp/PageDown pressed in the composer. */
 let activeViewport: HTMLElement | null = null
+let releaseFollow: (() => void) | undefined
 
-export function attachTimelineViewport(element: HTMLElement | null): void {
+export function attachTimelineViewport(element: HTMLElement | null, onNavigate?: () => void): void {
   activeViewport = element
+  releaseFollow = onNavigate
 }
 
 export function pageDirectionForKey(key: string): TimelinePageDirection | null {
@@ -45,6 +47,7 @@ export function prefersReducedMotion(): boolean {
 export function scrollTimelinePage(direction: TimelinePageDirection): boolean {
   const viewport = activeViewport
   if (!viewport || !viewport.isConnected) return false
+  releaseFollow?.()
   const distance = Math.round(viewport.clientHeight * PAGE_SCROLL_RATIO) * (direction === 'up' ? -1 : 1)
   viewport.scrollBy({ top: distance, behavior: prefersReducedMotion() ? 'auto' : 'smooth' })
   return true

@@ -19,6 +19,38 @@ export interface ParsedPatch {
   readonly deletions: number
 }
 
+export type SplitDiffRow =
+  | { readonly kind: 'hunk' | 'note'; readonly text: string }
+  | { readonly kind: 'lines'; readonly before: DiffLine | null; readonly after: DiffLine | null }
+
+/** Aligns each deletion/addition block independently, so context lines keep their actual line numbers. */
+export function splitDiffRows(patch: ParsedPatch): SplitDiffRow[] {
+  const rows: SplitDiffRow[] = []
+  for (const hunk of patch.hunks) {
+    rows.push({ kind: 'hunk', text: hunk.header })
+    let before: DiffLine[] = []
+    let after: DiffLine[] = []
+    const flush = () => {
+      for (let index = 0; index < Math.max(before.length, after.length); index += 1) {
+        rows.push({ kind: 'lines', before: before[index] ?? null, after: after[index] ?? null })
+      }
+      before = []
+      after = []
+    }
+    for (const line of hunk.lines) {
+      if (line.kind === 'deletion') before.push(line)
+      else if (line.kind === 'addition') after.push(line)
+      else {
+        flush()
+        if (line.kind === 'note') rows.push({ kind: 'note', text: line.text })
+        else rows.push({ kind: 'lines', before: line, after: line })
+      }
+    }
+    flush()
+  }
+  return rows
+}
+
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/
 
 /**

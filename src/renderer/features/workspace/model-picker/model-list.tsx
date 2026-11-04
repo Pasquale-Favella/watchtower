@@ -1,4 +1,4 @@
-import { Check, Loader2 } from 'lucide-react'
+import { Check, Loader2, TriangleAlert } from 'lucide-react'
 import type { KeyboardEvent, Ref } from 'react'
 import { useId } from 'react'
 
@@ -29,6 +29,7 @@ export function ModelList({
   onHighlight,
   onPick,
   onRetry,
+  notice,
   onClose,
   onLeaveSearch,
 }: {
@@ -41,13 +42,18 @@ export function ModelList({
   readonly onHighlight: (modelId: string) => void
   readonly onPick: (modelId: string) => void
   readonly onRetry: () => void
+  /** The previewed agent's sign-in: its account when ready, otherwise what to do. */
+  readonly notice?: { readonly tone: 'info' | 'attention'; readonly text: string | null } | null
   readonly onClose: () => void
   /** ArrowLeft on an empty search moves focus to the rail. */
   readonly onLeaveSearch: () => void
 }) {
   const listId = useId()
   const models = view.kind === 'listed' || view.kind === 'session' ? view.models : []
-  const rows = rankModelRows<ModelRow>([DEFAULT_MODEL_ROW, ...models], query)
+  // One row per ID: a repeated ID would show two checked rows and collide as a React key.
+  const seen = new Set<string>()
+  const unique = [DEFAULT_MODEL_ROW, ...models].filter(row => !seen.has(row.id) && Boolean(seen.add(row.id)))
+  const rows = rankModelRows<ModelRow>(unique, query)
   const highlightIndex = Math.max(
     0,
     rows.findIndex(row => row.id === highlightedId),
@@ -101,6 +107,20 @@ export function ModelList({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-1.5">
+        {notice?.text && view.kind !== 'failed' && (
+          <p
+            role={notice.tone === 'attention' ? 'alert' : 'status'}
+            className={cn(
+              'mx-0.5 mb-1.5 flex items-start gap-1.5 rounded-md px-2 py-1.5 text-[11px] leading-4',
+              notice.tone === 'attention'
+                ? 'bg-amber-500/10 text-amber-800 dark:text-amber-300'
+                : 'text-muted-foreground',
+            )}
+          >
+            {notice.tone === 'attention' && <TriangleAlert aria-hidden className="mt-px size-3.5 shrink-0" />}
+            <span className="min-w-0 break-words">{notice.text}</span>
+          </p>
+        )}
         {view.kind === 'loading' ? (
           <p role="status" className="text-muted-foreground flex items-center justify-center gap-1.5 py-6 text-[12px]">
             <Loader2 className="size-3.5 animate-spin" />
@@ -159,7 +179,9 @@ export function ModelList({
               <p className="text-muted-foreground px-2 py-3 text-[12px]">No models available</p>
             )}
             {view.kind === 'session' && models.length === 0 && (
-              <p className="text-muted-foreground px-2 py-3 text-[12px]">Models are reported when the chat starts</p>
+              <p className="text-muted-foreground px-2 py-3 text-[12px]">
+                This agent did not list its models. It uses its own default.
+              </p>
             )}
           </>
         )}

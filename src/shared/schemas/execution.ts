@@ -72,9 +72,19 @@ export const capabilitySchema = Schema.Struct({
 })
 export type Capability = Schema.Schema.Type<typeof capabilitySchema>
 
+/** Most model or mode choices one connection can report. OpenCode lists hundreds of provider models. */
+export const MAX_AGENT_CATALOG_CHOICES = 1024
+/** The account an agent reports it is signed in with. Fields stay absent when the agent does not say. */
+export const agentAccountSchema = Schema.Struct({
+  label: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
+  email: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
+})
+export type AgentAccount = Schema.Schema.Type<typeof agentAccountSchema>
 export const agentModelChoiceSchema = Schema.Struct({
   id: text,
   label: Schema.String,
+  /** What the model is for, shown under its name. */
+  description: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
   modes: Schema.optional(Schema.Array(Schema.Struct({ id: text, label: Schema.String }))),
 })
 export const agentSlashCommandSchema = Schema.Struct({
@@ -146,13 +156,51 @@ export const agentRequestSchema = Schema.Struct({
     Schema.Struct({
       id: text,
       prompt: Schema.String,
+      header: Schema.optional(Schema.String),
+      allowCustomAnswer: Schema.optional(Schema.Boolean),
+      isSecret: Schema.optional(Schema.Boolean),
       multiSelect: Schema.Boolean,
-      options: Schema.Array(Schema.Struct({ id: text, label: Schema.String })),
+      options: Schema.Array(
+        Schema.Struct({
+          id: text,
+          label: Schema.String,
+          description: Schema.optional(Schema.String),
+          recommended: Schema.optional(Schema.Boolean),
+        }),
+      ),
     }),
   ),
   nativeRequestId: optionalText,
 })
 export type AgentRequest = Schema.Schema.Type<typeof agentRequestSchema>
+
+export const agentToolMetadataSchema = Schema.Struct({
+  category: Schema.optional(
+    Schema.Literals(['command', 'fileRead', 'fileWrite', 'search', 'web', 'subagent', 'mcp', 'other']),
+  ),
+  command: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  exitCode: Schema.optional(Schema.Number.check(Schema.isInt())),
+  durationMs: Schema.optional(nonNegative),
+  paths: Schema.optional(Schema.Array(Schema.String)),
+  url: Schema.optional(Schema.String),
+  changes: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        kind: Schema.Literals(['add', 'delete', 'update']),
+        diff: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+})
+export type AgentToolMetadata = Schema.Schema.Type<typeof agentToolMetadataSchema>
+export const agentPlanEntrySchema = Schema.Struct({
+  content: Schema.String,
+  status: Schema.Literals(['pending', 'inProgress', 'completed']),
+})
+export type AgentPlanEntry = Schema.Schema.Type<typeof agentPlanEntrySchema>
 
 export const agentDriverEventSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('capabilitiesUpdated'), capabilities: agentCapabilitiesSchema }),
@@ -162,9 +210,44 @@ export const agentDriverEventSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('turnFailed'), nativeTurnId: optionalText, message: Schema.String }),
   Schema.Struct({ kind: Schema.Literal('textDelta'), text: Schema.String, itemId: optionalText }),
   Schema.Struct({ kind: Schema.Literal('reasoningDelta'), text: Schema.String, itemId: optionalText }),
-  Schema.Struct({ kind: Schema.Literal('toolStarted'), toolCallId: text, name: text, input: optionalText }),
-  Schema.Struct({ kind: Schema.Literal('toolUpdated'), toolCallId: text, output: optionalText }),
-  Schema.Struct({ kind: Schema.Literal('toolCompleted'), toolCallId: text, error: optionalText }),
+  Schema.Struct({
+    kind: Schema.Literal('toolStarted'),
+    toolCallId: text,
+    name: text,
+    input: Schema.optional(Schema.String),
+    ...agentToolMetadataSchema.fields,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('toolUpdated'),
+    toolCallId: text,
+    name: optionalText,
+    input: Schema.optional(Schema.String),
+    output: Schema.optional(Schema.String),
+    append: Schema.optional(Schema.Boolean),
+    ...agentToolMetadataSchema.fields,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('toolCompleted'),
+    toolCallId: text,
+    name: optionalText,
+    input: Schema.optional(Schema.String),
+    output: Schema.optional(Schema.String),
+    error: optionalText,
+    ...agentToolMetadataSchema.fields,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('media'),
+    itemId: optionalText,
+    mediaType: text,
+    url: Schema.String,
+    alt: optionalText,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('planUpdated'),
+    itemId: optionalText,
+    explanation: optionalText,
+    entries: Schema.Array(agentPlanEntrySchema),
+  }),
   Schema.Struct({ kind: Schema.Literal('requestPending'), request: agentRequestSchema }),
   Schema.Struct({ kind: Schema.Literal('requestResolved'), requestId: text, decision: agentRequestDecisionSchema }),
   Schema.Struct({

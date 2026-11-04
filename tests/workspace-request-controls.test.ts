@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   approvalDecision,
   eligibleApprovalOptions,
+  questionAnswerLabels,
   questionDecision,
   requestIsCurrent,
   requestResponseState,
@@ -107,6 +108,51 @@ describe('workspace request controls', () => {
     expect(requestIsCurrent(pending, 'conversation-a', [{ ...run, status: 'completed' }], [context])).toBe(false)
     expect(requestIsCurrent(pending, 'conversation-a', [{ ...run, generation: 1 }], [context])).toBe(false)
     expect(requestIsCurrent(pending, 'conversation-a', [run], [])).toBe(false)
+  })
+
+  it('accepts custom answers only when advertised and keeps multi-select option IDs alongside typed text', () => {
+    const request: AgentRequest = {
+      ...approval,
+      kind: 'question',
+      questions: [
+        {
+          id: 'target',
+          prompt: 'Targets?',
+          multiSelect: true,
+          allowCustomAnswer: true,
+          options: [
+            { id: 'web', label: 'Web' },
+            { id: 'desktop', label: 'Desktop' },
+          ],
+        },
+      ],
+    }
+    expect(questionDecision(request, { target: ['web', 'A custom target'] })).toEqual({
+      kind: 'answers',
+      answers: { target: ['web', 'A custom target'] },
+    })
+    expect(
+      questionDecision(
+        { ...request, questions: [{ ...request.questions[0], allowCustomAnswer: false }] },
+        { target: ['web', 'A custom target'] },
+      ),
+    ).toBeNull()
+    expect(questionDecision(request, { target: ['web', 'web'] })).toBeNull()
+    expect(questionDecision(request, { target: ['web', '   '] })).toBeNull()
+  })
+
+  it('resolves saved option IDs to labels while masking secret answers in history', () => {
+    const question: AgentRequest['questions'][number] = {
+      id: 'choice',
+      prompt: 'Choose',
+      multiSelect: true,
+      options: [{ id: 'one', label: 'First answer' }],
+      allowCustomAnswer: true,
+    }
+    const decision = { kind: 'answers' as const, answers: { choice: ['one', 'My answer'] } }
+    expect(questionAnswerLabels(question, decision)).toEqual(['First answer', 'My answer'])
+    expect(questionAnswerLabels({ ...question, isSecret: true }, decision)).toEqual(['Hidden answer'])
+    expect(questionAnswerLabels(question, { kind: 'cancel' })).toEqual([])
   })
 
   it('looks up response delivery independently by run, generation and request identity', () => {

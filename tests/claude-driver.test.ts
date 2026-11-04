@@ -1,5 +1,6 @@
 import type {
   Query,
+  SDKAssistantMessage,
   SDKMessage,
   SDKResultMessage,
   SDKSystemMessage,
@@ -158,6 +159,29 @@ const resultMessage = (
   session_id: sessionId,
 })
 
+function assistantMessage(sessionId: string, content: SDKAssistantMessage['message']['content']): SDKAssistantMessage {
+  return {
+    type: 'assistant',
+    uuid: '00000000-0000-4000-8000-000000000091',
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    message: {
+      id: 'message-rich',
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-sonnet-4-5',
+      content,
+      container: null,
+      context_management: null,
+      diagnostics: null,
+      stop_details: null,
+      stop_reason: null,
+      stop_sequence: null,
+      usage: resultMessage(sessionId, '00000000-0000-4000-8000-000000000092').usage,
+    },
+  }
+}
+
 const context = {
   sessionId: Schema.decodeUnknownSync(agentSessionIdSchema)('managed-session'),
   projectId: Schema.decodeUnknownSync(projectIdSchema)('project'),
@@ -181,6 +205,270 @@ const turn = {
 }
 
 describe('Claude Agent SDK native driver', () => {
+  it.each([false, true])(
+    'marks oversized tool content as truncated without ending the native session, streamed input %s',
+    async streaming => {
+      const fake = fakeSdk()
+      const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key' })
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const driver = yield* AgentDriver
+            const connection = yield* driver.connect({ connectionId: 'connection' })
+            const session = yield* connection.openSession(context)
+            const call = fakeCall(fake)
+            const submitting = yield* Effect.forkScoped(session.submit(turn))
+            const sent = yield* Effect.promise(() => promptIterator(call).next())
+            const sessionId = session.identity.nativeSessionId
+            call.push({
+              type: 'stream_event',
+              uuid: '00000000-0000-4000-8000-000000000096',
+              session_id: sessionId,
+              parent_tool_use_id: null,
+              user_message_uuid: inputUuid(sent.value),
+              event: {
+                type: 'content_block_start',
+                index: 0,
+                content_block: {
+                  type: 'tool_use',
+                  id: 'large',
+                  name: 'Write',
+                  input: streaming ? {} : { file_path: 'large.txt', content: 'x'.repeat(200000) },
+                },
+              },
+            })
+            yield* Fiber.join(submitting)
+            const collection = yield* Effect.forkScoped(session.events(runId).pipe(Stream.runCollect))
+            if (streaming) {
+              call.push({
+                type: 'stream_event',
+                uuid: '00000000-0000-4000-8000-000000000098',
+                session_id: sessionId,
+                parent_tool_use_id: null,
+                event: {
+                  type: 'content_block_delta',
+                  index: 0,
+                  delta: { type: 'input_json_delta', partial_json: 'x'.repeat(128 * 1024 - 32) },
+                },
+              })
+              call.push({
+                type: 'stream_event',
+                uuid: '00000000-0000-4000-8000-000000000099',
+                session_id: sessionId,
+                parent_tool_use_id: null,
+                event: {
+                  type: 'content_block_delta',
+                  index: 0,
+                  delta: { type: 'input_json_delta', partial_json: 'x' },
+                },
+              })
+            }
+            call.push({
+              type: 'user',
+              session_id: sessionId,
+              parent_tool_use_id: null,
+              message: {
+                role: 'user',
+                content: [{ type: 'tool_result', tool_use_id: 'large', content: 'y'.repeat(200000) }],
+              },
+            })
+            call.push(resultMessage(sessionId, '00000000-0000-4000-8000-000000000097'))
+            const events = yield* Fiber.join(collection)
+            const updates = events.filter(
+              (event): event is Extract<AgentDriverEvent, { kind: 'toolUpdated' }> => event.kind === 'toolUpdated',
+            )
+            for (const field of ['input', 'output'] as const) {
+              const content = updates.map(event => event[field] ?? '').join('')
+              expect(content).toContain('… [truncated]')
+              expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(128 * 1024)
+            }
+            expect(events.at(-1)?.kind).toBe('turnCompleted')
+            expect(call.closed).toBe(false)
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+    },
+  )
+
+  it('preserves native streamed input, stable text blocks, long output, plans and explicit file patches', async () => {
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key' })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          const session = yield* connection.openSession(context)
+          const call = fakeCall(fake)
+          const submitting = yield* Effect.forkScoped(session.submit(turn))
+          const sent = yield* Effect.promise(() => promptIterator(call).next())
+          const sessionId = session.identity.nativeSessionId
+          let sequence = 100
+          function stream(event: Extract<SDKMessage, { type: 'stream_event' }>['event'], echo?: string): void {
+            call.push({
+              type: 'stream_event',
+              uuid: `00000000-0000-4000-8000-${String(sequence++).padStart(12, '0')}`,
+              session_id: sessionId,
+              parent_tool_use_id: null,
+              ...(echo ? { user_message_uuid: echo } : {}),
+              event,
+            })
+          }
+          stream({ type: 'message_start', message: assistantMessage(sessionId, []).message }, inputUuid(sent.value))
+          yield* Fiber.join(submitting)
+          const collection = yield* Effect.forkScoped(session.events(runId).pipe(Stream.runCollect))
+          stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello ' } })
+          stream({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'world' } })
+          stream({
+            type: 'content_block_start',
+            index: 1,
+            content_block: { type: 'tool_use', id: 'shell', name: 'Bash', input: {} },
+          })
+          stream({
+            type: 'content_block_delta',
+            index: 1,
+            delta: { type: 'input_json_delta', partial_json: '{"command":"npm ' },
+          })
+          stream({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: 'test"}' } })
+          call.push(
+            assistantMessage(sessionId, [
+              {
+                type: 'tool_use',
+                id: 'shell',
+                name: 'Bash',
+                input: { command: 'npm test', description: 'Run checks' },
+              },
+            ]),
+          )
+          call.push({
+            type: 'tool_progress',
+            uuid: '00000000-0000-4000-8000-000000000093',
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            tool_use_id: 'shell',
+            tool_name: 'Bash',
+            elapsed_time_seconds: 2,
+          })
+          const output = `first\n${'🌍'.repeat(10000)}\nlast`
+          call.push({
+            type: 'user',
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            tool_use_result: { stdout: output, stderr: 'failed', exit_code: 1 },
+            message: {
+              role: 'user',
+              content: [{ type: 'tool_result', tool_use_id: 'shell', content: 'Compact model output', is_error: true }],
+            },
+          })
+          call.push({
+            type: 'tool_use_summary',
+            uuid: '00000000-0000-4000-8000-000000000094',
+            session_id: sessionId,
+            preceding_tool_use_ids: ['shell'],
+            summary: 'Tests failed',
+          })
+          call.push(
+            assistantMessage(sessionId, [
+              {
+                type: 'tool_use',
+                id: 'plan',
+                name: 'TodoWrite',
+                input: {
+                  todos: [
+                    { content: 'Inspect', status: 'completed' },
+                    { content: 'Fix', status: 'in_progress' },
+                  ],
+                },
+              },
+            ]),
+          )
+          call.push(
+            assistantMessage(sessionId, [
+              {
+                type: 'tool_use',
+                id: 'edit',
+                name: 'Edit',
+                input: { file_path: 'src/app.ts', old_string: 'old', new_string: 'new' },
+              },
+            ]),
+          )
+          call.push({
+            type: 'user',
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            tool_use_result: {
+              filePath: 'src/app.ts',
+              structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }],
+            },
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'edit', content: 'Updated file' }] },
+          })
+          call.push(resultMessage(sessionId, '00000000-0000-4000-8000-000000000095'))
+          const events = yield* Fiber.join(collection)
+          expect(events.filter(event => event.kind === 'textDelta')).toEqual([
+            { kind: 'textDelta', itemId: 'message-rich:0', text: 'Hello ' },
+            { kind: 'textDelta', itemId: 'message-rich:0', text: 'world' },
+          ])
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolUpdated',
+              toolCallId: 'shell',
+              input: '{"command":"npm ',
+              append: true,
+            }),
+          )
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolUpdated',
+              toolCallId: 'shell',
+              input: JSON.stringify({ command: 'npm test', description: 'Run checks' }),
+              append: false,
+            }),
+          )
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolUpdated',
+              toolCallId: 'shell',
+              category: 'command',
+              command: 'npm test',
+              description: 'Run checks',
+            }),
+          )
+          expect(events).toContainEqual({ kind: 'toolUpdated', toolCallId: 'shell', durationMs: 2000 })
+          const chunks = events.filter(
+            (event): event is Extract<AgentDriverEvent, { kind: 'toolUpdated' }> =>
+              event.kind === 'toolUpdated' && event.toolCallId === 'shell' && event.output !== undefined,
+          )
+          expect(chunks.map(event => event.output).join('')).toBe(`${output}\nfailed`)
+          expect(chunks[0]?.append).toBe(false)
+          expect(chunks.slice(1).every(event => event.append)).toBe(true)
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolCompleted',
+              toolCallId: 'shell',
+              exitCode: 1,
+              error: 'Tool execution failed.',
+            }),
+          )
+          expect(events).toContainEqual({
+            kind: 'planUpdated',
+            entries: [
+              { content: 'Inspect', status: 'completed' },
+              { content: 'Fix', status: 'inProgress' },
+            ],
+          })
+          expect(events).toContainEqual(
+            expect.objectContaining({
+              kind: 'toolCompleted',
+              toolCallId: 'edit',
+              changes: [{ path: 'src/app.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }],
+            }),
+          )
+          expect(events.every(event => new TextEncoder().encode(JSON.stringify(event)).byteLength <= 16384)).toBe(true)
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+  })
+
   it('passes only the selected API key instead of unrelated host secrets', async () => {
     vi.stubEnv('GH_TOKEN', 'host-gh-token')
     vi.stubEnv('OPENAI_API_KEY', 'host-openai-key')
@@ -205,6 +493,87 @@ describe('Claude Agent SDK native driver', () => {
     } finally {
       vi.unstubAllEnvs()
     }
+  })
+
+  it('sends the chosen effort level and keeps the agent default when none is chosen', async () => {
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const first = yield* driver.connect({ connectionId: 'connection' })
+          yield* first.openSession({ ...context, modeId: 'xhigh' })
+          expect(fakeCall(fake).options.effort).toBe('xhigh')
+          const second = yield* driver.connect({ connectionId: 'connection' })
+          yield* second.openSession({ ...context, modeId: 'default' })
+          expect(fakeCall(fake, 1).options).not.toHaveProperty('effort')
+          const third = yield* driver.connect({ connectionId: 'connection' })
+          const rejected = yield* third.openSession({ ...context, modeId: 'plan' }).pipe(Effect.flip)
+          expect(rejected).toMatchObject({ code: 'invalid-state' })
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+  })
+
+  it('probes models and their effort levels without sending a turn, then closes the probe', async () => {
+    let closed = false
+    let prompted = false
+    const sdk: ClaudeAgentSdk = {
+      query: ({ prompt, options }) => {
+        expect(options?.canUseTool).toBeTypeOf('function')
+        if (typeof prompt !== 'string') {
+          void (async () => {
+            const iterator = prompt[Symbol.asyncIterator]()
+            if (!(await iterator.next()).done) prompted = true
+          })()
+        }
+        return Object.assign((async function* () {})(), {
+          supportedModels: async () => [
+            {
+              value: 'default',
+              displayName: 'Default (recommended)',
+              description: '',
+              supportsEffort: true,
+              supportedEffortLevels: ['low', 'high', 'xhigh'],
+            },
+            { value: 'haiku', displayName: 'Haiku', description: '', supportsEffort: false },
+          ],
+          close: () => {
+            closed = true
+          },
+        }) as unknown as Query
+      },
+    }
+    const layer = makeClaudeAgentDriver({ sdk, apiKey: () => 'test-key' })
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          expect((yield* connection.discover()).modes).toEqual([])
+          if (!connection.probeCatalog) return yield* Effect.die(new Error('Claude must offer a catalog probe'))
+          return yield* connection.probeCatalog()
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+    expect(catalog).toEqual({
+      models: [
+        {
+          id: 'default',
+          label: 'Default (recommended)',
+          modes: [
+            { id: 'low', label: 'Low' },
+            { id: 'high', label: 'High' },
+            { id: 'xhigh', label: 'Extra high' },
+          ],
+        },
+        { id: 'haiku', label: 'Haiku', modes: [] },
+      ],
+      modes: [],
+    })
+    expect(closed).toBe(true)
+    expect(prompted).toBe(false)
   })
 
   it.each([
@@ -646,18 +1015,19 @@ describe('Claude Agent SDK native driver', () => {
     expect(fake.calls[0]?.closed).toBe(true)
   })
 
-  it('rejects absent API credentials and refuses a non-API-key SDK auth route', async () => {
-    const absent = makeClaudeAgentDriver({ apiKey: () => undefined })
-    await expect(
-      Effect.runPromise(
-        Effect.scoped(
-          Effect.gen(function* () {
-            const driver = yield* AgentDriver
-            yield* driver.connect({ connectionId: 'connection' })
-          }).pipe(Effect.provide(absent)),
-        ),
+  it('signs in with the Claude Code login when no API key is set, and refuses another route when a key is given', async () => {
+    const login = fakeSdk(sessionId => ({ ...initMessage(sessionId), apiKeySource: 'none' as const }))
+    const signedIn = makeClaudeAgentDriver({ sdk: login.sdk, apiKey: () => undefined })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          yield* connection.openSession(context)
+        }).pipe(Effect.provide(signedIn)),
       ),
-    ).rejects.toMatchObject({ code: 'authentication-required' })
+    )
+    expect(fakeCall(login).options.env).not.toHaveProperty('ANTHROPIC_API_KEY')
 
     const fake = fakeSdk(sessionId => ({ ...initMessage(sessionId), apiKeySource: 'none' as const }))
     const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key' })

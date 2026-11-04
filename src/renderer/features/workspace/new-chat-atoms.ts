@@ -5,6 +5,7 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
 import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc.js'
 import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query.js'
+import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
 import { updateWorkspaceComposerPreferenceAtom, updateWorkspaceDraftAtom, workspaceDraftsAtom } from './draft-atoms.js'
@@ -75,6 +76,7 @@ export const saveConversationComposerPreferenceAtom = Atom.writable(
       readonly connectionId: string
       readonly modelId?: string
       readonly modeId?: string
+      readonly accessMode?: AgentAccessMode
     },
   ) => {
     context.set(updateWorkspaceComposerPreferenceAtom, {
@@ -84,6 +86,7 @@ export const saveConversationComposerPreferenceAtom = Atom.writable(
         connectionId: input.connectionId,
         modelId: input.modelId ?? '',
         modeId: input.modeId ?? '',
+        ...(input.accessMode ? { accessMode: input.accessMode } : {}),
       },
     })
   },

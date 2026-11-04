@@ -1,6 +1,14 @@
+import { ChevronDown, CircleAlert, MessageCircleQuestion, ShieldQuestion, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/renderer/components/ui/dropdown-menu'
+import { cn } from '@/renderer/shared/lib/utils'
 import type { AgentRequest, AgentRequestDecision } from '@/shared/schemas/execution.js'
 import type { ConversationId, TaskId } from '@/shared/schemas/workspace.js'
 import type { WorkspacePendingRuntimeRequest } from '@/shared/schemas/workspace-store.js'
@@ -13,24 +21,20 @@ import {
   type WorkspaceRequest,
   type WorkspaceResult,
 } from './hooks.js'
+import { requestIsCurrent, requestResponseState, type ResponseDeliveryState } from './request-controls.js'
 import {
-  approvalDecision,
-  eligibleApprovalOptions,
-  questionDecision,
-  requestIsCurrent,
-  requestResponseState,
-  type ResponseDeliveryState,
-} from './request-controls.js'
+  approvalActions,
+  firstPendingRequest,
+  orderRequestsForDrawer,
+  PENDING_REQUEST_PAGE_SIZE,
+} from './request-drawer-state.js'
+import { QuestionForm } from './requests/QuestionForm.js'
 
-const PAGE_SIZE = 50
+const PAGE_SIZE = PENDING_REQUEST_PAGE_SIZE
+
 const snapshotRequest = (taskId: TaskId): WorkspaceRequest<'workspace:readTaskSnapshot'> => ({
   taskId,
   runLimit: 100,
-})
-const firstPendingRequest = (taskId: TaskId): WorkspaceRequest<'workspace:listPendingRuntimeRequests'> => ({
-  taskId,
-  afterSequence: 0,
-  limit: PAGE_SIZE,
 })
 const firstResponseRequest = (taskId: TaskId): WorkspaceRequest<'workspace:listRequestResponses'> => ({
   taskId,
@@ -45,7 +49,10 @@ type ResponseRecord = ResponseItem | SnapshotResponseItem
 const requestKey = (request: Pick<PendingRequest['request'], 'requestId' | 'runId' | 'generation'>) =>
   `${request.runId}:${request.generation}:${request.requestId}`
 
-/** Approval and question controls scoped to one Task and Conversation. */
+/**
+ * Approval and question controls for one Task and Conversation, docked on top of the composer.
+ * One request is answerable at a time: the oldest current one. Later requests wait their turn.
+ */
 export function WorkspaceRequests({
   taskId,
   conversationId,
@@ -138,30 +145,26 @@ function WorkspaceRequestsView({
 
   if (snapshotQuery.error || pendingQuery.error || responseQuery.error) {
     return (
-      <section className="border-t px-4 py-3" aria-label="Approvals and questions">
+      <Drawer>
         <p role="alert" className="text-destructive text-sm">
           Could not load request state. Responses are unavailable until the authoritative reads succeed.
         </p>
         {snapshotQuery.error && <p className="text-muted-foreground mt-1 text-xs">Task snapshot read failed.</p>}
         {pendingQuery.error && <p className="text-muted-foreground mt-1 text-xs">Pending request read failed.</p>}
         {responseQuery.error && <p className="text-muted-foreground mt-1 text-xs">Response history read failed.</p>}
-      </section>
+      </Drawer>
     )
   }
 
-  if (!snapshot || !pendingQuery.data || !responseQuery.data) {
-    return (
-      <section className="border-t px-4 py-2" aria-label="Approvals and questions" aria-busy="true">
-        <p role="status" className="text-muted-foreground text-xs">
-          Loading approval and question state…
-        </p>
-      </section>
-    )
-  }
+  // Nothing is shown until the authoritative reads land, so the composer does not jump on every load.
+  if (!snapshot || !pendingQuery.data || !responseQuery.data) return null
 
+  const unsettledResponses = visibleResponses.filter(response =>
+    ['pending', 'failed', 'uncertain'].includes(response.state),
+  )
   if (
     visibleRequests.length === 0 &&
-    visibleResponses.length === 0 &&
+    unsettledResponses.length === 0 &&
     !requestHistoryTruncated &&
     !responseHistoryHasMore &&
     !responseTruncated
@@ -169,259 +172,317 @@ function WorkspaceRequestsView({
     return null
   }
 
-  return (
-    <section className="max-h-[35vh] shrink-0 overflow-y-auto border-t px-4 py-3" aria-label="Approvals and questions">
-      <div className="space-y-3">
-        {visibleRequests.map(item => {
-          const isCurrent = requestIsCurrent(item, conversationId, snapshot.runs, runContexts)
-          const historyState = requestResponseState(
-            [...earlierResponses, ...(responseQuery.data?.items ?? [])],
-            item.runId,
-            item.request.generation,
-            item.request.requestId,
-          )
-          const snapshotState = snapshot.requestResponses?.find(
-            response =>
-              response.runId === item.runId &&
-              response.generation === item.request.generation &&
-              response.requestId === item.request.requestId,
-          )?.state
-          const delivery =
-            (historyState && historyState !== 'resolved' ? historyState : null) ??
-            (snapshotState && snapshotState !== 'resolved' ? snapshotState : null) ??
-            localDelivery[requestKey(item.request)]
-          return (
-            <RequestCard
-              key={requestKey(item.request)}
-              item={item}
-              current={isCurrent}
-              delivery={delivery ?? null}
-              onRespond={decision => void sendResponse(item, decision)}
-            />
-          )
-        })}
-        {visibleResponses
-          .filter(response => ['pending', 'failed', 'uncertain'].includes(response.state))
-          .map(response => (
-            <ResponseHistory key={response.commandId} response={response} />
-          ))}
-        {visibleResponses.some(response => ['accepted', 'resolved'].includes(response.state)) && (
-          <details className="text-muted-foreground text-xs">
-            <summary className="cursor-pointer">Previous decisions</summary>
-            <div className="mt-2 space-y-2">
-              {visibleResponses
-                .filter(response => ['accepted', 'resolved'].includes(response.state))
-                .map(response => (
-                  <ResponseHistory key={response.commandId} response={response} />
-                ))}
-            </div>
-          </details>
-        )}
+  const deliveryFor = (item: PendingRequest): ResponseDeliveryState | null => {
+    const historyState = requestResponseState(
+      [...earlierResponses, ...(responseQuery.data?.items ?? [])],
+      item.runId,
+      item.request.generation,
+      item.request.requestId,
+    )
+    const snapshotState = snapshot.requestResponses?.find(
+      response =>
+        response.runId === item.runId &&
+        response.generation === item.request.generation &&
+        response.requestId === item.request.requestId,
+    )?.state
+    return (
+      (historyState && historyState !== 'resolved' ? historyState : null) ??
+      (snapshotState && snapshotState !== 'resolved' ? snapshotState : null) ??
+      localDelivery[requestKey(item.request)] ??
+      null
+    )
+  }
+  const { active, waiting, stale } = orderRequestsForDrawer(visibleRequests, item =>
+    requestIsCurrent(item, conversationId, snapshot.runs, runContexts),
+  )
+  // Responses for the request in the drawer are shown on it, not repeated below.
+  const answeredElsewhere = unsettledResponses.filter(
+    response =>
+      !active ||
+      response.runId !== active.runId ||
+      response.generation !== active.request.generation ||
+      response.requestId !== active.request.requestId,
+  )
 
-        {(runCoverageTruncated || responseTruncated || requestHistoryTruncated) && (
-          <div className="text-muted-foreground flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" role="status">
-            <span>
-              {runCoverageTruncated && 'Run context is incomplete; requests without context are shown disabled. '}
-              {responseTruncated && 'Response history is truncated. '}
-              {requestHistoryTruncated && 'More pending request history is available.'}
-            </span>
-            {requestHistoryTruncated && (
-              <Button type="button" size="sm" variant="outline" onClick={showOlderRequests}>
-                Load more pending requests
-              </Button>
-            )}
-            {responseHistoryHasMore && (
-              <Button type="button" size="sm" variant="outline" onClick={showOlderResponses}>
-                Load more response history
-              </Button>
-            )}
-          </div>
-        )}
+  return (
+    <Drawer>
+      {active && (
+        <RequestPanel
+          key={requestKey(active.request)}
+          item={active}
+          waitingCount={waiting.length}
+          delivery={deliveryFor(active)}
+          onRespond={decision => void sendResponse(active, decision)}
+        />
+      )}
+      {stale.length > 0 && <StaleRequests items={stale} />}
+      {answeredElsewhere.map(response => (
+        <ResponseHistory key={response.commandId} response={response} />
+      ))}
+      {(runCoverageTruncated || responseTruncated || requestHistoryTruncated || responseHistoryHasMore) && (
+        <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs" role="status">
+          <span>
+            {runCoverageTruncated && 'Run context is incomplete; requests without context cannot be answered. '}
+            {responseTruncated && 'Response history is truncated. '}
+            {requestHistoryTruncated && 'More pending request history is available.'}
+          </span>
+          {requestHistoryTruncated && (
+            <Button type="button" size="xs" variant="outline" onClick={showOlderRequests}>
+              Load more pending requests
+            </Button>
+          )}
+          {responseHistoryHasMore && (
+            <Button type="button" size="xs" variant="outline" onClick={showOlderResponses}>
+              Load more response history
+            </Button>
+          )}
+        </div>
+      )}
+    </Drawer>
+  )
+}
+
+/** Sits on top of the prompt card, which overlaps its bottom edge so the two read as one surface. */
+function Drawer({ children }: { readonly children: React.ReactNode }): React.JSX.Element {
+  return (
+    <section aria-label="Approvals and questions" className="-mb-4 px-3">
+      <div className="bg-muted/60 max-h-[45vh] overflow-y-auto rounded-t-2xl border border-b-0 px-4 pt-3 pb-6">
+        {children}
       </div>
     </section>
   )
 }
 
-function RequestCard({
+function RequestPanel({
   item,
-  current,
+  waitingCount,
   delivery,
   onRespond,
 }: {
   readonly item: PendingRequest
-  readonly current: boolean
+  readonly waitingCount: number
   readonly delivery: ResponseDeliveryState | null
   readonly onRespond: (decision: AgentRequestDecision) => void
 }): React.JSX.Element {
   const request = item.request
+  const disabled = delivery !== null
   return (
-    <article className={`rounded-lg border p-3 ${current ? 'bg-background' : 'bg-muted/40 opacity-80'}`}>
-      <header className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <h2 className="text-sm font-semibold">{request.kind === 'approval' ? 'Approval requested' : 'Question'}</h2>
-          <details className="text-muted-foreground mt-1 text-xs">
-            <summary className="cursor-pointer">Request details</summary>
-            <p className="mt-1 break-all">
-              Run {item.runId} · generation {request.generation}
-            </p>
-          </details>
-        </div>
-        {delivery && <DeliveryStatus state={delivery} />}
-      </header>
-      <p className="mt-2 text-sm break-words whitespace-pre-wrap">{request.prompt}</p>
-      {!current && (
-        <p className="text-muted-foreground mt-2 text-xs" role="status">
-          This request belongs to an inactive or stale Run. It cannot be answered from this view.
-        </p>
-      )}
+    <article aria-label={request.kind === 'approval' ? 'Approval request' : 'Question'} className="space-y-2">
       {request.kind === 'approval' ? (
-        <ApprovalControls request={request} disabled={!current || delivery !== null} onRespond={onRespond} />
+        <ApprovalPanel
+          request={request}
+          waitingCount={waitingCount}
+          delivery={delivery}
+          disabled={disabled}
+          onRespond={onRespond}
+        />
       ) : (
-        <QuestionControls request={request} disabled={!current || delivery !== null} onRespond={onRespond} />
+        <QuestionPanel
+          request={request}
+          waitingCount={waitingCount}
+          delivery={delivery}
+          disabled={disabled}
+          onRespond={onRespond}
+        />
       )}
+      <details className="text-muted-foreground text-[10px]">
+        <summary className="cursor-pointer">Request details</summary>
+        <p className="mt-1 break-all">
+          Run {item.runId} · generation {request.generation}
+        </p>
+      </details>
     </article>
   )
 }
 
-function ApprovalControls({
-  request,
-  disabled,
-  onRespond,
+function PanelHeader({
+  icon,
+  title,
+  waitingCount,
+  delivery,
+  children,
 }: {
-  readonly request: AgentRequest
-  readonly disabled: boolean
-  readonly onRespond: (decision: AgentRequestDecision) => void
+  readonly icon: React.ReactNode
+  readonly title: React.ReactNode
+  readonly waitingCount: number
+  readonly delivery: ResponseDeliveryState | null
+  readonly children?: React.ReactNode
 }): React.JSX.Element {
-  const options = request.options ?? []
-  const eligible = eligibleApprovalOptions(request)
   return (
-    <div className="mt-3 space-y-2">
-      <details>
-        <summary className="text-muted-foreground cursor-pointer text-xs">Tool, path and scope details</summary>
-        <pre className="bg-muted mt-2 max-h-48 overflow-auto rounded p-2 text-xs break-words whitespace-pre-wrap">
-          {request.prompt}
-        </pre>
-      </details>
-      {options.length > 0 ? (
-        <div className="flex flex-wrap gap-2" aria-label="Native approval options">
-          {options.map(option => {
-            const decision = approvalDecision(request, option)
-            const canChoose = eligible.some(candidate => candidate.id === option.id) && decision !== null
-            return (
-              <div key={option.id} className="flex flex-col items-start gap-1">
-                <Button
-                  type="button"
-                  variant={option.kind === 'allow' ? 'default' : 'outline'}
-                  disabled={disabled || !canChoose}
-                  onClick={() => decision && onRespond(decision)}
-                >
-                  {option.label}
-                </Button>
-                <span className="text-muted-foreground text-[10px]">
-                  {[option.scope, option.kind].filter(Boolean).join(' · ') || 'Native option'}
-                </span>
-                {!canChoose && (
-                  <span className="text-muted-foreground text-[10px]">Response semantics unavailable</span>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      ) : (
-        <p className="text-muted-foreground text-xs">No native approval options were included with this request.</p>
-      )}
-    </div>
+    <header className="flex min-w-0 items-center gap-2">
+      <span className="text-warning shrink-0">{icon}</span>
+      <h2 className="min-w-0 truncate text-xs font-semibold">{title}</h2>
+      <span className="ml-auto flex shrink-0 items-center gap-2">
+        {waitingCount > 0 && (
+          <span className="text-muted-foreground text-[10px]" role="status">
+            +{waitingCount} waiting
+          </span>
+        )}
+        {delivery && <DeliveryStatus state={delivery} />}
+        {children}
+      </span>
+    </header>
   )
 }
 
-function QuestionControls({
+function ApprovalPanel({
   request,
+  waitingCount,
+  delivery,
   disabled,
   onRespond,
 }: {
   readonly request: AgentRequest
+  readonly waitingCount: number
+  readonly delivery: ResponseDeliveryState | null
   readonly disabled: boolean
   readonly onRespond: (decision: AgentRequestDecision) => void
 }): React.JSX.Element {
-  const [answers, setAnswers] = useState<Record<string, string | string[]>>({})
-  const decision = questionDecision(request, answers)
+  const actions = approvalActions(request)
+  const hasActions = actions.approve !== null || actions.decline !== null || actions.more.length > 0
   return (
-    <div className="mt-3 space-y-3">
-      {request.cancelDecision && (
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={disabled}
-          onClick={() => request.cancelDecision && onRespond(request.cancelDecision)}
-        >
-          Cancel question
-        </Button>
+    <>
+      <PanelHeader
+        icon={<ShieldQuestion className="size-3.5" />}
+        title="Approval requested"
+        waitingCount={waitingCount}
+        delivery={delivery}
+      />
+      <p className="max-h-32 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">{request.prompt}</p>
+      {hasActions ? (
+        <div className="flex flex-wrap items-center justify-end gap-2" aria-label="Approval options">
+          {actions.unavailable.length > 0 && (
+            <span
+              className="text-muted-foreground mr-auto text-[10px]"
+              title={actions.unavailable.map(option => option.label).join(', ')}
+            >
+              {actions.unavailable.length} option{actions.unavailable.length === 1 ? '' : 's'} not available here
+            </span>
+          )}
+          {actions.more.length > 0 && (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button type="button" size="sm" variant="ghost" disabled={disabled}>
+                    More options
+                    <ChevronDown className="size-3" />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-auto">
+                {actions.more.map(action => (
+                  <DropdownMenuItem key={action.option.id} onClick={() => onRespond(action.decision)}>
+                    {action.option.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          {actions.decline && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={disabled}
+              onClick={() => actions.decline && onRespond(actions.decline.decision)}
+            >
+              {actions.decline.option.label}
+            </Button>
+          )}
+          {actions.approve && (
+            <Button
+              type="button"
+              size="sm"
+              disabled={disabled}
+              onClick={() => actions.approve && onRespond(actions.approve.decision)}
+            >
+              {actions.approve.option.label}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <p className="text-muted-foreground text-xs">
+          This request has no options that can be answered from Watchtower. Stop the Run to release it.
+        </p>
       )}
-      {request.questions.map(question => {
-        const selected = answers[question.id]
-        const selectedValues = Array.isArray(selected) ? selected : selected ? [selected] : []
-        return (
-          <fieldset key={question.id} disabled={disabled} className="space-y-2">
-            <legend className="text-sm font-medium">{question.prompt}</legend>
-            {question.options.length === 0 ? (
-              <label className="block space-y-1 text-xs">
-                <span className="text-muted-foreground">Your answer</span>
-                <input
-                  className="bg-background w-full rounded-md border px-3 py-2 text-sm"
-                  type="text"
-                  value={typeof selected === 'string' ? selected : ''}
-                  onChange={event => setAnswers(current => ({ ...current, [question.id]: event.target.value }))}
-                  autoComplete="off"
-                />
-              </label>
-            ) : (
-              question.options.map(option => {
-                const checked = selectedValues.includes(option.id)
-                return (
-                  <label key={option.id} className="flex items-start gap-2 text-sm">
-                    <input
-                      type={question.multiSelect ? 'checkbox' : 'radio'}
-                      name={question.id}
-                      checked={checked}
-                      onChange={() => {
-                        setAnswers(current => {
-                          const value = current[question.id]
-                          if (question.multiSelect) {
-                            const values = Array.isArray(value) ? value : []
-                            return {
-                              ...current,
-                              [question.id]: checked ? values.filter(id => id !== option.id) : [...values, option.id],
-                            }
-                          }
-                          return { ...current, [question.id]: option.id }
-                        })
-                      }}
-                    />
-                    <span>{option.label}</span>
-                  </label>
-                )
-              })
-            )}
-          </fieldset>
-        )
-      })}
-      <Button type="button" disabled={disabled || decision === null} onClick={() => decision && onRespond(decision)}>
-        Submit answers
-      </Button>
-    </div>
+    </>
+  )
+}
+
+function QuestionPanel({
+  request,
+  waitingCount,
+  delivery,
+  disabled,
+  onRespond,
+}: {
+  readonly request: AgentRequest
+  readonly waitingCount: number
+  readonly delivery: ResponseDeliveryState | null
+  readonly disabled: boolean
+  readonly onRespond: (decision: AgentRequestDecision) => void
+}): React.JSX.Element {
+  return (
+    <>
+      <PanelHeader
+        icon={<MessageCircleQuestion className="size-3.5" />}
+        title={request.questions.length > 1 ? 'Questions' : 'Question'}
+        waitingCount={waitingCount}
+        delivery={delivery}
+      >
+        {request.cancelDecision && (
+          <Button
+            type="button"
+            size="icon-xs"
+            variant="ghost"
+            aria-label="Dismiss question without answering"
+            title="Dismiss question without answering"
+            disabled={disabled}
+            onClick={() => request.cancelDecision && onRespond(request.cancelDecision)}
+          >
+            <X className="size-3" />
+          </Button>
+        )}
+      </PanelHeader>
+      <QuestionForm request={request} disabled={disabled} delivery={delivery} onRespond={onRespond} />
+    </>
+  )
+}
+
+function StaleRequests({ items }: { readonly items: readonly PendingRequest[] }): React.JSX.Element {
+  return (
+    <details className="text-muted-foreground mt-2 text-xs">
+      <summary className="cursor-pointer">
+        {items.length} request{items.length === 1 ? '' : 's'} from an inactive Run
+      </summary>
+      <p className="mt-1">These belong to a stale or settled Run and cannot be answered from this view.</p>
+      <ul className="mt-1 space-y-1">
+        {items.map(item => (
+          <li key={requestKey(item.request)} className="truncate" title={item.request.prompt}>
+            {item.request.kind === 'approval' ? 'Approval' : 'Question'} · {item.request.prompt}
+          </li>
+        ))}
+      </ul>
+    </details>
   )
 }
 
 function DeliveryStatus({ state }: { readonly state: ResponseDeliveryState }): React.JSX.Element {
   const label = {
-    pending: 'Response pending',
+    pending: 'Sending response…',
     accepted: 'Response accepted',
     failed: 'Response failed',
     uncertain: 'Response delivery uncertain',
   }[state]
   return (
-    <span className="text-muted-foreground rounded-full border px-2 py-1 text-[10px]" role="status">
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px]',
+        state === 'failed' || state === 'uncertain' ? 'text-destructive' : 'text-muted-foreground',
+      )}
+      role="status"
+    >
+      {(state === 'failed' || state === 'uncertain') && <CircleAlert className="size-3" />}
       {label}
     </span>
   )
@@ -430,12 +491,15 @@ function DeliveryStatus({ state }: { readonly state: ResponseDeliveryState }): R
 function ResponseHistory({ response }: { readonly response: ResponseRecord }): React.JSX.Element {
   const state: ResponseDeliveryState = response.state === 'resolved' ? 'accepted' : response.state
   return (
-    <div className="bg-muted/40 rounded border px-3 py-2 text-xs">
-      <p>
-        Request response · Run <code>{response.runId}</code> · generation {response.generation}
-      </p>
+    <div className="text-muted-foreground mt-2 flex flex-wrap items-center gap-2 text-xs">
+      <span>Earlier response</span>
       <DeliveryStatus state={state} />
-      {response.state === 'resolved' && <p className="mt-1">The request was later resolved.</p>}
+      <details>
+        <summary className="cursor-pointer">Details</summary>
+        <p className="break-all">
+          Run <code>{response.runId}</code> · generation {response.generation}
+        </p>
+      </details>
     </div>
   )
 }

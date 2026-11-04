@@ -114,7 +114,9 @@ test('workspace opens by default, persists project and task across reload, and c
     if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
     await window.getByRole('button', { name: /Verify workspace composition/ }).click()
     await expect(window.getByRole('heading', { name: task.title, exact: true })).toBeVisible()
-    await expect(window.getByText('No conversation activity yet.', { exact: true })).toBeVisible()
+    await expect(window.getByRole('region', { name: 'Conversation history', exact: true })).toContainText(
+      'Send a message to start the conversation.',
+    )
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     const newChat = window.getByRole('region', { name: 'New chat', exact: true })
     await expect(newChat.getByRole('combobox', { name: 'Project', exact: true })).toHaveText('No project')

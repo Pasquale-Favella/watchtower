@@ -11,6 +11,7 @@ import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import { ExecutionServiceError } from '@/core/application/commands/execution-service.js'
+import { WorkspaceCheckouts } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
@@ -47,6 +48,9 @@ const messages = {
   'stream-overflow': 'Workspace stream exceeded its limit. Resume from the last received sequence.',
   'cleanup-unconfirmed': 'Native connection cleanup could not be confirmed.',
   'unsupported-access-mode': 'The selected access mode is not available for this agent connection.',
+  'checkout-busy':
+    'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
+  'checkout-in-use': 'Another agent is still using this checkout. Stop it or choose a different worktree.',
 } as const
 function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
@@ -55,6 +59,8 @@ function sanitize(error: unknown): WorkspaceRpcError {
   if (Schema.is(WorkspaceRpcError)(error)) return error
   if (Schema.is(Store.WorkspaceStoreError)(error)) {
     switch (error.code) {
+      case 'admission-conflict':
+        return failure('checkout-in-use')
       case 'not-found':
         return failure('not-found')
       case 'database-unavailable':
@@ -84,10 +90,11 @@ function sanitize(error: unknown): WorkspaceRpcError {
         : 'failed',
     )
   if (Schema.is(UnsupportedAgentOperation)(error)) return failure('invalid-request')
-  if (Schema.is(CheckoutResolverError)(error))
-    return failure(
-      error.code === 'filesystem-unavailable' || error.code === 'git-unavailable' ? 'unavailable' : 'invalid-request',
-    )
+  if (Schema.is(CheckoutResolverError)(error)) {
+    if (error.code === 'filesystem-unavailable' || error.code === 'git-unavailable') return failure('unavailable')
+    if (error.code === 'dirty-checkout' || error.code === 'worktree-conflict') return failure('checkout-busy')
+    return failure('invalid-request')
+  }
   return failure('failed')
 }
 function safe<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, WorkspaceRpcError, R> {
@@ -132,6 +139,11 @@ const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 export function workspaceHandlers<R = never>(
   options: {
     readonly attachments?: PromptAttachmentStore
+    readonly enrichPrompt?: (
+      taskId: import('@/shared/schemas/workspace.js').TaskId,
+      prompt: string,
+      nativeSessionId?: string | null,
+    ) => Effect.Effect<string, unknown, R>
     readonly chooseProjectDirectory?: () => Effect.Effect<string | null, unknown, R>
     readonly prepareScratchProject?: (
       store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
@@ -144,7 +156,10 @@ export function workspaceHandlers<R = never>(
       const host = yield* WorkspaceHost
       const projects = yield* WorkspaceProjects
       const setup = yield* Effect.serviceOption(WorkspaceProjectSetup)
+      const checkouts = yield* Effect.serviceOption(WorkspaceCheckouts)
       const store = host.store
+      // Model catalogs load while the app starts, so the first picker opens on known models.
+      if (host.prewarmConnections) yield* host.prewarmConnections
       const read = <A, E, R>(use: () => Effect.Effect<A, E, R>) =>
         safe(Effect.andThen(host.ensureOpen, Effect.suspend(use)))
       const mutation = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.uninterruptible(read(() => effect))
@@ -234,8 +249,10 @@ export function workspaceHandlers<R = never>(
             : Effect.fail(failure('unavailable')),
         'workspace:listConnections': () =>
           safe(Effect.map(host.listConnections ?? Effect.succeed([]), items => ({ items }))),
-        'workspace:inspectConnection': ({ connectionId }) =>
-          host.inspectConnection ? safe(host.inspectConnection(connectionId)) : Effect.fail(failure('unavailable')),
+        'workspace:inspectConnection': ({ connectionId, refresh }) =>
+          host.inspectConnection
+            ? safe(host.inspectConnection(connectionId, refresh ? { refresh } : {}))
+            : Effect.fail(failure('unavailable')),
         'workspace:registerProject': request =>
           mutation(
             Effect.suspend(() =>
@@ -269,6 +286,28 @@ export function workspaceHandlers<R = never>(
             }),
           ),
         'workspace:listProjects': ({ options }) => read(() => store.listProjects(options)),
+        'workspace:listBranches': request =>
+          Option.isSome(checkouts)
+            ? read(() => checkouts.value.branches(request))
+            : Effect.fail(failure('unavailable')),
+        'workspace:switchBranch': request =>
+          Option.isSome(checkouts)
+            ? mutation(Effect.suspend(() => checkouts.value.switchBranch(request)))
+            : Effect.fail(failure('unavailable')),
+        'workspace:createWorktree': request =>
+          Option.isSome(checkouts)
+            ? mutation(
+                Effect.suspend(() =>
+                  checkouts.value.createWorktree({
+                    ...request,
+                    token: createHash('sha256').update(JSON.stringify(request.commandId)).digest('hex').slice(0, 8),
+                    checkoutId: Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(
+                      entityId('checkout', `worktree:${request.commandId}`),
+                    ),
+                  }),
+                ),
+              )
+            : Effect.fail(failure('unavailable')),
         'workspace:getProject': ({ projectId, options }) => read(() => store.getProject(projectId, options)),
         'workspace:listTasks': ({ projectId, options }) => read(() => store.listTasks(projectId, options)),
         'workspace:readTaskDetail': ({ taskId, options }) => read(() => store.readTaskDetail(taskId, options)),
@@ -297,7 +336,10 @@ export function workspaceHandlers<R = never>(
         'workspace:startRun': request =>
           mutation(
             Effect.gen(function* () {
-              const command = yield* begin(request)
+              const prompt = options.enrichPrompt
+                ? yield* options.enrichPrompt(request.taskId, request.prompt, request.nativeSessionId)
+                : request.prompt
+              const command = yield* begin({ ...request, prompt })
               return yield* host.withExecution(execution => execution.start(command))
             }),
           ),

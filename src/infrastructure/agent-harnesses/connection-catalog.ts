@@ -46,7 +46,7 @@ function connectionId(parts: ReadonlyArray<string>): string {
   return `harness-acp-${digest}`
 }
 
-function nativeConnectionId(driverId: ValidatedNativeHarnessExecutable['driverId'], instanceId: string): string {
+function nativeConnectionId(driverId: Exclude<HarnessDriverId, 'acp'>, instanceId: string): string {
   const digest = createHash('sha256')
     .update(JSON.stringify([driverId, instanceId]))
     .digest('hex')
@@ -115,22 +115,52 @@ function nativeConnection(executable: ValidatedNativeHarnessExecutable): {
   return { connection, row }
 }
 
-/** Build immutable launch definitions from the current detected inventory and trusted Harness specs. */
+/** Instance slot of the Claude Agent SDK connection. Persisted sessions stay bound to it across app updates. */
+const CLAUDE_SDK_INSTANCE = 'claude:sdk'
+
+function claudeSdkConnection(displayName: string): {
+  readonly connection: HarnessConnection
+  readonly row: HarnessConnectionCatalogRow
+} {
+  const id = nativeConnectionId('claude-agent-sdk', CLAUDE_SDK_INSTANCE)
+  return {
+    connection: Object.freeze({ id, driverId: 'claude-agent-sdk' }),
+    row: Object.freeze({
+      connectionId: id,
+      label: displayName,
+      harnessKind: 'claude',
+      driverId: 'claude-agent-sdk',
+      // The SDK runs its own bundled CLI, signed in with the user's Claude Code login.
+      provenance: 'bundled',
+      availability: 'available',
+      capabilities: 'unknown',
+    }),
+  }
+}
+
+/**
+ * Build immutable launch definitions from the current detected inventory and trusted Harness specs.
+ * an agent with a native driver is offered once, natively: Codex through its app server when a validated binary is
+ * found, Claude Code through the Agent SDK. Their ACP adapters are kept only when no native route exists.
+ */
 export function createDetectedHarnessConnectionCatalog(
   options: HarnessConnectionCatalogOptions,
 ): HarnessConnectionCatalog {
   const specs = options.specs ?? harnessSpecs
   const specsByKind = new Map(specs.map(spec => [spec.kind, spec]))
+  const native = (options.nativeExecutables ?? [])
+    .filter(executable => isValidatedNativeHarnessExecutable(executable))
+    .map(nativeConnection)
+  const claude = options.instances.find(instance => instance.info.kind === 'claude' && specsByKind.has('claude'))
+  if (claude) native.push(claudeSdkConnection(claude.info.displayName))
+  const nativeKinds = new Set(native.map(entry => entry.row.harnessKind))
   const entries = options.instances.flatMap(instance => {
     const spec = specsByKind.get(instance.info.kind)
-    if (!spec) return []
+    if (!spec || nativeKinds.has(instance.info.kind)) return []
     const entry = detectedAcpConnection(instance, spec, options.runtimeExecutable)
     return entry ? [entry] : []
   })
-
-  for (const executable of options.nativeExecutables ?? []) {
-    if (isValidatedNativeHarnessExecutable(executable)) entries.push(nativeConnection(executable))
-  }
+  entries.push(...native)
 
   const ids = new Set<string>()
   for (const { connection } of entries) {

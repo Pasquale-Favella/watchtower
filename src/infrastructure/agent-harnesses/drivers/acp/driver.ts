@@ -1,3 +1,5 @@
+import { tmpdir } from 'node:os'
+
 import {
   type Agent,
   type Client,
@@ -8,12 +10,14 @@ import {
   type PermissionOption,
   PROTOCOL_VERSION,
   RequestError,
+  type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionConfigOption,
   type SessionModelState,
   type SessionModeState,
   type SessionNotification,
   type SessionUpdate,
+  type ToolCallUpdate,
 } from '@agentclientprotocol/sdk'
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
@@ -41,22 +45,28 @@ import {
 import { type JsonRpcTransport, spawnJsonRpcStdio } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import type {
+  AgentAccessMode,
   AgentCapabilities,
   AgentDriverEvent,
   AgentReconcileEvent,
   AgentRequestDecision,
   AgentSessionIdentity,
+  AgentToolMetadata,
 } from '@/shared/schemas/execution.js'
-import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
+import { DEFAULT_AGENT_ACCESS_MODE, MAX_AGENT_CATALOG_CHOICES } from '@/shared/schemas/execution.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
 const MAX_FRAME_BYTES = 1024 * 1024
+const MAX_CATALOG_CHOICES = MAX_AGENT_CATALOG_CHOICES
 const MAX_EVENTS = 128
 const MAX_EVENT_BYTES = 2 * 1024 * 1024
 const MAX_REPLAY_EVENTS = 128
 const MAX_REPLAY_BYTES = 2 * 1024 * 1024
 const MAX_COMPLETED_CHANNELS = 32
 const MAX_PREPARED_CHANNELS = 32
+const MAX_TOOL_TEXT = 64 * 1024
+const MAX_TOOL_ITEMS = 64
+const MAX_IMAGE_DATA = 512 * 1024
 const REPLAY_CURSOR_PREFIX = 'acp-replay:'
 
 const defaultScrubbedEnvironment = Object.freeze([
@@ -162,6 +172,12 @@ interface AcpSessionState {
   poison: (error: AgentDriverError) => void
 }
 
+interface AcpStateRef {
+  current?: AcpSessionState
+  /** Native IDs of disposable catalog probe sessions. */
+  probes?: Set<string>
+}
+
 interface AcpConnectionState {
   readonly identity: AgentDriverConnection['identity']
   readonly connection: ClientSideConnection
@@ -239,14 +255,208 @@ function jsonBytes(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
 }
 
+function boundedToolText(value: string): string {
+  if (value.length <= MAX_TOOL_TEXT) return value
+  const marker = '\n… [truncated]'
+  return `${value.slice(0, MAX_TOOL_TEXT - marker.length)}${marker}`
+}
+
 function displayValue(value: unknown): string | undefined {
   if (value === undefined || value === null) return undefined
-  if (typeof value === 'string') return value.slice(0, 64 * 1024)
+  if (typeof value === 'string') return boundedToolText(value)
   try {
-    return JSON.stringify(value).slice(0, 64 * 1024)
+    const encoded = JSON.stringify(value)
+    return encoded === undefined ? undefined : boundedToolText(encoded)
   } catch {
     return '[unserializable native value]'
   }
+}
+
+const toolHintsSchema = Schema.Struct({
+  command: Schema.optional(Schema.Union([Schema.String, Schema.Array(Schema.String)])),
+  cmd: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  path: Schema.optional(Schema.String),
+  filePath: Schema.optional(Schema.String),
+  file_path: Schema.optional(Schema.String),
+  paths: Schema.optional(Schema.Array(Schema.String)),
+  url: Schema.optional(Schema.String),
+  exitCode: Schema.optional(Schema.Number.check(Schema.isInt())),
+  exit_code: Schema.optional(Schema.Number.check(Schema.isInt())),
+  durationMs: Schema.optional(Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0))),
+  duration_ms: Schema.optional(Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0))),
+})
+
+function toolHints(value: unknown): Schema.Schema.Type<typeof toolHintsSchema> | undefined {
+  const decoded = Schema.decodeUnknownOption(toolHintsSchema)(value)
+  return decoded._tag === 'Some' ? decoded.value : undefined
+}
+
+function toolCategory(kind: ToolCallUpdate['kind']): AgentToolMetadata['category'] {
+  switch (kind) {
+    case 'execute':
+      return 'command'
+    case 'read':
+      return 'fileRead'
+    case 'edit':
+    case 'delete':
+    case 'move':
+      return 'fileWrite'
+    case 'search':
+      return 'search'
+    case 'fetch':
+      return 'web'
+    case null:
+    case undefined:
+      return undefined
+    default:
+      return 'other'
+  }
+}
+
+function filePatch(path: string, oldText: string | null | undefined, newText: string, budget: number): string {
+  const limit = Math.max(0, Math.floor((budget - 256 - path.length * 2) / 4))
+  const before = (oldText ?? '').slice(0, limit)
+  const after = newText.slice(0, limit)
+  const lines = (value: string) => (value.length === 0 ? [] : value.replace(/\n$/, '').split('\n'))
+  const removed = lines(before)
+  const added = lines(after)
+  const truncated = before.length < (oldText?.length ?? 0) || after.length < newText.length
+  const headerPath = path.replace(/[\r\n]/g, ' ')
+  return [
+    `--- ${oldText == null ? '/dev/null' : `a/${headerPath}`}`,
+    `+++ b/${headerPath}`,
+    `@@ -${removed.length ? 1 : 0},${removed.length} +${added.length ? 1 : 0},${added.length} @@`,
+    ...removed.map(line => `-${line}`),
+    ...added.map(line => `+${line}`),
+    ...(truncated ? ['[Diff display truncated]'] : []),
+  ]
+    .join('\n')
+    .slice(0, budget)
+}
+
+function toolMetadata(update: ToolCallUpdate): AgentToolMetadata {
+  const input = toolHints(update.rawInput)
+  const output = toolHints(update.rawOutput)
+  const nativeCommand = input?.command ?? input?.cmd
+  const command = typeof nativeCommand === 'string' ? nativeCommand : nativeCommand?.join(' ')
+  const category = toolCategory(update.kind)
+  const exitCode = output?.exitCode ?? output?.exit_code
+  const durationMs = output?.durationMs ?? output?.duration_ms
+  const changes: NonNullable<AgentToolMetadata['changes']>[number][] = []
+  let patchBudget = MAX_TOOL_TEXT
+  for (const content of (update.content ?? []).slice(0, MAX_TOOL_ITEMS)) {
+    if (content.type !== 'diff') continue
+    const path = content.path.slice(0, 4096)
+    const diff = patchBudget > 256 ? filePatch(path, content.oldText, content.newText, patchBudget) : undefined
+    patchBudget -= diff?.length ?? 0
+    const kind = update.kind === 'delete' ? 'delete' : content.oldText == null ? 'add' : 'update'
+    changes.push({ path, kind, ...(diff !== undefined ? { diff } : {}) })
+  }
+  const paths = [
+    ...new Set([
+      ...(update.locations ?? []).slice(0, MAX_TOOL_ITEMS).map(location => location.path),
+      ...(input?.paths ?? []).slice(0, MAX_TOOL_ITEMS),
+      ...[input?.path ?? input?.filePath ?? input?.file_path].filter((path): path is string => path !== undefined),
+      ...changes.map(change => change.path),
+    ]),
+  ]
+    .slice(0, MAX_TOOL_ITEMS)
+    .map(path => path.slice(0, 4096))
+  return {
+    ...(category ? { category } : {}),
+    ...(update.title ? { description: update.title.slice(0, 4096) } : {}),
+    ...(command !== undefined ? { command: command.slice(0, MAX_TOOL_TEXT) } : {}),
+    ...(input?.cwd !== undefined ? { cwd: input.cwd.slice(0, 4096) } : {}),
+    ...(input?.url !== undefined ? { url: input.url.slice(0, 4096) } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(paths.length ? { paths } : {}),
+    ...(changes.length ? { changes } : {}),
+  }
+}
+
+function imageEvent(
+  content: Extract<ContentBlock, { type: 'image' }>,
+  itemId?: string,
+  alt?: string,
+): AgentDriverEvent {
+  if (!/^image\/(png|jpeg|gif|webp|avif)$/.test(content.mimeType) || content.data.length > MAX_IMAGE_DATA) {
+    return { kind: 'nativeNotice', message: 'ACP image format or size is unsupported for inline display.' }
+  }
+  if (content.data.length > 0 && content.data.length % 4 !== 1 && /^[A-Za-z0-9+/]+={0,2}$/.test(content.data)) {
+    return {
+      kind: 'media',
+      mediaType: content.mimeType,
+      url: `data:${content.mimeType};base64,${content.data}`,
+      ...(itemId ? { itemId } : {}),
+      ...(alt ? { alt: alt.slice(0, 4096) } : {}),
+    }
+  }
+  return { kind: 'nativeNotice', message: 'ACP image did not contain valid inline image data.' }
+}
+
+function toolContentText(update: ToolCallUpdate): string | undefined {
+  const raw = displayValue(update.rawOutput)
+  const parts: string[] = []
+  let remaining = MAX_TOOL_TEXT
+  let truncated = false
+  for (const [index, item] of (update.content ?? []).entries()) {
+    if (item.type !== 'content') continue
+    const content = item.content
+    let value: string | undefined
+    if (content.type === 'text') value = content.text
+    else if (content.type === 'resource' && 'text' in content.resource) value = content.resource.text
+    else if (content.type === 'resource_link') value = `${content.title ?? content.name}\n${content.uri}`
+    if (value === undefined) continue
+    if (remaining <= 0 || index >= MAX_TOOL_ITEMS) {
+      truncated = true
+      continue
+    }
+    if (value.length > remaining) truncated = true
+    parts.push(value.slice(0, remaining))
+    remaining -= value.length + 1
+  }
+  let text = parts.join('\n')
+  if (truncated) text = boundedToolText(`${text}\n… [truncated]`)
+  if (raw !== undefined && text && raw !== text) return boundedToolText(`${raw}\n\n${text}`)
+  return raw ?? (update.content != null ? text : undefined)
+}
+
+function translateTool(update: ToolCallUpdate, started: boolean): readonly AgentDriverEvent[] {
+  const metadata = toolMetadata(update)
+  const input = displayValue(update.rawInput)
+  const output = toolContentText(update)
+  const name = update.title?.trim().slice(0, 4096)
+  const fields = {
+    toolCallId: update.toolCallId,
+    ...(name ? { name } : {}),
+    ...(input !== undefined ? { input } : {}),
+    ...metadata,
+  }
+  const events: AgentDriverEvent[] = []
+  if (update.status === 'completed' || update.status === 'failed') {
+    events.push({
+      kind: 'toolCompleted',
+      ...fields,
+      ...(output !== undefined ? { output } : {}),
+      ...(update.status === 'failed' ? { error: output || name || 'Tool failed' } : {}),
+    })
+  } else {
+    if (started) events.push({ kind: 'toolStarted', ...fields, name: name || update.kind || 'tool' })
+    if (!started || output !== undefined)
+      events.push({ kind: 'toolUpdated', ...fields, ...(output !== undefined ? { output, append: false } : {}) })
+  }
+  for (const [index, content] of (update.content ?? []).slice(0, MAX_TOOL_ITEMS).entries()) {
+    if (content.type === 'content' && content.content.type === 'image')
+      events.push(imageEvent(content.content, `${update.toolCallId}:image:${index}`, name))
+    else if (content.type === 'terminal')
+      events.push({
+        kind: 'nativeNotice',
+        message: 'ACP referenced terminal output without an available client terminal.',
+      })
+  }
+  return events
 }
 
 function configCatalog(options: ReadonlyArray<SessionConfigOption>, category: string) {
@@ -273,11 +483,21 @@ function sessionCapabilities(response: SessionCatalog): Pick<AgentCapabilities, 
   const models =
     response.models?.availableModels.map(model => ({ id: model.modelId, label: model.name })) ??
     configCatalog(configOptions, 'model')
+  // Reasoning effort is the run choice offered first; OpenCode reports it as a thought level. Agents
+  // without one keep their session modes.
+  // OpenCode lists its own "default" level; the picker's blank choice already means the agent default.
+  const effort = configCatalog(configOptions, 'thought_level').filter(choice => choice.id !== 'default')
   const modes =
-    response.modes?.availableModes.map(mode => ({ id: mode.id, label: mode.name })) ??
-    configCatalog(configOptions, 'mode')
-  return { models, modes }
+    effort.length > 0
+      ? effort
+      : (response.modes?.availableModes.map(mode => ({ id: mode.id, label: mode.name })) ??
+        configCatalog(configOptions, 'mode'))
+  // A catalog larger than the renderer contract would fail the whole inspection, so it is trimmed instead.
+  return { models: models.slice(0, MAX_CATALOG_CHOICES), modes: modes.slice(0, MAX_CATALOG_CHOICES) }
 }
+
+/** Config option categories a Run's mode ID may select. */
+const SELECTABLE_MODE_CATEGORIES: ReadonlyArray<string> = ['mode', 'thought_level']
 
 function emptyEventChannel(runId: AgentRunId): Effect.Effect<RunChannel, never> {
   return Effect.map(
@@ -425,73 +645,20 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
             : { kind: 'reasoningDelta', text: update.content.text },
         ]
       }
+      if (update.content.type === 'image') return [imageEvent(update.content)]
       return [
         {
           kind: 'nativeNotice',
-          message: `ACP emitted unsupported ${update.content.type} content; this adapter preserves text and reasoning only.`,
+          message: `ACP emitted unsupported ${update.content.type} message content.`,
         },
       ]
     }
     case 'user_message_chunk':
       return []
-    case 'tool_call': {
-      const toolCall = update
-      if (toolCall.status === 'completed' || toolCall.status === 'failed') {
-        return [
-          {
-            kind: 'toolCompleted',
-            toolCallId: toolCall.toolCallId,
-            ...(toolCall.status === 'failed' ? { error: toolCall.title ?? 'Tool failed' } : {}),
-          },
-        ]
-      }
-      return [
-        {
-          kind: 'toolStarted',
-          toolCallId: toolCall.toolCallId,
-          name: toolCall.title ?? toolCall.kind ?? 'tool',
-          ...(displayValue(toolCall.rawInput) ? { input: displayValue(toolCall.rawInput) } : {}),
-        },
-        ...(toolCall.locations?.length
-          ? [
-              {
-                kind: 'nativeNotice' as const,
-                message: `ACP tool activity referenced ${toolCall.locations.length} file location(s); file attribution is not represented by this event contract.`,
-              },
-            ]
-          : []),
-      ]
-    }
-    case 'tool_call_update': {
-      if (update.status === 'completed' || update.status === 'failed') {
-        const output = displayValue(update.rawOutput)
-        return [
-          {
-            kind: 'toolCompleted',
-            toolCallId: update.toolCallId,
-            ...(update.status === 'failed' ? { error: output ?? update.title ?? 'Tool failed' } : {}),
-          },
-        ]
-      }
-      const outputParts = (update.content ?? []).flatMap(content => {
-        if (content.type === 'content' && content.content.type === 'text') return [content.content.text]
-        if (content.type === 'diff')
-          return [`ACP reported a file diff for ${content.path}, which this event contract cannot retain.`]
-        if (content.type === 'terminal')
-          return ['ACP reported terminal output, which this event contract cannot retain.']
-        return ['ACP reported non-text tool content, which this event contract cannot retain.']
-      })
-      const output =
-        displayValue(update.rawOutput) ??
-        (outputParts.length > 0 ? outputParts.join('\n').slice(0, 64 * 1024) : undefined)
-      return [
-        {
-          kind: 'toolUpdated',
-          toolCallId: update.toolCallId,
-          ...(output ? { output } : {}),
-        },
-      ]
-    }
+    case 'tool_call':
+      return translateTool(update, true)
+    case 'tool_call_update':
+      return translateTool(update, false)
     case 'usage_update': {
       state.eventSequence += 1
       return [
@@ -507,8 +674,11 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
     case 'plan':
       return [
         {
-          kind: 'nativeNotice',
-          message: `ACP reported a plan with ${update.entries.length} entries; plan content is not represented in the current execution event contract.`,
+          kind: 'planUpdated',
+          entries: update.entries.slice(0, 128).map(entry => ({
+            content: entry.content.slice(0, 4096),
+            status: entry.status === 'in_progress' ? 'inProgress' : entry.status,
+          })),
         },
       ]
     case 'current_mode_update':
@@ -554,11 +724,40 @@ function selectSessionOptions(
   },
 ): Effect.Effect<void, AgentDriverError | UnsupportedAgentOperation> {
   return Effect.gen(function* () {
-    const configOptions = optionsForSession(response)
+    let configOptions = optionsForSession(response)
+    // The model goes first: an agent such as OpenCode offers different effort levels per model.
+    if (context.modelId) {
+      const nativeModel = response.models?.availableModels.find(model => model.modelId === context.modelId)
+      const configModel = configOptions.find(
+        option => option.category === 'model' && optionValues(option).some(item => item.value === context.modelId),
+      )
+      if (nativeModel && typeof client.unstable_setSessionModel === 'function') {
+        yield* Effect.tryPromise({
+          try: () =>
+            client.unstable_setSessionModel({ sessionId: sessionId as never, modelId: context.modelId as never }),
+          catch: error => toDriverError(error),
+        })
+      } else if (configModel) {
+        const updated = yield* Effect.tryPromise({
+          try: () =>
+            client.setSessionConfigOption({
+              sessionId: sessionId as never,
+              configId: configModel.id,
+              value: context.modelId as never,
+            }),
+          catch: error => toDriverError(error),
+        })
+        configOptions = updated.configOptions?.length ? updated.configOptions : configOptions
+      } else {
+        return yield* unsupported('openSession', 'Requested model is not present in the ACP session catalog.')
+      }
+    }
     if (context.modeId) {
       const nativeMode = response.modes?.availableModes.find(mode => mode.id === context.modeId)
       const configMode = configOptions.find(
-        option => option.category === 'mode' && optionValues(option).some(item => item.value === context.modeId),
+        option =>
+          SELECTABLE_MODE_CATEGORIES.includes(option.category ?? '') &&
+          optionValues(option).some(item => item.value === context.modeId),
       )
       if (nativeMode) {
         yield* Effect.tryPromise({
@@ -577,31 +776,6 @@ function selectSessionOptions(
         })
       } else {
         return yield* unsupported('openSession', 'Requested mode is not present in the ACP session catalog.')
-      }
-    }
-    if (context.modelId) {
-      const nativeModel = response.models?.availableModels.find(model => model.modelId === context.modelId)
-      const configModel = configOptions.find(
-        option => option.category === 'model' && optionValues(option).some(item => item.value === context.modelId),
-      )
-      if (nativeModel && typeof client.unstable_setSessionModel === 'function') {
-        yield* Effect.tryPromise({
-          try: () =>
-            client.unstable_setSessionModel({ sessionId: sessionId as never, modelId: context.modelId as never }),
-          catch: error => toDriverError(error),
-        })
-      } else if (configModel) {
-        yield* Effect.tryPromise({
-          try: () =>
-            client.setSessionConfigOption({
-              sessionId: sessionId as never,
-              configId: configModel.id,
-              value: context.modelId as never,
-            }),
-          catch: error => toDriverError(error),
-        })
-      } else {
-        return yield* unsupported('openSession', 'Requested model is not present in the ACP session catalog.')
       }
     }
   })
@@ -670,7 +844,28 @@ function choosePermissionResponse(
   return { outcome: { outcome: 'selected', optionId: selected.optionId } }
 }
 
-function makeClient(stateRef: { current?: AcpSessionState }): Client {
+const READ_TOOL_KINDS: ReadonlyArray<string> = ['read', 'search', 'think']
+const EDIT_TOOL_KINDS: ReadonlyArray<string> = ['edit', 'delete', 'move']
+
+/**
+ * The access mode applied to an ACP permission request: reads never ask, Supervised asks for the
+ * rest, Auto-accept edits allows file changes, Full access allows everything. Approval picks the one-time option;
+ * a persistent "always" choice is never made for the user, so its absence falls back to asking.
+ */
+export function automaticPermission(
+  accessMode: AgentAccessMode,
+  params: Pick<RequestPermissionRequest, 'options' | 'toolCall'>,
+): RequestPermissionResponse | undefined {
+  const kind = params.toolCall.kind ?? 'other'
+  const allowed =
+    READ_TOOL_KINDS.includes(kind) ||
+    accessMode === 'full-access' ||
+    (accessMode === 'auto-accept-edits' && EDIT_TOOL_KINDS.includes(kind))
+  const once = allowed ? params.options.find(option => option.kind === 'allow_once') : undefined
+  return once ? { outcome: { outcome: 'selected', optionId: once.optionId } } : undefined
+}
+
+function makeClient(stateRef: AcpStateRef): Client {
   return {
     requestPermission: async params => {
       const state = stateRef.current
@@ -678,6 +873,8 @@ function makeClient(stateRef: { current?: AcpSessionState }): Client {
       if (!state || !run || state.closed || !state.acceptRequests || params.sessionId !== state.nativeSessionId) {
         return { outcome: { outcome: 'cancelled' } }
       }
+      const automatic = automaticPermission(state.context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE, params)
+      if (automatic) return automatic
       const id = `acp-request-${++state.requestSequence}`
       let resolve!: (response: RequestPermissionResponse) => void
       const response = new Promise<RequestPermissionResponse>(res => {
@@ -716,6 +913,8 @@ function makeClient(stateRef: { current?: AcpSessionState }): Client {
       })
     },
     sessionUpdate: async (notification: SessionNotification) => {
+      // A catalog probe session is disposable; its updates carry nothing a Run needs.
+      if (stateRef.probes?.has(notification.sessionId)) return
       const state = stateRef.current
       if (!state || state.closed || notification.sessionId !== state.nativeSessionId) {
         throw new Error('ACP sent an update for an unrelated native session.')
@@ -1061,7 +1260,7 @@ function createConnection(
       transportClosed = true
       return transport.close(1000).pipe(Effect.ignore)
     })
-    const stateRef: { current?: AcpSessionState } = {}
+    const stateRef: AcpStateRef = {}
     const readable = yield* Stream.toReadableStreamEffect(transport.input, { strategy: { highWaterMark: 32 } })
     const writable = new WritableStream<Uint8Array>({
       write: bytes => {
@@ -1180,13 +1379,6 @@ function createConnection(
             message: 'ACP session requires a valid generation and resolved workspace path.',
           })
         }
-        // ACP has no standard access control; only the interactive approval flow can honour a Run.
-        if ((context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE) !== DEFAULT_AGENT_ACCESS_MODE) {
-          return yield* unsupported(
-            native ? 'loadSession' : 'openSession',
-            'ACP has no native access control; only approval-required is supported.',
-          )
-        }
         if (native && !connectionState.loadSessionSupported) {
           return yield* unsupported('loadSession', 'The ACP agent did not advertise session/load.')
         }
@@ -1280,6 +1472,20 @@ function createConnection(
           ),
         ),
       openSession: context => open(context),
+      probeCatalog: () =>
+        Effect.gen(function* () {
+          if (connectionState.closed || connectionState.session)
+            return yield* new AgentDriverError({
+              code: 'invalid-state',
+              message: 'ACP catalogs are probed only on an idle connection.',
+            })
+          const response = yield* Effect.tryPromise({
+            try: () => client.newSession({ cwd: tmpdir(), mcpServers: [] }),
+            catch: error => toDriverError(error),
+          })
+          ;(stateRef.probes ??= new Set()).add(response.sessionId)
+          return sessionCapabilities(response)
+        }),
       loadSession: (context, native) => open(context, native),
       close: deadlineMs => closeAcpConnection(connectionState, deadlineMs),
     } satisfies AgentDriverConnection
@@ -1289,7 +1495,7 @@ function createConnection(
 export function makeAcpDriver(dependencies: AcpDriverDependencies): AgentDriver['Service'] {
   return AgentDriver.of({
     driverId: 'acp',
-    accessModes: ['approval-required'],
+    accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
     connect: options =>
       dependencies.transportFactory(options).pipe(
         Effect.mapError(error =>

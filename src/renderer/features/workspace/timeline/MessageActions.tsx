@@ -30,41 +30,54 @@ export function MessageActions({
         className,
       )}
     >
-      <time dateTime={timestamp}>{formatMessageTime(timestamp)}</time>
-      {copyText !== null && <CopyMessageButton text={copyText} label={copyLabel} />}
+      <time dateTime={timestamp} title={timestamp}>
+        {formatMessageTime(timestamp)}
+      </time>
+      {copyText !== null && <CopyTextButton text={copyText} label={copyLabel} />}
       {children}
     </div>
   )
 }
 
-function CopyMessageButton({ text, label }: { readonly text: string; readonly label: string }): React.JSX.Element {
-  const [copied, setCopied] = useState(false)
+export function CopyTextButton({ text, label }: { readonly text: string; readonly label: string }): React.JSX.Element {
+  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   useEffect(() => {
-    if (!copied) return
+    if (status === 'idle') return
     const id = window.setTimeout(() => {
-      setCopied(false)
+      setStatus('idle')
     }, COPIED_FEEDBACK_MS)
     return () => {
       window.clearTimeout(id)
     }
-  }, [copied])
+  }, [status])
+  const copied = status === 'copied'
+  const copy = async () => {
+    if (!navigator.clipboard) {
+      setStatus('failed')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(text)
+      setStatus('copied')
+    } catch {
+      setStatus('failed')
+    }
+  }
   return (
     <Button
       type="button"
       variant="ghost"
       size="icon-xs"
       aria-label={copied ? `${label} copied` : label}
-      title={label}
-      onClick={() => {
-        void navigator.clipboard
-          ?.writeText(text)
-          .then(() => {
-            setCopied(true)
-          })
-          .catch(() => undefined)
-      }}
+      title={status === 'failed' ? 'Could not copy to clipboard' : label}
+      onClick={() => void copy()}
     >
       {copied ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
+      {status === 'failed' && (
+        <span role="status" className="sr-only">
+          Could not copy to clipboard
+        </span>
+      )}
     </Button>
   )
 }

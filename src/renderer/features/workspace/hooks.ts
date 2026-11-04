@@ -12,6 +12,7 @@ import {
   cloneProjectAtom,
   createProjectAtom,
   createTaskAtom,
+  createWorktreeAtom,
   enqueueFollowUpAtom,
   interruptAtom,
   promoteQueuedFollowUpAtom,
@@ -21,6 +22,8 @@ import {
   retainWorkspaceSidebarQuery,
   startRunAtom,
   steerAtom,
+  switchBranchAtom,
+  workspaceBranches,
   workspaceConversation,
   workspaceFollowUps,
   workspaceNativeAgentSessions,
@@ -40,6 +43,7 @@ import {
   workspaceTaskSnapshot,
 } from './atoms.js'
 import { nextConversationRequest, nextPayloadRequest, workspaceQueryKey, type WorkspaceRequest } from './lib.js'
+import { WorkspaceQueryScopeContext } from './side-chat/scope-context.js'
 
 function useWorkspaceLifetime() {
   const registry = useContext(RegistryContext)
@@ -51,11 +55,13 @@ function useWorkspaceLifetime() {
 function useWorkspaceQuery<Request, Value, Error>(slot: RpcQuerySlot<Request, Value, Error>, request: Request | null) {
   useWorkspaceLifetime()
   const registry = useContext(RegistryContext)
+  const overrides = useContext(WorkspaceQueryScopeContext)
+  const selectedSlot = (overrides?.get(slot) as RpcQuerySlot<Request, Value, Error> | undefined) ?? slot
   const active = request !== null
   useEffect(() => {
-    if (active) return retainWorkspaceQuery(registry, slot)
-  }, [registry, slot, active])
-  return useRemoteQuery(slot, request, workspaceQueryKey)
+    if (active) return retainWorkspaceQuery(registry, selectedSlot)
+  }, [registry, selectedSlot, active])
+  return useRemoteQuery(selectedSlot, request, workspaceQueryKey)
 }
 
 /** Activates the one-per-window subscription; unmounting a view never interrupts a Run. */
@@ -111,6 +117,8 @@ export const useWorkspaceSteerIntents = (request: WorkspaceRequest<'workspace:li
   useWorkspaceQuery(workspaceSteerIntents, request)
 export const useWorkspaceQueuedFollowUps = (request: WorkspaceRequest<'workspace:listQueuedFollowUps'> | null) =>
   useWorkspaceQuery(workspaceFollowUps, request)
+export const useWorkspaceBranches = (request: WorkspaceRequest<'workspace:listBranches'> | null) =>
+  useWorkspaceQuery(workspaceBranches, request)
 
 export function useWorkspaceConversation(request: WorkspaceRequest<'workspace:readConversationPage'> | null) {
   const query = useWorkspaceQuery(workspaceConversation, request)
@@ -162,6 +170,8 @@ export const useSteerRun = () => useWorkspaceCommand(steerAtom)
 export const useEnqueueFollowUp = () => useWorkspaceCommand(enqueueFollowUpAtom)
 export const useCancelQueuedFollowUp = () => useWorkspaceCommand(cancelQueuedFollowUpAtom)
 export const usePromoteQueuedFollowUp = () => useWorkspaceCommand(promoteQueuedFollowUpAtom)
+export const useSwitchBranch = () => useWorkspaceCommand(switchBranchAtom)
+export const useCreateWorktree = () => useWorkspaceCommand(createWorktreeAtom)
 
 export type {
   WorkspaceAttention,

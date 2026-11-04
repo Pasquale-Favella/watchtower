@@ -145,7 +145,7 @@ describe('right panel state', () => {
       readRightPanelPreferences(
         memoryStorage({ 'watchtower.workspace.right-panel.v1': '{"task-1":{"open":true,"tab":"files"}}' }),
       ),
-    ).toEqual({ 'task-1': { open: true, tab: 'files' } })
+    ).toEqual({ 'task-1': { open: true, surfaces: ['files'], active: 'files', maximized: false } })
     expect(readRightPanelWidth(memoryStorage({ 'watchtower.workspace.right-panel-width.v1': 'wide' }))).toBe(
       RIGHT_PANEL_DEFAULT_WIDTH,
     )
@@ -155,7 +155,10 @@ describe('right panel state', () => {
   it('bounds remembered panels to the most recent entries', () => {
     const storage = memoryStorage()
     const preferences = Object.fromEntries(
-      Array.from({ length: 150 }, (_, index) => [`task-${index}`, { open: true, tab: 'diff' as const }]),
+      Array.from({ length: 150 }, (_, index) => [
+        `task-${index}`,
+        { open: true, surfaces: ['diff' as const], active: 'diff' as const, maximized: false },
+      ]),
     )
     writeRightPanelPreferences(storage, preferences)
     const stored = readRightPanelPreferences(storage)

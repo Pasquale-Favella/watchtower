@@ -26,6 +26,7 @@ import {
   unexpectedShellHandlers,
   unexpectedTerminalHandlers,
   unexpectedWorkspaceHandlers,
+  unexpectedWorkspacePanelHandlers,
 } from './fixtures/unexpected-native-rpc.js'
 
 export interface CoachRpcTestOverrides {
@@ -117,6 +118,7 @@ export function makeCoachRpcTestClient(runtime: Atom.RegistryRuntimeFactory, ove
   const handlers = Layer.mergeAll(
     unexpectedShellHandlers,
     unexpectedWorkspaceHandlers,
+    unexpectedWorkspacePanelHandlers,
     unexpectedCheckoutInspectionHandlers,
     unexpectedTerminalHandlers,
     analyticsHandlers({ request: workerRequest }),

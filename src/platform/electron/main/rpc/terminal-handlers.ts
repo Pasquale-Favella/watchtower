@@ -6,8 +6,16 @@ import * as Stream from 'effect/Stream'
 
 import { TerminalHost, TerminalHostError } from '@/core/ports/terminal-host.js'
 import { TerminalRpcError, TerminalRpcGroup, terminalRpcMessages } from '@/shared/rpc/terminal.js'
-import { TERMINAL_DEFAULT_COLS, TERMINAL_DEFAULT_ROWS, type TerminalId } from '@/shared/schemas/terminal.js'
-import type { TaskId } from '@/shared/schemas/workspace.js'
+import {
+  type DraftTerminalTarget,
+  TERMINAL_DEFAULT_COLS,
+  TERMINAL_DEFAULT_ROWS,
+  type TerminalId,
+  type TerminalOwnerRequest,
+  terminalRequestTarget,
+  terminalTargetPayload,
+} from '@/shared/schemas/terminal.js'
+import type { TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 function failure(code: TerminalRpcError['code']): TerminalRpcError {
   return new TerminalRpcError({ code, message: terminalRpcMessages[code] })
@@ -29,24 +37,34 @@ function safe<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, Termina
   )
 }
 
-export interface TerminalHandlerOptions {
+export interface TerminalHandlerOptions<R = never> {
   /** Resolves the Task's checkout on the server. The renderer never supplies a working directory. */
-  readonly resolveTaskCwd: (taskId: TaskId) => Effect.Effect<string, TerminalRpcError>
+  readonly resolveDraftCwd?: ((target: DraftTerminalTarget) => Effect.Effect<string, TerminalRpcError, R>) | undefined
+  readonly resolveTaskCwd: (
+    taskId: TaskId,
+    checkoutId?: WorkspaceCheckoutId,
+  ) => Effect.Effect<string, TerminalRpcError, R>
 }
 
 /** Built per authenticated app connection; the TerminalHost behind it is application-lifetime. */
-export function terminalHandlers(options: TerminalHandlerOptions) {
+export function terminalHandlers<R = never>(options: TerminalHandlerOptions<R>) {
   return Layer.unwrap(
     Effect.gen(function* () {
       const host = yield* TerminalHost
-      const spawnRequest = (request: {
-        readonly taskId: TaskId
-        readonly terminalId: TerminalId
-        readonly cols?: number | undefined
-        readonly rows?: number | undefined
-      }) =>
-        Effect.map(options.resolveTaskCwd(request.taskId), cwd => ({
-          taskId: request.taskId,
+      const resolveCwd = (request: TerminalOwnerRequest) => {
+        const target = terminalRequestTarget(request)
+        if (target.kind === 'task') return options.resolveTaskCwd(target.taskId)
+        return options.resolveDraftCwd ? options.resolveDraftCwd(target) : Effect.fail(failure('cwd-unavailable'))
+      }
+      const spawnRequest = (
+        request: TerminalOwnerRequest & {
+          readonly terminalId: TerminalId
+          readonly cols?: number | undefined
+          readonly rows?: number | undefined
+        },
+      ) =>
+        Effect.map(resolveCwd(request), cwd => ({
+          ...terminalTargetPayload(terminalRequestTarget(request)),
           terminalId: request.terminalId,
           cwd,
           cols: request.cols ?? TERMINAL_DEFAULT_COLS,
@@ -56,11 +74,16 @@ export function terminalHandlers(options: TerminalHandlerOptions) {
       return TerminalRpcGroup.toLayer({
         'terminal:open': request => safe(Effect.flatMap(spawnRequest(request), host.open)),
         'terminal:restart': request => safe(Effect.flatMap(spawnRequest(request), host.restart)),
-        'terminal:attach': ({ taskId, terminalId }) => host.attach(taskId, terminalId).pipe(Stream.mapError(sanitize)),
-        'terminal:write': ({ taskId, terminalId, data }) => safe(host.write(taskId, terminalId, data)),
-        'terminal:resize': ({ taskId, terminalId, cols, rows }) => safe(host.resize(taskId, terminalId, cols, rows)),
-        'terminal:close': ({ taskId, terminalId }) => safe(host.close(taskId, terminalId)),
-        'terminal:list': ({ taskId }) => safe(Effect.map(host.list(taskId), items => ({ items: [...items] }))),
+        'terminal:attach': request =>
+          host.attach(terminalRequestTarget(request), request.terminalId).pipe(Stream.mapError(sanitize)),
+        'terminal:write': request => safe(host.write(terminalRequestTarget(request), request.terminalId, request.data)),
+        'terminal:resize': request =>
+          safe(host.resize(terminalRequestTarget(request), request.terminalId, request.cols, request.rows)),
+        'terminal:close': request => safe(host.close(terminalRequestTarget(request), request.terminalId)),
+        'terminal:list': request =>
+          safe(Effect.map(host.list(terminalRequestTarget(request)), items => ({ items: [...items] }))),
+        'terminal:adoptDraft': ({ draft, taskId, checkoutId }) =>
+          safe(Effect.flatMap(options.resolveTaskCwd(taskId, checkoutId), cwd => host.adoptDraft(draft, taskId, cwd))),
       })
     }),
   )

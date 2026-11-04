@@ -37,6 +37,7 @@ import {
 import {
   type BeginRunCommand,
   beginRunCommandSchema,
+  checkoutRegistrationReceiptSchema,
   type CommandReceipt,
   commandReceiptSchema,
   type CreateTaskCommand,
@@ -50,9 +51,12 @@ import {
   projectRegistrationReceiptSchema,
   promotedFollowUpSchema,
   queuedFollowUpSchema,
+  queuedFollowUpHeadSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
+  type RegisterCheckoutCommand,
+  registerCheckoutCommandSchema,
   type RegisterProjectCommand,
   registerProjectCommandSchema,
   requestResponseHistoryItemSchema,
@@ -256,6 +260,13 @@ const migrations = [
       ALTER TABLE workspace_dispatch_intent ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'approval-required';
     `),
   },
+  {
+    version: 11,
+    name: 'hold_follow_up_queue_until_explicit_resume',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_follow_up_queue ADD COLUMN held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0, 1));
+    `),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
@@ -295,6 +306,7 @@ const fingerprint = (value: unknown): string => {
 
 const receiptServerFields = {
   registerProject: [],
+  registerCheckout: [],
   createTask: [],
   beginRun: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
   promoteFollowUp: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
@@ -314,6 +326,16 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
       commandId: registration.commandId,
       project: { name: registration.project.name, repositoryIdentity: registration.project.repositoryIdentity },
       mainCheckout: { path: registration.mainCheckout.path },
+    }
+  } else if (kind === 'registerCheckout') {
+    const registration = command as RegisterCheckoutCommand
+    intent = {
+      commandId: registration.commandId,
+      checkout: {
+        projectId: registration.checkout.projectId,
+        path: registration.checkout.path,
+        branch: registration.checkout.branch ?? null,
+      },
     }
   } else if (kind === 'createTask') {
     const creation = command as CreateTaskCommand
@@ -468,6 +490,41 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  const registerCheckout = (command: Parameters<WorkspaceStore['Service']['registerCheckout']>[0]) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(registerCheckoutCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Checkout registration data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'registerCheckout', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return {
+                ...(yield* decodeJson(checkoutRegistrationReceiptSchema)(String(prior[0].payload))),
+                replayed: true,
+              }
+            }
+            const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${command.checkout.projectId}`
+            if (!projects[0]) return yield* safeError('not-found', 'Project was not found')
+            const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
+            if (project.archivedAt)
+              return yield* safeError('membership-conflict', 'Archived projects take no checkouts')
+            const samePath =
+              yield* sql`SELECT id FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.path') = ${command.checkout.path} AND json_extract(payload, '$.archivedAt') IS NULL LIMIT 1`
+            if (samePath[0]) return yield* safeError('membership-conflict', 'Checkout path is already registered')
+            const checkout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)(command.checkout)
+            yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${checkout.id}, ${project.id}, ${encode(checkout)})`
+            const result = { commandId: command.commandId, checkout, replayed: false }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('registerCheckout', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
   const createTask = (command: Parameters<WorkspaceStore['Service']['createTask']>[0]) =>
     guard(
       Effect.gen(function* () {
@@ -579,8 +636,10 @@ const makeService = Effect.gen(function* () {
             const requestedCheckout = yield* decodeJson(workspaceCheckoutSchema)(membership.checkout_payload)
             const active = yield* sql`
         SELECT DISTINCT c.payload AS checkout_payload FROM workspace_agent_run r
+        JOIN workspace_dispatch_intent i ON i.run_id = r.id
         JOIN workspace_checkout c ON c.id = r.checkout_id
         WHERE r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired')
+          AND i.state NOT IN ('settled', 'failed')
       `
             const activeCheckouts = yield* Effect.forEach(active as Array<{ checkout_payload: unknown }>, row =>
               decodeJson(workspaceCheckoutSchema)(String(row.checkout_payload)),
@@ -594,6 +653,7 @@ const makeService = Effect.gen(function* () {
         JOIN workspace_dispatch_intent i ON i.run_id = r.id
         WHERE (r.session_id = ${command.provisionalAgentSessionId} OR i.provisional_session_id = ${command.provisionalAgentSessionId})
           AND r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired')
+          AND i.state NOT IN ('settled', 'failed')
       `
             if (sessionRuns.length > 0)
               return yield* Effect.fail(safeError('admission-conflict', 'Agent Session already has an active turn'))
@@ -631,7 +691,10 @@ const makeService = Effect.gen(function* () {
             yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, access_mode, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.accessMode ?? DEFAULT_AGENT_ACCESS_MODE}, ${command.nativeSessionId ?? null}, 'pending')`
             yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
             yield* sql`UPDATE workspace_message SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
-            yield* appendEvent(run, 'runQueued', command.issuedAt, { conversationId: command.conversationId })
+            yield* appendEvent(run, 'runQueued', command.issuedAt, {
+              conversationId: command.conversationId,
+              commandId: command.commandId,
+            })
             const result: CommandReceipt = {
               commandId: command.commandId,
               runId: run.id,
@@ -1474,7 +1537,10 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(
                 safeError('membership-conflict', 'Follow-up must belong to an active Task and Conversation'),
               )
-            yield* sql`INSERT INTO workspace_follow_up_queue (command_id, task_id, conversation_id, payload) VALUES (${command.commandId}, ${command.taskId}, ${command.conversationId}, ${encode(command)})`
+            const priorQueue =
+              yield* sql`SELECT held FROM workspace_follow_up_queue WHERE conversation_id = ${command.conversationId} ORDER BY position LIMIT 1`
+            const held = Number(priorQueue[0]?.held ?? 0) === 1
+            yield* sql`INSERT INTO workspace_follow_up_queue (command_id, task_id, conversation_id, payload, held) VALUES (${command.commandId}, ${command.taskId}, ${command.conversationId}, ${encode(command)}, ${held ? 1 : 0})`
             const receipt = {
               commandId: command.commandId,
               conversationId: command.conversationId,
@@ -1490,9 +1556,11 @@ const makeService = Effect.gen(function* () {
 
   const decodeQueuedFollowUp = Effect.fnUntraced(function* (row: Record<string, unknown>) {
     const command = yield* decodeJson(enqueueFollowUpCommandSchema)(String(row.payload))
-    return yield* Schema.decodeUnknownEffect(queuedFollowUpSchema)({ ...command, position: Number(row.position) }).pipe(
-      Effect.mapError(() => safeError('invalid-data', 'Stored follow-up failed validation')),
-    )
+    return yield* Schema.decodeUnknownEffect(queuedFollowUpSchema)({
+      ...command,
+      position: Number(row.position),
+      held: Number(row.held ?? 0) === 1,
+    }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored follow-up failed validation')))
   })
 
   const decodeReadOptions = (options: WorkspaceReadPageOptions = {}) =>
@@ -1537,9 +1605,92 @@ const makeService = Effect.gen(function* () {
             const counts =
               yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN position > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId}`
             const rows =
-              yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} AND position > ${afterPosition} ORDER BY position LIMIT ${limit}`
+              yield* sql`SELECT position, payload, held FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} AND position > ${afterPosition} ORDER BY position LIMIT ${limit}`
             const items = yield* Effect.forEach(rows, decodeQueuedFollowUp)
             return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const listQueuedFollowUpHeads: WorkspaceStore['Service']['listQueuedFollowUpHeads'] = options =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts = yield* sql`
+              SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN head.position > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining
+              FROM workspace_follow_up_queue head
+              WHERE head.position = (
+                SELECT MIN(candidate.position) FROM workspace_follow_up_queue candidate
+                WHERE candidate.conversation_id = head.conversation_id
+              )
+            `
+            const rows = yield* sql`
+              SELECT head.position, head.payload, head.held,
+                task.project_id, intent.checkout_id, intent.driver_id, intent.connection_id,
+                run.generation, run.status AS run_status,
+                session.native_session_id, session.status AS session_status
+              FROM workspace_follow_up_queue head
+              JOIN workspace_conversation conversation ON conversation.id = head.conversation_id
+              JOIN workspace_task task ON task.id = conversation.task_id
+              LEFT JOIN workspace_dispatch_intent intent ON intent.run_id = (
+                SELECT latest.run_id
+                FROM workspace_dispatch_intent latest
+                JOIN workspace_agent_run latest_run ON latest_run.id = latest.run_id
+                WHERE latest.conversation_id = head.conversation_id
+                ORDER BY latest_run.rowid DESC LIMIT 1
+              )
+              LEFT JOIN workspace_agent_run run ON run.id = intent.run_id
+              LEFT JOIN workspace_agent_session session ON session.id = run.session_id
+              WHERE head.position > ${afterPosition}
+                AND head.position = (
+                  SELECT MIN(candidate.position) FROM workspace_follow_up_queue candidate
+                  WHERE candidate.conversation_id = head.conversation_id
+                )
+              ORDER BY head.position LIMIT ${limit}
+            `
+            const items = yield* Effect.forEach(rows, row =>
+              Effect.gen(function* () {
+                const queued = yield* decodeQueuedFollowUp(row as Record<string, unknown>)
+                const context = row.run_status
+                  ? {
+                      projectId: String(row.project_id),
+                      checkoutId: String(row.checkout_id),
+                      driverId: String(row.driver_id),
+                      connectionId: String(row.connection_id),
+                      generation: Number(row.generation),
+                      nativeSessionId: row.native_session_id === null ? null : String(row.native_session_id),
+                      sessionStatus: row.session_status === null ? null : String(row.session_status),
+                      runStatus: String(row.run_status),
+                    }
+                  : null
+                return yield* Schema.decodeUnknownEffect(queuedFollowUpHeadSchema)({ ...queued, context }).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored follow-up head context failed validation')),
+                )
+              }),
+            )
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const holdQueuedFollowUps: WorkspaceStore['Service']['holdQueuedFollowUps'] = (conversationId, ownerEpoch) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const worker =
+              yield* sql`SELECT retired_epoch, allocated_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+            const retiredEpoch = Number(worker[0]?.retired_epoch ?? 0)
+            const allocatedEpoch = Number(worker[0]?.allocated_epoch ?? 0)
+            if (ownerEpoch <= retiredEpoch || (allocatedEpoch > 0 && ownerEpoch !== allocatedEpoch))
+              return yield* Effect.fail(safeError('stale-epoch', 'Queue hold owner epoch is stale'))
+            yield* sql`UPDATE workspace_follow_up_queue SET held = 1 WHERE conversation_id = ${conversationId}`
           }),
         )
       }),
@@ -1626,8 +1777,9 @@ const makeService = Effect.gen(function* () {
               return { ...promoted, receipt: { ...promoted.receipt, replayed: true } }
             }
             const active =
-              yield* sql`SELECT r.id FROM workspace_agent_run r JOIN workspace_dispatch_intent i ON i.run_id = r.id WHERE i.conversation_id = ${conversationId} AND r.status NOT IN ('completed', 'failed', 'interrupted') LIMIT 1`
+              yield* sql`SELECT r.id FROM workspace_agent_run r JOIN workspace_dispatch_intent i ON i.run_id = r.id WHERE i.conversation_id = ${conversationId} AND r.status NOT IN ('completed', 'failed', 'interrupted') AND i.state NOT IN ('settled', 'failed') LIMIT 1`
             if (active.length > 0) return null
+            yield* sql`UPDATE workspace_follow_up_queue SET held = 0 WHERE conversation_id = ${conversationId}`
             const head =
               yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} ORDER BY position LIMIT 1`
             if (!head[0]) return null
@@ -1639,6 +1791,8 @@ const makeService = Effect.gen(function* () {
             const followUp = { ...followUpCommand, position: Number(head[0].position) }
             const receipt = yield* beginRun({
               ...command,
+              checkoutId: followUp.checkoutId ?? command.checkoutId,
+              generation: followUp.generation ?? command.generation,
               prompt: followUp.prompt,
               attachments: followUp.attachments ?? [],
               driverId: followUp.driverId ?? command.driverId,
@@ -1646,6 +1800,7 @@ const makeService = Effect.gen(function* () {
               modelId: followUp.modelId === undefined ? command.modelId : followUp.modelId,
               modeId: followUp.modeId === undefined ? command.modeId : followUp.modeId,
               accessMode: followUp.accessMode === undefined ? command.accessMode : followUp.accessMode,
+              nativeSessionId: followUp.nativeSessionId ?? command.nativeSessionId,
             })
             if (receipt.replayed)
               return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
@@ -1723,6 +1878,42 @@ const makeService = Effect.gen(function* () {
     }
     return recovered
   })
+
+  const releaseDispatchAfterCleanup: WorkspaceStore['Service']['releaseDispatchAfterCleanup'] = (runId, ownerEpoch) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT owner_epoch FROM workspace_dispatch_intent WHERE run_id = ${runId}`
+            if (!rows[0]) return yield* safeError('not-found', 'Dispatch intent does not exist')
+            if (Number(rows[0].owner_epoch) !== ownerEpoch)
+              return yield* safeError('stale-epoch', 'Dispatch cleanup belongs to another owner')
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled'
+          WHERE run_id = ${runId} AND owner_epoch = ${ownerEpoch} AND state IN ('uncertain', 'recoveryRequired')
+          AND run_id IN (SELECT id FROM workspace_agent_run WHERE status IN ('uncertain', 'recoveryRequired'))`
+          }),
+        )
+      }),
+    )
+
+  const releaseRetiredDispatches: WorkspaceStore['Service']['releaseRetiredDispatches'] = ownerEpoch =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT allocated_epoch, retired_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+            if (Number(rows[0]?.allocated_epoch) !== ownerEpoch || ownerEpoch <= Number(rows[0]?.retired_epoch))
+              return yield* safeError('stale-epoch', 'Execution cleanup requires the current owner')
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled'
+          WHERE owner_epoch <= ${Number(rows[0].retired_epoch)} AND state IN ('uncertain', 'recoveryRequired')
+          AND run_id IN (SELECT id FROM workspace_agent_run WHERE status IN ('uncertain', 'recoveryRequired'))`
+          }),
+        )
+      }),
+    )
 
   const recoverWorker = (replacedEpoch: number, recoveredAt: string) =>
     guard(
@@ -2540,9 +2731,10 @@ const makeService = Effect.gen(function* () {
             const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
             const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
             const runRows = yield* sql`
-              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id
+              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, json_extract(c.payload, '$.path') AS workspace_path
               FROM workspace_agent_run r
               LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              LEFT JOIN workspace_checkout c ON c.id = i.checkout_id
               WHERE r.task_id = ${taskId}
               ORDER BY CASE
                 WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
@@ -2568,6 +2760,7 @@ const makeService = Effect.gen(function* () {
                       checkoutId: row.checkout_id,
                       driverId: row.driver_id,
                       connectionId: row.connection_id,
+                      ...(row.workspace_path != null ? { workspacePath: row.workspace_path } : {}),
                     }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Run context failed validation')))
                   : undefined
               const bytes = Buffer.byteLength(encode([run, context ?? null]), 'utf8')
@@ -2619,10 +2812,10 @@ const makeService = Effect.gen(function* () {
             const queueCounts =
               yield* sql`SELECT COUNT(*) AS total FROM workspace_follow_up_queue WHERE task_id = ${taskId}`
             const queuedRows =
-              yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE task_id = ${taskId} ORDER BY position LIMIT ${deliveryLimit}`
+              yield* sql`SELECT position, payload, held FROM workspace_follow_up_queue WHERE task_id = ${taskId} ORDER BY position LIMIT ${deliveryLimit}`
             const queue = yield* Effect.forEach(queuedRows, decodeQueuedFollowUp)
             const queuedFollowUps = boundedItems(
-              queue.map(({ commandId, taskId, conversationId, issuedAt, position, prompt }) => ({
+              queue.map(({ commandId, taskId, conversationId, issuedAt, position, prompt, held }) => ({
                 commandId,
                 taskId,
                 conversationId,
@@ -2630,6 +2823,7 @@ const makeService = Effect.gen(function* () {
                 position,
                 promptByteLength: Buffer.byteLength(prompt, 'utf8'),
                 promptPreview: prompt.slice(0, 512),
+                held: held ?? false,
               })),
               512 * 1024,
             )
@@ -2673,6 +2867,7 @@ const makeService = Effect.gen(function* () {
 
   return WorkspaceStore.of({
     registerProject,
+    registerCheckout,
     createTask,
     beginRun,
     claimDispatch,
@@ -2688,10 +2883,14 @@ const makeService = Effect.gen(function* () {
     enqueueFollowUp,
     cancelQueuedFollowUp,
     listQueuedFollowUps,
+    listQueuedFollowUpHeads,
+    holdQueuedFollowUps,
     listRequestResponses,
     listSteerIntents,
     promoteNextFollowUp,
     recoverWorker,
+    releaseDispatchAfterCleanup,
+    releaseRetiredDispatches,
     acquireOwnerEpoch,
     readWorkspacePayload,
     pageEvents,

@@ -9,8 +9,15 @@ import * as Stream from 'effect/Stream'
 
 import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc.js'
 import { TerminalRpcError } from '@/shared/rpc/terminal.js'
-import { type TerminalId, terminalSessionKey } from '@/shared/schemas/terminal.js'
-import type { TaskId } from '@/shared/schemas/workspace.js'
+import {
+  type DraftTerminalTarget,
+  type TerminalId,
+  type TerminalOwner,
+  type TerminalOwnerRequest,
+  terminalSessionKey,
+  terminalTargetPayload,
+} from '@/shared/schemas/terminal.js'
+import type { TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import type { TerminalSessionEvent } from './terminal-storage.js'
 
@@ -40,7 +47,7 @@ function publish(key: string, event: TerminalSessionEvent): void {
 
 /** Registers a pane for one session's events. Frames are delivered synchronously, in server order. */
 export function subscribeTerminalSession(
-  taskId: TaskId,
+  taskId: TerminalOwner,
   terminalId: TerminalId,
   listener: TerminalSessionListener,
 ): () => void {
@@ -55,7 +62,7 @@ export function subscribeTerminalSession(
 }
 
 /** Queues input or a resize for one attached session. Commands are sent in the order they were queued. */
-export function sendTerminalCommand(taskId: TaskId, terminalId: TerminalId, command: SessionCommand): boolean {
+export function sendTerminalCommand(taskId: TerminalOwner, terminalId: TerminalId, command: SessionCommand): boolean {
   const queue = commandQueues.get(terminalSessionKey(taskId, terminalId))
   return queue !== undefined && Queue.offerUnsafe(queue, command)
 }
@@ -68,7 +75,7 @@ function reconnectDelayMs(attempt: number): number {
   return Math.min(RECONNECT_MAX_MS, RECONNECT_MIN_MS * 2 ** attempt)
 }
 
-function createSessionAtom(taskId: TaskId, terminalId: TerminalId) {
+function createSessionAtom(taskId: TerminalOwner, terminalId: TerminalId) {
   const key = terminalSessionKey(taskId, terminalId)
   return terminalRuntime.atom(get =>
     Effect.gen(function* () {
@@ -81,8 +88,13 @@ function createSessionAtom(taskId: TaskId, terminalId: TerminalId) {
       yield* Effect.forkChild(
         Stream.runForEach(Stream.fromQueue(commands), command =>
           (command._tag === 'write'
-            ? rpc('terminal:write', { taskId, terminalId, data: command.data })
-            : rpc('terminal:resize', { taskId, terminalId, cols: command.cols, rows: command.rows })
+            ? rpc('terminal:write', { ...terminalTargetPayload(taskId), terminalId, data: command.data })
+            : rpc('terminal:resize', {
+                ...terminalTargetPayload(taskId),
+                terminalId,
+                cols: command.cols,
+                rows: command.rows,
+              })
           ).pipe(Effect.ignore),
         ),
       )
@@ -91,7 +103,7 @@ function createSessionAtom(taskId: TaskId, terminalId: TerminalId) {
       let attempt = 0
       while (true) {
         if (!opened) {
-          const outcome = yield* Effect.exit(rpc('terminal:open', { taskId, terminalId }))
+          const outcome = yield* Effect.exit(rpc('terminal:open', { ...terminalTargetPayload(taskId), terminalId }))
           if (Exit.isSuccess(outcome)) {
             opened = true
           } else {
@@ -106,7 +118,7 @@ function createSessionAtom(taskId: TaskId, terminalId: TerminalId) {
         }
 
         const streamed = yield* Effect.exit(
-          Stream.runForEach(rpc('terminal:attach', { taskId, terminalId }), frame =>
+          Stream.runForEach(rpc('terminal:attach', { ...terminalTargetPayload(taskId), terminalId }), frame =>
             Effect.sync(() => {
               attempt = 0
               publish(key, frame)
@@ -142,7 +154,7 @@ function createSessionAtom(taskId: TaskId, terminalId: TerminalId) {
  * One live attachment per session. Mounting it opens the session if needed, then streams its
  * snapshot and output. Unmounting ends the stream; the server keeps the process running.
  */
-export function terminalSessionAtom(taskId: TaskId, terminalId: TerminalId) {
+export function terminalSessionAtom(taskId: TerminalOwner, terminalId: TerminalId) {
   const key = terminalSessionKey(taskId, terminalId)
   let atom = sessionAtoms.get(key)
   if (!atom) {
@@ -152,8 +164,7 @@ export function terminalSessionAtom(taskId: TaskId, terminalId: TerminalId) {
   return atom
 }
 
-export interface TerminalTabInput {
-  readonly taskId: TaskId
+export interface TerminalTabInput extends TerminalOwnerRequest {
   readonly terminalId: TerminalId
   readonly cols?: number | undefined
   readonly rows?: number | undefined
@@ -170,12 +181,25 @@ export const restartTerminalAtom = terminalRuntime.fn<TerminalTabInput>()(
   { concurrent: true },
 )
 
-export const closeTerminalAtom = terminalRuntime.fn<Pick<TerminalTabInput, 'taskId' | 'terminalId'>>()(
+export const closeTerminalAtom = terminalRuntime.fn<TerminalOwnerRequest & { readonly terminalId: TerminalId }>()(
   input => Effect.flatMap(ApplicationClient, rpc => rpc('terminal:close', input)),
   { concurrent: true },
 )
 
-export const listTerminalsAtom = terminalRuntime.fn<{ readonly taskId: TaskId }>()(
-  input => Effect.flatMap(ApplicationClient, rpc => rpc('terminal:list', input)),
-  { concurrent: true },
-)
+export const listTerminalsAtom = () =>
+  terminalRuntime.fn<TerminalOwnerRequest>()(
+    input => Effect.flatMap(ApplicationClient, rpc => rpc('terminal:list', input)),
+    { concurrent: true },
+  )
+
+export const adoptDraftTerminalsAtom = terminalRuntime.fn<{
+  readonly draft: DraftTerminalTarget
+  readonly taskId: TaskId
+  readonly checkoutId?: WorkspaceCheckoutId | undefined
+}>()(input => Effect.flatMap(ApplicationClient, rpc => rpc('terminal:adoptDraft', input)), { concurrent: true })
+
+export const makeCloseTerminalAtom = () =>
+  terminalRuntime.fn<TerminalOwnerRequest & { readonly terminalId: TerminalId }>()(
+    input => Effect.flatMap(ApplicationClient, rpc => rpc('terminal:close', input)),
+    { concurrent: true },
+  )
