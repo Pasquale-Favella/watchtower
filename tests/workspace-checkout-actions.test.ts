@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
@@ -76,8 +76,9 @@ describe('checkout actions', () => {
     writeFileSync(join(directory, 'new file.txt'), 'retain\n')
     await withActions(async (actions, run) => {
       await run(actions.stage(directory, ['new file.txt']))
+      writeFileSync(join(directory, 'new file.txt'), 'edited after staging\n')
       await run(actions.unstage(directory, ['new file.txt']))
-      expect(existsSync(join(directory, 'new file.txt'))).toBe(true)
+      expect(readFileSync(join(directory, 'new file.txt'), 'utf8')).toBe('edited after staging\n')
       expect((await run(actions.status(directory))).files).toEqual([
         { path: 'new file.txt', index: '?', workingTree: '?' },
       ])

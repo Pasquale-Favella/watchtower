@@ -98,7 +98,8 @@ export const CheckoutActionsLive = Layer.effect(
         Effect.mapError(() => failure('git-failed')),
       )
       if (head.exitCode === 0) yield* git(root, ['restore', '--staged', '--', ...contained])
-      else if (head.exitCode === 1) yield* git(root, ['rm', '--cached', '--ignore-unmatch', '--', ...contained])
+      else if (head.exitCode === 1)
+        yield* git(root, ['rm', '--cached', '--force', '--ignore-unmatch', '--', ...contained])
       else return yield* failure('git-failed')
     })
     const commit = Effect.fn('CheckoutActions.commit')(function* (directory: string, message: string) {
