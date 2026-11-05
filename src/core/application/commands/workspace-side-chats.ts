@@ -17,6 +17,7 @@ import {
 } from '@/shared/schemas/workspace-side-chats.js'
 import {
   workspaceConversationMessageSchema,
+  type WorkspaceConversationPageItem,
   workspaceExecutionEventSchema,
   type WorkspacePayloadReference,
 } from '@/shared/schemas/workspace-store.js'
@@ -55,96 +56,157 @@ export const WorkspaceSideChatsLive = Layer.effect(
     const store = yield* WorkspaceStore
     const persistence = yield* SideChatPersistence
     const gate = yield* Semaphore.make(1)
-    const readPayload = Effect.fnUntraced(function* (reference: WorkspacePayloadReference) {
+    const readPayload = Effect.fnUntraced(function* (reference: WorkspacePayloadReference, maxCharacters: number) {
       let offset = 0
       let json = ''
       while (true) {
         const page = yield* store.readWorkspacePayload(reference, offset, 65536).pipe(Effect.mapError(contextFailure))
-        if (json.length + page.json.length > 8 * 1024 * 1024) return yield* contextFailure()
+        if (page.total > maxCharacters) return undefined
+        if (json.length + page.json.length > maxCharacters) return yield* contextFailure()
         json += page.json
         if (page.nextAfterOffset === null) break
         if (page.nextAfterOffset <= offset) return yield* contextFailure()
         offset = page.nextAfterOffset
       }
-      return yield* Effect.try({ try: () => JSON.parse(json) as unknown, catch: contextFailure })
+      const value = yield* Effect.try({ try: () => JSON.parse(json) as unknown, catch: contextFailure })
+      return { value, characters: json.length }
     })
     const capture = Effect.fnUntraced(function* (conversationId: ConversationId, onlyRunId?: string) {
-      let after = 0
+      let before: number | undefined
       let through: number | undefined
-      let context = ''
+      const pages: Array<readonly WorkspaceConversationPageItem[]> = []
+      let windowCharacters = 0
+      const chunks: string[] = []
       let truncated = false
-      let textRunId: string | null = null
-      const users = new Set<string>()
-      const tools = new Map<string, string>()
-      let lastAssistant = ''
       while (true) {
         const page = yield* store
-          .readConversationPage(conversationId, after, 100, through)
+          .readConversationPage(conversationId, 0, 100, through, { direction: 'backward', beforeSequence: before })
           .pipe(Effect.mapError(contextFailure))
         through ??= page.highWatermark
-        for (const item of page.items) {
+        const items = onlyRunId ? page.items.filter(item => item.event.runId === onlyRunId) : page.items
+        if (items.length > 0) {
+          pages.push(items)
+          windowCharacters += JSON.stringify(items).length
+        }
+        if (onlyRunId && items.some(item => item.event.kind === 'runQueued')) break
+        if (!page.hasMore) break
+        const nextBefore = page.nextBeforeSequence
+        if (nextBefore === undefined || nextBefore === null || nextBefore >= (before ?? through + 1))
+          return yield* contextFailure()
+        if (windowCharacters >= SIDE_CHAT_CONTEXT_MAX_CHARS * 2 || pages.length === 40) {
+          truncated = true
+          break
+        }
+        before = nextBefore
+      }
+      let payloadCharacters = 0
+      const payloads = new Map<string, unknown>()
+      const readContextPayload = Effect.fnUntraced(function* (reference: WorkspacePayloadReference) {
+        const key = `${reference.kind}:${reference.id}:${reference.digest}`
+        if (payloads.has(key)) return payloads.get(key)
+        const payload = yield* readPayload(reference, SIDE_CHAT_CONTEXT_MAX_CHARS * 2 - payloadCharacters)
+        if (!payload) {
+          truncated = true
+          payloads.set(key, undefined)
+          return undefined
+        }
+        payloadCharacters += payload.characters
+        payloads.set(key, payload.value)
+        return payload.value
+      })
+      for (const items of pages) {
+        for (const item of [...items].reverse()) {
+          if (onlyRunId && item.event.runId !== onlyRunId) continue
+          if (item.event.payloadTruncated && item.event.payloadRef) yield* readContextPayload(item.event.payloadRef)
+          if (!onlyRunId && item.userMessage?.payloadTruncated && item.userMessage.payloadRef)
+            yield* readContextPayload(item.userMessage.payloadRef)
+        }
+      }
+      function toolText(text: string): string {
+        const limit = SIDE_CHAT_CONTEXT_MAX_CHARS / 4
+        if (text.length <= limit) return text
+        truncated = true
+        return `${text.slice(0, limit)}\n[Tool content truncated]`
+      }
+      let textRunId: string | null = null
+      const users = new Set<string>()
+      const tools = new Map<string, { output: string; chunkIndex: number }>()
+      let lastAssistant = ''
+      for (const items of pages.reverse()) {
+        for (const item of items) {
           if (onlyRunId && item.event.runId !== onlyRunId) continue
           let user = onlyRunId ? undefined : item.userMessage
           if (user?.payloadTruncated) {
             if (!user.payloadRef) return yield* contextFailure()
-            user = yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)(
-              yield* readPayload(user.payloadRef),
-            ).pipe(Effect.mapError(contextFailure))
+            const payload = yield* readContextPayload(user.payloadRef)
+            if (payload !== undefined)
+              user = yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)(payload).pipe(
+                Effect.mapError(contextFailure),
+              )
+            else chunks.push('\n[User message truncated]')
           }
           if (user && !users.has(user.id)) {
             users.add(user.id)
             textRunId = null
-            context += `\n\nUser: ${user.content}`
+            chunks.push(`\n\nUser: ${user.content}`)
           }
           let event = item.event
           if (event.payloadTruncated) {
             if (!event.payloadRef) return yield* contextFailure()
-            event = yield* Schema.decodeUnknownEffect(workspaceExecutionEventSchema)(
-              yield* readPayload(event.payloadRef),
-            ).pipe(Effect.mapError(contextFailure))
+            const payload = yield* readContextPayload(event.payloadRef)
+            if (payload !== undefined)
+              event = yield* Schema.decodeUnknownEffect(workspaceExecutionEventSchema)(payload).pipe(
+                Effect.mapError(contextFailure),
+              )
+            else chunks.push('\n[Event payload truncated]')
           }
           if (event.kind === 'driverEvent') {
             const decoded = Schema.decodeUnknownOption(agentDriverEventSchema)(event.data['event'])
             if (decoded._tag === 'Some') {
               const driver = decoded.value
+              const toolKey = `${event.runId}:${'toolCallId' in driver ? driver.toolCallId : ''}`
               if (driver.kind === 'textDelta') {
                 if (textRunId !== event.runId) {
                   lastAssistant = ''
-                  context += '\n\nAssistant: '
+                  chunks.push('\n\nAssistant: ')
                   textRunId = event.runId
                 }
-                context += driver.text
+                chunks.push(driver.text)
                 lastAssistant += driver.text
-              } else if (driver.kind === 'toolStarted') context += `\n[Tool: ${driver.name}] ${driver.input ?? ''}\n`
-              else if (driver.kind === 'toolUpdated' && driver.output !== undefined)
-                tools.set(driver.toolCallId, driver.output)
-              else if (driver.kind === 'toolCompleted') {
-                context += `\n[Tool result] ${tools.get(driver.toolCallId) ?? ''}${driver.error ? `\nError: ${driver.error}` : ''}\n`
-                tools.delete(driver.toolCallId)
+              } else if (driver.kind === 'toolStarted')
+                chunks.push(`\n[Tool: ${driver.name}] ${toolText(driver.input ?? '')}\n`)
+              else if (driver.kind === 'toolUpdated' && driver.output !== undefined) {
+                tools.set(toolKey, { output: toolText(driver.output), chunkIndex: chunks.length })
+                chunks.push('')
+              } else if (driver.kind === 'toolCompleted') {
+                chunks.push(
+                  `\n[Tool result] ${tools.get(toolKey)?.output ?? ''}${driver.error ? `\nError: ${toolText(driver.error)}` : ''}\n`,
+                )
+                tools.delete(toolKey)
               }
             }
           }
-          if (context.length > SIDE_CHAT_CONTEXT_MAX_CHARS) {
-            context = context.slice(0, SIDE_CHAT_CONTEXT_MAX_CHARS)
-            truncated = true
-            break
-          }
         }
-        if (truncated || !page.hasMore || page.nextAfterSequence === null) break
-        if (page.nextAfterSequence <= after) return yield* contextFailure()
-        after = page.nextAfterSequence
       }
-      for (const output of tools.values()) context += `\n[Tool output] ${output}\n`
+      let hasMessages = users.size > 0
+      if (!hasMessages && !onlyRunId && truncated) {
+        const first = yield* store
+          .readConversationPage(conversationId, 0, 1, through)
+          .pipe(Effect.mapError(contextFailure))
+        hasMessages = first.items.some(item => item.userMessage !== undefined)
+      }
+      for (const { output, chunkIndex } of tools.values()) chunks[chunkIndex] = `\n[Tool output] ${output}\n`
+      let context = chunks.join('')
       if (context.length > SIDE_CHAT_CONTEXT_MAX_CHARS) {
-        context = context.slice(0, SIDE_CHAT_CONTEXT_MAX_CHARS)
+        context = context.slice(-SIDE_CHAT_CONTEXT_MAX_CHARS)
         truncated = true
       }
       return {
         context,
         highWatermark: through ?? 0,
         truncated,
-        hasMessages: users.size > 0,
-        lastAssistant: lastAssistant.slice(0, SIDE_CHAT_CONTEXT_MAX_CHARS),
+        hasMessages,
+        lastAssistant: lastAssistant.slice(-SIDE_CHAT_CONTEXT_MAX_CHARS),
       }
     })
     const requireRecord = Effect.fnUntraced(function* (id: string) {

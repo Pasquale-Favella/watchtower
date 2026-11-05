@@ -15,8 +15,17 @@ import {
   taskIdSchema,
   workspaceCheckoutIdSchema,
 } from '../src/shared/schemas/workspace.js'
-import type { CreateSideChatRequest, SideChatRecord } from '../src/shared/schemas/workspace-side-chats.js'
-import type { CreateTaskCommand, WorkspaceConversationPageItem } from '../src/shared/schemas/workspace-store.js'
+import {
+  type CreateSideChatRequest,
+  SIDE_CHAT_CONTEXT_MAX_CHARS,
+  type SideChatRecord,
+} from '../src/shared/schemas/workspace-side-chats.js'
+import type {
+  CreateTaskCommand,
+  WorkspaceConversationPageItem,
+  WorkspaceConversationPageReadOptions,
+  WorkspacePayloadReference,
+} from '../src/shared/schemas/workspace-store.js'
 
 const parentTaskId = taskIdSchema.make('parent-task')
 const parentConversationId = conversationIdSchema.make('parent-conversation')
@@ -43,9 +52,18 @@ function harness() {
   const records = new Map<string, SideChatRecord>()
   const created: CreateTaskCommand[] = []
   let parentItems = [item(1, 'first reply', true), item(2, ' continues')]
-  let sideItems = [item(3, 'old reply', true, 'side-run-a'), item(4, 'latest reply', true, 'side-run-b')]
+  let sideItems = [
+    item(3, 'old reply', true, 'side-run-a'),
+    item(4, 'latest reply', true, 'side-run-b'),
+    item(5, 'unfinished reply', true, 'side-run-c'),
+  ]
   let busy = false
+  let pageSize = 1
+  let failCreation = false
+  let onRead: (() => void) | undefined
   let reads = 0
+  const payloads = new Map<string, string>()
+  const payloadReads: number[] = []
   const watermarks: Array<number | undefined> = []
   const store = {
     readTaskDetail: () =>
@@ -57,24 +75,63 @@ function harness() {
       Effect.succeed({ project: { id: projectId }, mainCheckout: { id: checkoutId }, otherCheckouts: [] }),
     readTaskSnapshot: (id: string) =>
       Effect.succeed({
-        runs: [{ status: busy && id === parentTaskId ? 'running' : 'completed' }],
+        runs:
+          id === parentTaskId
+            ? [{ status: busy ? 'running' : 'completed' }]
+            : [
+                { id: 'side-run-a', status: 'completed', submittedAt: '2026-11-02T12:00:00.000Z' },
+                { id: 'side-run-b', status: 'completed', submittedAt: '2026-11-02T12:01:00.000Z' },
+                { id: 'side-run-c', status: 'failed', submittedAt: '2026-11-02T12:02:00.000Z' },
+              ],
         runContexts: [{ conversationId: parentConversationId, checkoutId }],
       }),
-    readConversationPage: (id: string, after: number, _limit: number, through?: number) => {
+    readConversationPage: (
+      id: string,
+      after: number,
+      limit: number,
+      through?: number,
+      options?: WorkspaceConversationPageReadOptions,
+    ) => {
       reads++
       watermarks.push(through)
       const all = id === parentConversationId ? parentItems : sideItems
       const bound = through ?? all.at(-1)?.event.sequence ?? 0
-      const entries = all.filter(item => item.event.sequence > after && item.event.sequence <= bound)
+      const backward = options?.direction === 'backward'
+      const entries = all.filter(
+        item =>
+          item.event.sequence <= bound &&
+          (backward ? item.event.sequence <= (options.beforeSequence ?? bound) : item.event.sequence > after),
+      )
+      const count = Math.min(pageSize, limit)
+      const selected = backward ? entries.slice(-count) : entries.slice(0, count)
+      const hasMore = entries.length > selected.length
+      onRead?.()
       return Effect.succeed({
-        items: entries.slice(0, 1),
+        items: selected,
         highWatermark: bound,
-        nextAfterSequence: entries.length > 1 ? (entries[0]?.event.sequence ?? null) : null,
-        hasMore: entries.length > 1,
+        nextAfterSequence: !backward && hasMore ? (selected.at(-1)?.event.sequence ?? null) : null,
+        nextBeforeSequence: backward && hasMore ? (selected[0]?.event.sequence ?? 1) - 1 : null,
+        hasMore,
+      })
+    },
+    readWorkspacePayload: (reference: WorkspacePayloadReference, offset: number, limit: number) => {
+      const json = payloads.get(reference.id)
+      if (json === undefined) return Effect.fail(new Error('Payload unavailable'))
+      payloadReads.push(offset)
+      const end = Math.min(offset + limit, json.length)
+      return Effect.succeed({
+        json: json.slice(offset, end),
+        total: json.length,
+        nextAfterOffset: end < json.length ? end : null,
+        truncated: end < json.length,
       })
     },
     createTask: (command: CreateTaskCommand) => {
       created.push(command)
+      if (failCreation) {
+        failCreation = false
+        return Effect.fail(new Error('Storage unavailable'))
+      }
       return Effect.succeed({
         commandId: command.commandId,
         taskId: command.task.id,
@@ -97,6 +154,8 @@ function harness() {
   return {
     created,
     records,
+    payloads,
+    payloadReads,
     watermarks,
     get reads() {
       return reads
@@ -109,6 +168,15 @@ function harness() {
     },
     setBusy: (value: boolean) => {
       busy = value
+    },
+    setPageSize: (value: number) => {
+      pageSize = value
+    },
+    failNextCreation: () => {
+      failCreation = true
+    },
+    onRead: (callback: () => void) => {
+      onRead = callback
     },
     run: <A, E>(use: (service: WorkspaceSideChats['Service']) => Effect.Effect<A, E>) =>
       Effect.runPromise(Effect.provide(Effect.flatMap(WorkspaceSideChats, use), layer)),
@@ -179,6 +247,115 @@ describe('side chat context and independent identity', () => {
       }),
     )
   })
+  it('keeps recent decisions in chronological order without scanning the whole history', async () => {
+    const h = harness()
+    h.setPageSize(100)
+    h.setParent([
+      ...Array.from({ length: 10000 }, (_, index) => item(index + 1, `old ${index} ${'x'.repeat(200)}`, true)),
+      item(10001, 'recent decision A', true, 'recent-a'),
+      item(10002, 'recent decision B', true, 'recent-b'),
+    ])
+    const binding = await h.run(service => service.create(request))
+    const context = h.records.get(binding.id)?.context ?? ''
+    expect(binding.contextTruncated).toBe(true)
+    expect(context.length).toBeLessThanOrEqual(SIDE_CHAT_CONTEXT_MAX_CHARS)
+    expect(context).not.toContain('old 0 ')
+    expect(context).toContain('recent decision A')
+    expect(context.indexOf('recent decision A')).toBeLessThan(context.indexOf('recent decision B'))
+    expect(h.reads).toBeLessThan(10)
+  })
+  it('pins every page to the first watermark when new parent events arrive during capture', async () => {
+    const h = harness()
+    h.onRead(() => h.setParent([item(1, 'first reply', true), item(2, ' continues'), item(3, 'later', true)]))
+    const binding = await h.run(service => service.create(request))
+    expect(binding.parentHighWatermark).toBe(2)
+    expect(h.watermarks).toEqual([undefined, 2])
+    expect(h.records.get(binding.id)?.context).toBe('\n\nUser: question 1\n\nAssistant: first reply continues')
+  })
+  it('retries task creation with the immutable captured context after a storage failure', async () => {
+    const h = harness()
+    h.failNextCreation()
+    await h.run(service =>
+      Effect.gen(function* () {
+        expect(yield* Effect.flip(service.create(request))).toMatchObject({ code: 'unavailable' })
+        const original = h.records.get('side-chat:create-a')
+        const reads = h.reads
+        h.setParent([item(7, 'later context', true)])
+        const binding = yield* service.create(request)
+        expect(binding).toEqual(original?.binding)
+        expect(h.records.get(binding.id)).toEqual(original)
+        expect(h.reads).toBe(reads)
+        expect(yield* service.enrichPrompt(binding.taskId, 'question')).not.toContain('later context')
+      }),
+    )
+  })
+  it('omits an oversized referenced tool payload and keeps the surrounding recent discussion', async () => {
+    const h = harness()
+    const update = item(2, '')
+    const reference: WorkspacePayloadReference = { kind: 'event', id: '2', digest: 'a'.repeat(64) }
+    const fullEvent = {
+      ...update.event,
+      data: { event: { kind: 'toolUpdated', toolCallId: 'tool', output: 'x'.repeat(9 * 1024 * 1024) } },
+    }
+    h.payloads.set(reference.id, JSON.stringify(fullEvent))
+    h.setParent([
+      item(1, 'before the tool', true),
+      {
+        event: {
+          ...fullEvent,
+          data: { event: { kind: 'toolUpdated', toolCallId: 'tool', output: 'tool preview' } },
+          payloadTruncated: true,
+          payloadRef: reference,
+        },
+      },
+      item(3, 'recent decision'),
+    ])
+    const binding = await h.run(service => service.create(request))
+    const context = h.records.get(binding.id)?.context
+    expect(binding.contextTruncated).toBe(true)
+    expect(context).toContain('[Event payload truncated]')
+    expect(context).toContain('before the tool')
+    expect(context).toContain('recent decision')
+    expect(context).toContain('tool preview')
+    expect(context?.indexOf('tool preview')).toBeLessThan(context?.indexOf('recent decision') ?? 0)
+    expect(h.payloadReads).toEqual([0])
+  })
+  it.each(['{invalid JSON', '{"unrelated":true}'])(
+    'rejects an invalid referenced payload instead of treating it as oversized context: %s',
+    async json => {
+      const h = harness()
+      const original = item(1, 'preview', true)
+      const reference: WorkspacePayloadReference = { kind: 'event', id: '1', digest: 'a'.repeat(64) }
+      h.payloads.set(reference.id, json)
+      h.setParent([{ ...original, event: { ...original.event, payloadTruncated: true, payloadRef: reference } }])
+      await h.run(service =>
+        Effect.gen(function* () {
+          expect(yield* Effect.flip(service.create(request))).toMatchObject({ code: 'context-unavailable' })
+          expect(h.created).toHaveLength(0)
+          expect(h.records.size).toBe(0)
+        }),
+      )
+    },
+  )
+  it('bounds a large inline tool output without losing the latest discussion', async () => {
+    const h = harness()
+    const update = item(2, '')
+    h.setParent([
+      item(1, 'before the tool', true),
+      {
+        event: {
+          ...update.event,
+          data: { event: { kind: 'toolUpdated', toolCallId: 'tool', output: 'x'.repeat(500000) } },
+        },
+      },
+      item(3, 'recent decision'),
+    ])
+    const binding = await h.run(service => service.create(request))
+    const context = h.records.get(binding.id)?.context
+    expect(binding.contextTruncated).toBe(true)
+    expect(context).toContain('[Tool content truncated]')
+    expect(context).toContain('recent decision')
+  })
   it('refuses a changed request under the same command identity', async () => {
     const h = harness()
     await h.run(service =>
@@ -208,6 +385,23 @@ describe('side chat context and independent identity', () => {
         const binding = yield* service.create(request)
         expect(yield* service.bringBack(binding.id)).toBe('Side chat findings:\nlatest reply')
         h.setBusy(true)
+        expect(yield* service.bringBack(binding.id)).toBe('Side chat findings:\nlatest reply')
+      }),
+    )
+  })
+  it('reaches the latest completed reply after a long failed attempt without spending its context budget', async () => {
+    const h = harness()
+    h.setPageSize(100)
+    h.setSide([
+      item(3, 'old reply', true, 'side-run-a'),
+      item(4, 'latest reply', true, 'side-run-b'),
+      ...Array.from({ length: 4100 }, (_, index) =>
+        item(index + 5, `unfinished ${'x'.repeat(100)}`, false, 'side-run-c'),
+      ),
+    ])
+    await h.run(service =>
+      Effect.gen(function* () {
+        const binding = yield* service.create(request)
         expect(yield* service.bringBack(binding.id)).toBe('Side chat findings:\nlatest reply')
       }),
     )
