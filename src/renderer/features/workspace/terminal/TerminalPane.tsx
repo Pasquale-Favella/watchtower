@@ -25,6 +25,7 @@ import {
   terminalActionShortcut,
   terminalInputShortcut,
 } from './terminal-keys.js'
+import { bindTerminalOutput } from './terminal-output.js'
 import { acceptTerminalFrame, type TerminalPaneStatus, type TerminalSessionEvent } from './terminal-storage.js'
 import { isDarkDocument, readTerminalTheme } from './terminal-theme.js'
 import { useTerminalSession } from './use-terminal-session.js'
@@ -143,6 +144,9 @@ export function TerminalPane({
     )
     term.open(host)
     termRef.current = term
+    const output = bindTerminalOutput(term, data => {
+      if (runningRef.current) session.input(data)
+    })
     // The drawer owns Mod+J and its split/new shortcuts; xterm must not send them to the shell.
     term.attachCustomKeyEventHandler(event => {
       if (
@@ -203,15 +207,14 @@ export function TerminalPane({
       lastSequenceRef.current = event.sequence
       switch (event._tag) {
         case 'snapshot':
-          term.reset()
-          term.write(event.data)
+          output.restoreSnapshot(event.data)
           runningRef.current = event.status === 'running'
           sentSizeRef.current = { cols: event.cols, rows: event.rows }
           setView({ status: event.status, exitCode: event.exitCode, message: null })
           syncSize()
           return
         case 'output':
-          term.write(event.data)
+          output.append(event.data)
           return
         case 'exited':
           runningRef.current = false
@@ -227,9 +230,6 @@ export function TerminalPane({
       }
     }
 
-    const dataSubscription = term.onData(data => {
-      if (runningRef.current) session.input(data)
-    })
     const resizeObserver = new ResizeObserver(() => syncSize())
     resizeObserver.observe(host)
     const themeObserver = new MutationObserver(() => {
@@ -241,7 +241,7 @@ export function TerminalPane({
       sinkRef.current = () => undefined
       resizeObserver.disconnect()
       themeObserver.disconnect()
-      dataSubscription.dispose()
+      output.dispose()
       termRef.current = null
       term.dispose()
     }

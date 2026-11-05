@@ -259,6 +259,8 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
       input.dispatchEvent(new DragEvent('drop', { dataTransfer, bubbles: true, cancelable: true }))
     })
     await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('draft-context.txt')
+    await header.getByRole('button', { name: 'Terminal', exact: true }).click()
+    await expect(window.locator('[data-terminal-owner="drawer"]')).toBeVisible()
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     await expect(newPrompt).toHaveValue('')
     await newPrompt.fill('Independent second draft')
@@ -266,6 +268,31 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(prompt).toHaveValue('Keep this draft during navigation')
     await window.reload()
     await expect(prompt).toHaveValue('Keep this draft during navigation')
+    const restoredTerminal = window.locator('[data-terminal-owner="drawer"]')
+    await expect(restoredTerminal).toBeVisible()
+    const restoredInput = restoredTerminal.locator('.xterm-helper-textarea').first()
+    await restoredInput.pressSequentially('echo WT_TERMINAL_RETURN')
+    await restoredInput.press('Enter')
+    await expect
+      .poll(async () => {
+        const frame = await invokeRpcStreamFirst(window, 'terminal:attach', {
+          taskId: startedTaskId,
+          terminalId: 'term-1',
+        })
+        return frame.ok ? ((frame.value as { data?: string }).data ?? '') : ''
+      })
+      .toContain('WT_TERMINAL_RETURN')
+    const restoredHistory = await invokeRpcStreamFirst(window, 'terminal:attach', {
+      taskId: startedTaskId,
+      terminalId: 'term-1',
+    })
+    expect(restoredHistory).toMatchObject({
+      ok: true,
+      value: { data: expect.stringContaining('WT_TERMINAL_ADOPTION') },
+    })
+    if (!restoredHistory.ok) throw new Error('Restored terminal unavailable')
+    expect((restoredHistory.value as { data: string }).data).not.toContain('[?1;2c')
+    await header.getByRole('button', { name: 'Terminal', exact: true }).click()
     await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('draft-context.txt')
     await composer.getByRole('button', { name: 'Remove draft-context.txt', exact: true }).click()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
