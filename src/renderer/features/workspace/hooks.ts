@@ -2,7 +2,7 @@ import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import * as Option from 'effect/Option'
 import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import type * as Atom from 'effect/reactivity/Atom'
-import { useContext, useEffect } from 'react'
+import { useCallback, useContext, useEffect, useState } from 'react'
 
 import type { RpcQuerySlot } from '@/renderer/stores/atoms/rpc-query.js'
 import { pinWindowAtom, querySnapshot, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query.js'
@@ -12,9 +12,9 @@ import {
   cloneProjectAtom,
   createProjectAtom,
   createTaskAtom,
-  createWorktreeAtom,
   enqueueFollowUpAtom,
   interruptAtom,
+  makeCreateWorktreeAtom,
   promoteQueuedFollowUpAtom,
   registerProjectAtom,
   respondAtom,
@@ -42,8 +42,15 @@ import {
   workspaceTasksForSidebar,
   workspaceTaskSnapshot,
 } from './atoms.js'
-import { nextConversationRequest, nextPayloadRequest, workspaceQueryKey, type WorkspaceRequest } from './lib.js'
+import {
+  nextConversationRequest,
+  nextPayloadRequest,
+  type WorkspaceCommandInput,
+  workspaceQueryKey,
+  type WorkspaceRequest,
+} from './lib.js'
 import { WorkspaceQueryScopeContext } from './side-chat/scope-context.js'
+import { useWorkspaceOperation } from './use-workspace-operation.js'
 
 function useWorkspaceLifetime() {
   const registry = useContext(RegistryContext)
@@ -171,7 +178,23 @@ export const useEnqueueFollowUp = () => useWorkspaceCommand(enqueueFollowUpAtom)
 export const useCancelQueuedFollowUp = () => useWorkspaceCommand(cancelQueuedFollowUpAtom)
 export const usePromoteQueuedFollowUp = () => useWorkspaceCommand(promoteQueuedFollowUpAtom)
 export const useSwitchBranch = () => useWorkspaceCommand(switchBranchAtom)
-export const useCreateWorktree = () => useWorkspaceCommand(createWorktreeAtom)
+export function useCreateWorktree() {
+  useWorkspaceLifetime()
+  const run = useWorkspaceOperation(makeCreateWorktreeAtom)
+  const [pendingCount, setPendingCount] = useState(0)
+  const execute = useCallback(
+    async (request: WorkspaceCommandInput<'workspace:createWorktree'>) => {
+      setPendingCount(count => count + 1)
+      try {
+        return await run(request)
+      } finally {
+        setPendingCount(count => count - 1)
+      }
+    },
+    [run],
+  )
+  return { execute, pending: pendingCount > 0 }
+}
 
 export type {
   WorkspaceAttention,

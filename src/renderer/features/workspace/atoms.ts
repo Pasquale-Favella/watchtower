@@ -137,7 +137,7 @@ export function createWorkspaceAtoms(
   const workspaceProjectionAtom = Atom.keepAlive(Atom.make(createWorkspaceProjection()))
   const workspaceStreamStateAtom = Atom.keepAlive(Atom.make<WorkspaceStreamState>({ status: 'inactive', error: null }))
   const workspaceRuntime = client.runtime.factory(get =>
-    Layer.merge(get(client.runtime.layer), ApplicationProtocolLayer),
+    Layer.merge(get(client.runtime.layer), options.layer ?? ApplicationProtocolLayer),
   )
   // Registration, task creation and queue edits lack execution events. Only visible,
   // mounted readers of those mutable records need the bounded fallback.
@@ -266,9 +266,11 @@ export function createWorkspaceAtoms(
   const switchBranchAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:switchBranch'>) =>
     rpc('workspace:switchBranch', request),
   )
-  const createWorktreeAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createWorktree'>) =>
-    rpc('workspace:createWorktree', request),
-  )
+  const makeCreateWorktreeAtom = () =>
+    makeCommand((rpc, request: WorkspaceRequest<'workspace:createWorktree'>) =>
+      rpc('workspace:createWorktree', request),
+    )
+  const createWorktreeAtom = makeCreateWorktreeAtom()
 
   const makeSubscription = Effect.fnUntraced(function* (
     get: Atom.AtomContext,
@@ -351,6 +353,7 @@ export function createWorkspaceAtoms(
     promoteQueuedFollowUpAtom,
     switchBranchAtom,
     createWorktreeAtom,
+    makeCreateWorktreeAtom,
   }
 }
 
@@ -389,4 +392,5 @@ export const {
   promoteQueuedFollowUpAtom,
   switchBranchAtom,
   createWorktreeAtom,
+  makeCreateWorktreeAtom,
 } = createWorkspaceAtoms()

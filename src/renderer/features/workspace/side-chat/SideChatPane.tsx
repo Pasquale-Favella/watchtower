@@ -61,16 +61,17 @@ function SideChatContent({
   const [fileError, setFileError] = useState<string | null>(null)
   const openFile = useOpenCheckoutFile()
   const runContext = snapshot.data?.runContexts?.find(context => context.conversationId === binding.conversationId)
+  const activeCheckoutId = runContext?.checkoutId ?? binding.checkoutId
   function openChatFile(path: string): void {
     setFileError(null)
-    if (onOpenFile && binding.checkoutId === fileCheckoutId) {
+    if (onOpenFile && activeCheckoutId === fileCheckoutId) {
       onOpenFile(path)
       return
     }
     if (!detail.data) return
     void openFile({
       projectId: detail.data.task.projectId,
-      checkoutId: binding.checkoutId,
+      checkoutId: activeCheckoutId,
       path,
       editor: 'vscode',
     }).catch(() => setFileError('Could not open this file.'))
@@ -142,10 +143,22 @@ function SideChatContent({
           conversationId={binding.conversationId}
           workspacePath={runContext?.workspacePath}
           onOpenFile={openChatFile}
-          scope={detail.data ? { projectId: detail.data.task.projectId, checkoutId: binding.checkoutId } : undefined}
+          scope={detail.data ? { projectId: detail.data.task.projectId, checkoutId: activeCheckoutId } : undefined}
         />
       </div>
-      {detail.data && <WorkspaceComposer task={detail.data.task} conversationId={binding.conversationId} />}
+      {snapshot.data?.runs.length === 0 && (
+        <p className="text-muted-foreground shrink-0 px-4 pt-2 text-xs">
+          Choose New worktree to run alongside the main chat in an isolated checkout.
+        </p>
+      )}
+      {detail.data && (
+        <WorkspaceComposer
+          key={binding.conversationId}
+          task={detail.data.task}
+          conversationId={binding.conversationId}
+          allowInitialCheckoutChoice
+        />
+      )}
     </section>
   )
 }

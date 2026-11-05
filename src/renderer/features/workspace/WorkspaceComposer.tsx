@@ -4,9 +4,10 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/renderer/components/ui/button'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
-import type { ConversationId, Task } from '@/shared/schemas/workspace.js'
+import type { ConversationId, Task, WorkspaceCheckout } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceAgentPreferences } from './agent-preferences.js'
+import type { CheckoutMode } from './checkout-strip-state.js'
 import {
   boundConversationSession,
   type ComposerAwaiting,
@@ -26,6 +27,7 @@ import {
 import { WORKSPACE_DRAFT_MAX_LENGTH } from './draft-storage.js'
 import {
   useCancelQueuedFollowUp,
+  useCreateWorktree,
   useEnqueueFollowUp,
   useInterruptRun,
   usePromoteQueuedFollowUp,
@@ -39,6 +41,7 @@ import {
   useWorkspaceQueuedFollowUps,
   useWorkspaceTaskSnapshot,
 } from './hooks.js'
+import { createInitialCheckoutPreparation, initialWorktreeError } from './initial-checkout.js'
 import type { WorkspaceCommandInput } from './lib.js'
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
@@ -78,14 +81,27 @@ const snapshotRequest = (taskId: Task['id']): WorkspaceRequest<'workspace:readTa
   runLimit: 100,
 })
 
-/** Pinned prompt controls for one Conversation; execution ownership remains with the application. */
-export function WorkspaceComposer({
-  task,
-  conversationId,
-}: {
+type WorkspaceComposerProps = {
   readonly task: Task
   readonly conversationId: ConversationId
-}) {
+  readonly allowInitialCheckoutChoice?: boolean | undefined
+}
+
+/** Pinned prompt controls for one Conversation; execution ownership remains with the application. */
+export function WorkspaceComposer(props: WorkspaceComposerProps): React.JSX.Element {
+  return (
+    <WorkspaceComposerContent
+      key={JSON.stringify([props.task.projectId, props.task.id, props.conversationId])}
+      {...props}
+    />
+  )
+}
+
+function WorkspaceComposerContent({
+  task,
+  conversationId,
+  allowInitialCheckoutChoice = false,
+}: WorkspaceComposerProps) {
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
   const { accessMode: defaultAccessMode } = useWorkspaceAgentPreferences()
   const attachments = usePromptAttachments(conversationId)
@@ -98,6 +114,12 @@ export function WorkspaceComposer({
   const modeId = selectedModeId ?? preferences?.modeId ?? ''
   const [intent, setIntent] = useState<Intent | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>('local')
+  const [baseBranch, setBaseBranch] = useState<string | null>(null)
+  const [createdCheckout, setCreatedCheckout] = useState<WorkspaceCheckout | null>(null)
+  const [preparingCheckout, setPreparingCheckout] = useState(false)
+  const checkoutPreparation = useRef(createInitialCheckoutPreparation(() => crypto.randomUUID()))
+  const checkoutPreparationLock = useRef(false)
   const draftRef = useRef(draft)
   useEffect(() => {
     draftRef.current = draft
@@ -118,6 +140,7 @@ export function WorkspaceComposer({
   const connections = useWorkspaceConnections()
   const inspect = useInspectWorkspaceConnection()
   const startRun = useStartRun()
+  const createWorktree = useCreateWorktree()
   const enqueue = useEnqueueFollowUp()
   const steerRun = useSteerRun()
   const interrupt = useInterruptRun()
@@ -143,13 +166,16 @@ export function WorkspaceComposer({
 
   const checkoutChoices = useMemo(() => {
     if (!project.data) return []
-    return [project.data.mainCheckout, ...project.data.otherCheckouts].filter(checkout => !checkout.archivedAt)
-  }, [project.data])
+    const choices = [project.data.mainCheckout, ...project.data.otherCheckouts].filter(checkout => !checkout.archivedAt)
+    if (createdCheckout && !choices.some(checkout => checkout.id === createdCheckout.id)) choices.push(createdCheckout)
+    return choices
+  }, [project.data, createdCheckout])
   const availableCheckoutIds = useMemo(() => new Set(checkoutChoices.map(checkout => checkout.id)), [checkoutChoices])
   const sessionChoices = useMemo(() => sessions.data?.items ?? [], [sessions.data])
   // The checkout is fixed when the chat starts; only its branch can change afterwards.
   const preferredCheckout =
-    checkoutChoices.find(checkout => checkout.id === preferences?.checkoutId) ?? checkoutChoices[0]
+    checkoutChoices.find(checkout => checkout.id === (createdCheckout?.id ?? preferences?.checkoutId)) ??
+    checkoutChoices[0]
   const detectedConnectionIds = useMemo(
     () => new Set(connections.data?.items.map(item => item.connectionId) ?? []),
     [connections.data],
@@ -171,10 +197,10 @@ export function WorkspaceComposer({
   const activeCheckout = checkoutChoices.find(checkout => checkout.id === checkoutId) ?? null
   const branchRequest = useMemo(
     () =>
-      activeCheckout && project.data && !project.data.project.isScratch
+      activeCheckout && project.data && (!project.data.project.isScratch || allowInitialCheckoutChoice)
         ? { projectId: task.projectId, checkoutId: activeCheckout.id }
         : null,
-    [activeCheckout, project.data, task.projectId],
+    [activeCheckout, project.data, task.projectId, allowInitialCheckoutChoice],
   )
   const branches = useWorkspaceBranches(branchRequest)
   const switchBranch = useSwitchBranch()
@@ -237,6 +263,18 @@ export function WorkspaceComposer({
     snapshot.data.runCoverage?.returned === runContexts.length,
   )
   const runs = snapshot.data ? currentConversationRuns(snapshot.data.runs, runContexts, conversationId) : []
+  const choosingInitialCheckout = allowInitialCheckoutChoice && contextComplete && runs.length === 0 && !resumeMode
+  let shownCheckoutMode: CheckoutMode = activeCheckout?.kind === 'worktree' ? 'worktree' : 'local'
+  if (choosingInitialCheckout) shownCheckoutMode = checkoutMode
+  const initialChoice = activeCheckout
+    ? {
+        mode: checkoutMode,
+        checkout: activeCheckout,
+        baseBranch: baseBranch ?? branches.data?.current ?? null,
+        branches: branches.data,
+      }
+    : null
+  const checkoutError = choosingInitialCheckout && initialChoice ? initialWorktreeError(initialChoice) : null
   const activeRun = runs.find(isRunActive) ?? null
   const activeRunContext = activeRun ? (runContexts.find(context => context.runId === activeRun.id) ?? null) : null
   // Stop and steer read the running agent's shared inspection, which is warm from startup.
@@ -325,7 +363,7 @@ export function WorkspaceComposer({
     }
   }
 
-  const submit = () => {
+  const submit = async () => {
     const prompt = promptWithAttachments(draft, attachments.items)
     if (
       !prompt ||
@@ -334,7 +372,9 @@ export function WorkspaceComposer({
       blocked ||
       pendingStart ||
       pendingStarts.store.error ||
-      intent
+      intent ||
+      checkoutError ||
+      checkoutPreparationLock.current
     )
       return
     if (busy) {
@@ -359,11 +399,31 @@ export function WorkspaceComposer({
     }
     if (!submitAvailable || !checkoutId || !selectedConnection) return
     if (resumeMode && !validatedSession) return
+    let startCheckoutId = checkoutId
+    if (choosingInitialCheckout && initialChoice?.mode === 'worktree') {
+      checkoutPreparationLock.current = true
+      setPreparingCheckout(true)
+      setError(null)
+      try {
+        const checkout = await checkoutPreparation.current(initialChoice, createWorktree.execute)
+        startCheckoutId = checkout.id
+        setCreatedCheckout(checkout)
+        setPreferences({ checkoutId: checkout.id })
+        setCheckoutMode('local')
+        setBaseBranch(null)
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not create a worktree.')
+        return
+      } finally {
+        checkoutPreparationLock.current = false
+        setPreparingCheckout(false)
+      }
+    }
     const command: WorkspaceRequest<'workspace:startRun'> = {
       commandId: crypto.randomUUID(),
       taskId: task.id,
       conversationId,
-      checkoutId,
+      checkoutId: startCheckoutId,
       generation: validatedSession?.generation ?? 1,
       driverId: validatedSession?.driverId ?? selectedConnection.driverId,
       connectionId: validatedSession?.connectionId ?? selectedConnection.connectionId,
@@ -519,7 +579,7 @@ export function WorkspaceComposer({
 
   const dispatchPrompt = (alternate: boolean) => {
     if (resolveComposerDispatch({ busy, canSteer: steerAvailable, alternate }) === 'steer') steer()
-    else submit()
+    else void submit()
   }
 
   const keyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -538,7 +598,7 @@ export function WorkspaceComposer({
     )
       return
     event.preventDefault()
-    submit()
+    void submit()
   }
 
   return (
@@ -711,24 +771,41 @@ export function WorkspaceComposer({
           onOpenModelPicker={() => agentPickerRef.current?.open()}
           placeholder={composerPlaceholder({ busy, awaiting, canSteer: steerAvailable })}
           contextStrip={
-            activeCheckout && project.data && !project.data.project.isScratch ? (
+            activeCheckout && project.data && (!project.data.project.isScratch || choosingInitialCheckout) ? (
               <CheckoutStrip
-                mode={activeCheckout.kind === 'worktree' ? 'worktree' : 'local'}
-                lockedKind={activeCheckout.kind}
-                branch={branches.data?.current ?? null}
+                mode={shownCheckoutMode}
+                lockedKind={choosingInitialCheckout ? undefined : activeCheckout.kind}
+                onModeChange={
+                  choosingInitialCheckout
+                    ? mode => {
+                        setCheckoutMode(mode)
+                        setBaseBranch(null)
+                        setBranchError(null)
+                      }
+                    : undefined
+                }
+                branch={
+                  choosingInitialCheckout && checkoutMode === 'worktree'
+                    ? (initialChoice?.baseBranch ?? null)
+                    : (branches.data?.current ?? null)
+                }
                 branches={branches.data}
-                pending={switchBranch.pending}
+                pending={switchBranch.pending || preparingCheckout}
                 // A running agent works on the checked-out branch, so it stays put until the Run ends.
-                disabled={busy || switchBranch.pending}
+                disabled={busy || switchBranch.pending || preparingCheckout || Boolean(pendingStart) || Boolean(intent)}
                 onBranchSelect={branch => {
                   setBranchError(null)
+                  if (choosingInitialCheckout && checkoutMode === 'worktree') {
+                    setBaseBranch(branch)
+                    return
+                  }
                   switchBranch
                     .execute({ projectId: task.projectId, checkoutId: activeCheckout.id, branch })
                     .catch(cause =>
                       setBranchError(cause instanceof Error ? cause.message : 'Could not switch branches.'),
                     )
                 }}
-                error={branchError ?? branches.error}
+                error={branchError ?? branches.error ?? checkoutError}
               />
             ) : undefined
           }
@@ -803,6 +880,8 @@ export function WorkspaceComposer({
                     Boolean(pendingStart) ||
                     Boolean(pendingStarts.store.error) ||
                     Boolean(intent) ||
+                    Boolean(checkoutError) ||
+                    preparingCheckout ||
                     (busy
                       ? !queueExhaustive && (!steerAvailable || steerRun.pending)
                       : !submitAvailable || (resumeMode && !validatedSession))
