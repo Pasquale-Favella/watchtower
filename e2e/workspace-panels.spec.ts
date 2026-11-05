@@ -85,7 +85,7 @@ test('draft terminals and browser tabs preserve their resources across hiding, t
         webContents
           .getAllWebContents()
           .find(contents => contents.getURL() === expectedUrl)
-          ?.executeJavaScript('document.querySelector("a").click()'),
+          ?.executeJavaScript('document.querySelector("a").click()', true),
       url,
     )
     await expect(browser.getByRole('textbox', { name: 'Browser address', exact: true })).toHaveValue(`${url}next`)
