@@ -9,6 +9,7 @@ import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
 import { ExecutionService, type ExecutionServiceOptions } from '@/core/application/commands/execution-service.js'
+import { enrichSideChatPrompt, SideChatPersistence } from '@/core/application/commands/workspace-side-chats.js'
 import {
   AgentDriver,
   type AgentDriverConnection,
@@ -24,6 +25,7 @@ import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-
 import type { ResolvedCheckout } from '@/shared/schemas/checkout.js'
 import type { AgentAccessMode, AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
 import type { AgentSessionId } from '@/shared/schemas/workspace.js'
+import type { SideChatRecord } from '@/shared/schemas/workspace-side-chats.js'
 import { type BeginRunCommand, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 type RunEffect = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
@@ -166,6 +168,98 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
 }
 
 describe('ExecutionService', () => {
+  it('keeps the user prompt in storage while seeding only the first native side-chat turn with parent context', async () => {
+    const sideTask = { ...task, id: 'side-task:execution-test' as never }
+    const record: SideChatRecord = {
+      binding: {
+        id: 'side-chat:execution-test',
+        commandId: 'execution-test',
+        parentTaskId: task.id,
+        parentConversationId: conversation.id,
+        taskId: sideTask.id,
+        conversationId: conversation.id,
+        projectId: project.id,
+        checkoutId: checkout.id,
+        parentHighWatermark: 8,
+        contextTruncated: false,
+        title: 'Side chat',
+        createdAt: command.issuedAt,
+      },
+      request: { commandId: 'execution-test', parentTaskId: task.id, parentConversationId: conversation.id },
+      context: 'Parent decision: preserve the central project picker.',
+    }
+    const persistence = SideChatPersistence.of({
+      get: id => Effect.succeed(id === record.binding.id ? record : null),
+      put: () => Effect.die('Unexpected side-chat write'),
+      list: () => Effect.die('Unexpected side-chat list'),
+    })
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    await runStore(store.registerProject({ project, mainCheckout: checkout }))
+    await runStore(store.createTask({ task: sideTask, conversation }))
+    const claimedPrompts: string[] = []
+    const submittedPrompts: Array<string | undefined> = []
+    const session = makeSession({
+      events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+      submit: input =>
+        Effect.sync(() => {
+          submittedPrompts.push(input.messages[0]?.content)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+    })
+    const runtime = makeRuntime(
+      () => Effect.succeed(makeConnection(session)),
+      {
+        enrichPrompt: claim =>
+          enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
+            Effect.provideService(SideChatPersistence, persistence),
+            Effect.mapError(() => new AgentDriverError({ code: 'invalid-state', message: 'Context unavailable.' })),
+          ),
+      },
+      WorkspaceStore.of({
+        ...store,
+        claimDispatch: (...args) =>
+          store.claimDispatch(...args).pipe(Effect.tap(claim => Effect.sync(() => claimedPrompts.push(claim.prompt)))),
+      }),
+    )
+    try {
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, taskId: sideTask.id, prompt: 'First side question' }))
+      await expect
+        .poll(async () => (await run(store.readTaskSnapshot(sideTask.id, 10))).runs[0]?.status)
+        .toBe('completed')
+      await run(
+        service.start({
+          ...command,
+          taskId: sideTask.id,
+          commandId: 'side-continuation',
+          runId: 'side-continuation-run' as never,
+          provisionalAgentSessionId: 'side-continuation-session',
+          nativeSessionId: 'native-session',
+          prompt: 'Continue the side discussion',
+        }),
+      )
+      await expect
+        .poll(
+          async () =>
+            (await run(store.readTaskSnapshot(sideTask.id, 10))).runs.find(item => item.id === 'side-continuation-run')
+              ?.status,
+        )
+        .toBe('completed')
+      expect(claimedPrompts).toEqual(['First side question', 'Continue the side discussion'])
+      const page = await run(store.readConversationPage(conversation.id, 0, 100))
+      expect(page.items.flatMap(item => (item.userMessage ? [item.userMessage.content] : []))).toEqual(claimedPrompts)
+      expect(submittedPrompts[0]).toContain('First side question')
+      expect(submittedPrompts[0]).toContain(record.context)
+      expect(submittedPrompts[1]).toBe('Continue the side discussion')
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
   it.each([
     ['canonical path changed', Effect.succeed({ ...resolvedCheckout, canonicalPath: 'C:/different-checkout' })],
     ['repository identity changed', Effect.succeed({ ...resolvedCheckout, repositoryIdentity: 'repo:replacement' })],

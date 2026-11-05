@@ -72,6 +72,7 @@ export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceEr
 }) {}
 
 export interface ExecutionServiceOptions {
+  readonly enrichPrompt?: (claim: DispatchClaim) => Effect.Effect<string, AgentDriverError | ExecutionServiceError>
   readonly resolveAttachments?: (
     references: readonly PromptAttachment[],
   ) => Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError>
@@ -343,6 +344,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.tapError(error => Effect.sync(() => backgroundFailures.push(Cause.fail(error)))),
           )
           const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
+          const prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim) : state.claim.prompt
           const driver = yield* drivers.resolve(state.claim.driverId)
           if (driver.driverId !== state.claim.driverId) {
             return yield* new ExecutionServiceError({
@@ -437,7 +439,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.gen(function* () {
               const acceptedValue: unknown = yield* session.submit({
                 runId: state.claim.runId,
-                messages: [{ role: 'user', content: state.claim.prompt }],
+                messages: [{ role: 'user', content: prompt }],
                 attachmentIds: [],
                 attachments: resolvedAttachments,
               })

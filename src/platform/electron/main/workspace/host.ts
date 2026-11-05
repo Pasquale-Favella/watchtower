@@ -43,6 +43,7 @@ export class WorkspaceHostError extends Schema.TaggedError<WorkspaceHostError>()
 }) {}
 
 export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
+  readonly enrichPrompt?: import('@/core/application/commands/execution-service.js').ExecutionServiceOptions['enrichPrompt']
   readonly resolveAttachments?: import('@/core/application/commands/execution-service.js').ExecutionServiceOptions['resolveAttachments']
   readonly loadConnections?: () => Effect.Effect<ReadonlyArray<HarnessConnection>, unknown>
   /** Loads the immutable execution definitions and their renderer-safe catalog rows together. */
@@ -392,6 +393,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         const serviceScope = yield* Scope.make()
         const serviceContext = yield* Layer.buildWithScope(
           ExecutionService.layer({
+            enrichPrompt: options.enrichPrompt,
             resolveAttachments: options.resolveAttachments,
             ownerEpoch,
             closeDeadlineMs: options.closeDeadlineMs,

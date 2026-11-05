@@ -139,11 +139,6 @@ const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 export function workspaceHandlers<R = never>(
   options: {
     readonly attachments?: PromptAttachmentStore
-    readonly enrichPrompt?: (
-      taskId: import('@/shared/schemas/workspace.js').TaskId,
-      prompt: string,
-      nativeSessionId?: string | null,
-    ) => Effect.Effect<string, unknown, R>
     readonly chooseProjectDirectory?: () => Effect.Effect<string | null, unknown, R>
     readonly prepareScratchProject?: (
       store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
@@ -336,10 +331,7 @@ export function workspaceHandlers<R = never>(
         'workspace:startRun': request =>
           mutation(
             Effect.gen(function* () {
-              const prompt = options.enrichPrompt
-                ? yield* options.enrichPrompt(request.taskId, request.prompt, request.nativeSessionId)
-                : request.prompt
-              const command = yield* begin({ ...request, prompt })
+              const command = yield* begin(request)
               return yield* host.withExecution(execution => execution.start(command))
             }),
           ),

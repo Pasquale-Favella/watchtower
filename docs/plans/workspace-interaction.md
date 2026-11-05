@@ -171,8 +171,12 @@ report actual capabilities before enabling input or simulator controls.
 Side chats create an independent Task from an immutable parent conversation
 snapshot. A persisted receipt binds retries to that snapshot. Embedded
 composers keep independent query selections and inspection focus while sharing
-the window's event subscription. Bringing a finished reply back appends it to
-the parent draft and leaves its execution under the parent's controls.
+the window's event subscription. The native agent receives the captured context;
+the conversation transcript keeps the user's original message. Before its first
+Run, a side chat can use the current checkout or create a new worktree when sent.
+Parallel agents use separate worktrees; the existing checkout admission still applies. Bringing a
+finished reply back appends it to the parent draft and leaves its execution
+under the parent's controls.
 
 Worktree selection must resolve and revalidate real paths. Concurrent writers
 use existing exclusive-write admission or separate worktrees. A worktree is not

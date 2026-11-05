@@ -24,6 +24,22 @@ test('side chats use the parent snapshot, run independently and bring replies ba
     mkdirSync(harness)
     execFileSync('git', ['init', repository], { windowsHide: true, stdio: 'pipe' })
     writeFileSync(join(repository, 'README.md'), 'Side chat fixture\n')
+    execFileSync('git', ['add', 'README.md'], { cwd: repository, windowsHide: true, stdio: 'pipe' })
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Side chat test',
+        '-c',
+        'user.email=side@example.invalid',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '-m',
+        'Initial fixture',
+      ],
+      { cwd: repository, windowsHide: true, stdio: 'pipe' },
+    )
     const script = resolve('e2e/fixtures/workspace-agent.mjs')
     const shim = join(harness, process.platform === 'win32' ? 'gemini.cmd' : 'gemini')
     writeFileSync(
@@ -62,11 +78,19 @@ test('side chats use the parent snapshot, run independently and bring replies ba
     const side = panel.getByRole('region', { name: 'Side chat', exact: true })
     await expect(side).toBeVisible()
     await expect(parentPrompt).toHaveValue('Keep the parent draft')
+    await side.getByRole('button', { name: 'Checkout: Current checkout', exact: true }).click()
+    await window.getByRole('menuitemradio', { name: /^New worktree/ }).click()
+    await window.keyboard.press('Escape')
+    await expect(side.getByRole('combobox', { name: 'Branch', exact: true })).toBeEnabled()
     const sidePrompt = side.getByRole('textbox', { name: 'Prompt', exact: true })
     await sidePrompt.fill('Ask independently in the side chat')
+    await expect(side.getByRole('button', { name: 'Send', exact: true })).toBeEnabled()
     await sidePrompt.press('Enter')
     const sideRequests = side.getByRole('region', { name: 'Approvals and questions', exact: true })
     await expect(sideRequests.getByRole('button', { name: 'Skip inspection', exact: true })).toBeEnabled()
+    const sideMessage = side.getByRole('article', { name: 'User message', exact: true })
+    await expect(sideMessage).toContainText('Ask independently in the side chat')
+    await expect(sideMessage).not.toContainText('Parent conversation snapshot')
     await expect(parentRequests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await sideRequests.getByRole('button', { name: 'Skip inspection', exact: true }).click()
     await expect(side.getByRole('button', { name: 'Bring back', exact: true })).toBeEnabled()

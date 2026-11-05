@@ -17,7 +17,12 @@ import { join } from 'path'
 
 import { WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
-import { WorkspaceSideChats, WorkspaceSideChatsLive } from '@/core/application/commands/workspace-side-chats.js'
+import {
+  enrichSideChatPrompt,
+  SideChatPersistence,
+  WorkspaceSideChats,
+  WorkspaceSideChatsLive,
+} from '@/core/application/commands/workspace-side-chats.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
@@ -143,11 +148,14 @@ const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
   },
 }).pipe(Layer.provideMerge(appUpdatesLayer))
 
+const sideChatStorageLayer = sideChatPersistenceLayer(join(app.getPath('userData'), 'workspace', 'side-chats'))
+
 // Only the inert host is acquired at boot. Its worker, database and drivers stay lazy.
 const workspaceHostLayer = Layer.effect(
   WorkspaceHost,
   Effect.gen(function* () {
     const snapshot = yield* HarnessSnapshot
+    const sideChatStorage = yield* SideChatPersistence
     const scope = yield* Effect.acquireRelease(Scope.make(), scope =>
       Scope.close(scope, Exit.void).pipe(
         Effect.onExit(exit =>
@@ -163,6 +171,14 @@ const workspaceHostLayer = Layer.effect(
     )
     const context = yield* Layer.buildWithScope(
       WorkspaceHostLive({
+        enrichPrompt: claim =>
+          enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
+            Effect.provideService(SideChatPersistence, sideChatStorage),
+            Effect.mapError(
+              () =>
+                new AgentDriverError({ code: 'invalid-state', message: 'The side chat context could not be read.' }),
+            ),
+          ),
         resolveAttachments: references =>
           Effect.tryPromise({
             try: () =>
@@ -202,18 +218,14 @@ const workspaceHostLayer = Layer.effect(
     )
     return Context.get(context, WorkspaceHost)
   }),
-)
+).pipe(Layer.provide(sideChatStorageLayer))
 const workspaceStoreLayer = Layer.effect(
   WorkspaceStore,
   Effect.map(WorkspaceHost, host => host.store),
 )
 const workspaceLayer = WorkspaceProjectSetupLive.pipe(
   Layer.provideMerge(WorkspaceProjectsLive),
-  Layer.provideMerge(
-    WorkspaceSideChatsLive.pipe(
-      Layer.provide(sideChatPersistenceLayer(join(app.getPath('userData'), 'workspace', 'side-chats'))),
-    ),
-  ),
+  Layer.provideMerge(WorkspaceSideChatsLive.pipe(Layer.provide(sideChatStorageLayer))),
   Layer.provideMerge(WorkspaceCheckoutsLive(join(app.getPath('userData'), 'worktrees'))),
   Layer.provideMerge(
     Layer.mergeAll(
@@ -492,11 +504,7 @@ app.whenReady().then(async () => {
             Effect.provide(
               Layer.mergeAll(
                 coachHandlers(agents.native),
-                workspaceHandlers<WorkspaceSideChats | Effect.Services<ReturnType<typeof ensureScratchProject>>>({
-                  enrichPrompt: (taskId, prompt, nativeSessionId) =>
-                    Effect.flatMap(WorkspaceSideChats, sideChats =>
-                      sideChats.enrichPrompt(taskId, prompt, nativeSessionId),
-                    ),
+                workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject>>>({
                   attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
                   chooseProjectDirectory: () =>
                     Effect.tryPromise({

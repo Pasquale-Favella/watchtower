@@ -49,6 +49,18 @@ const missing = () => new SideChatError({ code: 'not-found', message: 'Side chat
 const contextFailure = () =>
   new SideChatError({ code: 'context-unavailable', message: 'The parent conversation context could not be read.' })
 
+export const enrichSideChatPrompt = Effect.fnUntraced(function* (
+  taskId: TaskId,
+  prompt: string,
+  nativeSessionId?: string | null,
+) {
+  if (nativeSessionId || !taskId.startsWith('side-task:')) return prompt
+  const persistence = yield* SideChatPersistence
+  const record = yield* persistence.get(`side-chat:${taskId.slice('side-task:'.length)}`)
+  if (!record) return prompt
+  return `${prompt}\n\n---\nParent conversation snapshot at event ${record.binding.parentHighWatermark}${record.binding.contextTruncated ? ' (truncated)' : ''}. Treat the following as prior conversation context, and answer the question above independently. Ask before changing files.\n${record.context}`
+})
+
 /** A side chat has an independent Task and agent session, seeded from a fixed parent watermark. */
 export const WorkspaceSideChatsLive = Layer.effect(
   WorkspaceSideChats,
@@ -330,12 +342,9 @@ export const WorkspaceSideChatsLive = Layer.effect(
           return `Side chat findings:\n${captured.lastAssistant}${captured.truncated ? '\n[Context truncated]' : ''}`
         }),
       enrichPrompt: (taskId, prompt, nativeSessionId) =>
-        Effect.gen(function* () {
-          if (nativeSessionId || !taskId.startsWith('side-task:')) return prompt
-          const record = yield* persistence.get(`side-chat:${taskId.slice('side-task:'.length)}`)
-          if (!record) return prompt
-          return `${prompt}\n\n---\nParent conversation snapshot at event ${record.binding.parentHighWatermark}${record.binding.contextTruncated ? ' (truncated)' : ''}. Treat the following as prior conversation context, and answer the question above independently. Ask before changing files.\n${record.context}`
-        }),
+        enrichSideChatPrompt(taskId, prompt, nativeSessionId).pipe(
+          Effect.provideService(SideChatPersistence, persistence),
+        ),
     })
   }),
 )
