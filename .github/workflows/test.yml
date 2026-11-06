@@ -73,7 +73,7 @@ jobs:
       - run: npm test -- --run
 
   windows-process-regression:
-    name: Windows process source regressions
+    name: Windows process and provider regressions
     needs: changes
     if: needs.changes.outputs.checks == 'true'
     runs-on: windows-latest
@@ -85,13 +85,22 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Exercise Windows process cleanup and command shims
+      - name: Exercise process, command and provider-platform branches
         run: >-
           npm test -- --run
           tests/agents-process-tree.test.ts
           tests/command-runner.test.ts
           tests/command-runner-start.test.ts
           tests/command-runner-fast-exit.test.ts
+          tests/claude-app-paths.test.ts
+          tests/copilot-app-paths.test.ts
+          tests/provider-app-paths.test.ts
+          tests/antigravity-rpc-effect.test.ts
+          --reporter=default
+          --reporter=json
+          --outputFile.json=win32-vitest-results.json
+      - name: Assert native Windows branches were exercised
+        run: node scripts/ci-verify-win32-tests.cjs win32-vitest-results.json
 
   application:
     name: Application checks

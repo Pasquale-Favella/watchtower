@@ -149,8 +149,8 @@ describe('getDesktopSessionsDirs (WATCHTOWER_DESKTOP_SESSIONS_DIR + APPDATA + LO
   })
 
   // Windows-only branches: `APPDATA` / `LOCALAPPDATA` are read there and
-  // nowhere else. CI is ubuntu (test.yml), so these pin the Windows branch on
-  // the Windows dev box only. `LOCALAPPDATA` points at an empty temp dir so
+  // nowhere else. The Windows CI provider regression job exercises both guards.
+  // `LOCALAPPDATA` points at an empty temp dir so
   // the MSIX `Packages` scan finds nothing and the candidate list is exact.
   it.skipIf(process.platform !== 'win32')(
     'APPDATA / LOCALAPPDATA are honored, null and "" fall back per the || chain',
