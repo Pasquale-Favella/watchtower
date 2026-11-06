@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'vitest'
+
 import {
-  SHORTCUTS,
-  NAV_SECTIONS,
-  NUMBERED_SECTION_SHORTCUTS,
-  shortcutForAction,
   displayShortcut,
   displayShortcutForAction,
+  NAV_SECTIONS,
+  NUMBERED_SECTION_SHORTCUTS,
   sectionsRangeLabel,
+  shortcutForAction,
+  SHORTCUTS,
 } from '../src/renderer/app/shortcuts.js'
 import { acceleratorFor } from '../src/shared/lib/shortcuts.js'
 
@@ -25,7 +26,7 @@ describe('shortcut registry', () => {
     expect(shortcutForAction('commandPalette')?.hotkey).toBe('Mod+K')
   })
 
-  it('registers nothing for digits beyond the numbered sections (Mod+9/Mod+10 no-op)', () => {
+  it('registers nothing for digits beyond the numbered sections (Mod+10 no-op)', () => {
     const hotkeys = new Set<string>(SHORTCUTS.map(def => def.hotkey))
     expect(hotkeys.has('Mod+9')).toBe(false)
     expect([...hotkeys].some(hotkey => hotkey === 'Mod+10')).toBe(false)

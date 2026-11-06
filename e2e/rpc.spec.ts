@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 import type { Api } from '../src/platform/electron/preload/index.js'
 import { dismissOnboarding, withApp } from './app'
 import { invokeRpc } from './rpc-probe'
+import { switchVertical } from './verticals'
 
 test('sandboxed preload carries RPC frames and replaces the connection after reload', async () => {
   await withApp(async ({ app, window }) => {
@@ -75,6 +76,7 @@ test('sandboxed preload carries RPC frames and replaces the connection after rel
 test('Overview native RPC refreshes pricing after reconnect without reload', async () => {
   await withApp(async ({ app, window }) => {
     await dismissOnboarding(window)
+    await switchVertical(window, 'Analytics')
     await expect(window.getByText('Total spend', { exact: true })).toBeVisible()
 
     const totalSpend = window

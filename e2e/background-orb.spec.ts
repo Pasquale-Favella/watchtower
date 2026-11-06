@@ -7,6 +7,7 @@ import type { Api } from '../src/platform/electron/preload/index.js'
 import { acceleratorFor, SHORTCUTS } from '../src/shared/lib/shortcuts'
 import { dismissOnboarding, withApp } from './app'
 import { invokeRpc } from './rpc-probe'
+import { switchVertical } from './verticals'
 
 /**
  * Background shell: closing the main window keeps the app alive in the tray
@@ -21,6 +22,7 @@ const PAGE: Record<Surface, string> = { main: 'index.html', orb: 'orb.html', pan
 test('closing the window backgrounds the app into the orb, which reopens it', async () => {
   await withApp(async ({ app, window }) => {
     await dismissOnboarding(window)
+    await switchVertical(window, 'Analytics')
     // Leave the app on Settings, so the panel's "See overview" has to navigate.
     await window.getByRole('button', { name: 'Settings', exact: true }).click()
     await expect(window.getByRole('navigation', { name: 'Settings sections' })).toBeVisible()

@@ -2,6 +2,8 @@
 
 Status: accepted
 
+The general workspace execution model in [ADR 0039](0039-agent-workspace-domain-and-execution.md) amends the ACP-only Harness definition and separates native session identity from each execution attempt. The implementation described below remains the Coach path until its migration; workspace driver conformance remains separately gated.
+
 ## Context
 
 ADR 0016 (revised) and ADR 0017 shipped the data-driven harness registry and the unified Coach & Skills section on the AI SDK (`ai` v6) + `@mcpc-tech/acp-ai-provider`. Two things did not survive contact with the REAL provider (v0.3.5 installed):

@@ -1,126 +1,153 @@
 import { useRouterState } from '@tanstack/react-router'
-import type { ComponentProps, ReactNode } from 'react'
+import { ChartNoAxesCombined, Check, ChevronsUpDown, PanelsTopLeft } from 'lucide-react'
+import type { ComponentProps } from 'react'
 
-import { WatchtowerIcon } from '@/renderer/components/shell/WatchtowerIcon'
-import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
-import { navigateToSection, sectionForPath } from '@/renderer/app/navigation'
+import { type AppVertical, navigateToSection, sectionForPath } from '@/renderer/app/navigation'
 import { SECTION_ICONS } from '@/renderer/app/section-icons'
-import { displayShortcutForAction, type Section, shortcutForAction } from '@/renderer/app/shortcuts'
+import { displayShortcutForAction, NAV_SECTIONS, shortcutForAction } from '@/renderer/app/shortcuts'
+import { WatchtowerIcon } from '@/renderer/components/shell/WatchtowerIcon'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@/renderer/components/ui/dropdown-menu'
 import {
   Sidebar,
   SidebarContent,
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
   SidebarMenuButton,
   SidebarMenuItem,
   SidebarRail,
+  useSidebar,
 } from '@/renderer/components/ui/sidebar'
+import { WorkspaceSidebar } from '@/renderer/features/workspace/WorkspaceSidebar'
 import { PERIOD_LABELS } from '@/renderer/shared/lib/settings-constants'
 import { providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
+import { useAppVerticalStore } from '@/renderer/stores/hooks/use-app-vertical-store'
+import { useScopeStore } from '@/renderer/stores/hooks/use-scope-store'
 
-import { SECTIONS } from '@/shared/schemas/navigation.js'
+const VERTICALS = [
+  { id: 'analytics', label: 'Analytics', icon: ChartNoAxesCombined },
+  { id: 'workspace', label: 'Workspace', icon: PanelsTopLeft },
+] as const satisfies readonly { id: AppVertical; label: string; icon: typeof ChartNoAxesCombined }[]
 
-/** Sidebar nav — ids and order come from navigation (ADR 0014, SECTIONS);
- * labels and keycap hints come from the shortcuts registry (ADR 0001). */
-const NAV = SECTIONS.map(id => ({ id, icon: SECTION_ICONS[id] }))
+/** The sidebar-07 team switcher selects the application's active vertical. */
+function VerticalSwitcher() {
+  const { vertical, switchVertical } = useAppVerticalStore()
+  const { isMobile } = useSidebar()
+  const active = vertical === 'analytics' ? VERTICALS[0] : VERTICALS[1]
 
-/** AppSidebarShell — presentational sidebar (shadcn `sidebar-07` pattern):
- * brand header, flat section nav with keyboard-shortcut badges and active-state
- * highlighting, and a scope-caption footer — built entirely on
- * `components/ui/sidebar` and the app's real 8-section navigation model. */
-export function AppSidebarShell({
-  active,
-  onNavigate,
-  status,
-  ...props
-}: {
-  active: Section
-  onNavigate: (section: Section) => void
-  status?: ReactNode
-} & ComponentProps<typeof Sidebar>) {
   return (
-    <Sidebar collapsible="icon" {...props}>
-      <SidebarHeader>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton
-              size="lg"
-              className="pointer-events-none group-data-[collapsible=icon]:justify-center hover:bg-transparent"
-            >
-              {/* Brand: tinted square + wordmark when expanded. In the
-               * collapsed 32px icon rail the button itself is size-8 with
-               * padding, so the box shrinks to a plain centered icon — the
-               * same shape as the nav items beside it. */}
-              <div className="bg-primary/10 text-primary flex size-10 shrink-0 items-center justify-center rounded-xl group-data-[collapsible=icon]:size-4 group-data-[collapsible=icon]:rounded-sm group-data-[collapsible=icon]:bg-transparent">
-                {/* Expanded rail: the logo fills most of the 40px brand tile;
-                 * collapsed to icon-only, it drops back to the nav-item size.
-                 * The `!` important beats the sidebar button's own
-                 * `[&_svg]:size-4` descendant rule, which would otherwise pin
-                 * every svg inside the button to 16px. */}
-                <WatchtowerIcon className="size-6! group-data-[collapsible=icon]:size-6!" />
-              </div>
-              <span className="truncate text-sm font-bold tracking-tight group-data-[collapsible=icon]:hidden">
-                Watchtower
-              </span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
-      </SidebarHeader>
-      <SidebarContent>
-        <SidebarGroup>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {NAV.map(item => (
-                <SidebarMenuItem key={item.id}>
-                  <SidebarMenuButton
-                    isActive={item.id === active}
-                    tooltip={shortcutForAction(item.id)?.label ?? item.id}
-                    onClick={() => onNavigate(item.id)}
-                  >
-                    {item.icon}
-                    <span>{shortcutForAction(item.id)?.label ?? item.id}</span>
-                  </SidebarMenuButton>
-                  <SidebarMenuBadge className="text-muted-foreground font-mono text-[10px] font-normal tracking-normal">
-                    {displayShortcutForAction(item.id)}
-                  </SidebarMenuBadge>
-                </SidebarMenuItem>
+    <SidebarMenu>
+      <SidebarMenuItem>
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            aria-label={`Switch application, ${active.label}`}
+            render={
+              <SidebarMenuButton
+                size="lg"
+                className="data-open:bg-sidebar-accent data-open:text-sidebar-accent-foreground group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:p-0!"
+              />
+            }
+          >
+            <div className="bg-primary/10 text-primary flex aspect-square size-8 shrink-0 items-center justify-center rounded-lg">
+              <WatchtowerIcon className="size-5!" />
+            </div>
+            <div className="grid flex-1 text-left text-sm leading-tight group-data-[collapsible=icon]:hidden">
+              <span className="truncate font-semibold">Watchtower</span>
+              <span className="text-muted-foreground truncate text-xs">{active.label}</span>
+            </div>
+            <ChevronsUpDown className="ml-auto group-data-[collapsible=icon]:hidden" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="min-w-52" align="start" side={isMobile ? 'bottom' : 'right'}>
+            <DropdownMenuGroup>
+              <DropdownMenuLabel>Application</DropdownMenuLabel>
+              {VERTICALS.map(item => (
+                <DropdownMenuItem key={item.id} onClick={() => switchVertical(item.id)} className="gap-2 p-2">
+                  <item.icon />
+                  {item.label}
+                  {item.id === vertical && <Check className="ml-auto" aria-label="Selected" />}
+                </DropdownMenuItem>
               ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      </SidebarContent>
-      <SidebarFooter>
-        {status && (
-          <div className="text-muted-foreground truncate px-2 py-1 font-mono text-[11px] tabular-nums group-data-[collapsible=icon]:hidden">
-            {status}
-          </div>
-        )}
-      </SidebarFooter>
-      <SidebarRail />
-    </Sidebar>
+            </DropdownMenuGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </SidebarMenuItem>
+    </SidebarMenu>
   )
 }
 
-/** AppSidebar — scope-driven (ADR 0011) + router-driven (ADR 0014): the
- * active section comes from the current route, clicks route through
- * app/navigation.ts, and the footer caption reads the scope store. */
-export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
-  const pathname = useRouterState({ select: s => s.location.pathname })
+function AnalyticsNavigation() {
+  const pathname = useRouterState({ select: state => state.location.pathname })
   const active = sectionForPath(pathname)
-  const { period, customRange, provider, detectedProviders } = useScopeStore()
+  const { isMobile, setOpenMobile } = useSidebar()
 
-  const providerOptions = providerOptionsFromDetected(detectedProviders)
-  const providerLabel = providerOptions.find(p => p.value === provider)?.label ?? provider
-  const periodLabel = customRange ? `${customRange.since} → ${customRange.until}` : (PERIOD_LABELS[period] ?? period)
-  const status = (
-    <span>
-      {periodLabel} <b className="text-foreground font-medium">{providerLabel}</b>
-    </span>
+  return (
+    <SidebarGroup>
+      <SidebarGroupLabel>Analytics</SidebarGroupLabel>
+      <SidebarGroupContent>
+        <SidebarMenu>
+          {NAV_SECTIONS.map(section => (
+            <SidebarMenuItem key={section}>
+              <SidebarMenuButton
+                isActive={section === active}
+                tooltip={shortcutForAction(section)?.label ?? section}
+                onClick={() => {
+                  navigateToSection(section)
+                  if (isMobile) setOpenMobile(false)
+                }}
+              >
+                {SECTION_ICONS[section]}
+                <span>{shortcutForAction(section)?.label ?? section}</span>
+              </SidebarMenuButton>
+              <SidebarMenuBadge className="text-muted-foreground font-mono text-[10px] font-normal tracking-normal">
+                {displayShortcutForAction(section)}
+              </SidebarMenuBadge>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarGroupContent>
+    </SidebarGroup>
   )
+}
 
-  return <AppSidebarShell active={active} onNavigate={navigateToSection} status={status} {...props} />
+function AnalyticsScopeCaption() {
+  const { period, customRange, provider, detectedProviders } = useScopeStore()
+  const providerLabel =
+    providerOptionsFromDetected(detectedProviders).find(item => item.value === provider)?.label ?? provider
+  const periodLabel = customRange ? `${customRange.since} → ${customRange.until}` : (PERIOD_LABELS[period] ?? period)
+
+  return (
+    <div className="text-muted-foreground truncate px-2 py-1 font-mono text-[11px] tabular-nums group-data-[collapsible=icon]:hidden">
+      {periodLabel} <b className="text-foreground font-medium">{providerLabel}</b>
+    </div>
+  )
+}
+
+export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
+  const { vertical } = useAppVerticalStore()
+
+  return (
+    <Sidebar collapsible="icon" {...props}>
+      <SidebarHeader>
+        <VerticalSwitcher />
+      </SidebarHeader>
+      <SidebarContent>{vertical === 'workspace' ? <WorkspaceSidebar /> : <AnalyticsNavigation />}</SidebarContent>
+      {vertical === 'analytics' && (
+        <SidebarFooter>
+          <AnalyticsScopeCaption />
+        </SidebarFooter>
+      )}
+      <SidebarRail />
+    </Sidebar>
+  )
 }

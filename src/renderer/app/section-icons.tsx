@@ -1,16 +1,16 @@
-import type { ReactNode } from 'react'
-
 import {
-  LayoutDashboard,
-  PanelsTopLeft,
-  GitPullRequestArrow,
-  BarChart3,
-  Lightbulb,
-  Layers,
   ArrowLeftRight,
-  Sparkles,
+  BarChart3,
+  FolderKanban,
+  GitPullRequestArrow,
+  Layers,
+  LayoutDashboard,
+  Lightbulb,
+  PanelsTopLeft,
   Settings,
+  Sparkles,
 } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 import type { Section } from '@/shared/schemas/navigation.js'
 
@@ -19,6 +19,7 @@ import type { Section } from '@/shared/schemas/navigation.js'
  * import it without the router-bound sidebar tree. */
 export const SECTION_ICONS: Record<Section, ReactNode> = {
   overview: <LayoutDashboard />,
+  workspace: <FolderKanban />,
   sessions: <PanelsTopLeft />,
   pullRequests: <GitPullRequestArrow />,
   spend: <BarChart3 />,

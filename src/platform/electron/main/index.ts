@@ -3,53 +3,102 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 
 import * as ConfigProvider from 'effect/ConfigProvider'
+import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as RpcServer from 'effect/rpc/RpcServer'
 import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
-import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
-import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
-import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
-import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
-import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
-import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
-import { LedgerMcpPool } from '@/platform/mcp/pool.js'
-import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
+import { WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
+import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
 import {
-  BackgroundShell,
-  type BackgroundShellHandle,
-  backgroundShellLayer,
-} from '@/platform/electron/main/background-shell.js'
-import { DbWorkerClient } from '@/platform/electron/workers/client.js'
-import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
+  enrichSideChatPrompt,
+  SideChatPersistence,
+  WorkspaceSideChats,
+  WorkspaceSideChatsLive,
+} from '@/core/application/commands/workspace-side-chats.js'
+import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
+import { AgentDriverError } from '@/core/ports/agent-driver.js'
+import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
+import type { CheckoutActions } from '@/core/ports/checkout-actions.js'
+import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import type { TerminalHost } from '@/core/ports/terminal-host.js'
+import type { WorkspaceDevices } from '@/core/ports/workspace-devices.js'
+import type { WorkspacePullRequests } from '@/core/ports/workspace-pull-requests.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { createDetectedHarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
+import { discoverNativeHarnessExecutables } from '@/infrastructure/agent-harnesses/native-executables.js'
+import { HarnessSnapshot } from '@/infrastructure/agent-harnesses/snapshot.js'
 import { initAppPaths, readAppPathsEffect } from '@/infrastructure/config/environment.js'
-import { makeMainRuntime, type MainServices } from '@/platform/electron/main/main-runtime.js'
+import { CheckoutBranchesLive } from '@/infrastructure/filesystem/checkout-branches.js'
+import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
+import { ProjectProvisionerLive } from '@/infrastructure/filesystem/project-provisioner.js'
 import {
   closeOperationalLog,
   initOperationalLog,
   logCodeFor,
   safeLogOperationalEvent,
 } from '@/infrastructure/logging/operational-log.js'
+import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
+import { TerminalHostLive } from '@/infrastructure/terminal/terminal-host.js'
+import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
+import { CheckoutActionsLive } from '@/infrastructure/workspace/checkout-actions.js'
+import { WorkspaceDevicesLive } from '@/infrastructure/workspace/devices.js'
+import { WorkspacePullRequestsLive } from '@/infrastructure/workspace/pull-requests.js'
+import { sideChatPersistenceLayer } from '@/infrastructure/workspace/side-chat-store.js'
+import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
+import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
+import {
+  BackgroundShell,
+  type BackgroundShellHandle,
+  backgroundShellLayer,
+} from '@/platform/electron/main/background-shell.js'
+import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
+import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
+import { createElectronWorkspacePreviewManager } from '@/platform/electron/main/preview/electron-preview.js'
+import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
 import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
+import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
+import { checkoutActionsHandlers } from '@/platform/electron/main/rpc/checkout-actions-handlers.js'
+import { checkoutNavigationHandlers } from '@/platform/electron/main/rpc/checkout-navigation-handlers.js'
 import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
 import { analyticsHandlers, configHandlers } from '@/platform/electron/main/rpc/handlers.js'
 import {
+  lifecycleHandlers,
   LifecycleHub,
   type LifecycleHubService,
-  lifecycleHandlers,
   lifecycleLayer,
   type LifecyclePublishEvent,
 } from '@/platform/electron/main/rpc/lifecycle.js'
-import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
-import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
 import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
+import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
+import { terminalHandlers } from '@/platform/electron/main/rpc/terminal-handlers.js'
+import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
+import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
+import { workspacePreviewHandlers } from '@/platform/electron/main/rpc/workspace-preview-handlers.js'
+import { workspaceDeviceHandlers } from '@/platform/electron/main/rpc/workspace-device-handlers.js'
+import { workspacePullRequestHandlers } from '@/platform/electron/main/rpc/workspace-pull-request-handlers.js'
+import { workspaceSideChatHandlers } from '@/platform/electron/main/rpc/workspace-side-chat-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
+import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
+import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
+import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
+import { DbWorkerClient } from '@/platform/electron/workers/client.js'
+import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
+import { LedgerMcpPool } from '@/platform/mcp/pool.js'
+import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
+import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
+import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
+import { TerminalRpcError } from '@/shared/rpc/terminal.js'
+import { WorkspacePullRequestRpcError, pullRequestRpcMessages } from '@/shared/rpc/workspace-pull-requests.js'
+import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -99,6 +148,100 @@ const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
   },
 }).pipe(Layer.provideMerge(appUpdatesLayer))
 
+const sideChatStorageLayer = sideChatPersistenceLayer(join(app.getPath('userData'), 'workspace', 'side-chats'))
+
+// Only the inert host is acquired at boot. Its worker, database and drivers stay lazy.
+const workspaceHostLayer = Layer.effect(
+  WorkspaceHost,
+  Effect.gen(function* () {
+    const snapshot = yield* HarnessSnapshot
+    const sideChatStorage = yield* SideChatPersistence
+    const scope = yield* Effect.acquireRelease(Scope.make(), scope =>
+      Scope.close(scope, Exit.void).pipe(
+        Effect.onExit(exit =>
+          Effect.sync(() => {
+            const confirmed = Exit.isSuccess(exit)
+            safeLogOperationalEvent(confirmed ? 'info' : 'error', 'workspace.close', {
+              outcome: confirmed ? 'success' : 'failed',
+              code: confirmed ? 'cleanup-confirmed' : 'cleanup-unconfirmed',
+            })
+          }),
+        ),
+      ),
+    )
+    const context = yield* Layer.buildWithScope(
+      WorkspaceHostLive({
+        enrichPrompt: claim =>
+          enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
+            Effect.provideService(SideChatPersistence, sideChatStorage),
+            Effect.mapError(
+              () =>
+                new AgentDriverError({ code: 'invalid-state', message: 'The side chat context could not be read.' }),
+            ),
+          ),
+        resolveAttachments: references =>
+          Effect.tryPromise({
+            try: () =>
+              createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')).resolve(
+                references,
+              ),
+            catch: () =>
+              new AgentDriverError({
+                code: 'invalid-state',
+                message: 'A saved attachment is missing or failed integrity validation.',
+              }),
+          }),
+        filename: join(app.getPath('userData'), 'workspace.db'),
+        prewarmConnections: true,
+        workerPath: join(__dirname, 'workspace-worker.js'),
+        runtimeExecutable: process.execPath,
+        // Leave headroom inside the 15-second quit ceiling for the worker and ledger drain.
+        closeDeadlineMs: 3_000,
+        closeTimeoutMs: 2_000,
+        loadConnectionCatalog: () =>
+          Effect.gen(function* () {
+            const nativeExecutables = yield* discoverNativeHarnessExecutables()
+            const rows = yield* snapshot.list()
+            const instances = yield* Effect.forEach(rows, row => snapshot.get(row.instanceId))
+            return yield* Effect.try({
+              try: () =>
+                createDetectedHarnessConnectionCatalog({
+                  instances: instances.filter(instance => instance !== undefined),
+                  runtimeExecutable: process.execPath,
+                  nativeExecutables,
+                }),
+              catch: error => error,
+            })
+          }).pipe(Effect.provide(NodePlatformLive)),
+      }),
+      scope,
+    )
+    return Context.get(context, WorkspaceHost)
+  }),
+).pipe(Layer.provide(sideChatStorageLayer))
+const workspaceStoreLayer = Layer.effect(
+  WorkspaceStore,
+  Effect.map(WorkspaceHost, host => host.store),
+)
+const workspaceLayer = WorkspaceProjectSetupLive.pipe(
+  Layer.provideMerge(WorkspaceProjectsLive),
+  Layer.provideMerge(WorkspaceSideChatsLive.pipe(Layer.provide(sideChatStorageLayer))),
+  Layer.provideMerge(WorkspaceCheckoutsLive(join(app.getPath('userData'), 'worktrees'))),
+  Layer.provideMerge(
+    Layer.mergeAll(
+      CheckoutResolverLive,
+      CheckoutBranchesLive,
+      CheckoutInspectionLive,
+      CheckoutActionsLive,
+      WorkspaceDevicesLive,
+      WorkspacePullRequestsLive,
+      ProjectProvisionerLive,
+      workspaceStoreLayer,
+    ),
+  ),
+  Layer.provideMerge(workspaceHostLayer),
+)
+
 const mainRuntime = makeMainRuntime(
   {
     clientVersion: app.getVersion(),
@@ -108,7 +251,8 @@ const mainRuntime = makeMainRuntime(
     },
   },
   {},
-  Layer.merge(
+  Layer.mergeAll(
+    workspaceLayer,
     backgroundShellLayer({
       onRendererWindow: (window, role) => rendererRoles.set(window.webContents, role),
       preloadPath: join(__dirname, '../preload/index.js'),
@@ -119,6 +263,7 @@ const mainRuntime = makeMainRuntime(
       requestScan: () => void dbClient?.request('scan:start').catch(() => {}),
     }),
     rendererLifecycleLayer,
+    TerminalHostLive,
   ),
 )
 /** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
@@ -139,6 +284,10 @@ let backgroundShell: BackgroundShellHandle | null = null
 const hasInstanceLock = app.requestSingleInstanceLock()
 if (!hasInstanceLock) app.quit()
 app.on('second-instance', () => backgroundShell?.showMainWindow())
+// Renderers never open their own windows; external links go through the http(s)-only shell RPC.
+app.on('web-contents-created', (_event, contents) => {
+  contents.setWindowOpenHandler(() => ({ action: 'deny' }))
+})
 
 function publishLifecycle(event: LifecyclePublishEvent): void {
   if (lifecycleHub) mainRuntime.runSync(lifecycleHub.publish(event))
@@ -248,9 +397,13 @@ function createWindow(): BrowserWindow {
   return mainWindow
 }
 
+let workspacePreviewManager: ReturnType<typeof createElectronWorkspacePreviewManager> | undefined
+
 app.whenReady().then(async () => {
   if (!hasInstanceLock) return
   const dataDir = app.getPath('userData')
+  const previews = createElectronWorkspacePreviewManager()
+  workspacePreviewManager = previews
   try {
     await initOperationalLog({ logDir: join(dataDir, 'logs'), isPackaged: app.isPackaged })
   } catch {
@@ -328,11 +481,115 @@ app.whenReady().then(async () => {
       const protocol = serverProtocolLayer(port)
       const options = { disableTracing: true, disableFatalDefects: true } as const
       const provideHandlers = Effect.provide(Layer.merge(handlers, protocol))
-      let program: Effect.Effect<never, never, LifecycleHub | MainServices | AppUpdates | BackgroundShell>
+      let program: Effect.Effect<
+        never,
+        never,
+        | LifecycleHub
+        | MainServices
+        | AppUpdates
+        | BackgroundShell
+        | WorkspaceHost
+        | WorkspaceProjects
+        | CheckoutResolver
+        | CheckoutInspection
+        | CheckoutActions
+        | TerminalHost
+        | WorkspaceDevices
+        | WorkspacePullRequests
+        | WorkspaceSideChats
+      >
       switch (role) {
         case 'app':
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
-            Effect.provide(coachHandlers(agents.native)),
+            Effect.provide(
+              Layer.mergeAll(
+                coachHandlers(agents.native),
+                workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject>>>({
+                  attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
+                  chooseProjectDirectory: () =>
+                    Effect.tryPromise({
+                      try: async () => {
+                        const selected = await dialog.showOpenDialog({
+                          title: 'Open a Project',
+                          properties: ['openDirectory'],
+                        })
+                        return selected.canceled ? null : (selected.filePaths[0] ?? null)
+                      },
+                      catch: error => error,
+                    }),
+                  prepareScratchProject: store =>
+                    ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
+                }),
+                Layer.unwrap(
+                  Effect.map(WorkspaceHost, host =>
+                    terminalHandlers({
+                      resolveTaskCwd: (taskId, checkoutId) =>
+                        resolveTaskCheckoutPath(taskId, checkoutId).pipe(
+                          Effect.provideService(WorkspaceHost, host),
+                          Effect.mapError(
+                            () =>
+                              new TerminalRpcError({
+                                code: 'cwd-unavailable',
+                                message: 'The Task checkout is unavailable.',
+                              }),
+                          ),
+                        ),
+                      resolveDraftCwd: target =>
+                        Effect.gen(function* () {
+                          yield* host.ensureOpen
+                          if (target.projectId) {
+                            return yield* resolveCheckoutPath({
+                              projectId: target.projectId,
+                              ...(target.checkoutId ? { checkoutId: target.checkoutId } : {}),
+                            })
+                          }
+                          const scratch = yield* ensureScratchProject(
+                            host.store,
+                            join(app.getPath('userData'), 'workspace', 'scratch'),
+                          )
+                          return scratch.mainCheckout.path
+                        }).pipe(
+                          Effect.provideService(WorkspaceHost, host),
+                          Effect.mapError(
+                            () =>
+                              new TerminalRpcError({
+                                code: 'cwd-unavailable',
+                                message: 'The Task checkout is unavailable.',
+                              }),
+                          ),
+                        ),
+                    }),
+                  ),
+                ),
+                checkoutInspectionHandlers({
+                  resolveCheckoutPath: request =>
+                    resolveCheckoutPath(request).pipe(
+                      Effect.mapError(code =>
+                        code === 'not-found'
+                          ? new CheckoutInspectionRpcError({ code, message: 'Checkout record was not found.' })
+                          : new CheckoutInspectionRpcError({ code, message: 'Checkout inspection is unavailable.' }),
+                      ),
+                    ),
+                }),
+                checkoutActionsHandlers({ resolveCheckoutPath }),
+                checkoutNavigationHandlers({ resolveCheckoutPath }),
+                workspacePreviewHandlers(previews, sender),
+                workspaceDeviceHandlers(),
+                workspacePullRequestHandlers({
+                  resolveCheckoutPath: scope =>
+                    resolveCheckoutPath(scope).pipe(
+                      Effect.mapError(
+                        () =>
+                          new WorkspacePullRequestRpcError({
+                            code: 'not-found',
+                            message: pullRequestRpcMessages['not-found'],
+                          }),
+                      ),
+                    ),
+                }),
+                workspaceSideChatHandlers,
+              ),
+            ),
             provideHandlers,
           )
           break
@@ -410,6 +667,7 @@ const quitCoordinator = createQuitCoordinator({
   markQuitting: () => backgroundShell?.markQuitting(),
   cleanup: async () => {
     disposeRendererRpc?.()
+    workspacePreviewManager?.dispose()
     await Promise.all(Array.from(rendererRpcFibers, fiber => mainRuntime.runPromise(Fiber.interrupt(fiber))))
     try {
       await closeMainResources({
