@@ -134,6 +134,192 @@ describe('Copilot chat journal Effect parser', () => {
     expect(rejected).toBe(2)
   })
 
+  it('sums modelTotals into input without the cached part, plus cache reads and output', async () => {
+    // An agent-mode request makes one call per tool round; metadata holds only the
+    // LAST one. `modelTotals` sums every round, cache-inclusive input included.
+    const source = makeSource()
+    const request = {
+      requestId: 'totals',
+      modelId: 'copilot/gpt-4.1',
+      result: { metadata: { promptTokens: 10, outputTokens: 2 } },
+      modelTotals: [
+        { model: 'gpt-4.1', inputTokens: 1_000, cachedTokens: 700, outputTokens: 40 },
+        { model: 'gpt-4.1', inputTokens: 500, cachedTokens: 300, outputTokens: 10 },
+      ],
+    }
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(source.path, JSON.stringify({ kind: 0, v: { sessionId: 'chat-session', requests: [request] } }))
+
+    const [call] = await collect(createCopilotProvider().createSessionParser(source, new Set()))
+
+    expect(call).toMatchObject({ inputTokens: 500, cacheReadInputTokens: 1_000, outputTokens: 50 })
+  })
+
+  it('prices the request at copilotCredits when it carries GitHub’s figure', async () => {
+    // 1.5 credits = $0.015, exact, where the last-round prompt could not price it.
+    const source = makeSource()
+    const request = {
+      requestId: 'credits',
+      modelId: 'copilot/gpt-4.1',
+      copilotCredits: 1.5,
+      result: { metadata: { promptTokens: 10, outputTokens: 2 } },
+    }
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(source.path, JSON.stringify({ kind: 0, v: { sessionId: 'chat-session', requests: [request] } }))
+
+    const [call] = await collect(createCopilotProvider().createSessionParser(source, new Set()))
+    expect(call?.costUSD).toBeCloseTo(0.015, 10)
+  })
+
+  it('reads a pre-1.109 flat .json chat session as one document', async () => {
+    const source = makeSource()
+    const flat = { ...source, path: source.path.replace(/\.jsonl$/, '.json') }
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      flat.path,
+      JSON.stringify({
+        sessionId: 'flat-session',
+        creationDate: 1790856000000,
+        requests: [
+          {
+            requestId: 'legacy-1',
+            modelId: 'copilot/gpt-4.1',
+            timestamp: '2026-10-01T12:00:00.000Z',
+            result: { metadata: { promptTokens: 11, outputTokens: 3 } },
+          },
+        ],
+      }),
+    )
+
+    const [call] = await collect(createCopilotProvider().createSessionParser(flat, new Set()))
+    expect(call).toMatchObject({
+      sessionId: 'flat-session',
+      model: 'gpt-4.1',
+      inputTokens: 11,
+      outputTokens: 3,
+    })
+  })
+
+  it('resolves models from auto-mode responses, result metadata, and the session selection', async () => {
+    const source = makeSource()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      source.path,
+      JSON.stringify({
+        kind: 0,
+        v: {
+          sessionId: 'model-fallbacks',
+          inputState: { selectedModel: { metadata: { version: 'copilot/claude-sonnet-4-6' } } },
+          requests: [
+            {
+              requestId: 'auto-mode',
+              modelId: 'auto',
+              response: [{ kind: 'autoModeResolution', resolvedModel: 'copilot/gpt-4o' }],
+              result: { metadata: { promptTokens: 1, outputTokens: 2 } },
+            },
+            {
+              requestId: 'session-model',
+              result: { metadata: { promptTokens: 1, outputTokens: 2 } },
+            },
+            {
+              requestId: 'result-model',
+              result: {
+                model: 'github.copilot-chat/gemini-2.0-flash',
+                metadata: { promptTokens: 1, outputTokens: 2 },
+              },
+            },
+          ],
+        },
+      }),
+    )
+
+    const calls = await collect(createCopilotProvider().createSessionParser(source, new Set()))
+
+    expect(calls.map(call => call.model)).toEqual(['gpt-4o', 'claude-sonnet-4-6', 'gemini-2.0-flash'])
+  })
+
+  it('infers an auto model family from chat-session tool-call IDs', async () => {
+    const source = makeSource()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      source.path,
+      JSON.stringify({
+        kind: 0,
+        v: {
+          sessionId: 'tool-call-model',
+          requests: [
+            {
+              requestId: 'anthropic-tool',
+              response: [{ kind: 'toolInvocationSerialized', toolCallId: 'tooluse_abc123' }],
+              result: { metadata: { promptTokens: 1, outputTokens: 2 } },
+            },
+          ],
+        },
+      }),
+    )
+
+    const calls = await collect(createCopilotProvider().createSessionParser(source, new Set()))
+
+    expect(calls.map(call => call.model)).toEqual(['copilot-anthropic-auto'])
+
+    const openAiSource = { ...source, path: source.path.replace('session.jsonl', 'openai-session.jsonl') }
+    await writeFile(
+      openAiSource.path,
+      JSON.stringify({
+        kind: 0,
+        v: {
+          sessionId: 'openai-tool-call-model',
+          requests: [
+            {
+              requestId: 'openai-tool',
+              result: {
+                metadata: {
+                  promptTokens: 1,
+                  outputTokens: 2,
+                  toolCallRounds: [{ toolCalls: [{ id: 'call_abc123' }] }],
+                },
+              },
+            },
+          ],
+        },
+      }),
+    )
+
+    const openAiCalls = await collect(createCopilotProvider().createSessionParser(openAiSource, new Set()))
+
+    expect(openAiCalls.map(call => call.model)).toEqual(['copilot-openai-auto'])
+  })
+
+  it("uses another request's concrete model when the current request is in auto mode", async () => {
+    const source = makeSource()
+    const { writeFile } = await import('node:fs/promises')
+    await writeFile(
+      source.path,
+      JSON.stringify({
+        kind: 0,
+        v: {
+          sessionId: 'sibling-model-fallback',
+          requests: [
+            {
+              requestId: 'selected',
+              modelId: 'copilot/gpt-4.1',
+              result: { metadata: { promptTokens: 1, outputTokens: 2 } },
+            },
+            {
+              requestId: 'automatic',
+              modelId: 'auto',
+              result: { metadata: { promptTokens: 1, outputTokens: 2 } },
+            },
+          ],
+        },
+      }),
+    )
+
+    const calls = await collect(createCopilotProvider().createSessionParser(source, new Set()))
+
+    expect(calls.map(call => call.model)).toEqual(['gpt-4.1', 'gpt-4.1'])
+  })
+
   it('validates the model and output counter selected by the parser', async () => {
     const source = makeSource()
     const requests = [

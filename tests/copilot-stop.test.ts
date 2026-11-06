@@ -156,7 +156,7 @@ describe('Copilot cooperative stop', () => {
       })
 
     const rollups = providerParserIterator(provider.createSessionParser(jsonlSource, new Set()))
-    expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6')
+    expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6:1')
     await rollups.return(undefined)
   })
 
@@ -203,7 +203,7 @@ describe('Copilot cooperative stop', () => {
       })
 
     const rollups = providerParserIterator(provider.createSessionParser(jsonlSource, new Set()))
-    expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6')
+    expect((await rollups.next()).value?.deduplicationKey).toBe('copilot:sess-1:shutdown:claude-sonnet-4-6:1')
     await rollups.return(undefined)
   })
 })

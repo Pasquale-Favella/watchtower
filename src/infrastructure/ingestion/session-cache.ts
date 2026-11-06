@@ -123,7 +123,21 @@ export const PROVIDER_PARSE_VERSIONS: Record<string, string> = {
   // populates — so a turn served straight from this cache keeps its rollup and
   // the skip never runs, double-counting the CLI's input and cache tokens.
   // The bump forces the one-time re-parse that makes the skip take effect.
-  copilot: 'cli-shutdown-cost-v1-skills-session-store-v1',
+  // nonlocal-output-v1: a store row now keeps its own `output_tokens` when its
+  // session has NO local `events.jsonl` (ACP hosts, the desktop app, rows from
+  // another machine), because no per-turn event will ever report that output.
+  // That ownership is also decided inside the parser, from a provider-lifetime
+  // set discovery fills, so a row served straight from this cache would keep the
+  // output 0 it was parsed with and stay under-reported on every later scan.
+  // The bump forces the one-time re-parse that lands the recovered tokens.
+  // leg-deltas-v1: a resumed session's `session.shutdown` legs carry CUMULATIVE
+  // per-model counters, so each leg now serves as its own delta under its own
+  // `:n` key, the residual is anchored at the leg's last successful compaction,
+  // a leg's `totalNanoAiu` prices it from GitHub's bill, and a store row with no
+  // per-turn owner serves its output as its own call. Every one of those is
+  // decided inside the parser, so a turn served straight from this cache would
+  // keep the old sum-per-model figure forever. The bump forces the re-parse.
+  copilot: 'cli-shutdown-cost-v1-skills-session-store-v1-leg-deltas-v1',
   grok: 'estimated-cost-v1',
   hermes: 'reasoning-output-accounting-v1-est-cost',
   'lingtai-tui': 'token-ledger-registry-activity-v3',

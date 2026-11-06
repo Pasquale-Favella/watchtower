@@ -54,17 +54,40 @@
 //   a provider's sources in the order discovery returned them (parser.ts
 //   `for (const source of sources)` → `changedSources` → the parse loop), and
 //   the store must be parsed before any `events.jsonl` source so it can record
-//   which (session, model) pairs it covers before the shutdown rollup reads
-//   that set. When OTel is present, VS Code core chatSessions are skipped
-//   because they mirror the same Copilot turns under different IDs.
+//   which (session, model) pairs it covers — and how many tokens it covers —
+//   before the shutdown rollup subtracts them. Discovery also finishes before the
+//   first parser is created, so the set of sessions that HAVE a local
+//   `events.jsonl` is already complete when the store parser runs; that set
+//   decides which rows may own their output (see the OUTPUT OWNERSHIP block in
+//   createSessionStoreParser). When OTel is present, VS Code core chatSessions
+//   are skipped because they mirror the same Copilot turns under different IDs.
+//   A core chat session saved by VS Code before 1.109 is read as ONE flat JSON
+//   document beside the newer delta journals, and a chat session whose id the
+//   store already bills (the agent host writes both) is left out.
 //
 // LIMITATIONS (session-store):
-//   - The rollup is SUPPRESSED, not reconciled, for every (session, model) the
-//     store covers. A session whose rollup carried MORE than the sum of its
-//     store rows (rows pruned, or a crash that skipped the write) therefore
-//     reports the store's smaller figure. Under-reporting, never invented
-//     spend — the residual that would fix it needs a serve-time cross-source
-//     pass this pipeline has no hook for. See the skip site.
+//   - The rollup is RECONCILED per leg interval, never suppressed whole. Rows
+//     are authoritative per request, and what a leg claims BEYOND the rows of
+//     its own interval is served once as a residual at the leg's own instant.
+//     That interval starts at the leg's last successful in-session compaction
+//     rather than at the previous leg: the CLI resets its counters at a
+//     compaction, so the leg never claimed the pre-compaction conversation and
+//     subtracting it would cancel usage the rollup does not describe. The only
+//     direction left is under-reporting, when a store snapshot sits behind its
+//     journal with no local signal — never invented spend.
+//   - A resumed session writes one rollup per leg, each carrying CUMULATIVE
+//     counters, so each leg serves as `cumulative - previous cumulative` under
+//     its own key (`:1`, `:2`, …). A total below its predecessor is a fresh
+//     accounting epoch (an older per-leg CLI, or the reset a compaction causes)
+//     and is taken at face value instead of being clamped away.
+//   - A row of a session that DOES have a local `events.jsonl` yields no output:
+//     the per-turn `assistant.message` owns it. When the journal records no
+//     per-turn output at all (CLI 1.0.8x / the VS Code agent host, or an ACP host
+//     killed before it can shut down), that hand-off has nobody to take it, so
+//     each such row serves its output as its own call
+//     (`copilot:<session>:store-output:<row>`) and the rollup subtracts it as
+//     covered. Rows of sessions with NO local journal keep `output_tokens` on
+//     the row itself — nothing else on this machine can ever report them.
 //
 // LIMITATIONS:
 //   - The OTel DB only contains Copilot Chat and Agent mode spans. Inline
@@ -150,6 +173,24 @@ function copilotParser(parseStream: NonNullable<SessionParser['parseStream']>): 
 }
 
 const estimateTokens = (text: string) => estimateTokensFromChars(text.length)
+
+// ---------------------------------------------------------------------------
+// Copilot AI credits
+// ---------------------------------------------------------------------------
+//
+// GitHub bills Copilot usage in AI credits: 1e9 nano-AIU = 1 credit = $0.01
+// ("Usage-based billing for individuals"). This is the same conversion the
+// reference implementation uses, and it is the only way a request whose tokens
+// are not all recorded locally can still be priced exactly: the bill covers the
+// whole request, subagents included.
+
+const NANO_AIU_PER_CREDIT = 1e9
+const AI_CREDIT_USD = 0.01
+
+/** USD for a nano-AIU figure GitHub reported for one request. */
+function nanoAiuToUsd(nanoAiu: number): number {
+  return (nanoAiu / NANO_AIU_PER_CREDIT) * AI_CREDIT_USD
+}
 
 // ---------------------------------------------------------------------------
 // Model display names (unchanged from original)
@@ -365,6 +406,10 @@ const sessionStoreUsageRowSchema = Schema.Struct({
   cwd_type: Schema.optional(textOrNullTypeSchema),
   repository: nullableSqliteTextBlobSchema,
   repository_type: Schema.optional(textOrNullTypeSchema),
+  // Billing metadata. Only newer CLIs write it, so the SELECT ladder in
+  // querySessionStoreRows drops the column for a store that predates it and the
+  // row then prices from its tokens, exactly as before.
+  total_nano_aiu: Schema.optional(Schema.NullOr(Schema.Finite)),
 })
 type SessionStoreUsageRow = Schema.Schema.Type<typeof sessionStoreUsageRowSchema>
 const decodeSessionStoreUsageRow = Schema.decodeUnknownResult(sessionStoreUsageRowSchema)
@@ -771,12 +816,143 @@ function readString(raw: unknown): string {
   return typeof raw === 'string' ? raw : ''
 }
 
-function modelFromChatSessionRequest(req: ChatSessionRequest, metadata: Record<string, unknown>): string {
-  const resolved = readString(metadata['resolvedModel'])
-  if (resolved) return resolved
+/**
+ * Sum one agent-mode request's `modelTotals` into its token breakdown.
+ *
+ * `inputTokens` includes the cached part when the figure comes from the Copilot
+ * engine and excludes it when it comes from the Claude SDK; an input below the
+ * cached count can only be the latter, so it is kept as-is.
+ */
+function chatSessionModelTotals(
+  raw: unknown,
+): { inputTokens: number; cacheReadTokens: number; outputTokens: number } | undefined {
+  const entries = decodeCopilotArray(raw)
+  if (Result.isFailure(entries)) return undefined
+  let input = 0
+  let cached = 0
+  let output = 0
+  let found = false
+  for (const candidate of entries.success) {
+    const decoded = decodeCopilotRecord(candidate)
+    if (Result.isFailure(decoded)) continue
+    found = true
+    input += numberOrZero(decoded.success['inputTokens'])
+    cached += numberOrZero(decoded.success['cachedTokens'])
+    output += numberOrZero(decoded.success['outputTokens'])
+  }
+  if (!found) return undefined
+  return { inputTokens: input >= cached ? input - cached : input, cacheReadTokens: cached, outputTokens: output }
+}
 
-  const modelId = readString(req['modelId']).replace(/^copilot\//, '')
-  return modelId || 'unknown'
+/** `copilotCredits` (credits) as nano-AIU, the unit the pricing helper takes. */
+function chatSessionNanoAiu(raw: unknown): number | undefined {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw >= 0 ? Math.round(raw * NANO_AIU_PER_CREDIT) : undefined
+}
+
+function concreteChatSessionModel(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  const model = raw.replace(/^(?:copilot|github\.copilot-chat)\//, '').trim()
+  return model && !['auto', 'copilot-auto', 'unknown'].includes(model) ? model : undefined
+}
+
+function modelHintFromToolCallId(raw: unknown): string | undefined {
+  if (typeof raw !== 'string') return undefined
+  if (raw.startsWith('call_')) return 'copilot-openai-auto'
+  if (/^(?:tooluse_|toolu_)/.test(raw)) return 'copilot-anthropic-auto'
+  return undefined
+}
+
+function inferChatSessionModel(session: Record<string, unknown>, requests: readonly unknown[]): string | undefined {
+  for (const rawRequest of requests) {
+    const request = decodeCopilotRecord(rawRequest)
+    if (Result.isSuccess(request)) {
+      const model = concreteChatSessionModel(request.success['modelId'])
+      if (model) return model
+    }
+  }
+
+  const selectedModels: unknown[] = []
+  const inputState = decodeCopilotRecord(session['inputState'])
+  if (Result.isSuccess(inputState)) {
+    const selectedModel = decodeCopilotRecord(inputState.success['selectedModel'])
+    if (Result.isSuccess(selectedModel)) {
+      const metadata = decodeCopilotRecord(selectedModel.success['metadata'])
+      if (Result.isSuccess(metadata)) selectedModels.push(metadata.success['version'], metadata.success['family'])
+      selectedModels.push(selectedModel.success['identifier'])
+    }
+  }
+  for (const candidate of selectedModels) {
+    const model = concreteChatSessionModel(candidate)
+    if (model) return model
+  }
+
+  for (const rawRequest of requests) {
+    const request = decodeCopilotRecord(rawRequest)
+    if (Result.isFailure(request)) continue
+    const result = decodeCopilotRecord(request.success['result'])
+    if (Result.isFailure(result)) continue
+    const metadata = decodeCopilotRecord(result.success['metadata'])
+    const rounds = Result.isSuccess(metadata)
+      ? decodeCopilotArray(metadata.success['toolCallRounds'] ?? result.success['toolCallRounds'])
+      : decodeCopilotArray(result.success['toolCallRounds'])
+    if (Result.isSuccess(rounds)) {
+      for (const rawRound of rounds.success) {
+        const round = decodeCopilotRecord(rawRound)
+        if (Result.isFailure(round)) continue
+        const toolCalls = decodeCopilotArray(round.success['toolCalls'])
+        if (Result.isFailure(toolCalls)) continue
+        for (const rawToolCall of toolCalls.success) {
+          const toolCall = decodeCopilotRecord(rawToolCall)
+          if (Result.isFailure(toolCall)) continue
+          const model = modelHintFromToolCallId(toolCall.success['id'])
+          if (model) return model
+        }
+      }
+    }
+
+    const responses = decodeCopilotArray(request.success['response'])
+    if (Result.isSuccess(responses)) {
+      for (const rawResponse of responses.success) {
+        const response = decodeCopilotRecord(rawResponse)
+        if (Result.isFailure(response)) continue
+        const model = modelHintFromToolCallId(response.success['toolCallId'])
+        if (model) return model
+      }
+    }
+  }
+
+  return undefined
+}
+
+function modelFromChatSessionRequest(
+  req: ChatSessionRequest,
+  metadata: Record<string, unknown>,
+  inferredSessionModel: string | undefined,
+): string {
+  const result = decodeCopilotRecord(req['result'])
+  const resultRecord = Result.isSuccess(result) ? result.success : createReplayObject()
+  const candidates: unknown[] = [
+    metadata['resolvedModel'],
+    metadata['model'],
+    resultRecord['resolvedModel'],
+    resultRecord['model'],
+  ]
+
+  const response = decodeCopilotArray(req['response'])
+  if (Result.isSuccess(response)) {
+    for (const rawPart of response.success) {
+      const part = decodeCopilotRecord(rawPart)
+      if (Result.isFailure(part) || part.success['kind'] !== 'autoModeResolution') continue
+      candidates.push(part.success['resolvedModel'], part.success['model'], part.success['modelId'])
+    }
+  }
+
+  candidates.push(req['modelId'], inferredSessionModel)
+  for (const candidate of candidates) {
+    const model = concreteChatSessionModel(candidate)
+    if (model) return model
+  }
+  return 'unknown'
 }
 
 /**
@@ -1009,28 +1185,82 @@ function inferTranscriptModel(openaiCount: number, anthropicCount: number): stri
 // ---------------------------------------------------------------------------
 
 /**
- * @param coveredStoreKeys the provider-lifetime set of `${sessionId}\n${model}`
- * pairs the session-store parser has already described. The `session.shutdown`
- * handler skips its rollup for any pair in it — see the comment at that skip.
+ * @param storeRows what the session-store parser has already described, one
+ * record per row, per `${sessionId}\n${model}`. The `session.shutdown` handler
+ * subtracts the rows of its own interval from each leg (see the residual), and
+ * hands a withheld row's output its own call when the journal recorded none.
  * OTel / chatSessions / JetBrains / transcript sources never consult it: they
  * describe different tools' sessions, which the store does not record.
+ * @param localSessionIds sessions that have a local `events.jsonl`; only their
+ * rows sit with output withheld, so only they can have output to hand over.
+ * @param agentHostUsageSessions sessions this pass has seen billed usage for; the
+ * chat-session parser leaves such a session out rather than counting it twice.
  */
 function createJsonlParser(
   source: SessionSource,
   seenKeys: Set<string>,
-  coveredStoreKeys: Set<string>,
+  storeRows: ReadonlyMap<string, readonly StoreRowUsage[]>,
+  localSessionIds: ReadonlySet<string>,
+  agentHostUsageSessions: Set<string>,
   context: CopilotParserContext,
 ): SessionParser {
   const sessionId = basename(dirname(source.path))
   const isTranscript = (source as JsonlSessionSource).sessionKind === 'transcript'
   const workingDirectory = source.workingDirectory
-  const shutdownKey = (model: string) => 'copilot:' + sessionId + ':shutdown:' + model
+  const shutdownKey = (model: string, legIndex: number) =>
+    'copilot:' + sessionId + ':shutdown:' + model + ':' + String(legIndex)
+  // Keyed by the leg's own INSTANT, never its position: a journal discovered
+  // later can contribute a leg that sorts before existing ones, and an index
+  // that shifts would rename a key the cache (and any receiver) already holds.
+  const residualKey = (model: string, leg: ShutdownLeg) =>
+    'copilot:' + sessionId + ':shutdown-residual:' + model + ':' + (leg.timestamp || String(leg.legIndex))
 
-  type Rollup = {
+  /** One reconciled rollup leg: what this session should serve for that leg. */
+  type RollupCall = {
+    model: string
     inputTokens: number
-    cacheWriteTokens: number
+    outputTokens: number
     cacheReadTokens: number
+    cacheWriteTokens: number
     reasoningTokens: number
+    // GitHub's own figure for the WHOLE leg, when the rollup carried it. Only a
+    // leg served whole can use it: a residual is a subset of the leg, and no
+    // local source says which share of the bill it is.
+    nanoAiu: number | undefined
+    timestamp: string
+    deduplicationKey: string
+  }
+  /** A rollup leg as the journal wrote it, already reduced to its own delta. */
+  type ShutdownLeg = {
+    model: string
+    legIndex: number
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    reasoningTokens: number
+    nanoAiu: number | undefined
+    timestamp: string
+    timestampMs: number
+    // Stamp of the last SUCCESSFUL in-session compaction before this leg, or
+    // -Infinity. Carried onto the leg because the CLI resets its rollup counters
+    // there, so the leg describes only requests after it.
+    compactedAtMs: number
+  }
+  type CumulativeUsage = {
+    inputTokens: number
+    outputTokens: number
+    cacheReadTokens: number
+    cacheWriteTokens: number
+    reasoningTokens: number
+    nanoAiu: number
+  }
+  /** A withheld store row's output, served once the journal recorded none. */
+  type StoreOutputCandidate = {
+    kind: 'store-output'
+    deduplicationKey: string
+    model: string
+    outputTokens: number
     timestamp: string
   }
   type AssistantCandidate = {
@@ -1055,7 +1285,8 @@ function createJsonlParser(
   type Candidate =
     | AssistantCandidate
     | { kind: 'invalid-rollup'; deduplicationKey: string }
-    | { kind: 'rollup'; model: string; value: Rollup }
+    | { kind: 'rollup'; value: RollupCall }
+    | StoreOutputCandidate
   type FoldState = {
     model: string | undefined
     modelInvalid: boolean
@@ -1068,9 +1299,22 @@ function createJsonlParser(
     openaiToolIds: number
     anthropicToolIds: number
     candidates: Candidate[]
-    rollups: Map<string, Rollup>
-    rollupOrder: string[]
+    // One entry per `session.shutdown` leg, in file order. The CLI writes
+    // CUMULATIVE counters per leg, so a leg can only be served as a delta, and
+    // every delta keeps its own key: a resumed session appends legs instead of
+    // rewriting the row already cached under an earlier key.
+    legs: ShutdownLeg[]
+    legCounts: Map<string, number>
+    prevShutdown: Map<string, CumulativeUsage>
+    // A model whose counters were unusable in any leg. That leg is reported as
+    // unparsed and no later leg for the model is served: a partial sum of a
+    // cumulative series is not a smaller truth, it is a wrong one.
     invalidRollups: Set<string>
+    modelOrder: string[]
+    // Whether the CURRENT leg's `assistant.message` events carried output.
+    // Reset at every shutdown, because that is the scope a rollup covers.
+    legHasPerTurnOutput: boolean
+    lastCompactionMs: number
   }
 
   const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
@@ -1096,9 +1340,13 @@ function createJsonlParser(
               openaiToolIds: 0,
               anthropicToolIds: 0,
               candidates: [],
-              rollups: new Map(),
-              rollupOrder: [],
+              legs: [],
+              legCounts: new Map(),
+              prevShutdown: new Map(),
               invalidRollups: new Set(),
+              modelOrder: [],
+              legHasPerTurnOutput: false,
+              lastCompactionMs: Number.NEGATIVE_INFINITY,
             }),
             (state, rawLine) => {
               const line = typeof rawLine === 'string' ? rawLine : rawLine.toString('utf8')
@@ -1115,14 +1363,8 @@ function createJsonlParser(
         const state = readResult.success
         const transcriptModel = isTranscript ? inferTranscriptModel(state.openaiToolIds, state.anthropicToolIds) : ''
         if (isTranscript && !transcriptModel) return Stream.empty
-        for (const model of state.rollupOrder) {
-          if (state.invalidRollups.has(model)) {
-            state.candidates.push({ kind: 'invalid-rollup', deduplicationKey: shutdownKey(model) })
-          } else {
-            const value = state.rollups.get(model)
-            if (value) state.candidates.push({ kind: 'rollup', model, value })
-          }
-        }
+        appendStoreOutputCandidates(state)
+        appendRollupCandidates(state)
 
         let emittedUserMessageVersion = 0
         return Stream.fromIterable(state.candidates).pipe(
@@ -1130,7 +1372,7 @@ function createJsonlParser(
             Effect.gen(function* () {
               yield* checkScanAbort(context.signal)
               const deduplicationKey =
-                candidate.kind === 'rollup' ? shutdownKey(candidate.model) : candidate.deduplicationKey
+                candidate.kind === 'rollup' ? candidate.value.deduplicationKey : candidate.deduplicationKey
               if (seenKeys.has(deduplicationKey)) return Result.fail(undefined)
               seenKeys.add(deduplicationKey)
 
@@ -1141,6 +1383,36 @@ function createJsonlParser(
               if (candidate.kind === 'invalid-rollup') {
                 if (onUnparsedCall) yield* onUnparsedCall
                 return Result.fail(undefined)
+              }
+              if (candidate.kind === 'store-output') {
+                if (candidate.outputTokens <= 0) return Result.fail(undefined)
+                const costUSD = yield* Effect.try({
+                  try: () => context.pricing.calculateCost(candidate.model, 0, candidate.outputTokens, 0, 0, 0),
+                  catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                })
+                agentHostUsageSessions.add(sessionId)
+                const call: ParsedProviderCall = {
+                  provider: 'copilot' as const,
+                  sessionId,
+                  model: candidate.model,
+                  inputTokens: 0,
+                  outputTokens: candidate.outputTokens,
+                  cacheCreationInputTokens: 0,
+                  cacheReadInputTokens: 0,
+                  cachedInputTokens: 0,
+                  reasoningTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD,
+                  costIsEstimated: false,
+                  tools: [],
+                  bashCommands: [],
+                  timestamp: candidate.timestamp,
+                  speed: 'standard' as const,
+                  deduplicationKey,
+                  userMessage: '',
+                  ...(workingDirectory ? { projectPath: workingDirectory, workingDirectory } : {}),
+                }
+                return Result.succeed(call)
               }
               if (candidate.kind === 'assistant') {
                 if (
@@ -1156,6 +1428,7 @@ function createJsonlParser(
                 const model = candidate.model ?? (candidate.transcriptFallback ? transcriptModel : '')
                 if (!model) return Result.fail(undefined)
                 const costUSD = context.pricing.calculateCost(model, 0, candidate.outputTokens, 0, 0, 0)
+                if (candidate.outputTokens > 0) agentHostUsageSessions.add(sessionId)
                 const userMessage = hasNewUserMessage ? candidate.userMessage : ''
                 const call: ParsedProviderCall = {
                   provider: 'copilot' as const,
@@ -1183,20 +1456,45 @@ function createJsonlParser(
               }
 
               const rollup = candidate.value
-              const costUSD = context.pricing.calculateCost(
-                candidate.model,
-                rollup.inputTokens,
-                0,
-                rollup.cacheWriteTokens,
-                rollup.cacheReadTokens,
-                0,
+              // Nothing left to serve (a complete store, or a leg that only
+              // repeated its predecessor) — no empty $0 call, exactly as a row
+              // with no billable token is skipped.
+              if (
+                rollup.inputTokens === 0 &&
+                rollup.outputTokens === 0 &&
+                rollup.cacheReadTokens === 0 &&
+                rollup.cacheWriteTokens === 0 &&
+                rollup.reasoningTokens === 0 &&
+                rollup.nanoAiu === undefined
               )
+                return Result.fail(undefined)
+
+              // GitHub's own figure for the leg prices it exactly (1e9 nano-AIU =
+              // 1 credit = $0.01), subagents included. Absent on a CLI build that
+              // does not bill the rollup, which then prices from its tokens as
+              // before — measured counts either way, never a char estimate.
+              const costUSD =
+                rollup.nanoAiu !== undefined
+                  ? nanoAiuToUsd(rollup.nanoAiu)
+                  : yield* Effect.try({
+                      try: () =>
+                        context.pricing.calculateCost(
+                          rollup.model,
+                          rollup.inputTokens,
+                          billableOutputTokens('copilot', rollup.outputTokens, rollup.reasoningTokens),
+                          rollup.cacheWriteTokens,
+                          rollup.cacheReadTokens,
+                          0,
+                        ),
+                      catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                    })
+              agentHostUsageSessions.add(sessionId)
               const call: ParsedProviderCall = {
                 provider: 'copilot' as const,
                 sessionId,
-                model: candidate.model,
+                model: rollup.model,
                 inputTokens: rollup.inputTokens,
-                outputTokens: 0,
+                outputTokens: rollup.outputTokens,
                 cacheCreationInputTokens: rollup.cacheWriteTokens,
                 cacheReadInputTokens: rollup.cacheReadTokens,
                 cachedInputTokens: 0,
@@ -1219,6 +1517,176 @@ function createJsonlParser(
         )
       }),
     )
+
+  /**
+   * Turn the folded legs into the calls this session serves.
+   *
+   * A leg is served WHOLE when the store has no rows for its (session, model):
+   * nothing else describes those tokens. When rows exist they are authoritative
+   * per request, so only what the leg claims BEYOND the rows of its own interval
+   * is served, once, as a residual at the leg's own instant. The interval starts
+   * at the leg's last successful compaction: the CLI reset its counters there,
+   * so that leg never claimed the pre-compaction conversation and subtracting
+   * it would cancel usage the rollup does not describe.
+   */
+  function appendRollupCandidates(state: FoldState): void {
+    for (const model of state.modelOrder) {
+      if (state.invalidRollups.has(model)) {
+        state.candidates.push({
+          kind: 'invalid-rollup',
+          deduplicationKey: 'copilot:' + sessionId + ':shutdown:' + model,
+        })
+        continue
+      }
+      const modelLegs = state.legs
+        .filter(leg => leg.model === model)
+        .sort((left, right) => left.timestampMs - right.timestampMs)
+      if (modelLegs.length === 0) continue
+      const rows = storeRows.get(sessionId + '\n' + model) ?? []
+      if (rows.length === 0) {
+        for (const leg of modelLegs) state.candidates.push({ kind: 'rollup', value: servedLeg(leg) })
+        continue
+      }
+
+      // Legs sharing one instant have no interval between them: the strict
+      // (previous, this] rule would hand every row to the first and mint a full
+      // delta for the second, billing the same tokens twice. Coalesce them.
+      const coalesced: ShutdownLeg[] = []
+      for (const leg of modelLegs) {
+        const last = coalesced[coalesced.length - 1]
+        if (last && last.timestampMs === leg.timestampMs) {
+          last.inputTokens += leg.inputTokens
+          last.outputTokens += leg.outputTokens
+          last.cacheReadTokens += leg.cacheReadTokens
+          last.cacheWriteTokens += leg.cacheWriteTokens
+          last.reasoningTokens += leg.reasoningTokens
+          last.compactedAtMs = Math.max(last.compactedAtMs, leg.compactedAtMs)
+        } else {
+          coalesced.push({ ...leg })
+        }
+      }
+
+      const orderedRows = [...rows].sort((left, right) => left.timestampMs - right.timestampMs)
+      let rowIndex = 0
+      let previousLegMs = Number.NEGATIVE_INFINITY
+      for (const leg of coalesced) {
+        const intervalStart = Math.max(previousLegMs, leg.compactedAtMs)
+        let coveredInput = 0
+        let coveredOutput = 0
+        let coveredCacheRead = 0
+        let coveredCacheWrite = 0
+        let coveredReasoning = 0
+        while (rowIndex < orderedRows.length) {
+          const row = orderedRows[rowIndex]
+          if (!row || row.timestampMs > leg.timestampMs) break
+          // A labelled compaction row is the summarization request itself. It
+          // commits just BEFORE the compaction stamp, so the anchor would push
+          // it outside the interval while the post-reset rollup still counts it,
+          // serving it twice; the label lets it be subtracted exactly.
+          if (row.timestampMs > intervalStart || (row.isCompaction && row.timestampMs > previousLegMs)) {
+            coveredInput += row.inputTokens
+            // A row whose output was handed to its own call has that output
+            // served already, so it cancels the leg's copy; a row that kept
+            // output on itself cancels with what it served. A row that served 0
+            // and handed over nothing never reported it — the leg's copy is the
+            // only one, so it must not be cancelled.
+            coveredOutput += row.outputServedByAlias ? row.rawOutputTokens : row.outputTokens
+            coveredCacheRead += row.cacheReadTokens
+            coveredCacheWrite += row.cacheWriteTokens
+            coveredReasoning += row.reasoningTokens
+          }
+          rowIndex++
+        }
+        previousLegMs = leg.timestampMs
+
+        const inputTokens = Math.max(0, leg.inputTokens - coveredInput)
+        const outputTokens = Math.max(0, leg.outputTokens - coveredOutput)
+        const cacheReadTokens = Math.max(0, leg.cacheReadTokens - coveredCacheRead)
+        const cacheWriteTokens = Math.max(0, leg.cacheWriteTokens - coveredCacheWrite)
+        const reasoningTokens = Math.max(0, leg.reasoningTokens - coveredReasoning)
+        if (
+          inputTokens === 0 &&
+          outputTokens === 0 &&
+          cacheReadTokens === 0 &&
+          cacheWriteTokens === 0 &&
+          reasoningTokens === 0
+        )
+          continue
+        state.candidates.push({
+          kind: 'rollup',
+          value: {
+            model,
+            inputTokens,
+            outputTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+            reasoningTokens,
+            // A residual is a SUBSET of a leg; only a leg served whole keeps
+            // GitHub's exact figure.
+            nanoAiu: undefined,
+            timestamp: leg.timestamp,
+            deduplicationKey: residualKey(model, leg),
+          },
+        })
+      }
+    }
+  }
+
+  function servedLeg(leg: ShutdownLeg): RollupCall {
+    return {
+      model: leg.model,
+      inputTokens: leg.inputTokens,
+      outputTokens: leg.outputTokens,
+      cacheReadTokens: leg.cacheReadTokens,
+      cacheWriteTokens: leg.cacheWriteTokens,
+      reasoningTokens: leg.reasoningTokens,
+      nanoAiu: leg.nanoAiu,
+      timestamp: leg.timestamp,
+      deduplicationKey: shutdownKey(leg.model, leg.legIndex),
+    }
+  }
+
+  /**
+   * Give a withheld store row's output the only owner it can still have.
+   *
+   * A row of a session that HAS a local `events.jsonl` is emitted with output 0,
+   * because the per-turn call is the better owner: it carries the request's
+   * tools, skills and prompt too, so the ledger can attribute that cost to them.
+   * A CLI build that writes per-turn output nowhere (CLI 1.0.8x / the VS Code
+   * agent host, whose every `assistant.message` is a request with no tokens)
+   * leaves that hand-off with nobody to take it — and so does an ACP host, whose
+   * process is killed on IDE exit, so no `session.shutdown` ever carries it
+   * either. Those rows serve the output as their own call instead: stable key
+   * (`copilot:<session>:store-output:<row>`), the row's input and cache stay on
+   * the row, and the rollup subtracts it as covered, so a session that DOES shut
+   * down is never billed twice for it.
+   */
+  function appendStoreOutputCandidates(state: FoldState): void {
+    if (!localSessionIds.has(sessionId)) return
+    const perTurnOutputModels = new Set<string>()
+    for (const candidate of state.candidates) {
+      if (candidate.kind === 'assistant' && candidate.model && candidate.outputTokens > 0) {
+        perTurnOutputModels.add(candidate.model)
+      }
+    }
+    for (const [key, rows] of storeRows) {
+      const separator = key.indexOf('\n')
+      if (separator < 0 || key.slice(0, separator) !== sessionId) continue
+      const model = key.slice(separator + 1)
+      if (perTurnOutputModels.has(model)) continue
+      for (const row of rows) {
+        if (row.outputTokens > 0 || row.rawOutputTokens <= 0) continue
+        row.outputServedByAlias = true
+        state.candidates.push({
+          kind: 'store-output',
+          deduplicationKey: 'copilot:' + sessionId + ':store-output:' + row.rowId + ':' + row.contentHash,
+          model,
+          outputTokens: row.rawOutputTokens,
+          timestamp: row.timestamp,
+        })
+      }
+    }
+  }
 
   function foldEvent(event: CopilotJsonlEvent, state: FoldState): void {
     const timestampResult = decodeCopilotString(event.timestamp)
@@ -1249,6 +1717,20 @@ function createJsonlParser(
       state.userMessageVersion++
       return
     }
+    // An in-session compaction RESETS the CLI's rollup counters, so a leg that
+    // contains one describes only its post-compaction requests. Recognized here,
+    // stamped onto the leg, and used to start that leg's store-row interval at
+    // the compaction instead of at the previous leg — the difference between
+    // subtracting the requests the rollup covers and subtracting the whole
+    // pre-compaction conversation from it.
+    // `compaction_start` is recognized and carries nothing we need: only a
+    // COMPLETE with `success: true` reset anything.
+    if (event.type === 'session.compaction_complete') {
+      const ms = Date.parse(timestamp)
+      if (data['success'] === true && Number.isFinite(ms)) state.lastCompactionMs = ms
+      return
+    }
+    if (event.type === 'session.compaction_start') return
     if (event.type === 'session.shutdown') {
       if (!isTranscript) foldShutdown(data, timestamp, state)
       return
@@ -1273,8 +1755,19 @@ function createJsonlParser(
     if (!model && !modelInvalid && !transcriptFallback) return
 
     const rawOutput = data['outputTokens']
+    const hasOutputTokenCount = rawOutput !== undefined
     const outputResult = rawOutput === undefined ? Result.succeed(0) : decodeCopilotFinite(rawOutput)
-    if (!isTranscript && !modelInvalid && Result.isSuccess(outputResult) && outputResult.success === 0) return
+    // Missing counters still identify model activity; explicit zero does not.
+    if (
+      !isTranscript &&
+      !modelInvalid &&
+      hasOutputTokenCount &&
+      Result.isSuccess(outputResult) &&
+      outputResult.success === 0
+    )
+      return
+
+    if (model && Result.isSuccess(outputResult) && outputResult.success > 0) state.legHasPerTurnOutput = true
 
     state.candidates.push({
       kind: 'assistant',
@@ -1309,21 +1802,49 @@ function createJsonlParser(
     }
   }
 
+  /**
+   * Fold one `session.shutdown` leg into the DELTA it contributes.
+   *
+   * A resumed session appends one rollup per leg, each carrying CUMULATIVE
+   * counters: leg 3 repeats legs 1 and 2. Serving a leg whole would need the
+   * cache to update a call in place, and the cache is append-only by dedup key,
+   * so each leg serves as `cumulative - previous cumulative` under its own key.
+   * A total BELOW its predecessor is a fresh accounting epoch — an older
+   * per-leg CLI, or the counter reset an in-session compaction causes — and is
+   * taken at face value instead of being clamped to nothing, so that usage is
+   * never dropped. `inputTokens` is the monotonic sentinel: it is
+   * cache-inclusive, so any usage at all grows it.
+   */
   function foldShutdown(data: Record<string, unknown>, timestamp: string, state: FoldState): void {
     const metrics = decodeCopilotRecord(data['modelMetrics'])
     if (Result.isFailure(metrics)) return
     const shutdownTimestamp = timestamp || timestampToISO(data['sessionStartTime']) || state.lastEventTimestamp
+    const shutdownMs = Date.parse(shutdownTimestamp)
+    // A stamp nobody can parse is placed at +Infinity on purpose: every leg
+    // then coalesces into ONE residual that subtracts every row of the pair,
+    // which can only under-report. Problems with no local fix must not invent
+    // spend.
+    const timestampMs = Number.isFinite(shutdownMs) ? shutdownMs : Number.POSITIVE_INFINITY
     for (const [model, rawMetrics] of Object.entries(metrics.success)) {
-      if (!model || coveredStoreKeys.has(sessionId + '\n' + model)) continue
+      if (!model) continue
+      if (!state.modelOrder.includes(model)) state.modelOrder.push(model)
       const modelMetrics = decodeCopilotRecord(rawMetrics)
       if (Result.isFailure(modelMetrics)) continue
       const usage = decodeCopilotRecord(modelMetrics.success['usage'])
       if (Result.isFailure(usage)) continue
 
-      if (!state.rollupOrder.includes(model)) state.rollupOrder.push(model)
+      const legIndex = (state.legCounts.get(model) ?? 0) + 1
+      state.legCounts.set(model, legIndex)
+
       let invalid = false
       const counters = new Map<string, number>()
-      for (const key of ['inputTokens', 'cacheReadTokens', 'cacheWriteTokens', 'reasoningTokens'] as const) {
+      for (const key of [
+        'inputTokens',
+        'outputTokens',
+        'cacheReadTokens',
+        'cacheWriteTokens',
+        'reasoningTokens',
+      ] as const) {
         const raw = usage.success[key]
         if (raw === undefined) {
           counters.set(key, 0)
@@ -1335,25 +1856,64 @@ function createJsonlParser(
       }
       if (invalid) {
         state.invalidRollups.add(model)
-        state.rollups.delete(model)
         continue
       }
       if (state.invalidRollups.has(model)) continue
 
-      const cacheReadTokens = counters.get('cacheReadTokens') ?? 0
-      const cacheWriteTokens = counters.get('cacheWriteTokens') ?? 0
-      const inputTokens = Math.max(0, (counters.get('inputTokens') ?? 0) - cacheReadTokens - cacheWriteTokens)
-      if (inputTokens === 0 && cacheReadTokens === 0 && cacheWriteTokens === 0) continue
+      const billRaw = modelMetrics.success['totalNanoAiu']
+      const bill = typeof billRaw === 'number' && Number.isFinite(billRaw) && billRaw >= 0 ? billRaw : undefined
+      const cumulative: CumulativeUsage = {
+        inputTokens: counters.get('inputTokens') ?? 0,
+        outputTokens: counters.get('outputTokens') ?? 0,
+        cacheReadTokens: counters.get('cacheReadTokens') ?? 0,
+        cacheWriteTokens: counters.get('cacheWriteTokens') ?? 0,
+        reasoningTokens: counters.get('reasoningTokens') ?? 0,
+        nanoAiu: bill ?? 0,
+      }
+      const prevRaw = state.prevShutdown.get(model)
+      state.prevShutdown.set(model, cumulative)
+      const prev = prevRaw && cumulative.inputTokens < prevRaw.inputTokens ? undefined : prevRaw
+      const delta = (key: keyof CumulativeUsage) => Math.max(0, cumulative[key] - (prev?.[key] ?? 0))
 
-      const prior = state.rollups.get(model)
-      state.rollups.set(model, {
-        inputTokens: (prior?.inputTokens ?? 0) + inputTokens,
-        cacheWriteTokens: (prior?.cacheWriteTokens ?? 0) + cacheWriteTokens,
-        cacheReadTokens: (prior?.cacheReadTokens ?? 0) + cacheReadTokens,
-        reasoningTokens: (prior?.reasoningTokens ?? 0) + (counters.get('reasoningTokens') ?? 0),
+      const cacheReadTokens = delta('cacheReadTokens')
+      const cacheWriteTokens = delta('cacheWriteTokens')
+      const reasoningTokens = delta('reasoningTokens')
+      const inputTokens = Math.max(0, delta('inputTokens') - cacheReadTokens - cacheWriteTokens)
+      // Output is only the rollup's to report when NO per-turn event in this leg
+      // carried it (CLI 1.0.8x / the VS Code agent host).
+      const outputTokens = state.legHasPerTurnOutput ? 0 : delta('outputTokens')
+      // The bill is a running total too, and it does NOT reset at compaction, so
+      // its delta is taken against the raw predecessor even when the token
+      // counters reset. A figure that went backwards is a restarted bill, and 0
+      // then simply reports nothing for this leg.
+      const nanoAiu =
+        bill === undefined ? undefined : Math.max(0, bill - (prevRaw && bill >= prevRaw.nanoAiu ? prevRaw.nanoAiu : 0))
+
+      if (
+        inputTokens === 0 &&
+        outputTokens === 0 &&
+        cacheReadTokens === 0 &&
+        cacheWriteTokens === 0 &&
+        reasoningTokens === 0 &&
+        nanoAiu === undefined
+      )
+        continue
+
+      state.legs.push({
+        model,
+        legIndex,
+        inputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        reasoningTokens,
+        nanoAiu: nanoAiu === 0 ? undefined : nanoAiu,
         timestamp: shutdownTimestamp,
+        timestampMs,
+        compactedAtMs: state.lastCompactionMs,
       })
     }
+    state.legHasPerTurnOutput = false
   }
 
   return copilotParser(parseStream)
@@ -1361,6 +1921,8 @@ function createJsonlParser(
 function createChatSessionParser(
   source: SessionSource,
   seenKeys: Set<string>,
+  storeSessionIds: ReadonlySet<string>,
+  agentHostUsageSessions: ReadonlySet<string>,
   context: CopilotParserContext,
 ): SessionParser {
   const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
@@ -1368,28 +1930,46 @@ function createChatSessionParser(
       Effect.gen(function* () {
         yield* checkScanAbort(context.signal)
         let root: unknown = createReplayObject()
-        const readResult = yield* Effect.result(
-          Stream.runForEach(
-            readSessionLinesStream(source.path, undefined, {
-              maxBytes: MAX_SESSION_FILE_BYTES,
-              readFailure: 'fail',
-              ...(context.signal ? { signal: context.signal } : {}),
-            }),
-            line =>
-              Effect.sync(() => {
-                root = replayChatSessionJournalLine(root, typeof line === 'string' ? line : line.toString('utf8'))
+        // VS Code before 1.109 saved a chat session as ONE flat JSON document;
+        // newer versions save the same session as a delta journal. VS Code keeps
+        // the flat file when it migrates, so both shapes are read and dedupe on the
+        // same `copilot-chatsession:` key.
+        if (source.path.endsWith('.json')) {
+          const flattened = yield* Effect.result(readTextEffect(source.path, 'utf8', context.signal))
+          if (Result.isFailure(flattened) || flattened.success === null) return Stream.empty
+          const decodedDocument = decodeCopilotJson(flattened.success)
+          if (Result.isFailure(decodedDocument)) return Stream.empty
+          root = decodedDocument.success
+        } else {
+          const readResult = yield* Effect.result(
+            Stream.runForEach(
+              readSessionLinesStream(source.path, undefined, {
+                maxBytes: MAX_SESSION_FILE_BYTES,
+                readFailure: 'fail',
+                ...(context.signal ? { signal: context.signal } : {}),
               }),
-          ),
-        )
+              line =>
+                Effect.sync(() => {
+                  root = replayChatSessionJournalLine(root, typeof line === 'string' ? line : line.toString('utf8'))
+                }),
+            ),
+          )
+          if (Result.isFailure(readResult)) return Stream.empty
+        }
         yield* checkScanAbort(context.signal)
-        if (Result.isFailure(readResult)) return Stream.empty
         const decodedRoot = decodeCopilotRecord(root)
         if (Result.isFailure(decodedRoot)) return Stream.empty
         const session = decodedRoot.success
-        const sessionId = readString(session['sessionId']) || basename(source.path, '.jsonl')
+        const sessionId = readString(session['sessionId']) || basename(source.path).replace(/\.jsonl?$/, '')
+        // The agent host records one session under this same id on its own side
+        // too — a `session-state` journal call with tokens, or `session-store.db`
+        // rows. That side is the billed record, so this journal is left out. A
+        // journal of a session with no usage yet keeps serving.
+        if (storeSessionIds.has(sessionId) || agentHostUsageSessions.has(sessionId)) return Stream.empty
         const sessionCreatedAt = timestampToISO(session['creationDate'])
         const decodedRequests = decodeCopilotArray(session['requests'])
         if (Result.isFailure(decodedRequests)) return Stream.empty
+        const inferredSessionModel = inferChatSessionModel(session, decodedRequests.success)
 
         return Stream.fromIterable(decodedRequests.success).pipe(
           Stream.mapEffect((rawReq, index) =>
@@ -1416,7 +1996,7 @@ function createChatSessionParser(
                 if (onUnparsedCall) yield* onUnparsedCall
                 return Result.fail(undefined)
               }
-              const model = modelFromChatSessionRequest(request, metadata)
+              const model = modelFromChatSessionRequest(request, metadata, inferredSessionModel)
               const inputResult =
                 metadata['promptTokens'] === undefined
                   ? Result.succeed(0)
@@ -1429,22 +2009,105 @@ function createChatSessionParser(
                 if (onUnparsedCall) yield* onUnparsedCall
                 return Result.fail(undefined)
               }
-              const inputTokens = Math.max(0, inputResult.success)
-              const metadataOutputTokens = Math.max(0, metadataOutputResult.success)
-              let outputTokens = metadataOutputTokens
-              if (outputTokens === 0) {
-                const completionTokens = request['completionTokens']
-                const completionResult =
-                  completionTokens === undefined ? Result.succeed(0) : decodeCopilotFinite(completionTokens)
-                if (Result.isFailure(completionResult)) {
-                  if (onUnparsedCall) yield* onUnparsedCall
-                  return Result.fail(undefined)
-                }
-                outputTokens = Math.max(0, completionResult.success)
-              }
-              if (inputTokens === 0 && outputTokens === 0) return Result.fail(undefined)
 
-              const costUSD = context.pricing.calculateCost(model, inputTokens, outputTokens, 0, 0, 0)
+              // An agent-mode request makes one model call per tool round, and
+              // `result.metadata.promptTokens`/`outputTokens` describe only the LAST
+              // of them. `modelTotals` sums every round per model (Copilot Chat 0.69
+              // on), and its `inputTokens` already counts the cached part, so it is
+              // read first and the remainder served as uncached input.
+              const totals = chatSessionModelTotals(request['modelTotals'])
+              // `copilotCredits` is GitHub's billed `total_nano_aiu / 1e9` for the
+              // WHOLE request, subagents included — the only exact price a saved
+              // request carries.
+              const nanoAiu = chatSessionNanoAiu(request['copilotCredits'])
+
+              const decodedUsage = Result.isSuccess(decodedResult)
+                ? decodeCopilotRecord(decodedResult.success['usage'])
+                : Result.fail(undefined)
+              const usage = Result.isSuccess(decodedUsage) ? decodedUsage.success : undefined
+              const resultRecord = Result.isSuccess(decodedResult) ? decodedResult.success : undefined
+
+              // First defined counter wins; a malformed one is rejected and tallied
+              // rather than silently priced as 0, the rule every other field here
+              // follows. A zero falls through to the next candidate, so an explicit
+              // 0 in metadata still lets the request's own total apply.
+              const counterFrom = (candidates: readonly unknown[]): { value: number; invalid: boolean } => {
+                for (const candidate of candidates) {
+                  if (candidate === undefined || candidate === null) continue
+                  const decoded = decodeCopilotFinite(candidate)
+                  if (Result.isFailure(decoded)) return { value: 0, invalid: true }
+                  if (decoded.success > 0) return { value: Math.max(0, decoded.success), invalid: false }
+                }
+                return { value: 0, invalid: false }
+              }
+
+              const prompt = counterFrom([
+                metadata['promptTokens'],
+                resultRecord?.['promptTokens'],
+                request['promptTokens'],
+                usage?.['promptTokens'],
+                usage?.['prompt_tokens'],
+              ])
+              const completion = counterFrom([
+                metadata['outputTokens'],
+                request['completionTokens'],
+                resultRecord?.['outputTokens'],
+                request['outputTokens'],
+                usage?.['completionTokens'],
+                usage?.['completion_tokens'],
+              ])
+              const cacheRead = counterFrom([
+                metadata['cacheReadTokens'],
+                metadata['cachedTokens'],
+                resultRecord?.['cacheReadTokens'],
+                resultRecord?.['cachedTokens'],
+                usage?.['cacheReadTokens'],
+                usage?.['cache_read_tokens'],
+                usage?.['cachedTokens'],
+                usage?.['cached_tokens'],
+              ])
+              const cacheCreation = counterFrom([
+                metadata['cacheCreationTokens'],
+                metadata['cacheWriteTokens'],
+                resultRecord?.['cacheCreationTokens'],
+                resultRecord?.['cacheWriteTokens'],
+                usage?.['cacheCreationTokens'],
+                usage?.['cache_creation_tokens'],
+                usage?.['cacheWriteTokens'],
+                usage?.['cache_write_tokens'],
+              ])
+              if (prompt.invalid || completion.invalid || cacheRead.invalid || cacheCreation.invalid) {
+                if (onUnparsedCall) yield* onUnparsedCall
+                return Result.fail(undefined)
+              }
+
+              const inputTokens = totals ? totals.inputTokens : prompt.value
+              const outputTokens = totals ? totals.outputTokens : completion.value
+              const cacheReadTokens = totals ? totals.cacheReadTokens : cacheRead.value
+              const cacheCreationTokens = totals ? 0 : cacheCreation.value
+              if (
+                inputTokens === 0 &&
+                outputTokens === 0 &&
+                cacheReadTokens === 0 &&
+                cacheCreationTokens === 0 &&
+                nanoAiu === undefined
+              )
+                return Result.fail(undefined)
+
+              // The billed figure, when the request carries one, is the cost: the
+              // last round's prompt cannot price a multi-round request. Otherwise
+              // the recorded tokens are priced as before.
+              const costUSD =
+                nanoAiu !== undefined
+                  ? nanoAiuToUsd(nanoAiu)
+                  : context.pricing.calculateCost(
+                      model,
+                      inputTokens,
+                      outputTokens,
+                      cacheCreationTokens,
+                      cacheReadTokens,
+                      0,
+                    )
               const timestamp = timestampToISO(request['timestamp']) || sessionCreatedAt
               return Result.succeed({
                 provider: 'copilot' as const,
@@ -1453,8 +2116,8 @@ function createChatSessionParser(
                 model,
                 inputTokens,
                 outputTokens,
-                cacheCreationInputTokens: 0,
-                cacheReadInputTokens: 0,
+                cacheCreationInputTokens: cacheCreationTokens,
+                cacheReadInputTokens: cacheReadTokens,
                 cachedInputTokens: 0,
                 reasoningTokens: 0,
                 webSearchRequests: 0,
@@ -1491,10 +2154,19 @@ function createChatSessionParser(
 //                                     `session.shutdown` rollup reports the
 //                                     same tokens lumped per model.
 //   output                             events.jsonl `assistant.message`
-//                                     owns it, per turn.
+//                                     owns it, per turn — except where the
+//                                     session has no local journal at all (the
+//                                     row keeps it) or the journal's messages
+//                                     carry no `outputTokens` (the
+//                                     `session.shutdown` rollup carries the
+//                                     store's per-request output instead).
 //   compaction output                  the store row is the ONLY copy — a
 //                                     compaction request produces no
 //                                     assistant message to own it.
+//
+// What the rollup reports BEYOND the rows is served as one residual call at the
+// rollup's own (stable) dedup key, so a session whose rows are pruned or whose
+// crash skipped the store write never loses the tokens the CLI did record.
 //
 // The dedup key namespace `copilot-store:` is distinct from every other key
 // this file mints (`copilot:<session>:shutdown:<model>`,
@@ -1584,11 +2256,13 @@ function resolveStoreProject(cwd: string | null, repository: string | null): str
 /**
  * Parse `session-store.db` into one `ParsedProviderCall` per API request.
  *
- * `coveredStoreKeys` is the provider-lifetime set of `${sessionId}\n${model}`
- * pairs this store has described. The `session.shutdown` handler consults it to
- * decide whether to skip its rollup (see createJsonlParser); the store source is
- * discovered FIRST so that set is populated before any events.jsonl source is
- * parsed.
+ * `storeRows` is the provider-lifetime record of what this store has described,
+ * one entry per row per `${sessionId}\n${model}`, and `storeSessionIds` the
+ * sessions it bills. The `session.shutdown` handler subtracts the rows of its
+ * interval from each leg (see the residual in createJsonlParser) and serves a
+ * withheld row's output when the journal recorded none; the chat-session parser
+ * drops a journal whose session already has billed usage. The store source is
+ * discovered FIRST so both are complete before any other source is parsed.
  *
  * A missing / empty / corrupt / locked database yields nothing and throws
  * nothing: the CLI writes this file live (with `-wal` / `-shm` siblings), so a
@@ -1596,10 +2270,63 @@ function resolveStoreProject(cwd: string | null, repository: string | null): str
  * through the provider's existing problem-reporting path and the parse returns
  * empty, exactly as a table-less database does.
  */
+
+/**
+ * The columns every store schema this parser must accept can serve.
+ *
+ * Text is projected `CAST(... AS BLOB)` + a `typeof(...)` companion so the
+ * decoder can tell a NULL from text and never has to guess a driver's encoding.
+ */
+const SESSION_STORE_USAGE_COLUMNS = `u.id,
+  CASE WHEN typeof(u.session_id) = 'text' THEN CAST(u.session_id AS BLOB) ELSE NULL END AS session_id,
+  typeof(u.session_id) AS session_id_type,
+  CASE WHEN typeof(u.model) = 'text' THEN CAST(u.model AS BLOB) ELSE NULL END AS model,
+  typeof(u.model) AS model_type,
+  u.input_tokens, u.output_tokens,
+  u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
+  CASE WHEN typeof(u.initiator) = 'text' THEN CAST(u.initiator AS BLOB) ELSE NULL END AS initiator,
+  typeof(u.initiator) AS initiator_type,
+  CASE WHEN typeof(u.created_at) = 'text' THEN CAST(u.created_at AS BLOB) ELSE NULL END AS created_at,
+  typeof(u.created_at) AS created_at_type,
+  CASE WHEN typeof(s.cwd) = 'text' THEN CAST(s.cwd AS BLOB) ELSE NULL END AS cwd,
+  typeof(s.cwd) AS cwd_type,
+  CASE WHEN typeof(s.repository) = 'text' THEN CAST(s.repository AS BLOB) ELSE NULL END AS repository,
+  typeof(s.repository) AS repository_type`
+const SESSION_STORE_USAGE_FROM = `
+  FROM assistant_usage_events u
+  LEFT JOIN sessions s ON s.id = u.session_id
+  ORDER BY u.id ASC`
+
+/**
+ * Read the store richest-first, so a CLI whose schema predates the billing
+ * columns (`total_nano_aiu`, which only newer builds write) still parses — its
+ * rows simply price from their own tokens, exactly as before this column was
+ * read at all. Absence is reported through `no such column`, which is the one
+ * failure this ladder retries; anything else is the caller's to report.
+ */
+const SESSION_STORE_USAGE_SELECTS = [
+  `SELECT ${SESSION_STORE_USAGE_COLUMNS}, u.total_nano_aiu${SESSION_STORE_USAGE_FROM}`,
+  `SELECT ${SESSION_STORE_USAGE_COLUMNS}${SESSION_STORE_USAGE_FROM}`,
+]
+
+function querySessionStoreRows(db: SqliteDatabase): SessionStoreUsageRow[] {
+  let lastError: unknown
+  for (const sql of SESSION_STORE_USAGE_SELECTS) {
+    try {
+      return db.query<SessionStoreUsageRow>(sql)
+    } catch (cause) {
+      lastError = cause
+    }
+  }
+  throw lastError
+}
+
 function createSessionStoreParser(
   source: SessionStoreSource,
   seenKeys: Set<string>,
-  coveredStoreKeys: Set<string>,
+  storeRows: Map<string, StoreRowUsage[]>,
+  storeSessionIds: Set<string>,
+  localSessionIds: ReadonlySet<string>,
   context: CopilotParserContext,
 ): SessionParser {
   const parseStream: NonNullable<SessionParser['parseStream']> = onUnparsedCall =>
@@ -1617,30 +2344,9 @@ function createSessionStoreParser(
             owned => (owned ? closeCopilotDatabase(owned).pipe(Effect.orDie) : Effect.void),
           )
           if (!opened) return Stream.empty
-          const sourceCoveredKeys = new Set<string>()
+          const sourceRows = new Map<string, StoreRowUsage[]>()
           const rows = yield* Effect.try({
-            try: () =>
-              opened.db.query<SessionStoreUsageRow>(
-                `SELECT
-               u.id,
-               CASE WHEN typeof(u.session_id) = 'text' THEN CAST(u.session_id AS BLOB) ELSE NULL END AS session_id,
-               typeof(u.session_id) AS session_id_type,
-               CASE WHEN typeof(u.model) = 'text' THEN CAST(u.model AS BLOB) ELSE NULL END AS model,
-               typeof(u.model) AS model_type,
-             u.input_tokens, u.output_tokens,
-             u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,
-               CASE WHEN typeof(u.initiator) = 'text' THEN CAST(u.initiator AS BLOB) ELSE NULL END AS initiator,
-               typeof(u.initiator) AS initiator_type,
-               CASE WHEN typeof(u.created_at) = 'text' THEN CAST(u.created_at AS BLOB) ELSE NULL END AS created_at,
-               typeof(u.created_at) AS created_at_type,
-               CASE WHEN typeof(s.cwd) = 'text' THEN CAST(s.cwd AS BLOB) ELSE NULL END AS cwd,
-               typeof(s.cwd) AS cwd_type,
-               CASE WHEN typeof(s.repository) = 'text' THEN CAST(s.repository AS BLOB) ELSE NULL END AS repository,
-               typeof(s.repository) AS repository_type
-           FROM assistant_usage_events u
-           LEFT JOIN sessions s ON s.id = u.session_id
-           ORDER BY u.id ASC`,
-              ),
+            try: () => querySessionStoreRows(opened.db),
             catch: cause => copilotDatabaseError('read', cause),
           }).pipe(
             Effect.catch(error => {
@@ -1698,46 +2404,75 @@ function createSessionStoreParser(
 
                 // OUTPUT OWNERSHIP — the one place this source could double-count.
                 //
-                // Every non-compaction request's output is already reported by the
-                // per-turn `assistant.message` event in events.jsonl, which is parsed
-                // from a DIFFERENT source later in the same pass. There is no
-                // serve-time cross-source pass in this architecture to reconcile the
-                // two, and `seenKeys` cannot arbitrate either (the two rows carry
-                // different dedup keys, so claiming a shared one would drop the
-                // per-turn row and lose its tools / bashCommands / userMessage —
-                // strictly worse than a counted token).
+                // A request's output has two possible owners: the per-turn
+                // `assistant.message` event in events.jsonl (parsed from a DIFFERENT
+                // source later in the same pass) and this row. `seenKeys` cannot
+                // arbitrate (the two carry different dedup keys, and claiming a
+                // shared one would drop the per-turn row together with its tools /
+                // bashCommands / userMessage — strictly worse than a counted token),
+                // and this architecture has no serve-time cross-source pass.
                 //
-                // So the store yields OUTPUT ONLY for compaction rows, which produce
-                // no assistant message of their own and whose `output_tokens` is
-                // therefore the only copy anywhere. Every other row is emitted with
-                // output 0 and the per-turn event keeps ownership.
+                // So ownership follows whether a LOCAL per-turn journal exists for
+                // the session at all — `localSessionIds`, filled by discovery, which
+                // completes before the first parser runs:
                 //
-                // COST OF THIS CHOICE: a non-compaction request whose per-turn
-                // `assistant.message` is missing from events.jsonl (a pruned or
-                // unreadable session file) contributes no output at all. That
-                // under-reports. The alternative — emitting every row's output —
-                // over-reports on every normal session, which is the worse direction:
-                // it invents spend.
-                const outputTokens = initiator === 'compaction' ? rawOutputTokens : 0
+                //   - `session-state/<id>/events.jsonl` present: its per-turn events
+                //     own output and every non-compaction row yields 0. That is what
+                //     stops a normal CLI session from billing its output twice.
+                //   - No local journal: nothing will ever report that output. These
+                //     are the sessions that are not local to this machine — an ACP
+                //     host (JetBrains AI Chat, `copilot --acp`), the GitHub desktop
+                //     app, rows synced from another checkout, or a session-state dir
+                //     already pruned — and their row keeps `output_tokens`, the only
+                //     copy that exists anywhere.
+                //
+                // A compaction row always keeps its output: it produces no
+                // `assistant.message` of its own, local journal or not.
+                //
+                // COST OF THIS CHOICE: a LOCAL session's rows yield no output, so a
+                // journal whose per-turn events carry no `outputTokens` at all (the
+                // CLI 1.0.8x / VS Code agent-host shape) hands nothing over. The
+                // journal parser closes that: when there is no per-turn output for
+                // the model it serves each such row's output as its own call (see
+                // appendStoreOutputCandidates). A session with neither a shutdown nor
+                // a journal parser that ever reads the file keeps its input/cache
+                // from the rows and loses only the output.
+                const hasLocalJournal = localSessionIds.has(sessionId)
+                const outputTokens = initiator === 'compaction' || !hasLocalJournal ? rawOutputTokens : 0
 
                 // `copilot` is in OUTPUT_INCLUSIVE_REASONING_PROVIDERS, so
                 // reasoning is already inside the store's `output_tokens` and must
                 // NOT be added again. billableOutputTokens is the single place that
                 // answers that question; the arithmetic is never reimplemented here.
-                const costUSD = yield* Effect.try({
-                  try: () =>
-                    context.pricing.calculateCost(
-                      model,
-                      inputTokens,
-                      billableOutputTokens('copilot', outputTokens, reasoningTokens),
-                      cacheWriteTokens,
-                      cacheReadTokens,
-                      0,
-                    ),
-                  catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
-                })
+                // GitHub's own figure for this request, when the schema carries
+                // it: an exact bill beats any token arithmetic, because
+                // `total_nano_aiu` already covers subagent requests the store
+                // never wrote rows for. Absent on older CLIs, which price from
+                // their tokens exactly as before.
+                const nanoAiu =
+                  typeof row.total_nano_aiu === 'number' &&
+                  Number.isFinite(row.total_nano_aiu) &&
+                  row.total_nano_aiu >= 0
+                    ? row.total_nano_aiu
+                    : undefined
+                const costUSD =
+                  nanoAiu !== undefined
+                    ? nanoAiuToUsd(nanoAiu)
+                    : yield* Effect.try({
+                        try: () =>
+                          context.pricing.calculateCost(
+                            model,
+                            inputTokens,
+                            billableOutputTokens('copilot', outputTokens, reasoningTokens),
+                            cacheWriteTokens,
+                            cacheReadTokens,
+                            0,
+                          ),
+                        catch: cause => (cause instanceof Error ? cause : new Error(String(cause), { cause })),
+                      })
 
-                const dedupKey = `copilot-store:${sessionId}:${row.id}:${sessionStoreContentHash({
+                const rowId = String(row.id)
+                const contentHash = sessionStoreContentHash({
                   model,
                   inputTokens: rawInputTokens,
                   outputTokens: rawOutputTokens,
@@ -1745,10 +2480,8 @@ function createSessionStoreParser(
                   cacheWriteTokens,
                   reasoningTokens,
                   initiator,
-                })}`
-                sourceCoveredKeys.add(coveredKey)
-                if (seenKeys.has(dedupKey)) return Result.fail(undefined)
-                seenKeys.add(dedupKey)
+                })
+                const dedupKey = `copilot-store:${sessionId}:${rowId}:${contentHash}`
 
                 const cwd = blobToText(row.cwd).trim() || null
                 // The row's own `created_at`, normalized through the same helper the
@@ -1757,6 +2490,30 @@ function createSessionStoreParser(
                 // timestamp falls back to the session-state file's mtime (the same
                 // fallback the JetBrains parser uses) rather than being dropped.
                 const timestamp = timestampToISO(blobToText(row.created_at)) || source.mtime
+                const timestampMs = Date.parse(timestamp)
+
+                // Record what the row describes BEFORE the dedupe return: a row the
+                // pipeline already holds still describes its tokens, and the journal
+                // subtracts these records from its rollup legs either way.
+                const rowList = sourceRows.get(coveredKey) ?? []
+                rowList.push({
+                  rowId,
+                  contentHash,
+                  timestamp,
+                  timestampMs: Number.isFinite(timestampMs) ? timestampMs : Number.POSITIVE_INFINITY,
+                  inputTokens,
+                  outputTokens,
+                  rawOutputTokens,
+                  cacheReadTokens,
+                  cacheWriteTokens,
+                  reasoningTokens,
+                  isCompaction: initiator === 'compaction',
+                  outputServedByAlias: false,
+                })
+                sourceRows.set(coveredKey, rowList)
+                storeSessionIds.add(sessionId)
+                if (seenKeys.has(dedupKey)) return Result.fail(undefined)
+                seenKeys.add(dedupKey)
 
                 return Result.succeed({
                   provider: 'copilot',
@@ -1790,7 +2547,7 @@ function createSessionStoreParser(
             Effect.gen(function* () {
               yield* checkScanAbort(context.signal)
               yield* closeCopilotDatabase(opened)
-              for (const key of sourceCoveredKeys) coveredStoreKeys.add(key)
+              for (const [key, rows] of sourceRows) storeRows.set(key, rows)
             }),
           ).pipe(Stream.drain)
           return Stream.concat(calls, finish)
@@ -2696,6 +3453,39 @@ interface JetBrainsSessionSource extends SessionSource {
   projectName?: string
 }
 
+/**
+ * What the store has described for one `${sessionId}\n${model}` pair, summed
+ * over its rows. The rollup parser subtracts this from a `session.shutdown`
+ * rollup, which is how a residual (rows pruned, or a crash that skipped the
+ * write) reaches the ledger without ever counting a token twice.
+ *
+ * `inputTokens` is the UNCACHED remainder the rows were emitted with, and
+ * `outputTokens` the RAW per-request output the CLI wrote — the value a rollup
+ * carries on years when the journal's own messages record none.
+ */
+type StoreRowUsage = {
+  // The row's own id and content hash, so the journal can mint a stable key for
+  // the output it hands over instead of inventing a position.
+  rowId: string
+  contentHash: string
+  timestamp: string
+  // +Infinity when the row has no usable stamp: an interval subtraction then
+  // treats it as covering everything, which can only under-report.
+  timestampMs: number
+  // The UNCACHED remainder the row was emitted with.
+  inputTokens: number
+  // What the row actually SERVED — 0 for a session with a local journal, whose
+  // per-turn call owns it.
+  outputTokens: number
+  // What the CLI wrote, kept so the journal can serve it when nothing else does.
+  rawOutputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  reasoningTokens: number
+  isCompaction: boolean
+  outputServedByAlias: boolean
+}
+
 interface SessionStoreSource extends SessionSource {
   sourceType: 'sessionstore'
   // File mtime (ISO). A row whose `created_at` is missing or unparseable falls
@@ -2782,6 +3572,7 @@ const decodeWorkspaceJson = Schema.decodeUnknownResult(workspaceJsonSchema)
 
 const discoverJsonlSessions = Effect.fnUntraced(function* (
   sessionStateDir: string,
+  localSessionIds: Set<string>,
   context?: ProviderScanContext,
 ): Effect.fn.Return<JsonlSessionSource[], Error> {
   const signal = context?.signal
@@ -2793,6 +3584,9 @@ const discoverJsonlSessions = Effect.fnUntraced(function* (
     const eventsPath = join(sessionStateDir, sessionId, 'events.jsonl')
     const fileInfo = yield* optionalDiscovery(statEffect(eventsPath, signal), null)
     if (!fileInfo?.isFile()) continue
+    // A local per-turn journal exists, so its `assistant.message` events own the
+    // session's output — see the OUTPUT OWNERSHIP block in the store parser.
+    localSessionIds.add(sessionId)
 
     let project = sessionId
     let workingDirectory: string | undefined
@@ -3091,6 +3885,14 @@ const resolveWorkspaceProject = Effect.fnUntraced(function* (
   return workingDirectory ? { project, workingDirectory } : { project }
 })
 
+/**
+ * A VS Code core chat session on disk: the current delta journal (`.jsonl`) or
+ * the pre-1.109 flat document (`.json`).
+ */
+function isChatSessionFile(file: string): boolean {
+  return file.endsWith('.jsonl') || file.endsWith('.json')
+}
+
 const hasChatSessionFiles = Effect.fnUntraced(function* (
   chatSessionsDir: string,
   context?: ProviderScanContext,
@@ -3100,7 +3902,7 @@ const hasChatSessionFiles = Effect.fnUntraced(function* (
 
   for (const file of files) {
     yield* checkScanAbort(signal)
-    if (!file.endsWith('.jsonl')) continue
+    if (!isChatSessionFile(file)) continue
     const s = yield* optionalDiscovery(statEffect(join(chatSessionsDir, file), signal), null)
     if (s?.isFile()) return true
   }
@@ -3130,7 +3932,7 @@ const discoverWorkspaceChatSessions = Effect.fnUntraced(function* (
       const { project, workingDirectory } = yield* resolveWorkspaceProject(wsDir, hashDir, context)
       for (const file of files) {
         yield* checkScanAbort(signal)
-        if (!file.endsWith('.jsonl')) continue
+        if (!isChatSessionFile(file)) continue
         const path = join(chatSessionsDir, file)
         const s = yield* optionalDiscovery(statEffect(path, signal), null)
         if (!s?.isFile()) continue
@@ -3162,7 +3964,7 @@ const discoverEmptyWindowChatSessions = Effect.fnUntraced(function* (
 
     for (const file of files) {
       yield* checkScanAbort(signal)
-      if (!file.endsWith('.jsonl')) continue
+      if (!isChatSessionFile(file)) continue
       const path = join(chatSessionsDir, file)
       const s = yield* optionalDiscovery(statEffect(path, signal), null)
       if (!s?.isFile()) continue
@@ -3238,22 +4040,61 @@ export function createCopilotProvider(
   // overrides set after module load (e.g. in tests) are respected.
 
   /**
-   * The provider-lifetime set of `${sessionId}\n${model}` pairs the
-   * session-store has described.
+   * The provider-lifetime record of what the session-store has described, keyed
+   * by `${sessionId}\n${model}` and holding that pair's rows.
    *
    * It lives in the provider closure because the architecture gives a provider
    * no per-scan object: `createSessionParser` is called once per source and
    * nothing threads state between them. The store source is discovered FIRST
    * (see discoverSessions) and the scan parses sources in discovery order, so
-   * by the time any events.jsonl source asks, this set already holds every
-   * pair the store covered in this pass.
+   * by the time any events.jsonl source asks, this map already holds every row
+   * the store covered in this pass.
    *
-   * Lifetime rather than per-scan is deliberate and matches how the pipeline
-   * already treats durable providers: copilot's cached turns are never evicted,
-   * so a pair covered once stays covered, and the set is monotonically true
-   * rather than flapping between passes.
+   * Rows rather than totals because reconciliation is per leg interval: a leg
+   * claims only what happened between its predecessor, its own last compaction
+   * and itself, and only the rows inside that window may cancel it.
    */
-  const coveredStoreKeys = new Set<string>()
+  const storeRows = new Map<string, StoreRowUsage[]>()
+
+  /**
+   * Session ids this pass has seen billed usage for — a journal call carrying
+   * tokens or an exact credit figure, or a store row.
+   *
+   * A VS Code core chat-session journal of the same session is a second record
+   * of the same requests (the agent host writes both, under one id), so the
+   * journal parser leaves such a session out rather than counting it twice. A
+   * session-state file with no usage yet keeps the chat journal.
+   */
+  const agentHostUsageSessions = new Set<string>()
+
+  /**
+   * Session ids the store has billed usage for.
+   *
+   * A VS Code core chat-session journal of the same session is a second record of
+   * the same requests (the agent host writes both, under one id), so the journal
+   * parser leaves such a session out rather than counting it twice. A session-state
+   * file with no usage yet keeps the journal.
+   */
+  const storeSessionIds = new Set<string>()
+
+  /**
+   * The set of session ids that have a LOCAL per-turn journal
+   * (`session-state/<id>/events.jsonl`), filled by JSONL discovery.
+   *
+   * The store parser reads it to decide which rows may own their output (see the
+   * OUTPUT OWNERSHIP block there): a row whose session has no local journal is
+   * the ONLY record of that request's output anywhere, so zeroing it the way a
+   * local session's row is zeroed loses the tokens outright.
+   *
+   * Monotonic over the provider's lifetime, like `storeUsage` and for the same
+   * reason: never cleared, so an id added once keeps the `assistant.message`
+   * owner. Clearing it per pass would be tighter on paper, but a discovery pass
+   * that fails or is aborted mid-walk would then hand every session's output back
+   * to the store rows as well — double-counting, the one direction this provider
+   * must never take. Stale ids can only under-report, which the durable cache
+   * already covers by serving the per-turn output it recorded once.
+   */
+  const localSessionIds = new Set<string>()
 
   /**
    * Returns the workspaceStorage directories to scan for transcript sessions.
@@ -3309,7 +4150,9 @@ export function createCopilotProvider(
       }
     }
 
-    sources.push(...(yield* discoverJsonlSessions(getCopilotSessionStateDir(sessionStateDir, paths), context)))
+    sources.push(
+      ...(yield* discoverJsonlSessions(getCopilotSessionStateDir(sessionStateDir, paths), localSessionIds, context)),
+    )
     if (!discoveredOtel) {
       sources.push(...(yield* discoverWorkspaceChatSessions(getWsDirs(), context)))
       sources.push(...(yield* discoverEmptyWindowChatSessions(getGlobalDirs(), context)))
@@ -3356,18 +4199,18 @@ export function createCopilotProvider(
       // so if OTel already yielded a span, the JSONL parser will skip
       // the matching assistant.message (and vice versa).
       if (isSessionStoreSource(source)) {
-        return createSessionStoreParser(source, seenKeys, coveredStoreKeys, parserContext)
+        return createSessionStoreParser(source, seenKeys, storeRows, storeSessionIds, localSessionIds, parserContext)
       }
       if (isOtelSource(source)) {
         return createOtelParser(source, seenKeys, parserContext)
       }
       if (isChatSessionSource(source)) {
-        return createChatSessionParser(source, seenKeys, parserContext)
+        return createChatSessionParser(source, seenKeys, storeSessionIds, agentHostUsageSessions, parserContext)
       }
       if (isJetBrainsSource(source)) {
         return createJetBrainsParser(source, seenKeys, parserContext)
       }
-      return createJsonlParser(source, seenKeys, coveredStoreKeys, parserContext)
+      return createJsonlParser(source, seenKeys, storeRows, localSessionIds, agentHostUsageSessions, parserContext)
     },
   }
 }

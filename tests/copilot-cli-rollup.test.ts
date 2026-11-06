@@ -89,24 +89,59 @@ describe('copilot CLI shutdown rollup', () => {
     expect(calls.filter(c => !String(c['deduplicationKey']).includes(':shutdown:'))).toHaveLength(1)
   })
 
-  it('sums every leg a resumed session wrote', async () => {
-    // A resumed session writes one rollup PER LEG, each reporting what that leg
-    // consumed. The figures are not monotonic - measured on disk, one session's
-    // legs read 1,010,433 then 497,389 then 3,326,890 - so neither the first nor
-    // the last leg is the session total. Billing under the per-(session, model)
-    // dedup key as the file is read would keep ONE leg and discard the rest.
+  it('serves one delta per resumed leg, each under its own key', async () => {
+    // A resumed session writes one rollup PER LEG, each reporting CUMULATIVE
+    // counters, so serving a leg whole would bill the earlier requests again on
+    // every resume. Each leg keeps its own key: the cache is append-only by
+    // dedup key, so a later resume appends a row instead of rewriting one.
     const { source } = cliSession([
       start(),
-      shutdown(1_010_433, 871_424),
-      shutdown(497_389, 389_120),
-      shutdown(3_326_890, 3_235_328),
+      shutdown(100_000, 20_000),
+      shutdown(160_000, 30_000),
+      // Below its predecessor: a fresh accounting epoch (the CLI resets at an
+      // in-session compaction), taken at face value, never clamped away.
+      shutdown(90_000, 10_000),
     ])
 
     const calls = await collect(source)
     const rollups = calls.filter(c => String(c['deduplicationKey']).includes(':shutdown:'))
-    expect(rollups).toHaveLength(1)
-    expect(rollups[0]!['inputTokens']).toBe(1_010_433 - 871_424 + (497_389 - 389_120) + (3_326_890 - 3_235_328))
-    expect(rollups[0]!['cacheReadInputTokens']).toBe(871_424 + 389_120 + 3_235_328)
+    expect(rollups.map(c => c['deduplicationKey'])).toEqual([
+      'copilot:sess-1:shutdown:claude-sonnet-4-6:1',
+      'copilot:sess-1:shutdown:claude-sonnet-4-6:2',
+      'copilot:sess-1:shutdown:claude-sonnet-4-6:3',
+    ])
+    expect(rollups.map(c => [c['inputTokens'], c['cacheReadInputTokens']])).toEqual([
+      [80_000, 20_000],
+      [50_000, 10_000],
+      [80_000, 10_000],
+    ])
+  })
+
+  it('prices a leg from GitHub’s own bill when the rollup carries totalNanoAiu', async () => {
+    // CLI 1.0.8x and the VS Code agent host write no per-turn output, so the leg
+    // carries it — and `totalNanoAiu` makes the credits for that leg exact (the
+    // figure is a running bill; only its delta belongs to this leg).
+    const { source } = cliSession([
+      start(),
+      {
+        type: 'session.shutdown',
+        data: {
+          modelMetrics: {
+            'claude-sonnet-4-6': {
+              usage: { inputTokens: 1_000, outputTokens: 500 },
+              totalNanoAiu: 2_500_000_000,
+            },
+          },
+        },
+      },
+    ])
+
+    const [call] = await collect(source)
+    // 2.5e9 nano-AIU = 2.5 credits = $0.025, whatever the tokens price at.
+    expect(call!['costUSD']).toBeCloseTo(0.025, 10)
+    expect(call!['costIsEstimated']).toBe(false)
+    expect(call!['outputTokens']).toBe(500)
+    expect(call!['inputTokens']).toBe(1_000)
   })
 
   it('still refuses the rollup for a real VS Code transcript', async () => {
