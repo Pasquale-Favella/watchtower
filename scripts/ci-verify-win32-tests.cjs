@@ -86,7 +86,11 @@ function windowsOnlyInFile(file, root) {
         !outer.arguments.length ||
         !(ts.isStringLiteral(outer.arguments[0]) || ts.isNoSubstitutionTemplateLiteral(outer.arguments[0]))
       )
-        throw new Error(relative + ': unsupported conditional test near line ' + (source.getLineAndCharacterOfPosition(node.pos).line + 1))
+        throw new Error(
+          relative +
+            ': unsupported conditional test near line ' +
+            (source.getLineAndCharacterOfPosition(node.pos).line + 1),
+        )
       const runs = platform => {
         const active = Boolean(evaluate(node.arguments[0], platform))
         return node.expression.name.text === 'skipIf' ? !active : active
@@ -127,7 +131,9 @@ function verify(report, discovered) {
     if (suites.length !== 1) throw new Error(file + ': expected exactly one executed suite, got ' + suites.length)
     const matches = (suites[0].assertionResults ?? []).filter(assertion => assertion.title === title)
     if (matches.length !== 1 || matches[0].status !== 'passed')
-      throw new Error(file + ': Windows-only test not passed: ' + title + ' (' + (matches[0]?.status ?? 'missing') + ')')
+      throw new Error(
+        file + ': Windows-only test not passed: ' + title + ' (' + (matches[0]?.status ?? 'missing') + ')',
+      )
     console.log('PASS ' + file + ': ' + title)
   }
   console.log('Verified ' + discovered.length + ' auto-discovered Windows-only assertions.')
