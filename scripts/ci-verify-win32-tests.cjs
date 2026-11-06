@@ -13,12 +13,13 @@ const BASELINE_SUITES = [
 ]
 
 function testFiles(root) {
+  // Keep this in sync with vitest.config.ts (test.include: tests/**/*.test.ts).
   const files = []
   function walk(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const file = path.join(dir, entry.name)
       if (entry.isDirectory()) walk(file)
-      else if (entry.isFile() && /\.(?:test|spec)\.[jt]sx?$/.test(entry.name)) files.push(file)
+      else if (entry.isFile() && /\.test\.ts$/.test(entry.name)) files.push(file)
     }
   }
   walk(path.join(root, 'tests'))
@@ -30,13 +31,28 @@ function windowsOnlyInFile(file, root) {
   const relative = path.relative(root, file).replace(/\\/g, '/')
   if (source.parseDiagnostics.length) throw new Error(relative + ': TypeScript test source could not be parsed')
 
-  // Support simple module-level aliases such as const isWindows = process.platform === 'win32'.
-  const aliases = new Map()
-  for (const statement of source.statements) {
-    if (!ts.isVariableStatement(statement)) continue
-    for (const declaration of statement.declarationList.declarations)
-      if (ts.isIdentifier(declaration.name) && declaration.initializer)
-        aliases.set(declaration.name.text, declaration.initializer)
+  // Resolve aliases from the nearest lexical block rather than by module-wide name.
+  // Fail closed on mutable bindings and parameter shadowing: their values
+  // cannot be safely inferred from syntax alone.
+  function resolveAlias(identifier) {
+    for (let scope = identifier.parent; scope; scope = scope.parent) {
+      if (ts.isFunctionLike(scope)) {
+        for (const parameter of scope.parameters)
+          if (ts.isIdentifier(parameter.name) && parameter.name.text === identifier.text)
+            throw new Error(relative + ': unsupported platform guard: parameter ' + identifier.text)
+      }
+      if (!ts.isBlock(scope) && !ts.isSourceFile(scope)) continue
+      for (const statement of scope.statements) {
+        if (!ts.isVariableStatement(statement)) continue
+        for (const declaration of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name) || declaration.name.text !== identifier.text) continue
+          if (!(statement.declarationList.flags & ts.NodeFlags.Const) || !declaration.initializer)
+            throw new Error(relative + ': unsupported platform guard: non-constant alias ' + identifier.text)
+          return declaration
+        }
+      }
+    }
+    return undefined
   }
 
   function evaluate(node, platform, seen = new Set()) {
@@ -47,10 +63,14 @@ function windowsOnlyInFile(file, root) {
     if (ts.isPropertyAccessExpression(node) && node.getText(source) === 'process.platform') return platform
     if (ts.isCallExpression(node) && node.expression.getText(source) === 'osPlatform' && node.arguments.length === 0)
       return platform
-    if (ts.isIdentifier(node) && aliases.has(node.text) && !seen.has(node.text)) {
-      const next = new Set(seen)
-      next.add(node.text)
-      return evaluate(aliases.get(node.text), platform, next)
+    if (ts.isIdentifier(node)) {
+      const declaration = resolveAlias(node)
+      if (declaration) {
+        if (seen.has(declaration)) throw new Error(relative + ': circular platform guard alias: ' + node.text)
+        const next = new Set(seen)
+        next.add(declaration)
+        return evaluate(declaration.initializer, platform, next)
+      }
     }
     if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken)
       return !evaluate(node.operand, platform, seen)
