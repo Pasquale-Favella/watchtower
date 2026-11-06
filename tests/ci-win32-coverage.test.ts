@@ -40,7 +40,7 @@ describe('Windows CI coverage inventory', () => {
           "  it.skipIf(!isWindows)('aliased', () => {})",
           "  test.runIf(osPlatform() === 'win32')('run-if', () => {})",
           "  it.skipIf(isWindows)('posix-only', () => {})",
-          "})",
+          '})',
         ].join('\n'),
       },
       root => {
@@ -89,9 +89,7 @@ describe('Windows CI coverage inventory', () => {
       verify(
         {
           ...report,
-          testResults: [
-            { ...report.testResults[0], assertionResults: [{ title: cases[0].title, status: 'pending' }] },
-          ],
+          testResults: [{ ...report.testResults[0], assertionResults: [{ title: cases[0].title, status: 'pending' }] }],
         },
         cases,
       ),
