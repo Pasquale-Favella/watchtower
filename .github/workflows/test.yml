@@ -53,14 +53,6 @@ jobs:
         if: needs.changes.outputs.checks == 'true'
       - run: npm run lint:effect
         if: needs.changes.outputs.checks == 'true'
-      - name: Inspect exact Prettier output for CI changes
-        run: |
-          echo "BEGIN_CANONICAL_JS"
-          npx prettier scripts/ci-verify-win32-tests.cjs
-          echo "END_CANONICAL_JS"
-          echo "BEGIN_CANONICAL_TS"
-          npx prettier tests/ci-win32-coverage.test.ts
-          echo "END_CANONICAL_TS"
       - run: npm run format:check
 
   test:
