@@ -53,6 +53,8 @@ jobs:
         if: needs.changes.outputs.checks == 'true'
       - run: npm run lint:effect
         if: needs.changes.outputs.checks == 'true'
+      - name: Inspect canonical formatting of Windows verifier
+        run: npx prettier scripts/ci-verify-win32-tests.cjs
       - run: npm run format:check
 
   test:
