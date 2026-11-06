@@ -14,9 +14,7 @@ const expected = {
     'LOCALAPPDATA: the snapshot root is used, null falls back to homedir',
   ],
   'provider-app-paths.test.ts': ['a threaded LOCALAPPDATA root is honored on win32'],
-  'antigravity-rpc-effect.test.ts': [
-    'accepts probe headers without waiting for or reading the unused response body',
-  ],
+  'antigravity-rpc-effect.test.ts': ['accepts probe headers without waiting for or reading the unused response body'],
 }
 
 function verify(report) {
@@ -26,8 +24,8 @@ function verify(report) {
 
   let verified = 0
   for (const [filename, titles] of Object.entries(expected)) {
-    const suites = report.testResults.filter(suite =>
-      typeof suite.name === 'string' && suite.name.replace(/\\/g, '/').endsWith('/tests/' + filename),
+    const suites = report.testResults.filter(
+      suite => typeof suite.name === 'string' && suite.name.replace(/\\/g, '/').endsWith('/tests/' + filename),
     )
     if (suites.length !== 1) throw new Error(filename + ': expected one executed suite, got ' + suites.length)
 
@@ -37,8 +35,12 @@ function verify(report) {
       const matches = assertions.filter(assertion => assertion.title === title)
       if (matches.length !== 1 || matches[0].status !== 'passed') {
         throw new Error(
-          filename + ': Windows-only test not executed successfully: ' + title +
-            ' (status: ' + (matches[0]?.status ?? 'missing') + ')',
+          filename +
+            ': Windows-only test not executed successfully: ' +
+            title +
+            ' (status: ' +
+            (matches[0]?.status ?? 'missing') +
+            ')',
         )
       }
       verified += 1
