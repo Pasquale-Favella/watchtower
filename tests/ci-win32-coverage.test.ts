@@ -53,6 +53,60 @@ describe('Windows CI coverage inventory', () => {
     )
   })
 
+  it('resolves shadowed and locally chained aliases in the nearest lexical scope', () => {
+    withTestFiles(
+      {
+        'scoped.test.ts': [
+          'const isWindows = false',
+          "describe('local aliases', () => {",
+          "  const isWindows = process.platform === 'win32'",
+          '  const onlyWindows = isWindows',
+          "  it.skipIf(!onlyWindows)('win32 local', () => {})",
+          "  it.skipIf(isWindows)('posix local', () => {})",
+          '})',
+        ].join('\n'),
+      },
+      root => expect(discoverWindowsTests(root)).toEqual([{ file: 'tests/scoped.test.ts', title: 'win32 local' }]),
+    )
+  })
+
+  it('fails closed on mutable bindings or parameter-shadowed aliases', () => {
+    withTestFiles(
+      {
+        'mutable.test.ts': [
+          "let isWindows = process.platform === 'win32'",
+          "it.skipIf(!isWindows)('mutable branch', () => {})",
+        ].join('\n'),
+      },
+      root => expect(() => discoverWindowsTests(root)).toThrow('non-constant alias'),
+    )
+    withTestFiles(
+      {
+        'parameter.test.ts': [
+          "const isWindows = process.platform === 'win32'",
+          'const defineCases = (isWindows: boolean) => {',
+          "  it.skipIf(!isWindows)('parameter branch', () => {})",
+          '}',
+          'defineCases(true)',
+        ].join('\n'),
+      },
+      root => expect(() => discoverWindowsTests(root)).toThrow('parameter isWindows'),
+    )
+  })
+
+  it('scans only files included by the current Vitest test glob', () => {
+    const windowsCase = "it.skipIf(process.platform !== 'win32')('native', () => {})"
+    withTestFiles(
+      {
+        'included.test.ts': windowsCase,
+        'excluded.spec.ts': windowsCase,
+        'excluded.test.js': windowsCase,
+        'excluded.test.tsx': windowsCase,
+      },
+      root => expect(discoverWindowsTests(root)).toEqual([{ file: 'tests/included.test.ts', title: 'native' }]),
+    )
+  })
+
   it('automatically includes any new suite while preserving native process smoke coverage', () => {
     withTestFiles(
       {
