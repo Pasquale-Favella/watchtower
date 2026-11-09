@@ -23,7 +23,9 @@ export function ModelPickerPanel({
   searchRef,
   effortColumn,
   footer,
+  initialQuery = '',
 }: {
+  readonly initialQuery?: string
   readonly connections: readonly WorkspaceConnection[]
   readonly activeConnectionId: string
   /** The selected connection's catalog, already merged with any parent-held session facts. */
@@ -39,7 +41,7 @@ export function ModelPickerPanel({
   readonly footer?: ReactNode
 }) {
   const [draftId, setDraftId] = useState<string | null>(null)
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState(initialQuery)
   const [highlightedId, setHighlightedId] = useState<string | null>(null)
   const railRef = useRef<HTMLDivElement>(null)
   const ownInputRef = useRef<HTMLInputElement>(null)

@@ -5,19 +5,20 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as RpcTest from 'effect/rpc/RpcTest'
-import * as SubscriptionRef from 'effect/SubscriptionRef'
 import * as Schema from 'effect/Schema'
+import * as SubscriptionRef from 'effect/SubscriptionRef'
 import { describe, expect, it } from 'vitest'
 
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
-import { AgentDriver, AgentDriverError } from '@/core/ports/agent-driver.js'
+import { type AgentCatalogProbe, AgentDriver, AgentDriverError } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
-import { WorkspaceHost, type WorkspaceHostStatus, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
+import { inspectWorkspaceConnection } from '@/platform/electron/main/workspace/connection-inspection.js'
+import { WorkspaceHost, WorkspaceHostLive, type WorkspaceHostStatus } from '@/platform/electron/main/workspace/host.js'
 import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
-import { workspaceConnectionListSchema } from '@/shared/schemas/workspace-connections.js'
 import type { AgentCapabilities } from '@/shared/schemas/execution.js'
+import { workspaceConnectionListSchema } from '@/shared/schemas/workspace-connections.js'
 
 const rows = [
   {
@@ -52,7 +53,11 @@ const inspectedCapabilities: AgentCapabilities = {
   modes: [],
 }
 
-function makeInspectionRegistry(close: () => Effect.Effect<void, AgentDriverError>) {
+function makeInspectionRegistry(
+  close: () => Effect.Effect<void, AgentDriverError>,
+  probe?: AgentCatalogProbe,
+  capabilities: AgentCapabilities = inspectedCapabilities,
+) {
   let connects = 0
   let discoveries = 0
   const driver = AgentDriver.of({
@@ -64,10 +69,11 @@ function makeInspectionRegistry(close: () => Effect.Effect<void, AgentDriverErro
         discover: () =>
           Effect.sync(() => {
             discoveries += 1
-            return inspectedCapabilities
+            return capabilities
           }),
         openSession: () => Effect.die('inspection must not open a native session'),
         loadSession: () => Effect.die('inspection must not load a native session'),
+        ...(probe ? { probeCatalog: () => Effect.succeed(probe) } : {}),
         close,
       })
     },
@@ -83,6 +89,69 @@ const harnessConnection = {
 }
 
 describe('workspace connection catalog RPC', () => {
+  it('probes session configuration even when passive discovery already lists models and modes', async () => {
+    const models = [{ id: 'model', label: 'Model' }]
+    const modes = [{ id: 'agent', label: 'Agent' }]
+    const configOptions = [
+      {
+        id: 'effort',
+        label: 'Effort',
+        category: 'thought_level',
+        currentValue: 'medium',
+        options: [
+          { id: 'medium', label: 'Medium' },
+          { id: 'high', label: 'High' },
+        ],
+      },
+    ]
+    const fixture = makeInspectionRegistry(
+      () => Effect.void,
+      { models, modes, configOptions },
+      { ...inspectedCapabilities, models, modes },
+    )
+    const inspected = await Effect.runPromise(
+      inspectWorkspaceConnection([harnessConnection], fixture.registry, harnessConnection.id),
+    )
+    expect(inspected.capabilities.configOptions).toEqual(configOptions)
+    expect(inspected.capabilities.models.items).toEqual(models)
+    expect(inspected.capabilities.modes.items).toEqual(modes)
+  })
+
+  it('preserves independent ACP configuration choices discovered by a disposable catalog probe', async () => {
+    const configOptions = [
+      {
+        id: 'effort',
+        label: 'Effort',
+        category: 'thought_level',
+        currentValue: 'medium',
+        options: [
+          { id: 'medium', label: 'Medium' },
+          { id: 'high', label: 'High' },
+        ],
+      },
+      {
+        id: 'mode',
+        label: 'Mode',
+        category: 'mode',
+        currentValue: 'agent',
+        options: [
+          { id: 'agent', label: 'Agent' },
+          { id: 'plan', label: 'Plan' },
+        ],
+      },
+    ]
+    const fixture = makeInspectionRegistry(() => Effect.void, {
+      models: [{ id: 'model', label: 'Model' }],
+      modes: [{ id: 'high', label: 'High' }],
+      configOptions,
+    })
+    const inspected = await Effect.runPromise(
+      Effect.scoped(inspectWorkspaceConnection([harnessConnection], fixture.registry, rows[0]!.connectionId)),
+    )
+    expect(inspected.capabilities.configOptions).toEqual(configOptions)
+    expect(inspected.capabilities.models.items).toEqual([{ id: 'model', label: 'Model' }])
+  })
+
   it('returns safe catalog rows without opening workspace storage or execution', async () => {
     let opens = 0
     let executions = 0

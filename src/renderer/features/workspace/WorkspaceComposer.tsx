@@ -19,6 +19,7 @@ import {
   shouldSubmitComposerKey,
   validateResumeSelection,
 } from './composer-state.js'
+import { configOptionsForModel, configValuesForOptions, withoutModelSpecificConfigValues } from './config-values.js'
 import {
   useInspectWorkspaceConnection,
   useWorkspaceConnectionCatalog,
@@ -46,11 +47,14 @@ import type { WorkspaceCommandInput } from './lib.js'
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
 import { canClearCapturedDraft } from './pending-start-state.js'
+import { activeGoalControl, parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
-import { promptWithAttachments } from './prompt-editor.js'
+import { promptWithAttachments, visiblePromptAttachments } from './prompt-editor.js'
 import { firstPendingRequest } from './request-drawer-state.js'
+import { useCreateSideChat } from './side-chat/hooks.js'
 import { usePendingStart } from './use-pending-start.js'
-import { useWorkspaceDraft } from './use-workspace-draft.js'
+import { usePromptHistory } from './use-prompt-history.js'
+import { useDraftAppend, useWorkspaceDraft } from './use-workspace-draft.js'
 import { WorkspaceAgentPicker } from './WorkspaceAgentPicker.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
 import { WorkspacePromptInput } from './WorkspacePromptInput.js'
@@ -85,6 +89,7 @@ type WorkspaceComposerProps = {
   readonly task: Task
   readonly conversationId: ConversationId
   readonly allowInitialCheckoutChoice?: boolean | undefined
+  readonly onSideChatCreated?: ((id: string) => void) | undefined
 }
 
 /** Pinned prompt controls for one Conversation; execution ownership remains with the application. */
@@ -101,12 +106,14 @@ function WorkspaceComposerContent({
   task,
   conversationId,
   allowInitialCheckoutChoice = false,
+  onSideChatCreated,
 }: WorkspaceComposerProps) {
+  const appendDraft = useDraftAppend()
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
   const { accessMode: defaultAccessMode } = useWorkspaceAgentPreferences()
   const attachments = usePromptAttachments(conversationId)
   const inspectionRequested = useRef('')
-  const agentPickerRef = useRef<{ open: () => void }>(null)
+  const agentPickerRef = useRef<{ open: (query?: string) => void }>(null)
   const [selectedConnectionId, setSelectedConnectionId] = useState('')
   const [selectedModelId, setModelId] = useState<string | null>(null)
   const [selectedModeId, setModeId] = useState<string | null>(null)
@@ -135,11 +142,13 @@ function WorkspaceComposerContent({
 
   const project = useWorkspaceProject({ projectId: task.projectId })
   const snapshot = useWorkspaceTaskSnapshot(snapshotRequest(task.id))
+  const conversationHistory = usePromptHistory(task.id, conversationId)
   const sessions = useWorkspaceNativeAgentSessions({ taskId: task.id, options: { limit: 50 } })
   const followUps = useWorkspaceQueuedFollowUps({ conversationId, options: { limit: 50 } })
   const connections = useWorkspaceConnections()
   const inspect = useInspectWorkspaceConnection()
   const startRun = useStartRun()
+  const createSideChat = useCreateSideChat()
   const createWorktree = useCreateWorktree()
   const enqueue = useEnqueueFollowUp()
   const steerRun = useSteerRun()
@@ -190,9 +199,35 @@ function WorkspaceComposerContent({
     preferredCheckout?.id ?? '',
     detectedConnectionIds,
   )
+  const freshSessionRequested = preferences?.resumeNativeContext === false
+  const freshSessionNotice = freshSessionRequested
+  useEffect(() => {
+    const previousSessionId = preferences?.resumeSessionId
+    const runConversationIds = new Map(
+      (snapshot.data?.runContexts ?? []).map(context => [context.runId, context.conversationId] as const),
+    )
+    const latestSessionId = [...(snapshot.data?.runs ?? [])]
+      .filter(run => runConversationIds.get(run.id) === conversationId && run.sessionId)
+      .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]?.sessionId
+    if (
+      freshSessionRequested &&
+      previousSessionId &&
+      latestSessionId &&
+      latestSessionId !== previousSessionId
+    ) {
+      setPreferences({ resumeNativeContext: true, resumeSessionId: '' })
+    }
+  }, [
+    conversationId,
+    freshSessionRequested,
+    preferences?.resumeSessionId,
+    setPreferences,
+    snapshot.data?.runContexts,
+    snapshot.data?.runs,
+  ])
   // A started chat continues its agent session and stays with that agent.
-  const resumeMode = continuation !== null
-  const selectedSession = continuation
+  const resumeMode = continuation !== null && !freshSessionRequested
+  const selectedSession = resumeMode ? continuation : null
   const checkoutId = (resumeMode && selectedSession?.checkoutId) || preferredCheckout?.id || ''
   const activeCheckout = checkoutChoices.find(checkout => checkout.id === checkoutId) ?? null
   const branchRequest = useMemo(
@@ -235,11 +270,19 @@ function WorkspaceComposerContent({
               modes: observedSession.capabilities.modes.length
                 ? { state: 'session-scoped' as const, items: observedSession.capabilities.modes }
                 : inspection.capabilities.modes,
+              configOptions: observedSession.capabilities.configOptions ?? inspection.capabilities.configOptions,
             },
           }
         : inspection,
     [inspection, observedSession],
   )
+  const declaredConfigOptions = inspected?.capabilities.configOptions ?? []
+  const configOptions = configOptionsForModel(
+    declaredConfigOptions,
+    inspected?.capabilities.models.items.find(model => model.id === modelId),
+  )
+  const configValues = preferences?.configValues ?? {}
+  const submittedConfigValues = configValuesForOptions(configOptions, configValues)
   const validatedSession =
     selectedSession && sessions.data && !sessions.data.truncated && sessions.data.nextAfterId === null
       ? validateResumeSelection(
@@ -263,6 +306,14 @@ function WorkspaceComposerContent({
     snapshot.data.runCoverage?.returned === runContexts.length,
   )
   const runs = snapshot.data ? currentConversationRuns(snapshot.data.runs, runContexts, conversationId) : []
+  const latestGoal = [...runs].sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]?.goal ?? null
+  const promptHistory = useMemo(
+    () =>
+      [...(conversationHistory.data?.items ?? [])]
+        .reverse()
+        .flatMap(item => (item.userMessage ? [item.userMessage.content] : [])),
+    [conversationHistory.data],
+  )
   const choosingInitialCheckout = allowInitialCheckoutChoice && contextComplete && runs.length === 0 && !resumeMode
   let shownCheckoutMode: CheckoutMode = activeCheckout?.kind === 'worktree' ? 'worktree' : 'local'
   if (choosingInitialCheckout) shownCheckoutMode = checkoutMode
@@ -364,6 +415,123 @@ function WorkspaceComposerContent({
   }
 
   const submit = async () => {
+    const promptCommand = parseWorkspacePromptCommand(draft, observedSession?.capabilities?.commands ?? [])
+    const goalControl = activeGoalControl(promptCommand)
+    if (promptCommand?.kind === 'model') {
+      draftRef.current = ''
+      setDraft('')
+      agentPickerRef.current?.open(promptCommand.query)
+      return
+    }
+    if (promptCommand?.kind === 'clear') {
+      if (blocked || pendingStart || pendingStarts.store.error || intent) return
+      if (followUps.data?.items.length) {
+        setError('Send or remove queued messages before starting a fresh agent session.')
+        return
+      }
+      if (!continuation) {
+        setError('This Conversation already starts with a fresh agent session.')
+        return
+      }
+      setError(null)
+      setPreferences({ resumeNativeContext: false, resumeSessionId: continuation.nativeSessionId })
+      draftRef.current = ''
+      setDraft('')
+      attachments.clearCaptured(attachments.items)
+      return
+    }
+    if (goalControl && promptCommand?.kind === 'native') {
+      if (
+        !actionStateReady ||
+        blocked ||
+        unresolvedRun ||
+        pendingStart ||
+        pendingStarts.store.error ||
+        intent ||
+        !activeRun ||
+        !activeRunContext ||
+        runConnection?.connectionId !== activeRunContext.connectionId ||
+        runConnection.driverId !== activeRunContext.driverId ||
+        runConnection.capabilities.steer.support !== 'supported'
+      ) {
+        setError('The active agent goal cannot be controlled until this Run is confirmed and its connection is ready.')
+        return
+      }
+      const command: WorkspaceCommandInput<'workspace:steer'> = {
+        commandId: crypto.randomUUID(),
+        runId: activeRun.id,
+        generation: activeRun.generation,
+        ...(activeRun.nativeTurnId ? { expectedNativeTurnId: activeRun.nativeTurnId } : {}),
+        message: promptCommand.prompt,
+        attachments: [],
+      }
+      void sendIntent({ kind: 'steer', command, prompt: promptCommand.prompt, draftValue: draft })
+      return
+    }
+    if (promptCommand?.kind === 'side' || promptCommand?.kind === 'btw') {
+      if (!actionStateReady || blocked || pendingStart || pendingStarts.store.error || intent) return
+      const rawDraft = draft
+      const prompt = promptCommand.prompt
+      setError(null)
+      try {
+        const binding = await createSideChat.create({
+          parentTaskId: task.id,
+          parentConversationId: conversationId,
+          ...(checkoutId ? { checkoutId } : {}),
+          ...(prompt ? { title: prompt.slice(0, 200) } : {}),
+        })
+        if (!binding) return
+        onSideChatCreated?.(binding.id)
+        if (prompt) {
+          if (
+            selectedConnection &&
+            inspected?.capabilities.openSession.support === 'supported' &&
+            inspected.capabilities.submit.support === 'supported'
+          ) {
+            const sideCommand: WorkspaceRequest<'workspace:startRun'> = {
+              commandId: crypto.randomUUID(),
+              taskId: binding.taskId,
+              conversationId: binding.conversationId,
+              checkoutId: binding.checkoutId,
+              generation: 1,
+              driverId: selectedConnection.driverId,
+              connectionId: selectedConnection.connectionId,
+              prompt,
+              attachments: [],
+              modelId: modelId || null,
+              modeId: modeId || null,
+              accessMode: access.mode,
+              ...(Object.keys(submittedConfigValues).length > 0 ? { configValues: submittedConfigValues } : {}),
+              nativeSessionId: null,
+              retryOfRunId: null,
+            }
+            const captured = pendingStarts.capture({
+              conversationId: binding.conversationId,
+              command: sideCommand,
+              rawDraft: prompt,
+            })
+            if (captured.error || captured.records[binding.conversationId]?.command.commandId !== sideCommand.commandId)
+              throw new Error(captured.error ?? 'The side chat message could not be saved.')
+            if (canClearCapturedDraft(draftRef.current, rawDraft)) {
+              draftRef.current = ''
+              setDraft('')
+              attachments.clearCaptured(attachments.items)
+            }
+            await startRun.execute(sideCommand)
+          } else {
+            appendDraft(binding.conversationId, prompt)
+          }
+        }
+        if (canClearCapturedDraft(draftRef.current, rawDraft)) {
+          draftRef.current = ''
+          setDraft('')
+          attachments.clearCaptured(attachments.items)
+        }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : 'Could not open a side chat.')
+      }
+      return
+    }
     const prompt = promptWithAttachments(draft, attachments.items)
     if (
       !prompt ||
@@ -378,7 +546,7 @@ function WorkspaceComposerContent({
     )
       return
     if (busy) {
-      if (!queueExhaustive || !checkoutId || !selectedConnection) return
+      if (freshSessionRequested || !queueExhaustive || !checkoutId || !selectedConnection) return
       const command: WorkspaceCommandInput<'workspace:enqueueFollowUp'> = {
         commandId: crypto.randomUUID(),
         taskId: task.id,
@@ -393,6 +561,7 @@ function WorkspaceComposerContent({
         modelId: modelId || null,
         modeId: modeId || null,
         accessMode: access.mode,
+        ...(Object.keys(submittedConfigValues).length > 0 ? { configValues: submittedConfigValues } : {}),
       }
       void sendIntent({ kind: 'enqueue', command, prompt, draftValue: draft })
       return
@@ -432,6 +601,7 @@ function WorkspaceComposerContent({
       modelId: modelId || null,
       modeId: modeId || null,
       accessMode: access.mode,
+      ...(Object.keys(submittedConfigValues).length > 0 ? { configValues: submittedConfigValues } : {}),
       nativeSessionId: validatedSession?.nativeSessionId ?? null,
       retryOfRunId: null,
     }
@@ -562,6 +732,7 @@ function WorkspaceComposerContent({
       attachments: item.attachments ?? [],
       modelId: item.modelId ?? null,
       modeId: item.modeId ?? null,
+      ...(item.configValues ? { configValues: item.configValues } : {}),
       ...(item.accessMode ? { accessMode: item.accessMode } : {}),
       nativeSessionId: item.nativeSessionId ?? queuedSession?.nativeSessionId ?? null,
       retryOfRunId: null,
@@ -582,21 +753,13 @@ function WorkspaceComposerContent({
     else void submit()
   }
 
-  const keyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (
-      event.key === 'Enter' &&
-      (event.metaKey || event.ctrlKey) &&
-      !event.shiftKey &&
-      !event.nativeEvent.isComposing
-    ) {
+  const keyDown = (event: globalThis.KeyboardEvent) => {
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.isComposing) {
       event.preventDefault()
       dispatchPrompt(true)
       return
     }
-    if (
-      !shouldSubmitComposerKey({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })
-    )
-      return
+    if (!shouldSubmitComposerKey({ key: event.key, shiftKey: event.shiftKey, isComposing: event.isComposing })) return
     event.preventDefault()
     void submit()
   }
@@ -667,6 +830,7 @@ function WorkspaceComposerContent({
                 (!item.nativeSessionId || validatedQueuedSession) &&
                 !promoteFollowUp.pending,
               )
+              const visibleQueuedAttachments = visiblePromptAttachments(item.attachments ?? [])
               return (
                 <li
                   key={item.commandId}
@@ -677,9 +841,9 @@ function WorkspaceComposerContent({
                       Queued #{index + 1} · {item.held ? 'Paused' : 'Sends when the agent is available'}
                     </p>
                     <p className="break-words whitespace-pre-wrap">{item.prompt}</p>
-                    {item.attachments?.length ? (
+                    {visibleQueuedAttachments.length ? (
                       <p className="text-muted-foreground mt-1 text-xs">
-                        {item.attachments.map(attachment => attachment.name).join(' · ')}
+                        {visibleQueuedAttachments.map(attachment => attachment.name).join(' · ')}
                       </p>
                     ) : null}
                   </div>
@@ -749,6 +913,41 @@ function WorkspaceComposerContent({
             Message delivery is unresolved. More work is blocked until its status is confirmed.
           </p>
         )}
+        {freshSessionNotice && (
+          <div
+            className="mb-2 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
+            role="status"
+          >
+            <span>
+              {busy
+                ? 'After this Run ends, the next message starts a fresh agent session. Earlier messages remain in this Conversation.'
+                : 'The next message starts a fresh agent session. Earlier messages remain in this Conversation.'}
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setPreferences({ resumeNativeContext: true, resumeSessionId: '' })
+              }}
+            >
+              Keep current session
+            </Button>
+          </div>
+        )}
+        {latestGoal && (
+          <section className="mb-2 rounded-md border px-3 py-2 text-xs" aria-label="Agent goal">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+              <strong>Agent goal · {latestGoal.status}</strong>
+              <span>{latestGoal.tokensUsed.toLocaleString()} tokens used</span>
+              {latestGoal.tokenBudget && <span>Budget {latestGoal.tokenBudget.toLocaleString()}</span>}
+              <span>{latestGoal.timeUsedSeconds.toLocaleString()} seconds</span>
+            </div>
+            <p className="text-muted-foreground mt-1 line-clamp-2" title={latestGoal.objective}>
+              {latestGoal.objective}
+            </p>
+          </section>
+        )}
         {submissionHint && !busy && (
           <p className="text-muted-foreground mb-2 text-xs" role="status">
             {submissionHint}
@@ -765,10 +964,31 @@ function WorkspaceComposerContent({
           onKeyDown={keyDown}
           attachments={attachments}
           projectId={task.projectId}
+          taskId={task.id}
+          conversationId={conversationId}
           checkoutId={checkoutId}
+          connectionId={connectionId}
           maxLength={WORKSPACE_DRAFT_MAX_LENGTH}
           nativeCommands={observedSession?.capabilities?.commands ?? []}
-          onOpenModelPicker={() => agentPickerRef.current?.open()}
+          onOpenModelPicker={query => agentPickerRef.current?.open(query)}
+          history={promptHistory}
+          onPromptCommand={
+            onSideChatCreated
+              ? name => {
+                  setError(null)
+                  void createSideChat
+                    .create({
+                      parentTaskId: task.id,
+                      parentConversationId: conversationId,
+                      ...(checkoutId ? { checkoutId } : {}),
+                    })
+                    .then(binding => {
+                      if (binding) onSideChatCreated(binding.id)
+                    })
+                    .catch(cause => setError(cause instanceof Error ? cause.message : `Could not open a ${name} chat.`))
+                }
+              : undefined
+          }
           placeholder={composerPlaceholder({ busy, awaiting, canSteer: steerAvailable })}
           contextStrip={
             activeCheckout && project.data && (!project.data.project.isScratch || choosingInitialCheckout) ? (
@@ -817,6 +1037,7 @@ function WorkspaceComposerContent({
                 connectionId={connectionId}
                 modelId={modelId}
                 modeId={modeId}
+                configValues={configValues}
                 inspection={inspected}
                 pending={inspect.pending}
                 {...(continuation ? { lockedConnectionId: continuation.connectionId } : {})}
@@ -825,16 +1046,23 @@ function WorkspaceComposerContent({
                   setSelectedConnectionId(id)
                   setModelId('')
                   setModeId('')
-                  setPreferences({ checkoutId, connectionId: id, modelId: '', modeId: '' })
+                  setPreferences({ checkoutId, connectionId: id, modelId: '', modeId: '', configValues: {} })
                 }}
                 onModelChange={id => {
                   setModelId(id)
                   setModeId('')
-                  setPreferences({ modelId: id, modeId: '' })
+                  setPreferences({
+                    modelId: id,
+                    modeId: '',
+                    configValues: withoutModelSpecificConfigValues(configValues, declaredConfigOptions),
+                  })
                 }}
                 onModeChange={id => {
                   setModeId(id)
                   setPreferences({ modeId: id })
+                }}
+                onConfigValueChange={(id, value) => {
+                  setPreferences({ configValues: { ...configValues, [id]: value } })
                 }}
               />
               {/* The picker's footer always holds permissions; the chip only shows a mode that differs from the default. */}
@@ -883,7 +1111,7 @@ function WorkspaceComposerContent({
                     Boolean(checkoutError) ||
                     preparingCheckout ||
                     (busy
-                      ? !queueExhaustive && (!steerAvailable || steerRun.pending)
+                      ? freshSessionRequested || (!queueExhaustive && (!steerAvailable || steerRun.pending))
                       : !submitAvailable || (resumeMode && !validatedSession))
                   }
                   onClick={event => dispatchPrompt(event.metaKey || event.ctrlKey)}

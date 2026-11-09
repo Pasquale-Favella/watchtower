@@ -1,5 +1,8 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
+import type * as Schema from 'effect/Schema'
+
+import type { promptConversationSearchSchema, promptConversationMatchesSchema } from '@/shared/schemas/prompt-context.js'
 
 import type { AgentRunId, ConversationId, ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type {
@@ -155,6 +158,9 @@ export class WorkspaceStore extends Context.Service<
       projectId: ProjectId,
       options?: WorkspaceEntityPageOptions,
     ) => Effect.Effect<WorkspaceTaskReadPage, WorkspaceStoreError>
+    readonly searchPromptConversations?: (
+      request: Schema.Schema.Type<typeof promptConversationSearchSchema>,
+    ) => Effect.Effect<Schema.Schema.Type<typeof promptConversationMatchesSchema>, WorkspaceStoreError>
     readonly readTaskDetail: (
       taskId: TaskId,
       options?: WorkspaceEntityPageOptions,

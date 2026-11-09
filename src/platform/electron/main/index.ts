@@ -17,16 +17,16 @@ import { join } from 'path'
 
 import { WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
+import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import {
   enrichSideChatPrompt,
   SideChatPersistence,
   WorkspaceSideChats,
   WorkspaceSideChatsLive,
 } from '@/core/application/commands/workspace-side-chats.js'
-import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError } from '@/core/ports/agent-driver.js'
-import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
 import type { CheckoutActions } from '@/core/ports/checkout-actions.js'
+import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import type { TerminalHost } from '@/core/ports/terminal-host.js'
 import type { WorkspaceDevices } from '@/core/ports/workspace-devices.js'
@@ -47,12 +47,12 @@ import {
 } from '@/infrastructure/logging/operational-log.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import { TerminalHostLive } from '@/infrastructure/terminal/terminal-host.js'
-import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
 import { CheckoutActionsLive } from '@/infrastructure/workspace/checkout-actions.js'
+import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
 import { WorkspaceDevicesLive } from '@/infrastructure/workspace/devices.js'
+import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { WorkspacePullRequestsLive } from '@/infrastructure/workspace/pull-requests.js'
 import { sideChatPersistenceLayer } from '@/infrastructure/workspace/side-chat-store.js'
-import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { createNativeApplicationCapabilities } from '@/platform/electron/main/application/native-capabilities.js'
 import {
   BackgroundShell,
@@ -61,11 +61,11 @@ import {
 } from '@/platform/electron/main/background-shell.js'
 import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
 import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
-import { createElectronWorkspacePreviewManager } from '@/platform/electron/main/preview/electron-preview.js'
 import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
+import { createElectronWorkspacePreviewManager } from '@/platform/electron/main/preview/electron-preview.js'
 import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
-import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
 import { checkoutActionsHandlers } from '@/platform/electron/main/rpc/checkout-actions-handlers.js'
+import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
 import { checkoutNavigationHandlers } from '@/platform/electron/main/rpc/checkout-navigation-handlers.js'
 import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
@@ -81,14 +81,15 @@ import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
 import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
 import { terminalHandlers } from '@/platform/electron/main/rpc/terminal-handlers.js'
 import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
+import { workspaceDeviceHandlers } from '@/platform/electron/main/rpc/workspace-device-handlers.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
 import { workspacePreviewHandlers } from '@/platform/electron/main/rpc/workspace-preview-handlers.js'
-import { workspaceDeviceHandlers } from '@/platform/electron/main/rpc/workspace-device-handlers.js'
 import { workspacePullRequestHandlers } from '@/platform/electron/main/rpc/workspace-pull-request-handlers.js'
 import { workspaceSideChatHandlers } from '@/platform/electron/main/rpc/workspace-side-chat-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
 import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
+import { createPromptReferenceFiles } from '@/platform/electron/main/workspace/prompt-references.js'
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
 import { DbWorkerClient } from '@/platform/electron/workers/client.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
@@ -97,7 +98,7 @@ import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc
 import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
 import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
 import { TerminalRpcError } from '@/shared/rpc/terminal.js'
-import { WorkspacePullRequestRpcError, pullRequestRpcMessages } from '@/shared/rpc/workspace-pull-requests.js'
+import { pullRequestRpcMessages,WorkspacePullRequestRpcError } from '@/shared/rpc/workspace-pull-requests.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 /**
@@ -506,6 +507,7 @@ app.whenReady().then(async () => {
                 coachHandlers(agents.native),
                 workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject>>>({
                   attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
+                  promptReferences: createPromptReferenceFiles(join(app.getPath('userData'), 'workspace', 'prompt-references')),
                   chooseProjectDirectory: () =>
                     Effect.tryPromise({
                       try: async () => {

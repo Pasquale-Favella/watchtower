@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { expect, test } from '@playwright/test'
+import { expect, type Locator, test } from '@playwright/test'
 
 import { dismissOnboarding, launchApp } from './app'
 import { invokeRpc, invokeRpcStreamFirst } from './rpc-probe'
@@ -14,6 +14,18 @@ function observeSubmissionUi(): void {
       sessionStorage.setItem('unconfirmed-message-seen', 'true')
     }
   }).observe(document, { subtree: true, childList: true, characterData: true })
+}
+
+async function expectPromptValue(prompt: Locator, value: string): Promise<void> {
+  await expect
+    .poll(() =>
+      prompt.evaluate(element =>
+        Array.from(element.children)
+          .map(paragraph => paragraph.textContent ?? '')
+          .join('\n'),
+      ),
+    )
+    .toBe(value)
 }
 
 test('composer drives an isolated protocol peer, restores drafts and approval state, and controls queued work', async () => {
@@ -35,6 +47,11 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     if (process.platform !== 'win32') chmodSync(shim, 0o755)
     execFileSync('git', ['init', repository], { stdio: 'pipe', windowsHide: true })
     writeFileSync(join(repository, 'README.md'), 'Fixture repository\n')
+    for (const folder of ['client', 'server']) {
+      mkdirSync(join(repository, folder))
+      writeFileSync(join(repository, folder, 'shared.ts'), `export const owner = '${folder}'\n`)
+    }
+    writeFileSync(join(repository, 'WorkspacePromptInput.tsx'), 'export const composer = true\n')
     mkdirSync(join(repository, '.agents', 'skills', 'review'), { recursive: true })
     writeFileSync(
       join(repository, '.agents', 'skills', 'review', 'SKILL.md'),
@@ -76,6 +93,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     const newChat = window.getByRole('region', { name: 'New chat', exact: true })
     const projectPicker = newChat.getByRole('combobox', { name: 'Project', exact: true })
     await expect(newChat).toBeVisible()
+    await expect(projectPicker).toHaveText('repository')
     await expect(header).toHaveCount(1)
     await expect(header.getByRole('heading', { name: 'New chat', exact: true })).toBeVisible()
     await expect(header.getByRole('button', { name: 'Terminal', exact: true })).toBeEnabled()
@@ -115,7 +133,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(projectPicker).toHaveText('repository')
     await projectPicker.click()
     await window.getByRole('option', { name: 'No project', exact: true }).click()
-    await expect(newPrompt).toHaveValue('Inspect this checkout')
+    await expectPromptValue(newPrompt, 'Inspect this checkout')
     await projectPicker.click()
     await window.getByRole('option', { name: 'Add project', exact: true }).click()
     await launched.app.evaluate(({ dialog }, repository) => {
@@ -124,7 +142,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await addProject.getByRole('button', { name: /^Open in / }).click()
     await expect(addProject).toHaveCount(0)
     await expect(projectPicker).toHaveText('repository')
-    await expect(newPrompt).toHaveValue('Inspect this checkout')
+    await expectPromptValue(newPrompt, 'Inspect this checkout')
     await projectPicker.click()
     await window.getByRole('option', { name: 'No project', exact: true }).click()
     await expect(projectPicker).toHaveText('No project')
@@ -132,8 +150,34 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await window.getByRole('combobox', { name: 'Search Projects', exact: true }).fill('repo')
     await window.getByRole('option', { name: 'repository', exact: true }).click()
     await window.screenshot({ path: test.info().outputPath('workspace-new-chat.png'), fullPage: true })
+    await newPrompt.fill('@shared')
+    const fileMenu = newChat.getByRole('listbox', { name: 'Files, models, and conversations', exact: true })
+    const sameNameFiles = fileMenu.getByRole('option', { name: /^shared\.ts\b/ })
+    await expect(sameNameFiles).toHaveCount(2)
+    await sameNameFiles.filter({ hasText: 'server' }).click()
+    await expect(newPrompt.locator('[data-composer-mention]')).toHaveAttribute('path', 'server/shared.ts')
+    await newPrompt.fill('@wpi')
+    await expect(fileMenu.getByRole('option', { name: 'WorkspacePromptInput.tsx', exact: true })).toBeVisible()
+    await newPrompt.press('Escape')
+    await expect(fileMenu).toHaveCount(0)
+    await newPrompt.pressSequentially('n')
+    await expect(fileMenu).toHaveCount(0)
+    await newPrompt.press('End')
+    await newPrompt.press('Space')
+    await newPrompt.pressSequentially('@wpi')
+    await expect(fileMenu.getByRole('option', { name: 'WorkspacePromptInput.tsx', exact: true })).toBeVisible()
+    await newPrompt.press('Enter')
+    await expect(newPrompt.locator('[data-composer-mention]').last()).toHaveAttribute('path', 'WorkspacePromptInput.tsx')
+    await newPrompt.fill('/skill:rev')
+    await expect(newChat.getByRole('option', { name: /^\/skill:review\b/ })).toBeVisible()
+    await newPrompt.press('Tab')
+    await expect(newPrompt.locator('[data-composer-skill]')).toHaveText('$review')
+    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toHaveCount(0)
+    await newPrompt.fill('/mdl')
+    await expect(newChat.getByRole('option', { name: /^\/model\b/ })).toBeVisible()
+    await newPrompt.press('Escape')
     await newPrompt.fill('/mod')
-    await expect(newChat.getByRole('option', { name: '/model command', exact: true })).toBeVisible()
+    await expect(newChat.getByRole('option', { name: /^\/model\b/ })).toBeVisible()
     await newPrompt.press('Enter')
     await window.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
     await window.getByRole('option', { name: /^Default/ }).click()
@@ -141,14 +185,20 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(newChat.getByRole('button', { name: 'Agent and model', exact: true })).toContainText('Default model')
     await expect(newChat.getByRole('combobox', { name: 'Branch', exact: true })).toHaveText(/main|master/)
     await expect(newChat.getByRole('button', { name: 'Checkout: Current checkout', exact: true })).toBeVisible()
+    await newPrompt.fill('@Fixture:Gemini')
+    await expect(newChat.getByRole('option', { name: /^Fixture model/ })).toBeVisible()
+    await newPrompt.press('Tab')
+    await expect(newPrompt).toContainText('model:')
+    await expect(newPrompt).toContainText('/fixture-model')
+    await expect(newChat.getByRole('button', { name: 'Agent and model', exact: true })).toContainText('Default model')
     await newPrompt.fill('Inspect this checkout @READ')
     await expect(newChat.getByRole('option', { name: 'README.md', exact: true })).toBeVisible()
     await newPrompt.press('Enter')
-    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('README.md')
-    await newPrompt.fill('/rev')
-    await expect(newChat.getByRole('option', { name: '/review skill', exact: true })).toBeVisible()
+    await expect(newPrompt).toContainText('README.md')
+    await newPrompt.fill('Inspect this checkout\n@README.md $rev')
+    await expect(newChat.getByRole('option', { name: /^\$review\b/ })).toBeVisible()
     await newPrompt.press('Tab')
-    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('SKILL.md')
+    await expect(newPrompt).toContainText('$review')
     await newChat.locator('input[type=file]').setInputFiles({
       name: 'context.txt',
       mimeType: 'text/plain',
@@ -178,9 +228,9 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
       .getByRole('dialog', { name: 'pixel.png', exact: true })
       .getByRole('button', { name: 'Close', exact: true })
       .click()
-    await newPrompt.fill('Inspect this checkout')
+    await newPrompt.fill('Inspect this checkout\n@README.md $review ')
     await newPrompt.press('Shift+Enter')
-    await expect(newPrompt).toHaveValue('Inspect this checkout\n')
+    await expect(newPrompt.locator('p')).toHaveCount(3)
     await newPrompt.press('Enter')
     const composer = window.getByRole('region', { name: 'Conversation composer' })
     const composerLane = composer.locator('.max-w-chat')
@@ -224,15 +274,19 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
         }),
       )
       .toMatchObject({ maxWidth: '736px', centered: true })
-    await expect(prompt).toHaveValue('')
+    await expectPromptValue(prompt, '')
     const requests = window.getByRole('region', { name: 'Approvals and questions' })
     await expect(requests.getByText('Inspect checkout status', { exact: true }).first()).toBeVisible()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await expect(requests.getByRole('button', { name: 'Skip inspection', exact: true })).toBeEnabled()
+    await expect(requests.getByText('git status --short', { exact: true })).toBeVisible()
+    await requests.getByRole('button', { name: 'More options', exact: true }).click()
+    await expect(window.getByRole('menuitem', { name: 'Always inspect', exact: true })).toBeEnabled()
+    await window.keyboard.press('Escape')
     await prompt.fill('/fixture-')
-    await expect(composer.getByRole('option', { name: '/fixture-check agent command', exact: true })).toBeVisible()
+    await expect(composer.getByRole('option', { name: /^\/fixture-check\b/ })).toBeVisible()
     await prompt.press('Enter')
-    await expect(prompt).toHaveValue('/fixture-check ')
+    await expectPromptValue(prompt, '/fixture-check ')
     await prompt.fill('Queued work to cancel')
     await prompt.press('Enter')
     const queue = composer.getByRole('list', { name: 'Queued prompts' })
@@ -242,9 +296,22 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await composer.getByRole('button', { name: 'Agent and model', exact: true }).click()
     await window.getByRole('option', { name: 'Fixture model', exact: true }).click()
     await window
-      .getByRole('radiogroup', { name: /^(Effort|Mode)$/ })
-      .getByRole('radio', { name: /plan/i })
+      .getByRole('radiogroup', { name: 'Effort', exact: true })
+      .getByRole('radio', { name: 'High', exact: true })
       .click()
+    await window.getByRole('button', { name: 'Agent: General', exact: true }).click()
+    await window.getByRole('menuitemradio', { name: 'Reviewer', exact: true }).click()
+    const modeControl = window.getByRole('button', { name: 'Mode: Code', exact: true })
+    await modeControl.focus()
+    await modeControl.press('ArrowRight')
+    await expect(window.getByRole('menuitemradio', { name: 'Code', exact: true })).toBeFocused()
+    await window.keyboard.press('ArrowLeft')
+    await expect(modeControl).toBeFocused()
+    await expect(window.getByRole('menuitemradio')).toHaveCount(0)
+    await modeControl.click()
+    await window.getByRole('menuitemradio', { name: 'Plan', exact: true }).click()
+    await expect(window.getByRole('button', { name: 'Mode: Plan', exact: true })).toBeVisible()
+    await window.keyboard.press('Escape')
     await expect(composer.getByRole('combobox', { name: 'Branch', exact: true })).toBeVisible()
     await composer.locator('input[type=file]').setInputFiles(join(repository, 'notes.txt'))
     await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('notes.txt')
@@ -262,12 +329,16 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await header.getByRole('button', { name: 'Terminal', exact: true }).click()
     await expect(window.locator('[data-terminal-owner="drawer"]')).toBeVisible()
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
-    await expect(newPrompt).toHaveValue('')
+    await expectPromptValue(newPrompt, '')
+    await newPrompt.fill('@Inspect')
+    await expect(newChat.getByRole('option', { name: /^Inspect this checkout/ })).toBeVisible()
+    await newPrompt.press('Tab')
+    await expect(newPrompt.locator('[data-composer-mention]')).toContainText('chat-Inspect-this-checkout')
     await newPrompt.fill('Independent second draft')
     await window.getByRole('button', { name: /Inspect this checkout/ }).click()
-    await expect(prompt).toHaveValue('Keep this draft during navigation')
+    await expectPromptValue(prompt, 'Keep this draft during navigation')
     await window.reload()
-    await expect(prompt).toHaveValue('Keep this draft during navigation')
+    await expectPromptValue(prompt, 'Keep this draft during navigation')
     const restoredTerminal = window.locator('[data-terminal-owner="drawer"]')
     await expect(restoredTerminal).toBeVisible()
     const restoredInput = restoredTerminal.locator('.xterm-helper-textarea').first()
@@ -311,9 +382,9 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await composer.getByRole('button', { name: 'Stop Run', exact: true }).click()
     await expect(composer.getByRole('button', { name: 'Stop Run', exact: true })).toHaveCount(0)
-    await expect(prompt).toHaveValue('Keep this draft during navigation')
+    await expectPromptValue(prompt, 'Keep this draft during navigation')
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
-    await expect(newPrompt).toHaveValue('Independent second draft')
+    await expectPromptValue(newPrompt, 'Independent second draft')
     await expect(projectPicker).toHaveText('No project')
     await newChat.getByRole('button', { name: 'Agent and model', exact: true }).click()
     await window.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
@@ -329,7 +400,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(composer.getByRole('button', { name: 'Stop Run', exact: true })).toHaveCount(0)
     await prompt.fill('Continue this conversation')
     await prompt.press('Enter')
-    await expect(prompt).toHaveValue('')
+    await expectPromptValue(prompt, '')
     await expect(requests.getByRole('button', { name: 'Skip inspection', exact: true })).toBeEnabled()
     await requests.getByRole('button', { name: 'Skip inspection', exact: true }).click()
     expect(await window.evaluate(() => sessionStorage.getItem('unconfirmed-message-seen'))).toBeNull()
@@ -438,6 +509,14 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     expect(records).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ kind: 'session/set_mode', params: expect.objectContaining({ modeId: 'plan' }) }),
+        expect.objectContaining({
+          kind: 'session/set_config_option',
+          params: expect.objectContaining({ configId: 'effort', value: 'high' }),
+        }),
+        expect.objectContaining({
+          kind: 'session/set_config_option',
+          params: expect.objectContaining({ configId: 'agent', value: 'reviewer' }),
+        }),
         expect.objectContaining({
           kind: 'session/set_model',
           params: expect.objectContaining({ modelId: 'fixture-model' }),

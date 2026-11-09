@@ -101,11 +101,13 @@ export function WorkspaceConversation({
   workspacePath,
   onOpenFile,
   scope,
+  sessionIdsByRunId,
 }: {
   readonly conversationId: ConversationId
   readonly workspacePath?: string | undefined
   readonly onOpenFile?: ((path: string) => void) | undefined
   readonly scope?: CheckoutScope | undefined
+  readonly sessionIdsByRunId?: ReadonlyMap<string, string | null> | undefined
 }): React.JSX.Element {
   const loadImage = useMarkdownImageLoader(scope ?? null)
   const navigation = useMemo(
@@ -114,12 +116,18 @@ export function WorkspaceConversation({
   )
   return (
     <MarkdownNavigationContext value={navigation}>
-      <WorkspaceConversationView key={conversationId} conversationId={conversationId} />
+      <WorkspaceConversationView key={conversationId} conversationId={conversationId} sessionIdsByRunId={sessionIdsByRunId} />
     </MarkdownNavigationContext>
   )
 }
 
-function WorkspaceConversationView({ conversationId }: { conversationId: ConversationId }): React.JSX.Element {
+function WorkspaceConversationView({
+  conversationId,
+  sessionIdsByRunId = new Map(),
+}: {
+  readonly conversationId: ConversationId
+  readonly sessionIdsByRunId?: ReadonlyMap<string, string | null>
+}): React.JSX.Element {
   const { projection, stream } = useWorkspaceEvents()
   const { submissions, messageKeys, reconcile } = usePendingStart()
   const submission = submissions[conversationId] ?? null
@@ -331,10 +339,13 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
     for (const { value: result } of payloadResults.entries.values()) {
       if (result.value && 'data' in result.value) hydratedEvents.set(result.value.sequence, result.value)
     }
-    const { entries, activity } = projectConversationView(items, hydratedEvents)
+    const { entries, activity } = projectConversationView(items, hydratedEvents, sessionIdsByRunId)
     const timeline = buildTimelineRows(
       entries.filter(
-        entry => entry.kind !== 'status' || !['runQueued', 'dispatchClaimed', 'runStarted'].includes(entry.event.kind),
+        entry =>
+          entry.kind !== 'status' ||
+          entry.notice === 'newSession' ||
+          !['runQueued', 'dispatchClaimed', 'runStarted'].includes(entry.event.kind),
       ),
       activity,
       preservedWorkTurns,
@@ -354,7 +365,7 @@ function WorkspaceConversationView({ conversationId }: { conversationId: Convers
       timeline.push({ kind: 'user', id: entry.id, entry, delivery: submission.state })
     }
     return timeline
-  }, [items, payloadResults, submission, messageKeys, preservedWorkTurns])
+  }, [items, payloadResults, submission, messageKeys, preservedWorkTurns, sessionIdsByRunId])
   useEffect(() => {
     if (activeRequest || conversation.error) return
     if (!restoredAnchor.current) {
@@ -721,6 +732,12 @@ function TurnBlock({
 }
 
 function ConversationStatusEntry({ entry }: { readonly entry: ConversationStatusNotice }): React.JSX.Element {
+  if (entry.notice === 'newSession')
+    return (
+      <article className="text-muted-foreground py-2 text-center text-xs" aria-label="New session">
+        New session
+      </article>
+    )
   const attention = ['runFailed', 'runUncertain', 'runRecoveryRequired'].includes(entry.event.kind)
   return (
     <article

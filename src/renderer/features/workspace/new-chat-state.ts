@@ -1,7 +1,9 @@
 import * as Schema from 'effect/Schema'
 
+import { WORKSPACE_PROMPT_MAX_LENGTH } from '@/shared/schemas/prompt-context.js'
+
 const STORAGE_KEY = 'watchtower.workspace.new-chat-draft.v1'
-export const NEW_CHAT_DRAFT_MAX_LENGTH = 12_000
+export const NEW_CHAT_DRAFT_MAX_LENGTH = WORKSPACE_PROMPT_MAX_LENGTH
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000
 
 const storedDraftSchema = Schema.Struct({ text: Schema.String, updatedAt: Schema.Number })

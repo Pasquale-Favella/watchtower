@@ -1,13 +1,14 @@
 import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import * as Schema from 'effect/Schema'
-import { useContext, useEffect } from 'react'
+import { useContext, useEffect, useMemo } from 'react'
 
 import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc.js'
 import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query.js'
-import { pinWindowAtom, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query.js'
+import { querySnapshot } from '@/renderer/stores/hooks/use-remote-query.js'
 import { type PromptAttachment, promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
 
 import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
@@ -27,26 +28,59 @@ const attachAtom = runtime.fn<WorkspaceRequest<'workspace:attachPromptContext'>>
     return yield* client('workspace:attachPromptContext', request)
   }),
 )
+const resolveReferenceAtom = runtime.fn<WorkspaceRequest<'workspace:resolvePromptReference'>>()(request =>
+  Effect.gen(function* () {
+    const client = yield* ApplicationClient
+    return yield* client('workspace:resolvePromptReference', request)
+  }),
+)
 const previewAtom = runtime.fn<PromptAttachment>()(request =>
   Effect.gen(function* () {
     const client = yield* ApplicationClient
     return yield* client('workspace:previewAttachment', request)
   }),
 )
-const contextSearch = createRpcQuerySlot({
-  key: workspaceQueryKey,
-  query: (request: WorkspaceRequest<'workspace:searchPromptContext'>, id: string) =>
-    ApplicationClient.query('workspace:searchPromptContext', request, { serializationKey: id }),
-})
 export function usePromptContextSearch(request: WorkspaceRequest<'workspace:searchPromptContext'> | null) {
-  return useRemoteQuery(contextSearch, request, workspaceQueryKey)
+  const registry = useContext(RegistryContext)
+  const slot = useMemo(() => createRpcQuerySlot({
+    key: workspaceQueryKey,
+    query: (queryRequest: WorkspaceRequest<'workspace:searchPromptContext'>, id: string) =>
+      ApplicationClient.query('workspace:searchPromptContext', queryRequest, { serializationKey: id }),
+  }), [])
+  const selected = useAtomValue(slot.requestAtom)
+  const result = useAtomValue(slot.resultAtom)
+  const select = useAtomSet(slot.requestAtom)
+  useEffect(() => {
+    const unmount = slot.pin(registry)
+    select(request)
+    return () => {
+      select(null)
+      unmount()
+    }
+  }, [registry, request, select, slot])
+  if (request === null || selected === null || workspaceQueryKey(selected) !== workspaceQueryKey(request))
+    return querySnapshot(AsyncResult.initial())
+  return querySnapshot(result)
 }
 
 export function usePromptAttachmentPreview() {
   const registry = useContext(RegistryContext)
   const preview = useAtomSet(previewAtom, { mode: 'promise' })
-  useEffect(() => pinWindowAtom(registry, previewAtom), [registry])
+  useEffect(() => {
+    const unmount = registry.mount(previewAtom)
+    return unmount
+  }, [registry])
   return preview
+}
+
+export function useResolvePromptReference() {
+  const registry = useContext(RegistryContext)
+  const resolve = useAtomSet(resolveReferenceAtom, { mode: 'promise' })
+  useEffect(() => {
+    const unmount = registry.mount(resolveReferenceAtom)
+    return unmount
+  }, [registry])
+  return resolve
 }
 
 const STORAGE_KEY = 'watchtower.workspace.prompt-attachments.v1'
@@ -72,18 +106,25 @@ export function usePromptAttachments(draftKey: string) {
   const attach = useAtomSet(attachAtom, { mode: 'promise' })
   const preview = useAtomSet(previewAtom, { mode: 'promise' })
   useEffect(() => {
-    pinWindowAtom(registry, importAtom)
-    pinWindowAtom(registry, attachAtom)
-    pinWindowAtom(registry, previewAtom)
-    if (hydrated.has(registry)) return
-    hydrated.add(registry)
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY)
-      if (!raw) return
-      const decoded = Schema.decodeUnknownOption(storageSchema)(JSON.parse(raw))
-      if (decoded._tag === 'Some') registry.set(entriesAtom, retained(decoded.value))
-    } catch {
-      /* Editing remains available when local storage cannot be read. */
+    const unmountImport = registry.mount(importAtom)
+    const unmountAttach = registry.mount(attachAtom)
+    const unmountPreview = registry.mount(previewAtom)
+    if (!hydrated.has(registry)) {
+      hydrated.add(registry)
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY)
+        if (raw) {
+          const decoded = Schema.decodeUnknownOption(storageSchema)(JSON.parse(raw))
+          if (decoded._tag === 'Some') registry.set(entriesAtom, retained(decoded.value))
+        }
+      } catch {
+        /* Editing remains available when local storage cannot be read. */
+      }
+    }
+    return () => {
+      unmountImport()
+      unmountAttach()
+      unmountPreview()
     }
   }, [registry])
 

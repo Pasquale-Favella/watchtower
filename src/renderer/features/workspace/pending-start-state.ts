@@ -1,11 +1,12 @@
 import * as Schema from 'effect/Schema'
 
 import { workspaceStartRunRequestSchema } from '@/shared/rpc/workspace.js'
+import { WORKSPACE_PROMPT_MAX_LENGTH } from '@/shared/schemas/prompt-context.js'
 import { conversationIdSchema } from '@/shared/schemas/workspace.js'
 
 export const PENDING_START_MAX_CONVERSATIONS = 40
 export const PENDING_START_RETENTION_MS = 60 * 24 * 60 * 60 * 1000
-export const PENDING_START_MAX_PROMPT_LENGTH = 12_000
+export const PENDING_START_MAX_PROMPT_LENGTH = WORKSPACE_PROMPT_MAX_LENGTH
 const STORAGE_KEY = 'watchtower.workspace.pending-starts.v1'
 
 const pendingStartRecordSchema = Schema.Struct({

@@ -2,6 +2,7 @@ import { tmpdir } from 'node:os'
 
 import {
   type Agent,
+  type AvailableCommand,
   type Client,
   ClientSideConnection,
   type ContentBlock,
@@ -13,8 +14,6 @@ import {
   type RequestPermissionRequest,
   type RequestPermissionResponse,
   type SessionConfigOption,
-  type SessionModelState,
-  type SessionModeState,
   type SessionNotification,
   type SessionUpdate,
   type ToolCallUpdate,
@@ -22,6 +21,7 @@ import {
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
 import { ChildProcessSpawner } from 'effect/process'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
@@ -48,6 +48,7 @@ import type {
   AgentAccessMode,
   AgentCapabilities,
   AgentDriverEvent,
+  AgentPromptCatalog,
   AgentReconcileEvent,
   AgentRequestDecision,
   AgentSessionIdentity,
@@ -137,6 +138,7 @@ interface ActiveRun {
 }
 
 interface PendingPermission {
+  readonly kind: 'permission'
   readonly id: string
   readonly runId: AgentRunId
   readonly generation: number
@@ -145,6 +147,15 @@ interface PendingPermission {
   readonly resolve: (response: RequestPermissionResponse) => void
   answered: boolean
 }
+
+interface PendingQuestion extends Omit<PendingPermission, 'kind' | 'options' | 'resolve'> {
+  readonly kind: 'question'
+  readonly questions: NonNullable<ReturnType<typeof questionFields>>
+  readonly form: Schema.Schema.Type<typeof elicitationFormSchema>
+  readonly resolve: (response: CreateElicitationResponse) => void
+}
+
+type PendingRequest = PendingPermission | PendingQuestion
 
 interface ReplayRecord {
   readonly cursor: string
@@ -158,7 +169,7 @@ interface AcpSessionState {
   readonly identity: AgentSessionIdentity
   readonly queues: Map<AgentRunId, RunChannel>
   readonly completedRuns: Array<AgentRunId>
-  readonly permissions: Map<string, PendingPermission>
+  readonly permissions: Map<string, PendingRequest>
   readonly replay: Array<ReplayRecord>
   replayBytes: number
   replaying: boolean
@@ -167,6 +178,8 @@ interface AcpSessionState {
   eventSequence: number
   liveCapabilities: AgentCapabilities
   configOptions: ReadonlyArray<SessionConfigOption>
+  modeState?: AcpSessionModeState | undefined
+  modelState?: AcpSessionModelState | undefined
   acceptRequests: boolean
   closed: boolean
   poison: (error: AgentDriverError) => void
@@ -176,6 +189,10 @@ interface AcpStateRef {
   current?: AcpSessionState
   /** Native IDs of disposable catalog probe sessions. */
   probes?: Set<string>
+  promptCatalogProbe?: {
+    readonly earlyCommands: Map<string, AgentPromptCatalog['commands']>
+    readonly waiters: Map<string, (commands: AgentPromptCatalog['commands']) => void>
+  }
 }
 
 interface AcpConnectionState {
@@ -183,6 +200,8 @@ interface AcpConnectionState {
   readonly connection: ClientSideConnection
   readonly transport: JsonRpcTransport
   readonly loadSessionSupported: boolean
+  readonly initializeModels?: AcpSessionModelState | undefined
+  readonly initializeModes?: AcpSessionModeState | undefined
   session?: AcpSessionState | undefined
   closed: boolean
   transportClosed: boolean
@@ -212,9 +231,8 @@ function connectionCapabilities(loadSessionSupported: boolean, images = false): 
     submit: capability('supported', 'protocol', 'ACP session/prompt'),
     interrupt: capability('supported', 'protocol', 'ACP session/cancel acknowledges request, not termination'),
     steer: capability('unsupported', 'driver', 'ACP has no standard turn-steering operation'),
-    respond: capability('supported', 'protocol', 'ACP tool permission decisions only', [
-      'Structured user questions are not exposed by ACP Client callbacks.',
-      'Persistent allow and reject choices are never selected by this driver.',
+    respond: capability('supported', 'protocol', 'ACP tool permission decisions and elicitation form responses', [
+      'Persistent permission choices require an explicit user decision.',
     ]),
     reconcile: capability(
       loadSessionSupported ? 'supported' : 'unsupported',
@@ -286,6 +304,31 @@ const toolHintsSchema = Schema.Struct({
   durationMs: Schema.optional(Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0))),
   duration_ms: Schema.optional(Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0))),
 })
+
+const elicitationPropertySchema = Schema.Struct({
+  type: Schema.optional(Schema.Literals(['string', 'number', 'integer', 'boolean', 'array'])),
+  title: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  enum: Schema.optional(Schema.Array(Schema.Union([Schema.String, Schema.Number]))),
+  format: Schema.optional(Schema.String),
+  items: Schema.optional(Schema.Struct({ enum: Schema.optional(Schema.Array(Schema.String)) })),
+})
+const elicitationFormSchema = Schema.Struct({
+  properties: Schema.optional(Schema.Record(Schema.String, elicitationPropertySchema)),
+  required: Schema.optional(Schema.Array(Schema.String)),
+})
+const elicitationRequestSchema = Schema.Struct({
+  mode: Schema.String,
+  message: Schema.String,
+  sessionId: Schema.optional(Schema.NullOr(Schema.String)),
+  requestId: Schema.optional(Schema.String),
+  toolCallId: Schema.optional(Schema.NullOr(Schema.String)),
+  requestedSchema: Schema.optional(Schema.Unknown),
+})
+type CreateElicitationResponse =
+  | { readonly action: 'accept'; readonly content?: Record<string, string | number | boolean | ReadonlyArray<string>> }
+  | { readonly action: 'decline' }
+  | { readonly action: 'cancel' }
 
 function toolHints(value: unknown): Schema.Schema.Type<typeof toolHintsSchema> | undefined {
   const decoded = Schema.decodeUnknownOption(toolHintsSchema)(value)
@@ -459,45 +502,303 @@ function translateTool(update: ToolCallUpdate, started: boolean): readonly Agent
   return events
 }
 
+/** A blank native value (Copilot's default persona uses "") cannot be a catalog choice, so it is dropped. */
+const isRepresentableChoice = (value: string): boolean => value.trim().length > 0
+
 function configCatalog(options: ReadonlyArray<SessionConfigOption>, category: string) {
-  return options
+  const choices = options
     .filter(option => option.category === category)
-    .flatMap(option => optionValues(option).map(item => ({ id: item.value, label: item.name })))
+    .flatMap(option => optionValues(option).flatMap(item => (isRepresentableChoice(item.value) ? [item] : [])))
+  // One row per value: agents may list an alias such as Copilot's repeated "auto".
+  const seen = new Set<string>()
+  return choices.flatMap(item => {
+    if (seen.has(item.value)) return []
+    seen.add(item.value)
+    return [{ id: item.value, label: item.name }]
+  })
 }
 
-function optionValues(option: SessionConfigOption): ReadonlyArray<{ readonly value: string; readonly name: string }> {
+const HIDDEN_CONFIG_CATEGORIES = new Set(['permission', 'approval', 'access', 'security', 'sandbox'])
+
+function configOptionCatalog(options: ReadonlyArray<SessionConfigOption>) {
+  return options
+    .filter(option => option.type === 'select')
+    .filter(option => option.category !== 'model')
+    .filter(option => !HIDDEN_CONFIG_CATEGORIES.has(option.category ?? ''))
+    .slice(0, MAX_CATALOG_CHOICES)
+    .flatMap(option => {
+      if (!isRepresentableChoice(option.id)) return []
+      const seen = new Set<string>()
+      const choices = optionValues(option)
+        .flatMap(item => {
+          if (!isRepresentableChoice(item.value) || seen.has(item.value)) return []
+          seen.add(item.value)
+          return [
+            {
+              id: item.value,
+              label: item.name,
+              ...(item.description ? { description: item.description } : {}),
+            },
+          ]
+        })
+        .slice(0, MAX_CATALOG_CHOICES)
+      if (choices.length === 0) return []
+      return [
+        {
+          id: option.id,
+          label: option.name,
+          ...(option.description ? { description: option.description } : {}),
+          ...(option.category ? { category: option.category } : {}),
+          currentValue: option.currentValue,
+          options: choices,
+        },
+      ]
+    })
+}
+
+function optionValues(
+  option: SessionConfigOption,
+): ReadonlyArray<{ readonly value: string; readonly name: string; readonly description?: string | null }> {
   return option.options.flatMap(group => {
-    if ('value' in group) return [{ value: group.value, name: group.name }]
-    return group.options.map(item => ({ value: item.value, name: item.name }))
+    if ('value' in group) return [{ value: group.value, name: group.name, description: group.description }]
+    return group.options.map(item => ({ value: item.value, name: item.name, description: item.description }))
   })
 }
 
 interface SessionCatalog {
-  readonly modes?: SessionModeState | null
-  readonly models?: SessionModelState | null
+  readonly modes?: AcpSessionModeState | null
+  readonly models?: AcpSessionModelState | null
   readonly configOptions?: ReadonlyArray<SessionConfigOption> | null
 }
 
-function sessionCapabilities(response: SessionCatalog): Pick<AgentCapabilities, 'models' | 'modes'> {
+interface AcpSessionModelState {
+  readonly currentModelId: string
+  readonly availableModels: ReadonlyArray<{
+    readonly modelId: string
+    readonly name: string
+    readonly description?: string | null
+    readonly _meta?: Readonly<Record<string, unknown>> | null
+  }>
+}
+
+interface AcpSessionModeState {
+  readonly currentModeId: string
+  readonly availableModes: ReadonlyArray<{
+    readonly id: string
+    readonly name: string
+    readonly description?: string | null
+    readonly _meta?: Readonly<Record<string, unknown>> | null
+  }>
+}
+
+const metadataRecordSchema = Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))
+const acpModelInfoSchema = Schema.Struct({
+  _meta: Schema.optional(metadataRecordSchema),
+  description: Schema.optional(Schema.NullOr(Schema.String)),
+  modelId: Schema.String,
+  name: Schema.String,
+})
+const acpSessionModelStateSchema = Schema.Struct({
+  _meta: Schema.optional(metadataRecordSchema),
+  availableModels: Schema.Array(acpModelInfoSchema),
+  currentModelId: Schema.String,
+})
+const acpSessionModeSchema = Schema.Struct({
+  _meta: Schema.optional(metadataRecordSchema),
+  description: Schema.optional(Schema.NullOr(Schema.String)),
+  id: Schema.String,
+  name: Schema.String,
+})
+const acpSessionModeStateSchema = Schema.Struct({
+  _meta: Schema.optional(metadataRecordSchema),
+  availableModes: Schema.Array(acpSessionModeSchema),
+  currentModeId: Schema.String,
+})
+const acpInitializeMetadataSchema = Schema.Struct({
+  modelState: Schema.optional(Schema.Unknown),
+  modeState: Schema.optional(Schema.Unknown),
+})
+const modelEffortSchema = Schema.Struct({
+  id: Schema.String,
+  label: Schema.optional(Schema.String),
+  name: Schema.optional(Schema.String),
+})
+const modelMetadataSchema = Schema.Struct({
+  reasoningEfforts: Schema.optional(Schema.Array(modelEffortSchema)),
+})
+
+function initializeCatalog(metadata: unknown): Pick<SessionCatalog, 'models' | 'modes'> {
+  const decoded = Schema.decodeUnknownOption(acpInitializeMetadataSchema)(metadata)
+  if (decoded._tag === 'None') return {}
+  const modelState = Schema.decodeUnknownOption(acpSessionModelStateSchema)(decoded.value.modelState)
+  const modeState = Schema.decodeUnknownOption(acpSessionModeStateSchema)(decoded.value.modeState)
+  return {
+    ...(modelState._tag === 'Some' ? { models: modelState.value } : {}),
+    ...(modeState._tag === 'Some' ? { modes: modeState.value } : {}),
+  }
+}
+
+function modelEfforts(metadata: unknown): AgentCapabilities['models'][number]['modes'] | undefined {
+  const decoded = Schema.decodeUnknownOption(modelMetadataSchema)(metadata)
+  if (decoded._tag === 'None' || decoded.value.reasoningEfforts === undefined) return undefined
+  return decoded.value.reasoningEfforts.map(effort => ({
+    id: effort.id,
+    label: effort.label ?? effort.name ?? effort.id,
+  }))
+}
+
+function sessionCapabilities(response: SessionCatalog): Pick<AgentCapabilities, 'models' | 'modes' | 'configOptions'> {
   const configOptions = response.configOptions ?? []
+  const effort = configCatalog(configOptions, 'thought_level').filter(choice => choice.id !== 'default')
+  const executableEfforts = new Map(effort.map(choice => [choice.id, choice.label]))
+  const seenModels = new Set<string>()
+  const modelState = response.models?.availableModels.flatMap(model => {
+    if (!isRepresentableChoice(model.modelId) || seenModels.has(model.modelId)) return []
+    seenModels.add(model.modelId)
+    const advertisedEfforts = modelEfforts(model._meta)
+    const modes = advertisedEfforts?.flatMap(choice => {
+      const label = executableEfforts.get(choice.id)
+      return label ? [{ id: choice.id, label }] : []
+    })
+    return [
+      {
+        id: model.modelId,
+        label: model.name,
+        ...(model.description ? { description: model.description.slice(0, 256) } : {}),
+        ...(advertisedEfforts !== undefined ? { modes: modes ?? [] } : {}),
+      },
+    ]
+  })
+  const configuredModels = configCatalog(configOptions, 'model')
+  const modelMetadata = new Map((modelState ?? []).map(model => [model.id, model]))
   const models =
-    response.models?.availableModels.map(model => ({ id: model.modelId, label: model.name })) ??
-    configCatalog(configOptions, 'model')
+    configuredModels.length > 0
+      ? configuredModels.map(model => {
+          const advertised = modelMetadata.get(model.id)
+          return {
+            ...model,
+            ...(advertised?.description ? { description: advertised.description } : {}),
+            ...(advertised?.modes !== undefined ? { modes: advertised.modes } : {}),
+          }
+        })
+      : (modelState ?? [])
   // Reasoning effort is the run choice offered first; OpenCode reports it as a thought level. Agents
   // without one keep their session modes.
   // OpenCode lists its own "default" level; the picker's blank choice already means the agent default.
-  const effort = configCatalog(configOptions, 'thought_level').filter(choice => choice.id !== 'default')
-  const modes =
-    effort.length > 0
-      ? effort
-      : (response.modes?.availableModes.map(mode => ({ id: mode.id, label: mode.name })) ??
-        configCatalog(configOptions, 'mode'))
+  const configModes = configCatalog(configOptions, 'mode')
+  let modes = response.modes?.availableModes.map(mode => ({ id: mode.id, label: mode.name })) ?? []
+  if (configModes.length > 0) modes = configModes
+  if (effort.length > 0) modes = effort
+  const configurableOptions = configOptionCatalog(configOptions)
+  const nativeModes = response.modes?.availableModes ?? []
+  if (nativeModes.length > 0 && !configOptions.some(option => option.category === 'mode')) {
+    configurableOptions.push({
+      id: 'acp-session-mode',
+      label: 'Mode',
+      category: 'mode',
+      currentValue: response.modes?.currentModeId ?? '',
+      options: nativeModes.slice(0, MAX_CATALOG_CHOICES).map(mode => ({ id: mode.id, label: mode.name })),
+    })
+  }
   // A catalog larger than the renderer contract would fail the whole inspection, so it is trimmed instead.
-  return { models: models.slice(0, MAX_CATALOG_CHOICES), modes: modes.slice(0, MAX_CATALOG_CHOICES) }
+  return {
+    models: models.slice(0, MAX_CATALOG_CHOICES),
+    modes: modes.slice(0, MAX_CATALOG_CHOICES),
+    configOptions: configurableOptions,
+  }
 }
+
+function promptCommands(commands: ReadonlyArray<AvailableCommand>): AgentPromptCatalog['commands'] {
+  return commands.slice(0, 256).map(command => ({
+    name: command.name,
+    description: command.description,
+    ...(command.input?.hint ? { inputHint: command.input.hint } : {}),
+  }))
+}
+
+/**
+ * An agent may publish reasoning effort only for the model its session is on (OpenCode does), so the
+ * catalog probe asks every model in turn on disposable sessions. The first few answers decide whether the
+ * agent has per-model efforts at all, so an agent without them pays almost nothing; the rest is bounded
+ * by a deadline and a model that did not answer in time simply keeps no declared efforts.
+ */
+const MODEL_EFFORT_SESSION_LIMIT = 8
+const MODEL_EFFORT_DISCOVERY_SAMPLE = 4
+const MODEL_EFFORT_PROBE_DEADLINE = '3 seconds'
+const MODEL_EFFORT_REQUEST_DEADLINE = '1 second'
+
+type DeclaredEffort = Readonly<{ id: string; label: string }>
+
+const declaredEfforts = (configOptions: ReadonlyArray<SessionConfigOption> | null | undefined): DeclaredEffort[] =>
+  configCatalog(configOptions ?? [], 'thought_level').filter(choice => choice.id !== 'default')
 
 /** Config option categories a Run's mode ID may select. */
 const SELECTABLE_MODE_CATEGORIES: ReadonlyArray<string> = ['mode', 'thought_level']
+
+/**
+ * Reads the per-model reasoning efforts of an agent that publishes them only for the session's current
+ * model. Each answer arrives as the session config options after a model switch; results are collected in
+ * `found`, which keeps whatever answered before the caller's deadline.
+ */
+function probeModelEfforts(
+  client: ClientSideConnection,
+  modelOptionId: string,
+  modelIds: ReadonlyArray<string>,
+  onSession: (sessionId: string) => void,
+  found: Map<string, ReadonlyArray<DeclaredEffort>>,
+): Effect.Effect<void> {
+  const ask = (sessionId: string, modelId: string) =>
+    Effect.tryPromise({
+      try: () =>
+        client.setSessionConfigOption({
+          sessionId: sessionId as never,
+          configId: modelOptionId as never,
+          value: modelId as never,
+        }),
+      catch: () => undefined,
+    }).pipe(
+      Effect.timeoutOption(MODEL_EFFORT_REQUEST_DEADLINE),
+      Effect.map(Option.getOrUndefined),
+      Effect.flatMap(updated =>
+        Effect.sync(() => {
+          const efforts = declaredEfforts(updated?.configOptions ?? [])
+          if (efforts.length > 0) found.set(modelId, efforts)
+        }),
+      ),
+      Effect.ignore,
+    )
+  const open = () =>
+    Effect.tryPromise({ try: () => client.newSession({ cwd: tmpdir(), mcpServers: [] }), catch: () => undefined }).pipe(
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    )
+  return Effect.gen(function* () {
+    const sample = yield* open()
+    if (!sample) return
+    onSession(sample.sessionId)
+    yield* Effect.forEach(modelIds.slice(0, MODEL_EFFORT_DISCOVERY_SAMPLE), modelId => ask(sample.sessionId, modelId), {
+      discard: true,
+    })
+    const remaining = modelIds.slice(MODEL_EFFORT_DISCOVERY_SAMPLE)
+    if (found.size === 0 || remaining.length === 0) return
+    const extra = yield* Effect.forEach(
+      Array.from({ length: Math.min(MODEL_EFFORT_SESSION_LIMIT - 1, remaining.length) }),
+      open,
+      { concurrency: 'unbounded' },
+    )
+    for (const session of extra) if (session) onSession(session.sessionId)
+    const sessions = [sample.sessionId, ...extra.flatMap(session => (session ? [session.sessionId] : []))]
+    yield* Effect.forEach(
+      sessions,
+      (sessionId, index) =>
+        Effect.forEach(
+          remaining.filter((_, position) => position % sessions.length === index),
+          modelId => ask(sessionId, modelId),
+          { discard: true },
+        ),
+      { concurrency: 'unbounded', discard: true },
+    )
+  })
+}
 
 function emptyEventChannel(runId: AgentRunId): Effect.Effect<RunChannel, never> {
   return Effect.map(
@@ -682,22 +983,34 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
         },
       ]
     case 'current_mode_update':
-      return [{ kind: 'nativeNotice', message: `ACP mode changed to ${update.currentModeId}.` }]
+      if (state.modeState) state.modeState = { ...state.modeState, currentModeId: update.currentModeId }
+      state.liveCapabilities = {
+        ...state.liveCapabilities,
+        ...sessionCapabilities({
+          configOptions: state.configOptions,
+          modes: state.modeState,
+          models: state.modelState,
+        }),
+      }
+      return [
+        { kind: 'capabilitiesUpdated', capabilities: state.liveCapabilities },
+        { kind: 'nativeNotice', message: `ACP mode changed to ${update.currentModeId}.` },
+      ]
     case 'config_option_update':
       state.configOptions = update.configOptions
       state.liveCapabilities = {
         ...state.liveCapabilities,
-        ...sessionCapabilities({ configOptions: update.configOptions }),
+        ...sessionCapabilities({
+          configOptions: update.configOptions,
+          modes: state.modeState,
+          models: state.modelState,
+        }),
       }
       return [{ kind: 'capabilitiesUpdated', capabilities: state.liveCapabilities }]
     case 'available_commands_update':
       state.liveCapabilities = {
         ...state.liveCapabilities,
-        commands: update.availableCommands.slice(0, 256).map(command => ({
-          name: command.name,
-          description: command.description,
-          ...(command.input?.hint ? { inputHint: command.input.hint } : {}),
-        })),
+        commands: promptCommands(update.availableCommands),
       }
       return [{ kind: 'capabilitiesUpdated', capabilities: state.liveCapabilities }]
     case 'session_info_update':
@@ -707,8 +1020,8 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
 
 function optionsForSession(response: {
   readonly configOptions?: ReadonlyArray<SessionConfigOption> | null
-  readonly modes?: SessionModeState | null
-  readonly models?: SessionModelState | null
+  readonly modes?: AcpSessionModeState | null
+  readonly models?: AcpSessionModelState | null
 }): ReadonlyArray<SessionConfigOption> {
   return response.configOptions ?? []
 }
@@ -719,10 +1032,10 @@ function selectSessionOptions(
   context: AgentSessionContext,
   response: {
     readonly configOptions?: ReadonlyArray<SessionConfigOption> | null
-    readonly modes?: SessionModeState | null
-    readonly models?: SessionModelState | null
+    readonly modes?: AcpSessionModeState | null
+    readonly models?: AcpSessionModelState | null
   },
-): Effect.Effect<void, AgentDriverError | UnsupportedAgentOperation> {
+): Effect.Effect<ReadonlyArray<SessionConfigOption>, AgentDriverError | UnsupportedAgentOperation> {
   return Effect.gen(function* () {
     let configOptions = optionsForSession(response)
     // The model goes first: an agent such as OpenCode offers different effort levels per model.
@@ -731,13 +1044,7 @@ function selectSessionOptions(
       const configModel = configOptions.find(
         option => option.category === 'model' && optionValues(option).some(item => item.value === context.modelId),
       )
-      if (nativeModel && typeof client.unstable_setSessionModel === 'function') {
-        yield* Effect.tryPromise({
-          try: () =>
-            client.unstable_setSessionModel({ sessionId: sessionId as never, modelId: context.modelId as never }),
-          catch: error => toDriverError(error),
-        })
-      } else if (configModel) {
+      if (configModel) {
         const updated = yield* Effect.tryPromise({
           try: () =>
             client.setSessionConfigOption({
@@ -748,36 +1055,72 @@ function selectSessionOptions(
           catch: error => toDriverError(error),
         })
         configOptions = updated.configOptions?.length ? updated.configOptions : configOptions
+      } else if (nativeModel && typeof client.unstable_setSessionModel === 'function') {
+        yield* Effect.tryPromise({
+          try: () =>
+            client.unstable_setSessionModel({ sessionId: sessionId as never, modelId: context.modelId as never }),
+          catch: error => toDriverError(error),
+        })
       } else {
         return yield* unsupported('openSession', 'Requested model is not present in the ACP session catalog.')
       }
     }
     if (context.modeId) {
-      const nativeMode = response.modes?.availableModes.find(mode => mode.id === context.modeId)
-      const configMode = configOptions.find(
+      const configuredMode = configOptions.find(
         option =>
           SELECTABLE_MODE_CATEGORIES.includes(option.category ?? '') &&
           optionValues(option).some(item => item.value === context.modeId),
       )
-      if (nativeMode) {
-        yield* Effect.tryPromise({
-          try: () => client.setSessionMode({ sessionId: sessionId as never, modeId: context.modeId as never }),
-          catch: error => toDriverError(error),
-        })
-      } else if (configMode) {
-        yield* Effect.tryPromise({
+      const nativeMode = response.modes?.availableModes.find(mode => mode.id === context.modeId)
+      const modeOverridden =
+        configuredMode !== undefined && Object.hasOwn(context.configValues ?? {}, configuredMode.id)
+      if (modeOverridden) {
+        // The explicit config value is applied below and takes precedence over the general mode selection.
+      } else if (configuredMode) {
+        const updated = yield* Effect.tryPromise({
           try: () =>
             client.setSessionConfigOption({
               sessionId: sessionId as never,
-              configId: configMode.id,
+              configId: configuredMode.id,
               value: context.modeId as never,
             }),
+          catch: error => toDriverError(error),
+        })
+        configOptions = updated.configOptions?.length ? updated.configOptions : configOptions
+      } else if (nativeMode) {
+        yield* Effect.tryPromise({
+          try: () => client.setSessionMode({ sessionId: sessionId as never, modeId: context.modeId as never }),
           catch: error => toDriverError(error),
         })
       } else {
         return yield* unsupported('openSession', 'Requested mode is not present in the ACP session catalog.')
       }
     }
+    for (const [configId, value] of Object.entries(context.configValues ?? {})) {
+      if (HIDDEN_CONFIG_CATEGORIES.has(configOptions.find(option => option.id === configId)?.category ?? '')) {
+        return yield* unsupported('openSession', 'Requested ACP configuration option is managed by access policy.')
+      }
+      if (configId === 'acp-session-mode') {
+        if (!response.modes?.availableModes.some(mode => mode.id === value)) {
+          return yield* unsupported('openSession', 'Requested ACP mode is not present in the session catalog.')
+        }
+        yield* Effect.tryPromise({
+          try: () => client.setSessionMode({ sessionId: sessionId as never, modeId: value as never }),
+          catch: error => toDriverError(error),
+        })
+        continue
+      }
+      const option = configOptions.find(candidate => candidate.id === configId)
+      if (!option || !optionValues(option).some(choice => choice.value === value)) {
+        return yield* unsupported('openSession', 'Requested ACP configuration is not present in the session catalog.')
+      }
+      const updated = yield* Effect.tryPromise({
+        try: () => client.setSessionConfigOption({ sessionId: sessionId as never, configId, value: value as never }),
+        catch: error => toDriverError(error),
+      })
+      if (updated.configOptions?.length) configOptions = updated.configOptions
+    }
+    return configOptions
   })
 }
 
@@ -810,18 +1153,25 @@ function mapPromptContent(
 }
 
 function permissionOptions(options: ReadonlyArray<PermissionOption>) {
-  return options
-    .filter(option => option.kind === 'allow_once' || option.kind === 'reject_once')
-    .map(option => ({
+  return options.map(option => {
+    const persistent = option.kind === 'allow_always' || option.kind === 'reject_always'
+    let kind: 'allow' | 'deny' | 'allowAlways' | 'other' = 'other'
+    let decision: AgentRequestDecision | undefined
+    if (option.kind === 'allow_once' || option.kind === 'allow_always') {
+      kind = option.kind === 'allow_always' ? 'allowAlways' : 'allow'
+      decision = { kind: 'approve', optionId: option.optionId }
+    } else if (option.kind === 'reject_once' || option.kind === 'reject_always') {
+      kind = 'deny'
+      decision = { kind: 'deny', optionId: option.optionId }
+    }
+    return {
       id: option.optionId,
       label: option.name,
-      scope: 'once' as const,
-      kind: option.kind === 'allow_once' ? ('allow' as const) : ('deny' as const),
-      decision:
-        option.kind === 'allow_once'
-          ? ({ kind: 'approve', optionId: option.optionId } as const)
-          : ({ kind: 'deny' } as const),
-    }))
+      scope: persistent ? ('session' as const) : ('once' as const),
+      kind,
+      ...(decision ? { decision } : {}),
+    }
+  })
 }
 
 function choosePermissionResponse(
@@ -830,18 +1180,86 @@ function choosePermissionResponse(
 ): RequestPermissionResponse | undefined {
   if (decision.kind === 'cancel') return { outcome: { outcome: 'cancelled' } }
   if (decision.kind === 'deny') {
-    const selected = pending.options.find(option => option.kind === 'reject_once')
-    return selected
-      ? { outcome: { outcome: 'selected', optionId: selected.optionId } }
-      : { outcome: { outcome: 'cancelled' } }
+    const selected = decision.optionId
+      ? pending.options.find(option => option.optionId === decision.optionId)
+      : pending.options.find(option => option.kind === 'reject_once')
+    if (!selected) return { outcome: { outcome: 'cancelled' } }
+    if (selected.kind === 'reject_once' || selected.kind === 'reject_always')
+      return { outcome: { outcome: 'selected', optionId: selected.optionId } }
+    return undefined
   }
   if (decision.kind !== 'approve') return undefined
-  const selected =
-    decision.optionId === undefined
-      ? pending.options.find(option => option.kind === 'allow_once')
-      : pending.options.find(option => option.optionId === decision.optionId)
-  if (!selected || selected.kind !== 'allow_once') return undefined
+  const selected = decision.optionId
+    ? pending.options.find(option => option.optionId === decision.optionId)
+    : pending.options.find(option => option.kind === 'allow_once')
+  if (!selected || (selected.kind !== 'allow_once' && selected.kind !== 'allow_always')) return undefined
   return { outcome: { outcome: 'selected', optionId: selected.optionId } }
+}
+
+function questionFields(form: Schema.Schema.Type<typeof elicitationFormSchema>, message: string) {
+  const properties = Object.entries(form.properties ?? {})
+  if (properties.length === 0 || properties.length > 64) return undefined
+  if (properties.some(([, property]) => property.type === 'array' && !property.items?.enum)) return undefined
+  return properties.map(([id, property], index) => {
+    const isMultiSelect = property.type === 'array'
+    const values = isMultiSelect ? (property.items?.enum ?? []) : (property.enum ?? [])
+    const booleanOptions = property.type === 'boolean' ? ['true', 'false'] : []
+    const options = (values.length > 0 ? values.map(String) : booleanOptions).slice(0, 64).map(value => ({
+      id: value,
+      label: property.type === 'boolean' ? (value === 'true' ? 'Yes' : 'No') : value,
+      ...(property.description ? { description: property.description } : {}),
+    }))
+    return {
+      id,
+      prompt: property.description ?? message,
+      header: property.title ?? `Question ${index + 1}`,
+      allowCustomAnswer: options.length === 0,
+      isSecret: property.format === 'password',
+      multiSelect: isMultiSelect,
+      options,
+    }
+  })
+}
+
+function elicitationResponse(
+  decision: AgentRequestDecision,
+  questions: NonNullable<ReturnType<typeof questionFields>>,
+  form: Schema.Schema.Type<typeof elicitationFormSchema>,
+): CreateElicitationResponse | undefined {
+  if (decision.kind === 'cancel') return { action: 'cancel' }
+  if (decision.kind === 'deny') return { action: 'decline' }
+  if (decision.kind !== 'answers') return undefined
+  const properties = form.properties ?? {}
+  const required = new Set(form.required ?? [])
+  if (Object.keys(decision.answers).some(key => !(key in properties))) return undefined
+  if (Array.from(required).some(key => !(key in decision.answers))) return undefined
+  const content: Record<string, string | number | boolean | ReadonlyArray<string>> = {}
+  for (const question of questions) {
+    const answer = decision.answers[question.id]
+    if (answer === undefined) continue
+    const property = properties[question.id]
+    if (!property) return undefined
+    if (property.type === 'array') {
+      if (!Array.isArray(answer)) return undefined
+      const choices = property.items?.enum
+      if (choices && answer.some(value => !choices.includes(value))) return undefined
+      content[question.id] = answer
+      continue
+    }
+    if (typeof answer !== 'string') return undefined
+    if (property.enum && !property.enum.some(value => String(value) === answer)) return undefined
+    if (property.type === 'boolean') {
+      if (answer !== 'true' && answer !== 'false') return undefined
+      content[question.id] = answer === 'true'
+    } else if (property.type === 'number' || property.type === 'integer') {
+      const value = Number(answer)
+      if (!Number.isFinite(value) || (property.type === 'integer' && !Number.isInteger(value))) return undefined
+      content[question.id] = value
+    } else {
+      content[question.id] = answer
+    }
+  }
+  return { action: 'accept', content }
 }
 
 const READ_TOOL_KINDS: ReadonlyArray<string> = ['read', 'search', 'think']
@@ -860,7 +1278,7 @@ export function automaticPermission(
   const allowed =
     READ_TOOL_KINDS.includes(kind) ||
     accessMode === 'full-access' ||
-    (accessMode === 'auto-accept-edits' && EDIT_TOOL_KINDS.includes(kind))
+    ((accessMode === 'auto-accept-edits' || accessMode === 'auto') && EDIT_TOOL_KINDS.includes(kind))
   const once = allowed ? params.options.find(option => option.kind === 'allow_once') : undefined
   return once ? { outcome: { outcome: 'selected', optionId: once.optionId } } : undefined
 }
@@ -881,6 +1299,7 @@ function makeClient(stateRef: AcpStateRef): Client {
         resolve = res
       })
       const pending: PendingPermission = {
+        kind: 'permission',
         id,
         runId: run.id,
         generation: state.context.generation,
@@ -902,6 +1321,8 @@ function makeClient(stateRef: AcpStateRef): Client {
             prompt: params.toolCall.title ?? 'The agent requests permission to run a tool.',
             options: permissionOptions(params.options),
             questions: [],
+            toolCallId: params.toolCall.toolCallId,
+            tool: toolMetadata(params.toolCall),
           },
         })
       } catch {
@@ -912,9 +1333,88 @@ function makeClient(stateRef: AcpStateRef): Client {
         state.permissions.delete(id)
       })
     },
+    extMethod: async (method, params) => {
+      if (method !== 'elicitation/create' && method !== 'session/elicitation' && method !== '_session/elicitation') {
+        throw RequestError.methodNotFound(method)
+      }
+      const decoded = Schema.decodeUnknownOption(elicitationRequestSchema)(params)
+      if (decoded._tag === 'None' || decoded.value.mode !== 'form' || decoded.value.requestedSchema === undefined)
+        return { action: 'decline' }
+      const form = Schema.decodeUnknownOption(elicitationFormSchema)(decoded.value.requestedSchema)
+      if (form._tag === 'None') return { action: 'decline' }
+      const questions = questionFields(form.value, decoded.value.message)
+      if (!questions) return { action: 'decline' }
+      const state = stateRef.current
+      const run = state?.activeRun
+      if (
+        !state ||
+        !run ||
+        state.closed ||
+        !state.acceptRequests ||
+        (decoded.value.sessionId != null && decoded.value.sessionId !== state.nativeSessionId)
+      ) {
+        return { action: 'cancel' }
+      }
+      const id = `acp-request-${++state.requestSequence}`
+      let resolve!: (response: CreateElicitationResponse) => void
+      const response = new Promise<CreateElicitationResponse>(res => {
+        resolve = res
+      })
+      const pending: PendingQuestion = {
+        kind: 'question',
+        id,
+        runId: run.id,
+        generation: state.context.generation,
+        nativeSessionId: state.nativeSessionId,
+        questions,
+        form: form.value,
+        resolve,
+        answered: false,
+      }
+      state.permissions.set(id, pending)
+      try {
+        await emitEvent(state, {
+          kind: 'requestPending',
+          request: {
+            requestId: id,
+            runId: run.id,
+            sessionId: state.context.sessionId,
+            generation: state.context.generation,
+            kind: 'question',
+            prompt: decoded.value.message,
+            cancelDecision: { kind: 'cancel' },
+            questions,
+            ...(decoded.value.toolCallId ? { toolCallId: decoded.value.toolCallId } : {}),
+            ...(decoded.value.requestId ? { nativeRequestId: decoded.value.requestId } : {}),
+          },
+        })
+      } catch {
+        state.permissions.delete(id)
+        return { action: 'cancel' }
+      }
+      return response.finally(() => {
+        state.permissions.delete(id)
+      })
+    },
     sessionUpdate: async (notification: SessionNotification) => {
-      // A catalog probe session is disposable; its updates carry nothing a Run needs.
-      if (stateRef.probes?.has(notification.sessionId)) return
+      if (stateRef.probes?.has(notification.sessionId)) {
+        const probe = stateRef.promptCatalogProbe
+        if (probe && notification.update.sessionUpdate === 'available_commands_update') {
+          const commands = promptCommands(notification.update.availableCommands)
+          probe.earlyCommands.set(notification.sessionId, commands)
+          probe.waiters.get(notification.sessionId)?.(commands)
+        }
+        return
+      }
+      if (stateRef.promptCatalogProbe) {
+        if (notification.update.sessionUpdate === 'available_commands_update') {
+          stateRef.promptCatalogProbe.earlyCommands.set(
+            notification.sessionId,
+            promptCommands(notification.update.availableCommands),
+          )
+        }
+        return
+      }
       const state = stateRef.current
       if (!state || state.closed || notification.sessionId !== state.nativeSessionId) {
         throw new Error('ACP sent an update for an unrelated native session.')
@@ -929,7 +1429,8 @@ function failPendingPermissions(state: AcpSessionState): void {
   for (const [id, pending] of state.permissions) {
     if (!pending.answered) {
       pending.answered = true
-      pending.resolve({ outcome: { outcome: 'cancelled' } })
+      if (pending.kind === 'permission') pending.resolve({ outcome: { outcome: 'cancelled' } })
+      else pending.resolve({ action: 'cancel' })
     }
     state.permissions.delete(id)
   }
@@ -1224,14 +1725,36 @@ function sessionInterface(
             message: 'ACP permission request is stale or belongs to another Run.',
           })
         }
-        const response = choosePermissionResponse(pending, decision)
-        if (!response)
+        if (
+          pending.kind === 'question' &&
+          decision.kind !== 'answers' &&
+          decision.kind !== 'cancel' &&
+          decision.kind !== 'deny'
+        ) {
           return yield* new AgentDriverError({
             code: 'invalid-state',
-            message: 'Decision does not match a current one-shot ACP permission option.',
+            message: 'ACP elicitation needs answers, a denial, or a cancellation.',
           })
-        pending.answered = true
-        pending.resolve(response)
+        }
+        if (pending.kind === 'permission') {
+          const response = choosePermissionResponse(pending, decision)
+          if (!response)
+            return yield* new AgentDriverError({
+              code: 'invalid-state',
+              message: 'Decision does not match a current ACP permission option.',
+            })
+          pending.answered = true
+          pending.resolve(response)
+        } else {
+          const response = elicitationResponse(decision, pending.questions, pending.form)
+          if (!response)
+            return yield* new AgentDriverError({
+              code: 'invalid-state',
+              message: 'Answers do not match the current ACP elicitation schema.',
+            })
+          pending.answered = true
+          pending.resolve(response)
+        }
         state.permissions.delete(requestId)
         yield* emitEventEffect(state, { kind: 'requestResolved', requestId, decision })
         return { outcome: 'accepted', nativeConfirmation: 'unconfirmed' } satisfies DeliveryOutcome
@@ -1282,7 +1805,7 @@ function createConnection(
         client.initialize({
           protocolVersion: PROTOCOL_VERSION,
           clientInfo: { name: 'watchtower', version: clientVersion },
-          clientCapabilities: {},
+          clientCapabilities: { elicitation: { form: {} } } as never,
         }),
       catch: error => toDriverError(error, 'driver-unavailable'),
     })
@@ -1293,6 +1816,7 @@ function createConnection(
       })
     }
     const loadSessionSupported = initialized.agentCapabilities?.loadSession === true
+    const initializeStates = initializeCatalog(initialized._meta)
     const connectionState: AcpConnectionState = {
       identity: {
         id: options.connectionId,
@@ -1303,6 +1827,8 @@ function createConnection(
       connection: client,
       transport,
       loadSessionSupported,
+      initializeModels: initializeStates.models ?? undefined,
+      initializeModes: initializeStates.modes ?? undefined,
       closed: false,
       get transportClosed() {
         return transportClosed
@@ -1430,6 +1956,11 @@ function createConnection(
             return Effect.void
           }),
         )
+        const catalogResponse = {
+          ...response,
+          models: response.models ?? connectionState.initializeModels,
+          modes: response.modes ?? connectionState.initializeModes,
+        }
         if (native && response.sessionId !== native.nativeSessionId) {
           return yield* new AgentDriverError({
             code: 'protocol-error',
@@ -1443,12 +1974,19 @@ function createConnection(
         }
         state.poison = error => poisonConnection(state as AcpSessionState, error)
         state.replaying = false
-        state.liveCapabilities = { ...state.liveCapabilities, ...sessionCapabilities(response) }
-        state.configOptions = response.configOptions ?? []
+        state.liveCapabilities = { ...state.liveCapabilities, ...sessionCapabilities(catalogResponse) }
+        state.configOptions = catalogResponse.configOptions ?? []
+        state.modeState = catalogResponse.modes ?? undefined
+        state.modelState = catalogResponse.models ?? undefined
         stateRef.current = state
         connectionState.session = state
         const attachedState = state
-        yield* selectSessionOptions(client, response.sessionId, context, response).pipe(
+        const selectedConfigOptions = yield* selectSessionOptions(
+          client,
+          response.sessionId,
+          context,
+          catalogResponse,
+        ).pipe(
           Effect.tapError(error =>
             Effect.gen(function* () {
               attachedState.closed = true
@@ -1459,16 +1997,80 @@ function createConnection(
             }),
           ),
         )
+        state.configOptions = selectedConfigOptions
+        if (context.modeId && state.modeState?.availableModes.some(mode => mode.id === context.modeId)) {
+          state.modeState = { ...state.modeState, currentModeId: context.modeId }
+        }
+        for (const [configId, value] of Object.entries(context.configValues ?? {})) {
+          if (configId === 'acp-session-mode' && state.modeState) {
+            state.modeState = { ...state.modeState, currentModeId: value }
+          }
+          const selectedOption = state.configOptions.find(option => option.id === configId)
+          if (selectedOption?.category === 'mode' && state.modeState?.availableModes.some(mode => mode.id === value)) {
+            state.modeState = { ...state.modeState, currentModeId: value }
+          }
+          state.configOptions = state.configOptions.map(option =>
+            option.id === configId ? { ...option, currentValue: value } : option,
+          )
+        }
+        state.liveCapabilities = {
+          ...state.liveCapabilities,
+          ...sessionCapabilities({
+            configOptions: state.configOptions,
+            modes: state.modeState,
+            models: state.modelState,
+          }),
+        }
         return sessionInterface(client, connectionState, state)
       })
 
     return {
       identity: connectionState.identity,
       discover: () =>
-        Effect.succeed(
-          connectionCapabilities(
+        Effect.succeed({
+          ...connectionCapabilities(
             connectionState.loadSessionSupported,
             initialized.agentCapabilities?.promptCapabilities?.image === true,
+          ),
+          ...sessionCapabilities(initializeStates),
+        }),
+      discoverPromptCatalog: workspacePath =>
+        Effect.gen(function* () {
+          if (connectionState.closed || connectionState.session)
+            return yield* new AgentDriverError({
+              code: 'invalid-state',
+              message: 'ACP prompt catalogs are discovered only on an idle connection.',
+            })
+          const probe = {
+            earlyCommands: new Map<string, AgentPromptCatalog['commands']>(),
+            waiters: new Map<string, (commands: AgentPromptCatalog['commands']) => void>(),
+          }
+          stateRef.promptCatalogProbe = probe
+          const response = yield* Effect.tryPromise({
+            try: () => client.newSession({ cwd: workspacePath, mcpServers: [] }),
+            catch: error => toDriverError(error),
+          })
+          ;(stateRef.probes ??= new Set()).add(response.sessionId)
+          const discovered = probe.earlyCommands.get(response.sessionId)
+          if (discovered) return { skills: [], skillsComplete: false, commands: discovered }
+          const commands = yield* Effect.tryPromise({
+            try: () =>
+              new Promise<AgentPromptCatalog['commands']>(resolve => {
+                probe.waiters.set(response.sessionId, resolve)
+                const commands = probe.earlyCommands.get(response.sessionId)
+                if (commands) resolve(commands)
+              }),
+            catch: error => toDriverError(error),
+          }).pipe(
+            Effect.timeoutOption('3 seconds'),
+            Effect.map(result => (Option.isSome(result) ? result.value : [])),
+          )
+          return { skills: [], skillsComplete: false, commands }
+        }).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              stateRef.promptCatalogProbe = undefined
+            }),
           ),
         ),
       openSession: context => open(context),
@@ -1484,7 +2086,34 @@ function createConnection(
             catch: error => toDriverError(error),
           })
           ;(stateRef.probes ??= new Set()).add(response.sessionId)
-          return sessionCapabilities(response)
+          const capabilities = sessionCapabilities({
+            ...response,
+            models: response.models ?? connectionState.initializeModels,
+            modes: response.modes ?? connectionState.initializeModes,
+          })
+          const configOptions = response.configOptions ?? []
+          // The probe switches models by option id, so the gate is on the id itself: `category` is an optional
+          // protocol hint, while OpenCode publishes its model option under the fixed id `model`.
+          const modelOptionId = configOptions.find(option => option.id === 'model')?.id
+          const modelEffortsArePerModel =
+            declaredEfforts(configOptions).length === 0 && modelOptionId !== undefined && capabilities.models.length > 0
+          if (!modelEffortsArePerModel) return capabilities
+          const found = new Map<string, ReadonlyArray<DeclaredEffort>>()
+          yield* probeModelEfforts(
+            client,
+            modelOptionId,
+            capabilities.models.map(model => model.id),
+            sessionId => (stateRef.probes ??= new Set()).add(sessionId),
+            found,
+          ).pipe(Effect.timeoutOption(MODEL_EFFORT_PROBE_DEADLINE), Effect.ignore)
+          if (found.size === 0) return capabilities
+          return {
+            ...capabilities,
+            models: capabilities.models.map(model => {
+              const efforts = found.get(model.id)
+              return efforts === undefined ? model : { ...model, modes: efforts }
+            }),
+          }
         }),
       loadSession: (context, native) => open(context, native),
       close: deadlineMs => closeAcpConnection(connectionState, deadlineMs),
@@ -1495,7 +2124,7 @@ function createConnection(
 export function makeAcpDriver(dependencies: AcpDriverDependencies): AgentDriver['Service'] {
   return AgentDriver.of({
     driverId: 'acp',
-    accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
+    accessModes: ['approval-required', 'auto-accept-edits', 'auto', 'full-access'],
     connect: options =>
       dependencies.transportFactory(options).pipe(
         Effect.mapError(error =>

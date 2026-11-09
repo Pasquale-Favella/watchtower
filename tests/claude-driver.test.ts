@@ -1,3 +1,7 @@
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import type {
   Query,
   SDKAssistantMessage,
@@ -11,6 +15,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { type ClaudeAgentSdk, makeClaudeAgentDriver } from '@/infrastructure/agent-harnesses/drivers/claude/driver.js'
+import { resolveInstalledClaudeExecutable } from '@/infrastructure/agent-harnesses/drivers/claude/executable.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
@@ -537,6 +542,13 @@ describe('Claude Agent SDK native driver', () => {
               supportsEffort: true,
               supportedEffortLevels: ['low', 'high', 'xhigh'],
             },
+            {
+              value: 'opus',
+              displayName: 'Opus 5.5',
+              description: '',
+              supportsEffort: true,
+              supportedEffortLevels: ['low', 'high', 'xhigh'],
+            },
             { value: 'haiku', displayName: 'Haiku', description: '', supportsEffort: false },
           ],
           close: () => {
@@ -553,15 +565,21 @@ describe('Claude Agent SDK native driver', () => {
           const connection = yield* driver.connect({ connectionId: 'connection' })
           expect((yield* connection.discover()).modes).toEqual([])
           if (!connection.probeCatalog) return yield* Effect.die(new Error('Claude must offer a catalog probe'))
-          return yield* connection.probeCatalog()
+          const catalog = yield* connection.probeCatalog()
+          const unsupportedEffort = yield* connection
+            .openSession({ ...context, modelId: 'haiku', modeId: 'high' })
+            .pipe(Effect.flip)
+          expect(unsupportedEffort).toMatchObject({ code: 'invalid-state' })
+          return catalog
         }).pipe(Effect.provide(layer)),
       ),
     )
+    // The CLI's `default` row points at its own default model, not a model; the picker's blank Default sends none.
     expect(catalog).toEqual({
       models: [
         {
-          id: 'default',
-          label: 'Default (recommended)',
+          id: 'opus',
+          label: 'Opus 5.5',
           modes: [
             { id: 'low', label: 'Low' },
             { id: 'high', label: 'High' },
@@ -574,6 +592,71 @@ describe('Claude Agent SDK native driver', () => {
     })
     expect(closed).toBe(true)
     expect(prompted).toBe(false)
+  })
+
+  it('drives the installed Claude Code executable, resolving npm launcher shims on Windows', async () => {
+    const shim = 'C:\\Program Files\\nodejs\\claude.cmd'
+    const npmShim = '@ECHO off\r\n"%dp0%\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe"   %*\r\n'
+    expect(
+      resolveInstalledClaudeExecutable(
+        'win32',
+        () => shim,
+        path => path.toLowerCase().endsWith('node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe'.toLowerCase()),
+        () => npmShim,
+      ),
+    ).toBe('C:\\Program Files\\nodejs\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe')
+    const pnpmShim = 'C:\\Users\\dev\\AppData\\Local\\pnpm\\claude.cmd'
+    const pnpmEntry =
+      'C:\\Users\\dev\\AppData\\Local\\pnpm\\global\\5\\node_modules\\@anthropic-ai\\claude-code\\cli.js'
+    expect(
+      resolveInstalledClaudeExecutable(
+        'win32',
+        () => pnpmShim,
+        path => path === pnpmEntry,
+        () => '"%~dp0\\global\\5\\node_modules\\@anthropic-ai\\claude-code\\cli.js" %*',
+      ),
+    ).toBe(pnpmEntry)
+    // A shim that cannot be read leaves the SDK on its bundled CLI instead of a spawn that always fails.
+    expect(
+      resolveInstalledClaudeExecutable(
+        'win32',
+        () => shim,
+        () => false,
+        () => undefined,
+      ),
+    ).toBeUndefined()
+    expect(
+      resolveInstalledClaudeExecutable(
+        'linux',
+        () => '/usr/local/bin/claude',
+        () => false,
+      ),
+    ).toBe('/usr/local/bin/claude')
+    expect(
+      resolveInstalledClaudeExecutable(
+        'linux',
+        () => null,
+        () => false,
+      ),
+    ).toBeUndefined()
+
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({
+      sdk: fake.sdk,
+      apiKey: () => 'test-key',
+      executablePath: () => '/usr/local/bin/claude',
+    })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          yield* connection.openSession(context)
+          yield* connection.close(1000)
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+    expect(fakeCall(fake).options.pathToClaudeCodeExecutable).toBe('/usr/local/bin/claude')
   })
 
   it.each([
@@ -804,7 +887,9 @@ describe('Claude Agent SDK native driver', () => {
           expect(approvalEvent.request).toMatchObject({
             kind: 'approval',
             nativeRequestId: 'native-request-approval',
-            options: [{ id: 'allow-once' }, { id: 'deny-once' }],
+            toolCallId: 'native-tool-approval',
+            tool: { category: 'command', command: 'git status' },
+            options: [{ id: 'allow-once' }, { id: 'deny-once' }, { id: 'cancel' }],
           })
           const approvalRequestId = approvalEvent.request.requestId
           expect(approvalRequestId).toBeDefined()
@@ -814,6 +899,51 @@ describe('Claude Agent SDK native driver', () => {
           })
           const approvalResult = yield* Effect.promise(() => approval)
           expect(approvalResult).toMatchObject({ behavior: 'allow', updatedInput: { command: 'git status' } })
+
+          const sessionApproval = canUseTool(
+            'Bash',
+            { command: 'git status --short' },
+            {
+              signal,
+              toolUseID: 'native-tool-session-approval',
+              requestId: 'native-request-session-approval',
+              suggestions: [
+                {
+                  type: 'addRules',
+                  rules: [{ toolName: 'Bash', ruleContent: 'git status --short' }],
+                  behavior: 'allow',
+                  destination: 'projectSettings',
+                },
+              ],
+              defaultToNo: true,
+              suppressAlwaysAllowRule: false,
+            },
+          )
+          const sessionApprovalEvent = yield* Effect.promise(nextPending)
+          expect(sessionApprovalEvent.request?.options?.map(option => option.id)).toEqual([
+            'allow-once',
+            'allow-session',
+            'deny-once',
+            'cancel',
+          ])
+          const sessionApprovalRequestId = sessionApprovalEvent.request?.requestId
+          yield* session.respond(runId, requiredRequestId(sessionApprovalRequestId), 2, {
+            kind: 'approve',
+            optionId: 'allow-session',
+          })
+          const sessionApprovalResult = yield* Effect.promise(() => sessionApproval)
+          expect(sessionApprovalResult).toMatchObject({
+            behavior: 'allow',
+            decisionClassification: 'user_permanent',
+            updatedPermissions: [
+              {
+                type: 'addRules',
+                rules: [{ toolName: 'Bash', ruleContent: 'git status --short' }],
+                behavior: 'allow',
+                destination: 'session',
+              },
+            ],
+          })
 
           const ask = canUseTool(
             'AskUserQuestion',
@@ -838,6 +968,8 @@ describe('Claude Agent SDK native driver', () => {
           const questionEvent = yield* Effect.promise(nextPending)
           expect(questionEvent.request).toMatchObject({
             kind: 'question',
+            toolCallId: 'native-question-tool',
+            tool: { category: 'other' },
             questions: [
               {
                 id: 'q0',
@@ -878,7 +1010,7 @@ describe('Claude Agent SDK native driver', () => {
 
           fake.calls[0]!.push(resultMessage(nativeSessionId, '00000000-0000-4000-8000-000000000006'))
           yield* Fiber.join(eventCollection)
-          expect(events.filter(event => event.kind === 'requestResolved')).toHaveLength(3)
+          expect(events.filter(event => event.kind === 'requestResolved')).toHaveLength(4)
         }).pipe(Effect.provide(layer)),
       ),
     )
@@ -1045,4 +1177,89 @@ describe('Claude Agent SDK native driver', () => {
     ).rejects.toMatchObject({ code: 'authentication-required' })
     expect(fake.calls[0]?.closed).toBe(true)
   })
+})
+
+it('uses the workspace Claude initialization result for provider slash commands', async () => {
+  const configDirectory = await mkdtemp(join(tmpdir(), 'watchtower-claude-catalog-'))
+  const previousConfigDirectory = process.env.CLAUDE_CONFIG_DIR
+  const previousPluginDirectory = process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR
+  process.env.CLAUDE_CONFIG_DIR = configDirectory
+  process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = join(configDirectory, 'plugins')
+  await mkdir(join(configDirectory, 'skills', 'review'), { recursive: true })
+  await writeFile(
+    join(configDirectory, 'skills', 'review', 'SKILL.md'),
+    '---\nname: alias\ndescription: Review changes\n---\nReview the current changes.',
+  )
+  await mkdir(join(configDirectory, 'skills', 'internal'), { recursive: true })
+  await writeFile(
+    join(configDirectory, 'skills', 'internal', 'SKILL.md'),
+    '---\nuser-invocable: false\n---\nInternal-only skill.',
+  )
+  const pluginId = 'quality-tools@1.0.0'
+  const pluginInstall = join(configDirectory, 'plugins', 'cache', 'quality-tools')
+  await mkdir(join(pluginInstall, 'custom-skills', 'deploy'), { recursive: true })
+  await mkdir(join(pluginInstall, '.claude-plugin'), { recursive: true })
+  await writeFile(
+    join(pluginInstall, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'quality-tools', skills: 'custom-skills' }),
+  )
+  await writeFile(
+    join(pluginInstall, 'custom-skills', 'deploy', 'SKILL.md'),
+    '---\ndescription: Deploy safely\n---\nDeploy the current changes.',
+  )
+  await writeFile(
+    join(configDirectory, 'plugins', 'installed_plugins.json'),
+    JSON.stringify({ plugins: { [pluginId]: [{ scope: 'user', installPath: pluginInstall }] } }),
+  )
+  await writeFile(
+    join(configDirectory, 'settings.json'),
+    `{
+      // Claude accepts comments and trailing commas in settings files.
+      "enabledPlugins": { "${pluginId}": true, },
+    }`,
+  )
+  const commands = [{ name: 'deploy', description: 'Native deploy command', argumentHint: 'target' }]
+  const sdk: ClaudeAgentSdk = {
+    query: ({ options }) => {
+      expect(options?.cwd).toBe(context.workspacePath)
+      expect(options?.settingSources).toEqual(['user', 'project', 'local'])
+      return Object.assign((async function* () {})(), {
+        initializationResult: async () =>
+          ({ commands }) as unknown as Awaited<ReturnType<Query['initializationResult']>>,
+        close: () => undefined,
+      }) as unknown as Query
+    },
+  }
+
+  try {
+    const layer = makeClaudeAgentDriver({ sdk, apiKey: () => 'test-key' })
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          if (!connection.discoverPromptCatalog)
+            return yield* Effect.die(new Error('Claude must expose prompt catalog discovery'))
+          return yield* connection.discoverPromptCatalog(context.workspacePath)
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+
+    expect(catalog.skills).toEqual([
+      { name: 'review', enabled: true, description: 'Review changes' },
+      { name: 'quality-tools:deploy', enabled: true, description: 'Deploy safely' },
+    ])
+    expect(catalog.commands).toContainEqual({
+      name: 'deploy',
+      description: 'Native deploy command',
+      inputHint: 'target',
+    })
+    expect(catalog.commands.some(command => command.name === 'compact')).toBe(true)
+  } finally {
+    if (previousConfigDirectory === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = previousConfigDirectory
+    if (previousPluginDirectory === undefined) delete process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR
+    else process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = previousPluginDirectory
+    await rm(configDirectory, { recursive: true, force: true })
+  }
 })

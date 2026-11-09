@@ -1,17 +1,18 @@
-import type { EffortLevel, ModelInfo } from '@anthropic-ai/claude-agent-sdk'
+import type { ModelInfo, Options } from '@anthropic-ai/claude-agent-sdk'
 
 import type { AgentCapabilities } from '@/shared/schemas/execution.js'
 
 type ModelChoice = AgentCapabilities['models'][number]
+export type ClaudeEffortLevel = NonNullable<Options['effort']>
 
-export const EFFORT_LABELS: Readonly<Record<EffortLevel, string>> = {
+export const EFFORT_LABELS: Readonly<Record<ClaudeEffortLevel, string>> = {
   low: 'Low',
   medium: 'Medium',
   high: 'High',
   xhigh: 'Extra high',
   max: 'Max',
 }
-export const isClaudeEffort = (value: string): value is EffortLevel => Object.hasOwn(EFFORT_LABELS, value)
+export const isClaudeEffort = (value: string): value is ClaudeEffortLevel => Object.hasOwn(EFFORT_LABELS, value)
 
 const hasVersion = (text: string) => /\d/.test(text)
 
@@ -32,17 +33,24 @@ export function claudeModelChoice(model: ModelInfo): ModelChoice {
     id: model.value,
     label,
     ...(detail ? { description: detail } : {}),
-    modes: (model.supportsEffort === false ? [] : (model.supportedEffortLevels ?? [])).map(level => ({
-      id: level,
-      label: EFFORT_LABELS[level],
-    })),
+    modes: (model.supportsEffort === false ? [] : (model.supportedEffortLevels ?? []).filter(isClaudeEffort)).map(
+      level => ({
+        id: level,
+        label: EFFORT_LABELS[level],
+      }),
+    ),
   }
 }
 
-/** The CLI's models as picker rows, one per ID: a repeated ID keeps the row that names its version. */
+/**
+ * The CLI's models as picker rows, one per ID: a repeated ID keeps the row that names its version. The
+ * CLI's `default` row is its pointer at its own default model, not a model, and the picker already
+ * offers a blank "Default" choice that sends no model.
+ */
 export function claudeModelChoices(models: readonly ModelInfo[], limit: number): ModelChoice[] {
   const byId = new Map<string, ModelChoice>()
   for (const model of models) {
+    if (model.value.trim() === '' || model.value === 'default') continue
     const choice = claudeModelChoice(model)
     const existing = byId.get(choice.id)
     if (!existing || (!hasVersion(existing.label) && hasVersion(choice.label))) byId.set(choice.id, choice)

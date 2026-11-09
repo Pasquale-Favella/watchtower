@@ -5,9 +5,16 @@ import * as Schema from 'effect/Schema'
 import { useContext } from 'react'
 
 import { type AgentAccessMode, agentAccessModeSchema, DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
+import type { AgentConfigOption } from '@/shared/schemas/execution.js'
+
+import { withoutModelSpecificConfigValues } from './config-values.js'
 
 const STORAGE_KEY = 'watchtower.workspace.agent-preferences.v1'
-const choiceSchema = Schema.Struct({ modelId: Schema.String, modeId: Schema.String })
+const choiceSchema = Schema.Struct({
+  modelId: Schema.String,
+  modeId: Schema.String,
+  configValues: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+})
 const preferencesSchema = Schema.Struct({
   connectionId: Schema.String,
   choices: Schema.Record(Schema.String, choiceSchema),
@@ -35,7 +42,11 @@ export function decodeAgentPreferences(raw: string | null): AgentPreferences | n
 export function withRememberedChoice(
   preferences: AgentPreferences,
   connectionId: string,
-  change: { readonly modelId?: string; readonly modeId?: string },
+  change: {
+    readonly modelId?: string
+    readonly modeId?: string
+    readonly configValues?: Readonly<Record<string, string>>
+  },
 ): AgentPreferences {
   const selected = preferences.choices[connectionId] ?? { modelId: '', modeId: '' }
   return { ...preferences, choices: { ...preferences.choices, [connectionId]: { ...selected, ...change } } }
@@ -71,7 +82,11 @@ export function useWorkspaceAgentPreferences() {
   const registry = useContext(RegistryContext)
   hydrate(registry)
   const preferences = useAtomValue(preferencesAtom)
-  function updateChoice(change: { readonly modelId?: string; readonly modeId?: string }): void {
+  function updateChoice(change: {
+    readonly modelId?: string
+    readonly modeId?: string
+    readonly configValues?: Readonly<Record<string, string>>
+  }): void {
     const current = registry.get(preferencesAtom)
     save(registry, withRememberedChoice(current, current.connectionId, change))
   }
@@ -82,8 +97,20 @@ export function useWorkspaceAgentPreferences() {
     modeId: selected?.modeId ?? '',
     accessMode: preferences.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
     setConnectionId: (connectionId: string) => save(registry, { ...registry.get(preferencesAtom), connectionId }),
-    setModelId: (modelId: string) => updateChoice({ modelId, modeId: '' }),
+    setModelId: (modelId: string, configOptions: readonly AgentConfigOption[] = []) => {
+      const current = rememberedChoice(registry.get(preferencesAtom), registry.get(preferencesAtom).connectionId)
+      updateChoice({
+        modelId,
+        modeId: '',
+        configValues: withoutModelSpecificConfigValues(current?.configValues ?? {}, configOptions),
+      })
+    },
     setModeId: (modeId: string) => updateChoice({ modeId }),
+    configValues: selected?.configValues ?? {},
+    setConfigValue: (id: string, value: string) => {
+      const current = rememberedChoice(registry.get(preferencesAtom), registry.get(preferencesAtom).connectionId)
+      updateChoice({ configValues: { ...(current?.configValues ?? {}), [id]: value } })
+    },
     setAccessMode: (accessMode: AgentAccessMode) => save(registry, { ...registry.get(preferencesAtom), accessMode }),
   }
 }
@@ -95,7 +122,7 @@ export function useRememberedAgentChoices() {
   const preferences = useAtomValue(preferencesAtom)
   return {
     choiceFor: (connectionId: string): AgentChoice | undefined => rememberedChoice(preferences, connectionId),
-    remember: (connectionId: string, choice: AgentChoice): void =>
+    remember: (connectionId: string, choice: Partial<AgentChoice>): void =>
       save(registry, withRememberedChoice(registry.get(preferencesAtom), connectionId, choice)),
   }
 }

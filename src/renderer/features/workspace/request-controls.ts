@@ -7,6 +7,30 @@ type RequestResponseHistoryItem = WorkspaceResult<'workspace:listRequestResponse
 
 export type ResponseDeliveryState = 'pending' | 'accepted' | 'failed' | 'uncertain'
 
+/** Names the kind of work that an approval would authorize when the driver supplied it. */
+export function requestLabel(request: AgentRequest): string {
+  if (request.kind === 'question') return request.questions.length > 1 ? 'Questions' : 'Question'
+
+  switch (request.tool?.category) {
+    case 'command':
+      return 'Command approval'
+    case 'fileRead':
+      return 'File read approval'
+    case 'fileWrite':
+      return 'File change approval'
+    case 'search':
+      return 'Search approval'
+    case 'web':
+      return 'Web access approval'
+    case 'subagent':
+      return 'Subagent approval'
+    case 'mcp':
+      return 'App access approval'
+    default:
+      return 'Approval requested'
+  }
+}
+
 export function requestResponseState(
   responses: ReadonlyArray<RequestResponseHistoryItem>,
   runId: string,

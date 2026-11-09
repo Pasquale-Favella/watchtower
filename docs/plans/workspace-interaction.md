@@ -383,9 +383,15 @@ promise extraction or preview of every binary format.
 `@` searches tracked and nonignored untracked checkout files and folder paths.
 Selecting a file captures its bytes; selecting a folder captures a bounded file
 listing. References cannot read through a link outside the selected checkout.
-`/` and `$` search project skill and command files. Choosing one attaches its
-instructions; agent-advertised slash commands preserve their native command
-text. `/attach` opens the file picker. Menus support arrows, Enter, Tab and Escape.
+`/` searches the selected driver's native slash commands and skills for the
+active checkout, plus checkout-local commands. `$` searches provider skills;
+checkout skills fill gaps only when the provider catalog is incomplete.
+Selecting a provider skill or command inserts its inline `$skill` or `/command`
+token without creating an attachment. Checkout-local skill and command
+instructions stay hidden from the attachment strip, and deleting their token
+removes the associated context. `/attach` opens the file picker. Menus support
+arrows, Enter, Tab and Escape. Slash commands are offered only at the start of
+the prompt; skills remain available anywhere.
 
 Attachment metadata survives draft navigation and reload. Start, queue,
 promotion and steering intents retain snapshot references; receipt fingerprints
@@ -413,3 +419,26 @@ authenticated native turn was started. Packaging was not rerun.
 This checkpoint does not certify authenticated native turns, arbitrary binary
 extraction, every provider's permissions/plan controls or the remaining M3.1
 interaction gates. Keep #178 and draft #179 open.
+
+## Provider prompt catalog checkpoint, 2026-11-09
+
+The composer now follows the same suggestion model as the reference workspace.
+`@` ranks checkout files and folders, inserting a Markdown file link. `/` shows
+built-in actions, provider slash commands and skills; provider skills render as
+`/skill:<name>` and insert their inline `$skill` token, while checkout-local
+skills keep their captured instructions hidden from the attachment strip. `$`
+searches provider skills directly, with checkout skills filling gaps only when
+the provider catalog is incomplete. Commands stay limited to the start of the
+prompt; skills remain available anywhere. The Tiptap editor renders mentions and
+skills as atomic chips, keeps cursor positions stable across normalization and
+draft restoration, and preserves IME input and Shift+Enter list continuation.
+Menu rows share the fuzzy ranking helper, support arrows, Enter, Tab and Escape,
+and restore the dismissed trigger only after the caret leaves it.
+
+Verification on Windows: the full Vitest suite passed 395 files with 4,438
+passing tests and 6 skipped. All four TypeScript projects, ESLint on the changed
+files, Prettier and the production build passed. The Electron workspace journey
+passed, covering `@` file references, `$` skills, `/` commands, draft
+restoration, attachments, queued follow-ups, approvals and Stop; the model
+options journey also passed. No paid inference or authenticated native turn was
+started.

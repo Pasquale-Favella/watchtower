@@ -44,7 +44,7 @@ export function composerPlaceholder(input: {
   if (!input.busy) return undefined
   return input.canSteer
     ? 'Queue a follow-up, or Ctrl+Enter to steer the running turn'
-    : 'Queue a follow-up. @ files, / skills and commands'
+    : 'Queue a follow-up. @ files, / commands, $ skills'
 }
 
 const activeRunStatuses = new Set<AgentRun['status']>([

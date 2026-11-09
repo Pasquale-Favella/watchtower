@@ -6,6 +6,7 @@ import {
   ndJsonStream,
   type PermissionOption,
   PROTOCOL_VERSION,
+  type SessionModelState,
   type SessionUpdate,
 } from '@agentclientprotocol/sdk'
 import * as Effect from 'effect/Effect'
@@ -23,6 +24,7 @@ import {
   makeAcpDriver,
 } from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
 import type { JsonRpcTransport } from '../src/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { agentConfigOptionSchema } from '../src/shared/schemas/execution.js'
 import type { AgentRunId } from '../src/shared/schemas/workspace.js'
 import {
   agentRunIdSchema,
@@ -33,7 +35,7 @@ import {
   workspaceCheckoutIdSchema,
 } from '../src/shared/schemas/workspace.js'
 
-type PromptMode = 'events' | 'permission' | 'cancel' | 'block' | 'overflow'
+type PromptMode = 'events' | 'permission' | 'question' | 'cancel' | 'block' | 'overflow'
 
 interface FakeAcpState {
   driver: ReturnType<typeof makeAcpDriver>
@@ -43,6 +45,7 @@ interface FakeAcpState {
   readonly closeCalls: number[]
   readonly cancelCalls: number[]
   readonly permissionOutcomes: Array<{ readonly outcome: string; readonly optionId?: string }>
+  readonly questionOutcomes: Array<unknown>
   permissionOptions?: PermissionOption[]
   blockCancelWrite: boolean
   finishPrompt?: () => void
@@ -51,6 +54,14 @@ interface FakeAcpState {
   allowLoad: boolean
   /** Report OpenCode-style model and thought-level config options. */
   openCodeOptions?: boolean
+  /** Report Copilot-style config options, including an empty default persona value. */
+  copilotOptions?: boolean
+  /** Publish reasoning effort only for the model the session is on, as OpenCode does. */
+  modelDependentEffort?: boolean
+  omitModeConfigOption?: boolean
+  initializeMetadata?: unknown
+  sessionModels?: SessionModelState
+  catalogUpdates?: readonly SessionUpdate[]
   readonly configCalls: Array<{ readonly configId: string; readonly value: unknown }>
   updates?: readonly SessionUpdate[]
 }
@@ -67,6 +78,7 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     closeCalls: [],
     cancelCalls: [],
     permissionOutcomes: [],
+    questionOutcomes: [],
     blockCancelWrite: false,
     mode,
     allowLoad,
@@ -74,6 +86,46 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
   }
   let peer: AgentSideConnection | undefined
   let cancelPrompt: (() => void) | undefined
+  const selectedModels = new Map<string, string>()
+  const modelDependentOptions = (modelId: string) => [
+    {
+      type: 'select' as const,
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      currentValue: modelId,
+      options: [
+        { name: 'OpenAI/GPT', value: 'openai/gpt' },
+        { name: 'Plain/Model', value: 'plain/model' },
+      ],
+    },
+    ...(modelId === 'openai/gpt'
+      ? [
+          {
+            type: 'select' as const,
+            id: 'effort',
+            name: 'Effort',
+            category: 'thought_level',
+            currentValue: 'medium',
+            options: [
+              { name: 'Low', value: 'low' },
+              { name: 'High', value: 'high' },
+            ],
+          },
+        ]
+      : []),
+    {
+      type: 'select' as const,
+      id: 'mode',
+      name: 'Mode',
+      category: 'mode',
+      currentValue: 'build',
+      options: [
+        { name: 'Build', value: 'build' },
+        { name: 'Plan', value: 'plan' },
+      ],
+    },
+  ]
 
   const agent: Agent = {
     authenticate: async () => ({}),
@@ -81,12 +133,18 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
       protocolVersion: PROTOCOL_VERSION,
       agentCapabilities: { loadSession: state.allowLoad },
       agentInfo: { name: 'fixture', version: '1' },
+      ...(state.initializeMetadata !== undefined ? { _meta: state.initializeMetadata as never } : {}),
     }),
     newSession: async params => {
       state.newSessionCalls.push(state.newSessionCalls.length + 1)
       if (params.cwd !== 'C:/workspace/project' && params.cwd !== tmpdir()) throw new Error('wrong workspace path')
+      const sessionId = `native-${state.newSessionCalls.length}`
+      if (state.catalogUpdates) {
+        for (const update of state.catalogUpdates) await peer?.sessionUpdate({ sessionId, update })
+      }
+      if (state.modelDependentEffort) return { sessionId, configOptions: modelDependentOptions('plain/model') }
       return {
-        sessionId: `native-${state.newSessionCalls.length}`,
+        sessionId,
         configOptions: [
           ...(state.openCodeOptions
             ? [
@@ -112,25 +170,108 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
                     { name: 'High', value: 'high' },
                   ],
                 },
+                {
+                  type: 'select' as const,
+                  id: 'agent',
+                  name: 'Agent',
+                  currentValue: 'default',
+                  options: [
+                    {
+                      group: 'agents',
+                      name: 'Profiles',
+                      options: [
+                        { name: 'Default', value: 'default', description: 'Use the default agent.' },
+                        { name: 'Subagent', value: 'subagent', description: 'Delegate this work.' },
+                      ],
+                    },
+                  ],
+                },
               ]
             : []),
-          {
-            type: 'select',
-            id: 'mode',
-            name: 'Mode',
-            category: 'mode',
-            currentValue: 'code',
-            options: [
-              { name: 'Code', value: 'code' },
-              { name: 'Plan', value: 'plan' },
-            ],
-          },
+          ...(state.copilotOptions
+            ? [
+                {
+                  type: 'select' as const,
+                  id: 'model',
+                  name: 'Model',
+                  category: 'model',
+                  currentValue: 'auto',
+                  options: [
+                    { name: 'Auto', value: 'auto' },
+                    { name: 'Auto', value: 'auto' },
+                    { name: 'Claude Sonnet 5.5', value: 'claude-sonnet-5.5' },
+                  ],
+                },
+                {
+                  type: 'select' as const,
+                  id: 'agent',
+                  name: 'Agent',
+                  category: '_agent',
+                  currentValue: '',
+                  options: [
+                    { name: 'Copilot', value: '', description: 'Default Copilot agent' },
+                    { name: 'munaciello', value: 'munaciello' },
+                  ],
+                },
+                {
+                  type: 'select' as const,
+                  id: 'allow_all',
+                  name: 'Allow All',
+                  category: 'permissions',
+                  currentValue: 'off',
+                  options: [
+                    { name: 'On', value: 'on' },
+                    { name: 'Off', value: 'off' },
+                  ],
+                },
+              ]
+            : []),
+          ...(!state.omitModeConfigOption
+            ? [
+                {
+                  type: 'select' as const,
+                  id: 'mode',
+                  name: 'Mode',
+                  category: 'mode',
+                  currentValue: 'code',
+                  options: [
+                    { name: 'Code', value: 'code' },
+                    { name: 'Plan', value: 'plan' },
+                  ],
+                },
+              ]
+            : []),
         ],
+        ...(state.sessionModels ? { models: state.sessionModels } : {}),
+        ...(state.openCodeOptions
+          ? {
+              modes: {
+                currentModeId: 'ask',
+                availableModes: [
+                  { id: 'ask', name: 'Ask' },
+                  { id: 'code', name: 'Code' },
+                ],
+              },
+              ...(!state.sessionModels
+                ? {
+                    models: {
+                      currentModelId: 'anthropic/sonnet',
+                      availableModels: [
+                        { modelId: 'anthropic/sonnet', name: 'Anthropic/Sonnet' },
+                        { modelId: 'openai/gpt', name: 'OpenAI/GPT' },
+                      ],
+                    },
+                  }
+                : {}),
+            }
+          : {}),
       }
     },
     setSessionConfigOption: async params => {
       state.configCalls.push({ configId: params.configId, value: params.value })
-      return { configOptions: [] }
+      if (!state.modelDependentEffort || params.configId !== 'model') return { configOptions: [] }
+      selectedModels.set(params.sessionId, params.value)
+      return { configOptions: modelDependentOptions(params.value) }
     },
     loadSession: async params => {
       state.loadedSessionIds.push(params.sessionId)
@@ -192,6 +333,24 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
           })
         }
         return { stopReason: response?.outcome.outcome === 'cancelled' ? 'cancelled' : 'end_turn' }
+      }
+      if (state.mode === 'question') {
+        const response = await peer?.extMethod('elicitation/create', {
+          mode: 'form',
+          message: 'Choose a value',
+          sessionId: params.sessionId,
+          requestId: 'native-question-1',
+          toolCallId: 'tool-question',
+          requestedSchema: {
+            type: 'object',
+            required: ['choice'],
+            properties: {
+              choice: { type: 'string', title: 'Choice', description: 'Pick one', enum: ['alpha', 'beta'] },
+            },
+          },
+        })
+        state.questionOutcomes.push(response)
+        return { stopReason: response?.action === 'cancel' ? 'cancelled' : 'end_turn' }
       }
       if (state.mode === 'overflow') {
         for (let index = 0; index < 140; index += 1) {
@@ -287,6 +446,129 @@ function collectUpdates(updates: readonly SessionUpdate[]) {
 }
 
 describe('generic ACP driver', () => {
+  it('keeps per-model reasoning efforts, including an explicitly empty effort list', async () => {
+    const fake = makeFakeAcp()
+    fake.openCodeOptions = true
+    fake.sessionModels = {
+      currentModelId: 'anthropic/sonnet',
+      availableModels: [
+        {
+          modelId: 'anthropic/sonnet',
+          name: 'Anthropic Sonnet',
+          description: 'General coding model.',
+          _meta: { reasoningEfforts: [{ id: 'low' }, { id: 'high', default: true }] },
+        },
+        { modelId: 'openai/gpt', name: 'OpenAI GPT', _meta: { reasoningEfforts: [] } },
+      ],
+    }
+
+    const models = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-model-efforts' })
+          const catalog = yield* connection.probeCatalog?.() ?? Effect.die(new Error('Missing ACP probe'))
+          yield* connection.close(1000)
+          return catalog.models
+        }),
+      ),
+    )
+
+    expect(models).toEqual([
+      {
+        id: 'anthropic/sonnet',
+        label: 'Anthropic/Sonnet',
+        description: 'General coding model.',
+        modes: [
+          { id: 'low', label: 'Low' },
+          { id: 'high', label: 'High' },
+        ],
+      },
+      { id: 'openai/gpt', label: 'OpenAI/GPT', modes: [] },
+    ])
+  })
+
+  it('reads ACP model and mode state from initialize metadata when sessions omit it', async () => {
+    const fake = makeFakeAcp()
+    fake.omitModeConfigOption = true
+    fake.initializeMetadata = {
+      modelState: {
+        currentModelId: 'opus',
+        availableModels: [
+          { modelId: 'opus', name: 'Opus', _meta: { reasoningEfforts: [{ id: 'high' }] } },
+          { modelId: 'plain', name: 'Plain', _meta: { reasoningEfforts: [] } },
+          { modelId: 'legacy', name: 'Legacy' },
+        ],
+      },
+      modeState: {
+        currentModeId: 'plan',
+        availableModes: [
+          { id: 'code', name: 'Code' },
+          { id: 'plan', name: 'Plan' },
+        ],
+      },
+    }
+
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-initialize-catalog' })
+          const discovered = yield* connection.discover()
+          const probed = yield* connection.probeCatalog?.() ?? Effect.die(new Error('Missing ACP probe'))
+          yield* connection.close(1000)
+          return { discovered, probed }
+        }),
+      ),
+    )
+
+    expect(result.discovered.models).toEqual([
+      { id: 'opus', label: 'Opus', modes: [] },
+      { id: 'plain', label: 'Plain', modes: [] },
+      { id: 'legacy', label: 'Legacy' },
+    ])
+    expect(result.discovered.modes).toEqual([
+      { id: 'code', label: 'Code' },
+      { id: 'plan', label: 'Plan' },
+    ])
+    expect(result.probed.models).toEqual(result.discovered.models)
+    expect(result.probed.modes).toEqual(result.discovered.modes)
+  })
+
+  it('discovers available ACP commands from a disposable workspace session', async () => {
+    const fake = makeFakeAcp()
+    fake.catalogUpdates = [
+      {
+        sessionUpdate: 'available_commands_update',
+        availableCommands: [
+          { name: 'review', description: 'Review the current changes' },
+          { name: 'plan', description: 'Create a plan' },
+        ],
+      },
+    ]
+
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-prompt-catalog' })
+          if (!connection.discoverPromptCatalog)
+            return yield* Effect.die(new Error('ACP must expose prompt catalog discovery'))
+          const result = yield* connection.discoverPromptCatalog(context.workspacePath)
+          yield* connection.close(1000)
+          return result
+        }),
+      ),
+    )
+
+    expect(fake.newSessionCalls).toEqual([1])
+    expect(catalog).toEqual({
+      skills: [],
+      skillsComplete: false,
+      commands: [
+        { name: 'review', description: 'Review the current changes' },
+        { name: 'plan', description: 'Create a plan' },
+      ],
+    })
+  })
+
   it('retains native plan content and all execution statuses', async () => {
     const events = await collectUpdates([
       {
@@ -600,6 +882,53 @@ describe('generic ACP driver', () => {
     expect(command.options.extendEnv).toBe(true)
   })
 
+  it('applies independent session configuration while retaining native model and mode catalogs', async () => {
+    const fake = makeFakeAcp()
+    fake.openCodeOptions = true
+    const capabilities = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-config-values' })
+          const session = yield* connection.openSession({
+            ...context,
+            modelId: 'openai/gpt',
+            modeId: 'code',
+            configValues: { effort: 'high', mode: 'plan', agent: 'subagent' },
+          })
+          yield* connection.close(1000)
+          return session.capabilities
+        }),
+      ),
+    )
+
+    expect(fake.configCalls).toEqual([
+      { configId: 'model', value: 'openai/gpt' },
+      { configId: 'effort', value: 'high' },
+      { configId: 'mode', value: 'plan' },
+      { configId: 'agent', value: 'subagent' },
+    ])
+    expect(capabilities.models).toEqual([
+      { id: 'anthropic/sonnet', label: 'Anthropic/Sonnet' },
+      { id: 'openai/gpt', label: 'OpenAI/GPT' },
+    ])
+    expect(capabilities.modes).toEqual([
+      { id: 'low', label: 'Low' },
+      { id: 'high', label: 'High' },
+    ])
+    expect(capabilities.configOptions).toEqual([
+      expect.objectContaining({ id: 'effort', currentValue: 'high' }),
+      expect.objectContaining({
+        id: 'agent',
+        currentValue: 'subagent',
+        options: [
+          { id: 'default', label: 'Default', description: 'Use the default agent.' },
+          { id: 'subagent', label: 'Subagent', description: 'Delegate this work.' },
+        ],
+      }),
+      expect.objectContaining({ id: 'mode', currentValue: 'plan' }),
+    ])
+  })
+
   it('offers OpenCode thought levels as the effort and selects the model before the effort', async () => {
     const fake = makeFakeAcp()
     fake.openCodeOptions = true
@@ -725,13 +1054,26 @@ describe('generic ACP driver', () => {
             if (event.kind !== 'requestPending') return Effect.void
             expect(event.request.options).toEqual([
               {
+                id: 'allow-always',
+                label: 'Always allow',
+                scope: 'session',
+                kind: 'allowAlways',
+                decision: { kind: 'approve', optionId: 'allow-always' },
+              },
+              {
                 id: 'allow-once',
                 label: 'Allow once',
                 scope: 'once',
                 kind: 'allow',
                 decision: { kind: 'approve', optionId: 'allow-once' },
               },
-              { id: 'reject-once', label: 'Reject once', scope: 'once', kind: 'deny', decision: { kind: 'deny' } },
+              {
+                id: 'reject-once',
+                label: 'Reject once',
+                scope: 'once',
+                kind: 'deny',
+                decision: { kind: 'deny', optionId: 'reject-once' },
+              },
             ])
             return session
               .respond(promptRunId, event.request.requestId, context.generation, { kind: 'approve' })
@@ -1025,7 +1367,7 @@ describe('generic ACP driver', () => {
   })
 
   it('declares every access mode, applied through the permission callback', () => {
-    expect(makeFakeAcp().driver.accessModes).toEqual(['approval-required', 'auto-accept-edits', 'full-access'])
+    expect(makeFakeAcp().driver.accessModes).toEqual(['approval-required', 'auto-accept-edits', 'auto', 'full-access'])
   })
 
   it.each([
@@ -1033,6 +1375,8 @@ describe('generic ACP driver', () => {
     { accessMode: 'approval-required' as const, kind: 'edit', expected: undefined },
     { accessMode: 'auto-accept-edits' as const, kind: 'edit', expected: 'allow-once' },
     { accessMode: 'auto-accept-edits' as const, kind: 'execute', expected: undefined },
+    { accessMode: 'auto' as const, kind: 'edit', expected: 'allow-once' },
+    { accessMode: 'auto' as const, kind: 'execute', expected: undefined },
     { accessMode: 'full-access' as const, kind: 'execute', expected: 'allow-once' },
   ])('answers a $kind request in $accessMode with $expected', ({ accessMode, kind, expected }) => {
     const options: PermissionOption[] = [
@@ -1049,6 +1393,79 @@ describe('generic ACP driver', () => {
     expect(automaticPermission('full-access', { options, toolCall: { toolCallId: 't', kind: 'execute' } })).toBe(
       undefined,
     )
+  })
+
+  it('keeps Copilot catalog choices representable for the inspection contract', async () => {
+    const fake = makeFakeAcp()
+    fake.copilotOptions = true
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-copilot' })
+          if (!connection.probeCatalog) return yield* Effect.die(new Error('ACP must offer a catalog probe'))
+          const probed = yield* connection.probeCatalog()
+          yield* connection.close(1000)
+          return probed
+        }),
+      ),
+    )
+
+    // Copilot repeats its "auto" alias and uses an empty value for the default persona.
+    expect(catalog.models).toEqual([
+      { id: 'auto', label: 'Auto' },
+      { id: 'claude-sonnet-5.5', label: 'Claude Sonnet 5.5' },
+    ])
+    const options = catalog.configOptions ?? []
+    const agent = options.find(option => option.id === 'agent')
+    expect(agent).toMatchObject({
+      currentValue: '',
+      options: [{ id: 'munaciello', label: 'munaciello' }],
+    })
+    expect(options.find(option => option.id === 'allow_all')).toMatchObject({
+      label: 'Allow All',
+      category: 'permissions',
+      currentValue: 'off',
+    })
+    // The inspection RPC encodes this catalog, so an unrepresentable choice would fail the whole read.
+    expect(() => Schema.decodeUnknownSync(Schema.Array(agentConfigOptionSchema))(options)).not.toThrow()
+  })
+
+  it('discovers reasoning efforts per model when the agent publishes them only for the session model', async () => {
+    const fake = makeFakeAcp()
+    fake.modelDependentEffort = true
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-model-efforts' })
+          if (!connection.probeCatalog) return yield* Effect.die(new Error('ACP must offer a catalog probe'))
+          const probed = yield* connection.probeCatalog()
+          yield* connection.close(1000)
+          return probed
+        }),
+      ),
+    )
+
+    expect(catalog.models).toEqual([
+      {
+        id: 'openai/gpt',
+        label: 'OpenAI/GPT',
+        modes: [
+          { id: 'low', label: 'Low' },
+          { id: 'high', label: 'High' },
+        ],
+      },
+      { id: 'plain/model', label: 'Plain/Model' },
+    ])
+    expect(catalog.modes).toEqual([
+      { id: 'build', label: 'Build' },
+      { id: 'plan', label: 'Plan' },
+    ])
+    // Every model was switched to on a disposable session to read its own effort set.
+    expect(fake.configCalls).toEqual([
+      { configId: 'model', value: 'openai/gpt' },
+      { configId: 'model', value: 'plain/model' },
+    ])
+    expect(fake.newSessionCalls.length).toBeGreaterThan(1)
   })
 
   it('closes an opened native session when the requested mode is absent from the catalog', async () => {

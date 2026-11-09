@@ -116,6 +116,7 @@ const contextFor = (claim: DispatchClaim): AgentSessionContext => ({
   generation: claim.generation,
   ...(claim.modelId ? { modelId: claim.modelId } : {}),
   ...(claim.modeId ? { modeId: claim.modeId } : {}),
+  ...(claim.configValues ? { configValues: claim.configValues } : {}),
   accessMode: claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
 })
 
@@ -303,7 +304,13 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const handleCommittedEvent = (state: ManagedRun, value: AgentDriverEvent) =>
       Effect.gen(function* () {
         const event = yield* Schema.decodeUnknownEffect(agentDriverEventSchema)(value)
-        if (isTerminalEvent(event)) yield* Deferred.await(state.submissionAccepted)
+        if (
+          isTerminalEvent(event) ||
+          event.kind === 'goalUpdated' ||
+          event.kind === 'goalTurnStarted' ||
+          event.kind === 'goalTurnCompleted'
+        )
+          yield* Deferred.await(state.submissionAccepted)
         state.eventCounter += 1
         const committed = yield* store.recordDriverEvent(state.claim.runId, {
           ownerEpoch: state.claim.ownerEpoch,
@@ -312,12 +319,16 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           occurredAt: yield* timestamp,
           event,
         })
-        if (event.kind === 'turnStarted') {
+        if (event.kind === 'turnStarted' || event.kind === 'goalTurnStarted') {
           state.turnObserved = true
           if (event.nativeTurnId !== undefined) state.nativeTurnId = event.nativeTurnId
           yield* sendNativeInterrupt(state).pipe(
             Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
           )
+        }
+        if (event.kind === 'goalTurnCompleted') {
+          state.turnObserved = false
+          state.nativeTurnId = undefined
         }
         if (isTerminalEvent(event)) {
           state.terminal = true
@@ -896,6 +907,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         attachments: head.attachments ?? [],
         modelId: head.modelId,
         modeId: head.modeId,
+        configValues: head.configValues,
         accessMode: head.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
         nativeSessionId,
         retryOfRunId: null,

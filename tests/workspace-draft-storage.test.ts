@@ -67,10 +67,37 @@ describe('workspace draft storage', () => {
       {
         checkoutId: 'checkout-1',
         connectionId: 'connection-1',
+        modelId: 'model-1',
+        modeId: 'plan',
+        configValues: { effort: 'high', agent: 'reviewer' },
       },
       100,
     )
     expect(readWorkspaceComposerPreferences(storage, 101)).toEqual(saved)
-    expect(saved[conversationId]).toMatchObject({ checkoutId: 'checkout-1', connectionId: 'connection-1' })
+    expect(saved[conversationId]).toMatchObject({
+      checkoutId: 'checkout-1',
+      connectionId: 'connection-1',
+      modelId: 'model-1',
+      modeId: 'plan',
+      configValues: { effort: 'high', agent: 'reviewer' },
+    })
+  })
+
+  it('retains a pending fresh-session choice across reloads', () => {
+    const storage = memoryStorage()
+    const conversationId = conversationIdSchema.make('conversation-clear')
+    const saved = writeWorkspaceComposerPreference(
+      storage,
+      {},
+      conversationId,
+      { resumeNativeContext: false, resumeSessionId: 'native-session-old' },
+      100,
+    )
+
+    expect(readWorkspaceComposerPreferences(storage, 101)[conversationId]).toMatchObject({
+      resumeNativeContext: false,
+      resumeSessionId: 'native-session-old',
+    })
+    expect(saved[conversationId]?.resumeNativeContext).toBe(false)
   })
 })

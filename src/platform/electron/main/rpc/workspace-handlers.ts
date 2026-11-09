@@ -16,10 +16,14 @@ import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-pro
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
 import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
+import { WorkspacePullRequests } from '@/core/ports/workspace-pull-requests.js'
+import { mergePromptContextSearch } from '@/infrastructure/agent-harnesses/prompt-catalog.js'
 import type { PromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
+import { nativePromptPathSearch } from '@/infrastructure/workspace/prompt-native-search.js'
 import { ConnectionInspectionError } from '@/platform/electron/main/workspace/connection-inspection.js'
 import { browseDirectories } from '@/platform/electron/main/workspace/directory-browse.js'
 import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
+import { createPromptReferenceIndex, type PromptReferenceFiles, searchMentionModels } from '@/platform/electron/main/workspace/prompt-references.js'
 import {
   WORKSPACE_RPC_PROTOCOL_VERSION,
   type WorkspaceEventFrame,
@@ -139,6 +143,7 @@ const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 export function workspaceHandlers<R = never>(
   options: {
     readonly attachments?: PromptAttachmentStore
+    readonly promptReferences?: PromptReferenceFiles
     readonly chooseProjectDirectory?: () => Effect.Effect<string | null, unknown, R>
     readonly prepareScratchProject?: (
       store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
@@ -152,7 +157,10 @@ export function workspaceHandlers<R = never>(
       const projects = yield* WorkspaceProjects
       const setup = yield* Effect.serviceOption(WorkspaceProjectSetup)
       const checkouts = yield* Effect.serviceOption(WorkspaceCheckouts)
+      const pullRequests = yield* Effect.serviceOption(WorkspacePullRequests)
       const store = host.store
+      yield* Effect.addFinalizer(() => Effect.promise(() => nativePromptPathSearch.dispose()))
+      const referenceIndex = createPromptReferenceIndex(store)
       // Model catalogs load while the app starts, so the first picker opens on known models.
       if (host.prewarmConnections) yield* host.prewarmConnections
       const read = <A, E, R>(use: () => Effect.Effect<A, E, R>) =>
@@ -182,6 +190,26 @@ export function workspaceHandlers<R = never>(
         if (!checkout) return yield* failure('not-found')
         return checkout.path
       })
+      const searchRoot = Effect.fnUntraced(function* (request: {
+        readonly projectId?: import('@/shared/schemas/workspace.js').ProjectId
+        readonly checkoutId?: import('@/shared/schemas/workspace.js').WorkspaceCheckoutId
+      }) {
+        if (request.projectId) return yield* contextRoot({ ...request, projectId: request.projectId })
+        const prepareScratchProject = options.prepareScratchProject
+        if (!prepareScratchProject) return yield* failure('unavailable')
+        const registration = yield* read(() => prepareScratchProject(store))
+        return registration.mainCheckout.path
+      })
+      const mentionModels = Effect.fnUntraced(function* (query: string) {
+        if (query.replace(/[:/\s-]/g, '').length < 2 || !host.listConnections || !host.observedConnectionInspections) return []
+        const connections = yield* host.listConnections
+        const inspections = yield* host.observedConnectionInspections
+        const catalogs = connections.map(connection =>
+          (inspections.find(inspection => inspection.connectionId === connection.connectionId)?.capabilities.models.items ?? [])
+            .map(model => ({ connection, id: model.id, label: model.label })),
+        )
+        return searchMentionModels(catalogs.flat(), query)
+      })
 
       return WorkspaceRpcGroup.toLayer({
         'workspace:importAttachment': request =>
@@ -195,15 +223,61 @@ export function workspaceHandlers<R = never>(
         'workspace:searchPromptContext': request =>
           attachmentStore
             ? safe(
-                Effect.flatMap(contextRoot(request), root =>
-                  Effect.tryPromise(() => attachmentStore.search(root, request.kind, request.query)),
-                ),
+                Effect.gen(function* () {
+                  if (request.kind === 'pullRequest') {
+                    if (!request.projectId || Option.isNone(pullRequests)) return { items: [], truncated: false }
+                    const root = yield* contextRoot({ ...request, projectId: request.projectId })
+                    const numeric = /^\d+$/.test(request.query)
+                    const result = yield* pullRequests.value.list(root, {
+                      projectId: request.projectId,
+                      ...(request.checkoutId ? { checkoutId: request.checkoutId } : {}),
+                      state: 'all',
+                      ...(!numeric && request.query ? { query: request.query } : {}),
+                    })
+                    const matches = result.items.filter(item => !numeric || String(item.number).includes(request.query))
+                    if (numeric && !matches.some(item => String(item.number) === request.query)) {
+                      const exact = yield* pullRequests.value.detail(root, Number(request.query)).pipe(Effect.option)
+                      if (Option.isSome(exact)) matches.unshift(exact.value)
+                    }
+                    if (numeric) matches.sort((a, b) => Number(String(b.number) === request.query) - Number(String(a.number) === request.query))
+                    return {
+                      items: matches.slice(0, 12).map(item => ({ kind: 'pullRequest' as const, path: String(item.number), label: `#${item.number}`, description: item.title.slice(0, 512) })),
+                      truncated: result.truncated || matches.length > 12,
+                    }
+                  }
+                  if (request.kind === 'file') {
+                    const [chats, models] = yield* Effect.all([
+                      read(() => referenceIndex.search(request.query, request.excludeTaskId, request.excludeConversationId)),
+                      mentionModels(request.query),
+                    ], { concurrency: 'unbounded' })
+                    const files = yield* Effect.flatMap(searchRoot(request), root => Effect.tryPromise(() => attachmentStore.search(root, 'file', request.query)))
+                    return { items: [...chats, ...models, ...files.items], truncated: files.truncated }
+                  }
+                  const root = yield* searchRoot(request)
+                  const local = yield* Effect.tryPromise(() => attachmentStore.search(root, 'command', request.query))
+                  if (!request.connectionId) return local
+                  if (!host.discoverPromptCatalog) return yield* failure('unavailable')
+                  const catalog = yield* host.discoverPromptCatalog(request.connectionId, root)
+                  return mergePromptContextSearch(local, catalog, request.query)
+                }),
               )
             : Effect.fail(failure('unavailable')),
+        'workspace:resolvePromptReference': request =>
+          safe(Effect.gen(function* () {
+            const files = options.promptReferences
+            if (!files) return yield* failure('unavailable')
+            if (request.kind === 'conversation') return yield* read(() => files.conversation(store, request.path))
+            if (!request.projectId || Option.isNone(pullRequests) || !/^[1-9]\d*$/.test(request.path))
+              return yield* failure('invalid-request')
+            const root = yield* contextRoot({ ...request, projectId: request.projectId })
+            const detail = yield* pullRequests.value.detail(root, Number(request.path))
+            const content = `# Pull request #${detail.number}: ${detail.title}\n\n${detail.url}\n\nState: ${detail.state}\nBase: ${detail.baseRefName}\nHead: ${detail.headRefName}\n\n${detail.body}`
+            return yield* Effect.tryPromise(() => files.save(`PR-${detail.number}`, content))
+          })),
         'workspace:attachPromptContext': request =>
           attachmentStore
             ? safe(
-                Effect.flatMap(contextRoot(request), root =>
+                Effect.flatMap(searchRoot(request), root =>
                   Effect.tryPromise(() => attachmentStore.attach(root, request.path, request.kind)),
                 ),
               )
@@ -277,7 +351,7 @@ export function workspaceHandlers<R = never>(
                   createdAt: at,
                 },
                 conversation: { id: conversationId, createdAt: at },
-              })
+              }).pipe(Effect.tap(() => referenceIndex.invalidate))
             }),
           ),
         'workspace:listProjects': ({ options }) => read(() => store.listProjects(options)),

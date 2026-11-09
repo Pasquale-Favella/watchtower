@@ -21,13 +21,14 @@ import {
   type WorkspaceRequest,
   type WorkspaceResult,
 } from './hooks.js'
-import { requestIsCurrent, requestResponseState, type ResponseDeliveryState } from './request-controls.js'
+import { requestIsCurrent, requestLabel, requestResponseState, type ResponseDeliveryState } from './request-controls.js'
 import {
   approvalActions,
   firstPendingRequest,
   orderRequestsForDrawer,
   PENDING_REQUEST_PAGE_SIZE,
 } from './request-drawer-state.js'
+import { RequestToolDetails } from './request-tool-details.js'
 import { QuestionForm } from './requests/QuestionForm.js'
 
 const PAGE_SIZE = PENDING_REQUEST_PAGE_SIZE
@@ -344,20 +345,28 @@ function ApprovalPanel({
     <>
       <PanelHeader
         icon={<ShieldQuestion className="size-3.5" />}
-        title="Approval requested"
+        title={requestLabel(request)}
         waitingCount={waitingCount}
         delivery={delivery}
       />
+      <RequestToolDetails request={request} />
       <p className="max-h-32 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">{request.prompt}</p>
       {hasActions ? (
         <div className="flex flex-wrap items-center justify-end gap-2" aria-label="Approval options">
           {actions.unavailable.length > 0 && (
-            <span
-              className="text-muted-foreground mr-auto text-[10px]"
-              title={actions.unavailable.map(option => option.label).join(', ')}
-            >
-              {actions.unavailable.length} option{actions.unavailable.length === 1 ? '' : 's'} not available here
-            </span>
+            <details className="text-muted-foreground mr-auto text-[10px]">
+              <summary className="cursor-pointer">
+                {actions.unavailable.length} option{actions.unavailable.length === 1 ? '' : 's'} cannot be sent safely
+              </summary>
+              <ul className="mt-1 space-y-1">
+                {actions.unavailable.map(option => (
+                  <li key={option.id} className="max-w-64 break-words">
+                    <span className="font-medium">{option.label}</span>
+                    <span className="block">Watchtower cannot represent this native response exactly.</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
           )}
           {actions.more.length > 0 && (
             <DropdownMenu>
@@ -371,7 +380,11 @@ function ApprovalPanel({
               />
               <DropdownMenuContent align="end" className="w-auto">
                 {actions.more.map(action => (
-                  <DropdownMenuItem key={action.option.id} onClick={() => onRespond(action.decision)}>
+                  <DropdownMenuItem
+                    key={action.option.id}
+                    disabled={disabled}
+                    onClick={() => onRespond(action.decision)}
+                  >
                     {action.option.label}
                   </DropdownMenuItem>
                 ))}
@@ -426,7 +439,7 @@ function QuestionPanel({
     <>
       <PanelHeader
         icon={<MessageCircleQuestion className="size-3.5" />}
-        title={request.questions.length > 1 ? 'Questions' : 'Question'}
+        title={requestLabel(request)}
         waitingCount={waitingCount}
         delivery={delivery}
       >

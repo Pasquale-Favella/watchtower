@@ -1,9 +1,11 @@
 import * as Schema from 'effect/Schema'
 
-import { projectIdSchema, workspaceCheckoutIdSchema } from './workspace.js'
+import { conversationIdSchema, projectIdSchema, taskIdSchema, workspaceCheckoutIdSchema } from './workspace.js'
 
 export const PROMPT_ATTACHMENT_MAX_BYTES = 4 * 1024 * 1024
 export const PROMPT_ATTACHMENT_MAX_COUNT = 8
+export const WORKSPACE_PROMPT_MAX_LENGTH = 120_000
+export const PROMPT_CONTEXT_SEARCH_MAX_RESULTS = 2048
 const name = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))
 export const promptAttachmentSchema = Schema.Struct({
   id: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
@@ -15,6 +17,8 @@ export const promptAttachmentSchema = Schema.Struct({
     Schema.isLessThanOrEqualTo(PROMPT_ATTACHMENT_MAX_BYTES),
   ),
   source: Schema.Literals(['file', 'reference', 'skill', 'command']),
+  /** Captured invocation name for checkout-local aliases and nested commands. */
+  token: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
 })
 export const promptAttachmentsSchema = Schema.Array(promptAttachmentSchema).check(
   Schema.isMaxLength(PROMPT_ATTACHMENT_MAX_COUNT),
@@ -45,21 +49,50 @@ export const promptContextScopeFields = {
   checkoutId: Schema.optional(workspaceCheckoutIdSchema),
 }
 export const searchPromptContextSchema = Schema.Struct({
-  ...promptContextScopeFields,
-  kind: Schema.Literals(['file', 'command']),
+  projectId: Schema.optional(projectIdSchema),
+  checkoutId: Schema.optional(workspaceCheckoutIdSchema),
+  connectionId: Schema.optional(Schema.String.check(Schema.isTrimmed(), Schema.isMaxLength(128))),
+  excludeTaskId: Schema.optional(taskIdSchema),
+  excludeConversationId: Schema.optional(conversationIdSchema),
+  kind: Schema.Literals(['file', 'command', 'pullRequest']),
   query: Schema.String.check(Schema.isMaxLength(256)),
 })
 export const promptContextItemSchema = Schema.Struct({
   path: name,
   label: name,
-  kind: Schema.Literals(['file', 'skill', 'command']),
+  description: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
+  kind: Schema.Literals(['file', 'skill', 'command', 'providerSkill', 'providerCommand', 'model', 'conversation', 'pullRequest']),
 })
 export const promptContextSearchResultSchema = Schema.Struct({
-  items: Schema.Array(promptContextItemSchema).check(Schema.isMaxLength(30)),
+  items: Schema.Array(promptContextItemSchema).check(Schema.isMaxLength(PROMPT_CONTEXT_SEARCH_MAX_RESULTS)),
   truncated: Schema.Boolean,
 })
+export type PromptContextSearchResult = {
+  items: Array<Schema.Schema.Type<typeof promptContextItemSchema>>
+  truncated: boolean
+}
 export const attachPromptContextSchema = Schema.Struct({
-  ...promptContextScopeFields,
+  projectId: Schema.optional(projectIdSchema),
+  checkoutId: Schema.optional(workspaceCheckoutIdSchema),
   path: name,
   kind: Schema.Literals(['file', 'skill', 'command']),
 })
+
+export const resolvePromptReferenceSchema = Schema.Struct({
+  projectId: Schema.optional(projectIdSchema),
+  checkoutId: Schema.optional(workspaceCheckoutIdSchema),
+  kind: Schema.Literals(['conversation', 'pullRequest']),
+  path: name,
+})
+export const resolvedPromptReferenceSchema = Schema.Struct({ text: Schema.String.check(Schema.isMaxLength(4096)) })
+
+export const promptConversationSearchSchema = Schema.Struct({
+  query: Schema.String.check(Schema.isMaxLength(256)),
+  excludeConversationId: Schema.optional(conversationIdSchema),
+})
+export const promptConversationMatchSchema = Schema.Struct({
+  conversationId: conversationIdSchema,
+  taskId: taskIdSchema,
+  title: Schema.String.check(Schema.isMaxLength(512)),
+})
+export const promptConversationMatchesSchema = Schema.Array(promptConversationMatchSchema).check(Schema.isMaxLength(8))

@@ -495,6 +495,7 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           const payload = { projectId, options }
           return invoke('workspace-worker:listTasks', payload, () => rawClient['workspace-worker:listTasks'](payload))
         },
+        searchPromptConversations: request => invoke('workspace-worker:searchPromptConversations', request, () => rawClient['workspace-worker:searchPromptConversations'](request)),
         readTaskDetail: (
           taskId: TaskId,
           options?: WorkspaceEntityPageOptions,

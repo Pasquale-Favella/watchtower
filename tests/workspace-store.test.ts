@@ -151,19 +151,26 @@ describe('WorkspaceStore', () => {
     })
   })
 
-  it('retains attachment snapshots in receipts, dispatch claims, transcript pages, and promoted follow-ups', async () => {
+  it('retains attachments and native config choices in receipts, dispatch claims, and promoted follow-ups', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
       const attachments = [
         { id: 'a'.repeat(64), name: 'notes.txt', mediaType: 'text/plain', size: 10, source: 'reference' as const },
       ]
-      const withContext = { ...command, attachments }
+      const configValues = { thought_level: 'high', mode: 'agent', agent: 'reviewer' }
+      const withContext = { ...command, attachments, configValues }
       await run(store.beginRun(withContext))
       expect(await run(store.beginRun(withContext))).toMatchObject({ replayed: true })
       await expect(
         run(store.beginRun({ ...withContext, attachments: [{ ...attachments[0], name: 'other.txt' }] })),
       ).rejects.toMatchObject({ code: 'command-conflict' })
-      expect(await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))).toMatchObject({ attachments })
+      await expect(
+        run(store.beginRun({ ...withContext, configValues: { ...configValues, mode: 'plan' } })),
+      ).rejects.toMatchObject({ code: 'command-conflict' })
+      expect(await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))).toMatchObject({
+        attachments,
+        configValues,
+      })
       const page = await run(store.readConversationPage(conversation.id, 0, 20))
       expect(page.items.find(item => item.userMessage)?.userMessage).toMatchObject({ attachments })
       await run(
@@ -182,6 +189,7 @@ describe('WorkspaceStore', () => {
           conversationId: conversation.id,
           prompt: 'Use the context',
           attachments,
+          configValues,
         }),
       )
       const promoted = await run(
@@ -190,11 +198,13 @@ describe('WorkspaceStore', () => {
           commandId: 'promote-context',
           runId: 'run-context-promoted' as never,
           provisionalAgentSessionId: 'session-context-promoted',
+          configValues: { mode: 'different-promotion-default' },
         }),
       )
-      expect(promoted?.followUp).toMatchObject({ attachments })
+      expect(promoted?.followUp).toMatchObject({ attachments, configValues })
       expect(await run(store.claimDispatch('run-context-promoted' as never, 7, '2026-10-29T10:00:05Z'))).toMatchObject({
         attachments,
+        configValues,
       })
     })
   })
@@ -1458,6 +1468,7 @@ describe('WorkspaceStore', () => {
           Effect.gen(function* () {
             const sql = yield* SqlClient.SqlClient
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
+            yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN config_values`
             yield* sql`ALTER TABLE workspace_follow_up_queue DROP COLUMN held`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 10`
           }),
@@ -2494,6 +2505,7 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE workspace_follow_up_queue`
             yield* sql`ALTER TABLE workspace_command_receipt DROP COLUMN promotion_payload`
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN attachments`
+            yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN config_values`
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN attachments`
             yield* sql`ALTER TABLE workspace_agent_session DROP COLUMN capabilities`

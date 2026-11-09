@@ -36,6 +36,7 @@ export function useWorkspaceDraft(conversationId: ConversationId) {
       readonly connectionId?: string
       readonly modelId?: string
       readonly modeId?: string
+      readonly configValues?: Readonly<Record<string, string>>
       readonly accessMode?: AgentAccessMode
       readonly resumeNativeContext?: boolean
       readonly resumeSessionId?: string

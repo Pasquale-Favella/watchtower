@@ -6,6 +6,29 @@ import { createInterface } from 'node:readline'
 const logPath = process.argv[2]
 const prompts = new Map()
 const permissions = new Map()
+const configuration = [
+  {
+    id: 'effort',
+    name: 'Effort',
+    category: 'thought_level',
+    type: 'select',
+    currentValue: 'medium',
+    options: [
+      { value: 'medium', name: 'Medium' },
+      { value: 'high', name: 'High' },
+    ],
+  },
+  {
+    id: 'agent',
+    name: 'Agent',
+    type: 'select',
+    currentValue: 'general',
+    options: [
+      { value: 'general', name: 'General' },
+      { value: 'reviewer', name: 'Reviewer' },
+    ],
+  },
+]
 
 function send(frame) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...frame })}\n`)
@@ -38,6 +61,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   } else if (frame.method === 'session/new') {
     reply(frame.id, {
       sessionId: `fixture-${randomUUID()}`,
+      configOptions: configuration,
       models: {
         currentModelId: 'fixture-model',
         availableModels: [{ modelId: 'fixture-model', name: 'Fixture model' }],
@@ -52,6 +76,7 @@ createInterface({ input: process.stdin }).on('line', line => {
     })
   } else if (frame.method === 'session/load') {
     reply(frame.id, {
+      configOptions: configuration,
       models: {
         currentModelId: 'fixture-model',
         availableModels: [{ modelId: 'fixture-model', name: 'Fixture model' }],
@@ -64,6 +89,11 @@ createInterface({ input: process.stdin }).on('line', line => {
         ],
       },
     })
+  } else if (frame.method === 'session/set_config_option') {
+    appendFileSync(logPath, `${JSON.stringify({ kind: frame.method, params: frame.params })}\n`)
+    const option = configuration.find(item => item.id === frame.params.configId)
+    if (option) option.currentValue = frame.params.value
+    reply(frame.id, { configOptions: configuration })
   } else if (frame.method === 'session/set_mode' || frame.method === 'session/set_model') {
     appendFileSync(logPath, `${JSON.stringify({ kind: frame.method, params: frame.params })}\n`)
     reply(frame.id, {})
@@ -102,9 +132,15 @@ createInterface({ input: process.stdin }).on('line', line => {
       method: 'session/request_permission',
       params: {
         sessionId,
-        toolCall: { toolCallId: 'fixture-command', title: 'Inspect checkout status' },
+        toolCall: {
+          toolCallId: 'fixture-command',
+          title: 'Inspect checkout status',
+          kind: 'execute',
+          rawInput: { command: 'git status --short', cwd: 'fixture-checkout' },
+        },
         options: [
           { optionId: 'fixture-read-once', name: 'Inspect once', kind: 'allow_once' },
+          { optionId: 'fixture-read-always', name: 'Always inspect', kind: 'allow_always' },
           { optionId: 'fixture-reject', name: 'Skip inspection', kind: 'reject_once' },
         ],
       },

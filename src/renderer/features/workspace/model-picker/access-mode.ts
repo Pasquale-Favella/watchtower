@@ -1,4 +1,4 @@
-import { LockIcon, type LucideIcon, PenLineIcon, ShieldOffIcon } from 'lucide-react'
+import { LockIcon, type LucideIcon, PenLineIcon, ShieldOffIcon, SparklesIcon } from 'lucide-react'
 
 import { type AgentAccessMode, DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 
@@ -19,6 +19,11 @@ export const accessModeConfig: Readonly<Record<AgentAccessMode, Omit<AccessModeO
     label: 'Auto-accept edits',
     description: 'Auto-approve edits, ask before other actions.',
     icon: PenLineIcon,
+  },
+  auto: {
+    label: 'Auto',
+    description: "Use provider's automatic review logic to approve routine actions.",
+    icon: SparklesIcon,
   },
   'full-access': {
     label: 'Full access',

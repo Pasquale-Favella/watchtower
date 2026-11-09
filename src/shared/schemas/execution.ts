@@ -24,8 +24,19 @@ export const agentRunStatusSchema = Schema.Literals([
 ])
 export type AgentRunStatus = Schema.Schema.Type<typeof agentRunStatusSchema>
 
+export const agentGoalStateSchema = Schema.Struct({
+  objective: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32 * 1024)),
+  status: Schema.Literals(['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete']),
+  tokenBudget: Schema.optional(Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0)))),
+  tokensUsed: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  timeUsedSeconds: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  createdAt: Schema.Number.check(Schema.isInt()),
+  updatedAt: Schema.Number.check(Schema.isInt()),
+})
+export type AgentGoalState = Schema.Schema.Type<typeof agentGoalStateSchema>
+
 /** How much a Run may do without asking. Absent values are applied as the fail-safe default. */
-export const agentAccessModeSchema = Schema.Literals(['approval-required', 'auto-accept-edits', 'full-access'])
+export const agentAccessModeSchema = Schema.Literals(['approval-required', 'auto-accept-edits', 'auto', 'full-access'])
 export type AgentAccessMode = Schema.Schema.Type<typeof agentAccessModeSchema>
 export const DEFAULT_AGENT_ACCESS_MODE: AgentAccessMode = 'approval-required'
 
@@ -41,6 +52,7 @@ export const agentRunSchema = Schema.Struct({
   startedAt: optionalTimestamp,
   finishedAt: optionalTimestamp,
   nativeTurnId: Schema.optional(Schema.NullOr(Schema.String)),
+  goal: Schema.optional(Schema.NullOr(agentGoalStateSchema)),
   failure: Schema.optional(Schema.NullOr(Schema.String)),
 })
 export type AgentRun = Schema.Schema.Type<typeof agentRunSchema>
@@ -92,6 +104,29 @@ export const agentSlashCommandSchema = Schema.Struct({
   description: Schema.String,
   inputHint: Schema.optional(Schema.String),
 })
+export const agentPromptSkillSchema = Schema.Struct({
+  name: text,
+  description: optionalText,
+  enabled: Schema.Boolean,
+  userInvocable: Schema.optional(Schema.Boolean),
+})
+export const agentPromptCatalogSchema = Schema.Struct({
+  skills: Schema.Array(agentPromptSkillSchema).check(Schema.isMaxLength(512)),
+  skillsComplete: Schema.Boolean,
+  commands: Schema.Array(agentSlashCommandSchema).check(Schema.isMaxLength(256)),
+})
+export type AgentPromptCatalog = Schema.Schema.Type<typeof agentPromptCatalogSchema>
+
+export const agentConfigOptionSchema = Schema.Struct({
+  id: text,
+  label: Schema.String,
+  description: optionalText,
+  category: optionalText,
+  currentValue: Schema.String,
+  options: Schema.Array(Schema.Struct({ id: text, label: Schema.String, description: optionalText })),
+})
+export type AgentConfigOption = Schema.Schema.Type<typeof agentConfigOptionSchema>
+export const agentConfigValuesSchema = Schema.Record(text, Schema.String)
 
 export const agentCapabilitiesSchema = Schema.Struct({
   openSession: capabilitySchema,
@@ -103,6 +138,7 @@ export const agentCapabilitiesSchema = Schema.Struct({
   reconcile: capabilitySchema,
   models: Schema.Array(agentModelChoiceSchema),
   modes: Schema.Array(Schema.Struct({ id: text, label: Schema.String })),
+  configOptions: Schema.optional(Schema.Array(agentConfigOptionSchema)),
   promptContent: Schema.optional(Schema.Struct({ images: Schema.Boolean, files: Schema.Boolean })),
   commands: Schema.optional(Schema.Array(agentSlashCommandSchema).check(Schema.isMaxLength(256))),
 })
@@ -124,7 +160,7 @@ export type AgentSessionIdentity = Schema.Schema.Type<typeof agentSessionIdentit
 
 export const agentRequestDecisionSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('approve'), optionId: optionalText }),
-  Schema.Struct({ kind: Schema.Literal('deny'), reason: optionalText }),
+  Schema.Struct({ kind: Schema.Literal('deny'), optionId: optionalText, reason: optionalText }),
   Schema.Struct({ kind: Schema.Literal('cancel') }),
   Schema.Struct({
     kind: Schema.Literal('answers'),
@@ -132,6 +168,29 @@ export const agentRequestDecisionSchema = Schema.Union([
   }),
 ])
 export type AgentRequestDecision = Schema.Schema.Type<typeof agentRequestDecisionSchema>
+
+export const agentToolMetadataSchema = Schema.Struct({
+  category: Schema.optional(
+    Schema.Literals(['command', 'fileRead', 'fileWrite', 'search', 'web', 'subagent', 'mcp', 'other']),
+  ),
+  command: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  description: Schema.optional(Schema.String),
+  exitCode: Schema.optional(Schema.Number.check(Schema.isInt())),
+  durationMs: Schema.optional(nonNegative),
+  paths: Schema.optional(Schema.Array(Schema.String)),
+  url: Schema.optional(Schema.String),
+  changes: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        kind: Schema.Literals(['add', 'delete', 'update']),
+        diff: Schema.optional(Schema.String),
+      }),
+    ),
+  ),
+})
+export type AgentToolMetadata = Schema.Schema.Type<typeof agentToolMetadataSchema>
 
 export const agentRequestSchema = Schema.Struct({
   requestId: text,
@@ -146,7 +205,7 @@ export const agentRequestSchema = Schema.Struct({
       Schema.Struct({
         id: text,
         label: Schema.String,
-        scope: Schema.optional(Schema.Literals(['once', 'session', 'project'])),
+        scope: Schema.optional(Schema.Literals(['once', 'session', 'project', 'persistent'])),
         kind: Schema.optional(Schema.Literals(['allow', 'deny', 'allowAlways', 'other'])),
         decision: Schema.optional(agentRequestDecisionSchema),
       }),
@@ -171,31 +230,11 @@ export const agentRequestSchema = Schema.Struct({
     }),
   ),
   nativeRequestId: optionalText,
+  toolCallId: optionalText,
+  tool: Schema.optional(agentToolMetadataSchema),
 })
 export type AgentRequest = Schema.Schema.Type<typeof agentRequestSchema>
 
-export const agentToolMetadataSchema = Schema.Struct({
-  category: Schema.optional(
-    Schema.Literals(['command', 'fileRead', 'fileWrite', 'search', 'web', 'subagent', 'mcp', 'other']),
-  ),
-  command: Schema.optional(Schema.String),
-  cwd: Schema.optional(Schema.String),
-  description: Schema.optional(Schema.String),
-  exitCode: Schema.optional(Schema.Number.check(Schema.isInt())),
-  durationMs: Schema.optional(nonNegative),
-  paths: Schema.optional(Schema.Array(Schema.String)),
-  url: Schema.optional(Schema.String),
-  changes: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        path: Schema.String,
-        kind: Schema.Literals(['add', 'delete', 'update']),
-        diff: Schema.optional(Schema.String),
-      }),
-    ),
-  ),
-})
-export type AgentToolMetadata = Schema.Schema.Type<typeof agentToolMetadataSchema>
 export const agentPlanEntrySchema = Schema.Struct({
   content: Schema.String,
   status: Schema.Literals(['pending', 'inProgress', 'completed']),
@@ -204,6 +243,25 @@ export type AgentPlanEntry = Schema.Schema.Type<typeof agentPlanEntrySchema>
 
 export const agentDriverEventSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('capabilitiesUpdated'), capabilities: agentCapabilitiesSchema }),
+  Schema.Struct({
+    kind: Schema.Literal('goalUpdated'),
+    nativeSessionId: text,
+    generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+    goal: Schema.NullOr(agentGoalStateSchema),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('goalTurnStarted'),
+    nativeSessionId: text,
+    generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+    nativeTurnId: text,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('goalTurnCompleted'),
+    nativeSessionId: text,
+    generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+    nativeTurnId: text,
+    status: Schema.Literals(['completed', 'interrupted', 'failed']),
+  }),
   Schema.Struct({ kind: Schema.Literal('turnStarted'), nativeTurnId: optionalText }),
   Schema.Struct({ kind: Schema.Literal('turnCompleted'), nativeTurnId: optionalText }),
   Schema.Struct({ kind: Schema.Literal('turnInterrupted'), nativeTurnId: optionalText }),

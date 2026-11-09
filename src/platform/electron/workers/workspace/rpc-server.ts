@@ -294,6 +294,12 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       execute('workspace-worker:readTaskDetail', { taskId, options: pageOptions }, () =>
         options.store.readTaskDetail(taskId, pageOptions),
       ),
+    'workspace-worker:searchPromptConversations': request =>
+      execute('workspace-worker:searchPromptConversations', request, () =>
+        options.store.searchPromptConversations
+          ? options.store.searchPromptConversations(request)
+          : Effect.fail(safeError('database-unavailable')),
+      ),
     'workspace-worker:listNativeAgentSessions': ({ taskId, options: pageOptions }) =>
       execute('workspace-worker:listNativeAgentSessions', { taskId, options: pageOptions }, () =>
         options.store.listNativeAgentSessions(taskId, pageOptions),

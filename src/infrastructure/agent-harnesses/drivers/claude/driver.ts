@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import {
   type CanUseTool,
   type Options,
+  type PermissionUpdate,
   type Query,
   query as sdkQuery,
   type SDKMessage,
@@ -31,11 +32,16 @@ import {
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
+import {
+  discoverClaudePromptCatalog,
+  normalizeAgentPromptCatalog,
+} from '@/infrastructure/agent-harnesses/prompt-catalog.js'
 import { executablePathEnv } from '@/infrastructure/process/executable.js'
 import type {
   AgentAccessMode,
   AgentCapabilities,
   AgentDriverEvent,
+  AgentPromptCatalog,
   AgentRequest,
   AgentRequestDecision,
   AgentToolMetadata,
@@ -44,7 +50,8 @@ import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
 import { claudeSignIn } from './account.js'
-import { claudeModelChoices, isClaudeEffort } from './models.js'
+import { resolveInstalledClaudeExecutable } from './executable.js'
+import { type ClaudeEffortLevel, claudeModelChoices, isClaudeEffort } from './models.js'
 
 const DRIVER_ID = 'claude-agent-sdk'
 const EVENT_CAPACITY = 1024
@@ -86,6 +93,8 @@ export interface ClaudeDriverDependencies {
   readonly sdk?: ClaudeAgentSdk | undefined
   readonly apiKey?: (() => string | undefined) | undefined
   readonly makeId?: (() => string) | undefined
+  /** Installed Claude Code executable the SDK drives; the SDK's bundled CLI when absent. */
+  readonly executablePath?: (() => string | undefined) | undefined
 }
 
 const defaultSdk: ClaudeAgentSdk = { query: sdkQuery }
@@ -142,6 +151,7 @@ interface PendingRequest {
   readonly generation: number
   readonly decision: ReturnType<typeof deferred<AgentRequestDecision>>
   readonly toolInput: Record<string, unknown>
+  readonly suggestions?: ReadonlyArray<PermissionUpdate>
 }
 
 const askUserQuestionSchema = Schema.Struct({
@@ -340,6 +350,8 @@ const questionRequest = (
   sessionId: AgentSessionContext['sessionId'],
   generation: number,
   nativeRequestId: string,
+  toolCallId: string,
+  toolInput: unknown,
 ): AgentRequest => {
   const questions = input.questions.map((question, questionIndex) => ({
     id: `q${questionIndex}`,
@@ -362,10 +374,17 @@ const questionRequest = (
     cancelDecision: { kind: 'cancel' },
     prompt: questions.map(({ prompt }) => prompt).join('\n'),
     questions,
+    toolCallId,
+    tool: toolMetadata('AskUserQuestion', toolInput),
     nativeRequestId,
   }
 }
 
+/**
+ * Approval choices as the Claude Code client presents them: Approve and Decline primary, the session-wide
+ * grant and Cancel behind the extra-options menu. Claude withholds a standing grant for some requests
+ * (`suppressAlwaysAllowRule`), and then the only choices are Approve and Decline.
+ */
 const makeAskRequest = (
   toolName: string,
   prompt: string,
@@ -374,6 +393,9 @@ const makeAskRequest = (
   sessionId: AgentSessionContext['sessionId'],
   generation: number,
   nativeRequestId: string,
+  toolCallId: string,
+  toolInput: unknown,
+  allowSession: boolean,
 ): AgentRequest => ({
   requestId,
   runId,
@@ -381,15 +403,29 @@ const makeAskRequest = (
   generation,
   kind: 'approval',
   prompt,
+  toolCallId,
+  tool: toolMetadata(toolName, toolInput),
   options: [
     {
       id: 'allow-once',
-      label: 'Allow once',
+      label: 'Approve',
       scope: 'once',
       kind: 'allow',
       decision: { kind: 'approve', optionId: 'allow-once' },
     },
-    { id: 'deny-once', label: 'Deny', scope: 'once', kind: 'deny', decision: { kind: 'deny' } },
+    ...(allowSession
+      ? [
+          {
+            id: 'allow-session',
+            label: 'Always allow this session',
+            scope: 'session' as const,
+            kind: 'allowAlways' as const,
+            decision: { kind: 'approve' as const, optionId: 'allow-session' },
+          },
+        ]
+      : []),
+    { id: 'deny-once', label: 'Decline', scope: 'once', kind: 'deny', decision: { kind: 'deny' } },
+    { id: 'cancel', label: 'Cancel', scope: 'once', kind: 'other', decision: { kind: 'cancel' } },
   ],
   questions: [],
   nativeRequestId,
@@ -433,6 +469,8 @@ const claudePermissionOptions = (
       return { permissionMode: 'default', hooks: askBeforeTool() }
     case 'auto-accept-edits':
       return { permissionMode: 'acceptEdits', hooks: askBeforeTool('AskUserQuestion') }
+    case 'auto':
+      return { permissionMode: 'auto', hooks: askBeforeTool('AskUserQuestion') }
     case 'full-access':
       return {
         permissionMode: 'bypassPermissions',
@@ -456,6 +494,7 @@ const idlePrompt = (signal: AbortSignal): AsyncIterable<SDKUserMessage> => ({
 const probeClaudeCatalog = (
   sdk: ClaudeAgentSdk,
   apiKey: string | undefined,
+  executablePath: string | undefined,
 ): Effect.Effect<AgentCatalogProbe, AgentDriverError> =>
   Effect.acquireUseRelease(
     Effect.try({
@@ -466,6 +505,7 @@ const probeClaudeCatalog = (
           options: {
             cwd: tmpdir(),
             abortController,
+            ...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
             settingSources: [],
             permissionMode: 'default',
             canUseTool: async () => ({ behavior: 'deny', message: 'Catalog probes never run tools.' }),
@@ -514,16 +554,80 @@ const probeClaudeCatalog = (
       }),
   )
 
+const probeClaudePromptCommands = (
+  sdk: ClaudeAgentSdk,
+  apiKey: string | undefined,
+  workspacePath: string,
+  executablePath: string | undefined,
+): Effect.Effect<AgentPromptCatalog['commands'], AgentDriverError> =>
+  Effect.acquireUseRelease(
+    Effect.try({
+      try: () => {
+        const abortController = new AbortController()
+        const probe = sdk.query({
+          prompt: idlePrompt(abortController.signal),
+          options: {
+            cwd: workspacePath,
+            abortController,
+            ...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
+            settingSources: ['user', 'project', 'local'],
+            settings: { disableAllHooks: true },
+            allowedTools: [],
+            mcpServers: {},
+            permissionMode: 'default',
+            canUseTool: async () => ({ behavior: 'deny', message: 'Prompt catalog probes never run tools.' }),
+            env: claudeProcessEnvironment(apiKey),
+          },
+        })
+        return { probe, abortController }
+      },
+      catch: () => makeError('driver-unavailable', 'Claude slash commands could not be read.'),
+    }),
+    ({ probe }) =>
+      Effect.tryPromise({
+        try: () => probe.initializationResult(),
+        catch: () => makeError('protocol-error', 'Claude slash commands could not be read.'),
+      }).pipe(
+        Effect.timeoutOption(`${CATALOG_PROBE_TIMEOUT_MS} millis`),
+        Effect.flatMap(result =>
+          result._tag === 'Some'
+            ? Effect.succeed(result.value.commands)
+            : Effect.fail(makeError('timeout', 'Claude slash command discovery timed out.')),
+        ),
+        Effect.map(commands => [
+          { name: 'compact', description: 'Compact this conversation to free up context.' },
+          ...commands.flatMap(command => {
+            const name = command.name.trim()
+            if (!name) return []
+            const description = command.description?.trim() ?? ''
+            const inputHint = command.argumentHint?.trim()
+            return [{ name, description, ...(inputHint ? { inputHint } : {}) }]
+          }),
+        ]),
+      ),
+    ({ probe, abortController }) =>
+      Effect.sync(() => {
+        abortController.abort()
+        try {
+          probe.close()
+        } catch {
+          /* The probe process is already gone. */
+        }
+      }),
+  )
+
 const modeOptions = (
   context: AgentSessionContext,
   native: NativeSessionReference | undefined,
   nativeSessionId: string,
   apiKey: string | undefined,
+  executablePath: string | undefined,
 ): Options => {
   return {
     cwd: context.workspacePath,
     ...(context.modelId !== undefined ? { model: context.modelId } : {}),
     ...(context.modeId !== undefined && isClaudeEffort(context.modeId) ? { effort: context.modeId } : {}),
+    ...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
     ...claudePermissionOptions(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE),
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
@@ -542,11 +646,22 @@ const makeSession = (
   sdk: ClaudeAgentSdk,
   id: () => string,
   apiKey: string | undefined,
+  executablePath: string | undefined,
+  catalogEfforts?: ReadonlyMap<string, ReadonlySet<ClaudeEffortLevel>>,
 ): Effect.Effect<AgentDriverSession, AgentDriverError> =>
   Effect.gen(function* () {
     const nativeSessionId = native?.nativeSessionId ?? freshNativeSessionId ?? id()
     if (context.modeId !== undefined && context.modeId !== LEGACY_DEFAULT_MODE && !isClaudeEffort(context.modeId)) {
       return yield* makeError('invalid-state', 'The requested Claude effort level is not supported by this driver.')
+    }
+    const supportedEfforts = context.modelId ? catalogEfforts?.get(context.modelId) : undefined
+    if (
+      context.modeId !== undefined &&
+      context.modeId !== LEGACY_DEFAULT_MODE &&
+      supportedEfforts !== undefined &&
+      !supportedEfforts.has(context.modeId)
+    ) {
+      return yield* makeError('invalid-state', 'The selected Claude model does not support this effort level.')
     }
     const runtimeContext = yield* Effect.context()
     const runPromise = Effect.runPromiseWith(runtimeContext)
@@ -562,7 +677,7 @@ const makeSession = (
     const closed = { value: false }
     const currentRunId = { value: undefined as AgentRunId | undefined }
     const pumpFailure = { value: undefined as AgentDriverError | undefined }
-    const queryOptions = modeOptions(context, native, nativeSessionId, apiKey)
+    const queryOptions = modeOptions(context, native, nativeSessionId, apiKey, executablePath)
 
     const prompt: AsyncIterable<SDKUserMessage> = {
       [Symbol.asyncIterator]() {
@@ -693,7 +808,13 @@ const makeSession = (
       }
       const requestId = id()
       const wait = deferred<AgentRequestDecision>()
-      const request: PendingRequest = { runId, generation, decision: wait, toolInput }
+      const request: PendingRequest = {
+        runId,
+        generation,
+        decision: wait,
+        toolInput,
+        ...(options.suggestions?.length ? { suggestions: options.suggestions } : {}),
+      }
       pending.set(requestId, request)
       let parsedQuestions: ParsedAskUserQuestion | undefined
       if (toolName === 'AskUserQuestion') {
@@ -709,8 +830,28 @@ const makeSession = (
           `${toolName} requires your approval.\n${encodeToolInput(toolInput) ?? '[Tool input could not be rendered]'}`,
       )
       const event = parsedQuestions
-        ? questionRequest(parsedQuestions, requestId, runId, context.sessionId, generation, options.requestId)
-        : makeAskRequest(toolName, title, requestId, runId, context.sessionId, generation, options.requestId)
+        ? questionRequest(
+            parsedQuestions,
+            requestId,
+            runId,
+            context.sessionId,
+            generation,
+            options.requestId,
+            options.toolUseID,
+            toolInput,
+          )
+        : makeAskRequest(
+            toolName,
+            title,
+            requestId,
+            runId,
+            context.sessionId,
+            generation,
+            options.requestId,
+            options.toolUseID,
+            toolInput,
+            options.suppressAlwaysAllowRule !== true,
+          )
       try {
         await runPromise(emit(runId, { kind: 'requestPending', request: event }))
         const decision = await Promise.race([
@@ -721,10 +862,34 @@ const makeSession = (
         ])
         await runPromise(emit(runId, { kind: 'requestResolved', requestId, decision }))
         if (decision.kind === 'approve') {
+          if (decision.optionId === 'allow-session') {
+            const updates: PermissionUpdate[] = request.suggestions?.length
+              ? request.suggestions.map(suggestion => ({ ...suggestion, destination: 'session' as const }))
+              : [
+                  {
+                    type: 'addRules',
+                    rules: [{ toolName }],
+                    behavior: 'allow',
+                    destination: 'session' as const,
+                  },
+                ]
+            return {
+              behavior: 'allow',
+              updatedInput: toolInput,
+              toolUseID: options.toolUseID,
+              decisionClassification: 'user_permanent',
+              updatedPermissions: updates,
+            }
+          }
           if (decision.optionId !== undefined && decision.optionId !== 'allow-once') {
             return { behavior: 'deny', message: 'The selected approval option does not grant this action.' }
           }
-          return { behavior: 'allow', updatedInput: toolInput }
+          return {
+            behavior: 'allow',
+            updatedInput: toolInput,
+            toolUseID: options.toolUseID,
+            decisionClassification: 'user_temporary',
+          }
         }
         if (decision.kind === 'answers' && toolName === 'AskUserQuestion') {
           if (!parsedQuestions) return { behavior: 'deny', message: 'No valid question request is pending.' }
@@ -1265,17 +1430,20 @@ export const makeClaudeAgentDriver = (dependencies: ClaudeDriverDependencies = {
   const sdk = dependencies.sdk ?? defaultSdk
   const apiKey = dependencies.apiKey ?? (() => process.env.ANTHROPIC_API_KEY)
   const id: () => string = dependencies.makeId ?? randomUUID
+  const resolveExecutable = dependencies.executablePath ?? resolveInstalledClaudeExecutable
 
   return Layer.succeed(
     AgentDriver,
     AgentDriver.of({
       driverId: DRIVER_ID,
-      accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
+      accessModes: ['approval-required', 'auto-accept-edits', 'auto', 'full-access'],
       connect: (options: AgentDriverConnectOptions) =>
         Effect.gen(function* () {
           const key = apiKey() || undefined
+          const executablePath = resolveExecutable()
           const childScope = yield* Scope.make()
           let connectionClosed = false
+          let catalogEfforts: ReadonlyMap<string, ReadonlySet<ClaudeEffortLevel>> | undefined
 
           const connection: AgentDriverConnection = {
             identity: {
@@ -1285,7 +1453,28 @@ export const makeClaudeAgentDriver = (dependencies: ClaudeDriverDependencies = {
               authentication: 'unknown',
             },
             discover: () => Effect.succeed(capabilities),
-            probeCatalog: () => probeClaudeCatalog(sdk, key),
+            discoverPromptCatalog: workspacePath =>
+              Effect.gen(function* () {
+                const catalog = yield* Effect.tryPromise({
+                  try: () => discoverClaudePromptCatalog(workspacePath),
+                  catch: () => makeError('protocol-error', 'Claude skill catalog could not be read.'),
+                })
+                const commands = yield* probeClaudePromptCommands(sdk, key, workspacePath, executablePath)
+                return normalizeAgentPromptCatalog({ ...catalog, commands: [...commands, ...catalog.commands] })
+              }),
+            probeCatalog: () =>
+              probeClaudeCatalog(sdk, key, executablePath).pipe(
+                Effect.tap(catalog =>
+                  Effect.sync(() => {
+                    catalogEfforts = new Map(
+                      catalog.models.map(model => [
+                        model.id,
+                        new Set((model.modes ?? []).map(mode => mode.id).filter(isClaudeEffort)),
+                      ]),
+                    )
+                  }),
+                ),
+              ),
             openSession: context =>
               Effect.gen(function* () {
                 if (connectionClosed) return yield* makeError('disconnected', 'Claude connection is closed.')
@@ -1301,6 +1490,8 @@ export const makeClaudeAgentDriver = (dependencies: ClaudeDriverDependencies = {
                   sdk,
                   id,
                   key,
+                  executablePath,
+                  catalogEfforts,
                 )
               }),
             loadSession: (context, native) =>
@@ -1312,7 +1503,18 @@ export const makeClaudeAgentDriver = (dependencies: ClaudeDriverDependencies = {
                     'Claude resume requires the exact native session ID and matching generation.',
                   )
                 }
-                return yield* makeSession(childScope, context, native, undefined, native.generation, sdk, id, key)
+                return yield* makeSession(
+                  childScope,
+                  context,
+                  native,
+                  undefined,
+                  native.generation,
+                  sdk,
+                  id,
+                  key,
+                  executablePath,
+                  catalogEfforts,
+                )
               }),
             close: deadlineMs =>
               Effect.gen(function* () {

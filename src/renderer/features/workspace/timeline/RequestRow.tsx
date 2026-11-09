@@ -5,9 +5,16 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/
 import { cn } from '@/renderer/shared/lib/utils'
 
 import type { ConversationRequestOutcome, ConversationTurnBlock } from '../conversation-view.js'
-import { questionAnswerLabels } from '../request-controls.js'
+import { questionAnswerLabels, requestLabel } from '../request-controls.js'
+import { RequestToolDetails } from '../request-tool-details.js'
 
 type RequestBlock = Extract<ConversationTurnBlock, { readonly kind: 'request' }>
+
+function getRequestLabel(block: RequestBlock): string {
+  if (block.request) return requestLabel(block.request)
+  if (block.requestKind === 'question') return 'Question'
+  return 'Approval requested'
+}
 
 const outcomeLabels: Readonly<Record<Exclude<ConversationRequestOutcome, 'pending'>, string>> = {
   approved: 'Approved',
@@ -15,8 +22,6 @@ const outcomeLabels: Readonly<Record<Exclude<ConversationRequestOutcome, 'pendin
   cancelled: 'Cancelled',
   answered: 'Answered',
 }
-
-const kindLabels = { approval: 'Approval requested', question: 'Question' } as const
 
 /**
  * A request in the transcript. Its controls live in the composer drawer; this row records what was
@@ -33,11 +38,12 @@ export function RequestRow({
   const pending = block.outcome === 'pending'
   const status = pending ? (live ? 'Waiting for you' : 'No response') : outcomeLabels[block.outcome]
   const Icon = block.requestKind === 'question' ? MessageCircleQuestionIcon : ShieldQuestionIcon
-  const label = block.requestKind ? kindLabels[block.requestKind] : 'Request'
+  const label = getRequestLabel(block)
   const summary = block.prompt?.split('\n', 1)[0]?.trim() ?? ''
   const questions = block.request?.kind === 'question' ? block.request.questions : []
   const answerPreview = questions.flatMap(question => questionAnswerLabels(question, block.decision)).join(' · ')
   const hasDetail =
+    Boolean(block.request?.toolCallId || block.request?.tool) ||
     questions.length > 0 ||
     Boolean(block.prompt && block.prompt.trim() !== summary) ||
     (block.decision?.kind === 'deny' && Boolean(block.decision.reason))
@@ -76,6 +82,7 @@ export function RequestRow({
       </CollapsibleTrigger>
       {hasDetail && (
         <CollapsibleContent className="space-y-3 pt-2">
+          {block.request && <RequestToolDetails request={block.request} />}
           {questions.length > 0 ? (
             <dl className="space-y-3">
               {questions.map(question => {

@@ -1,5 +1,5 @@
 import { ArrowUpRight, X } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import type { WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
@@ -53,6 +53,10 @@ function SideChatContent({
 }: SideChatPaneProps & { readonly binding: SideChatBinding }): React.JSX.Element {
   const detail = useWorkspaceTask({ taskId: binding.taskId, options: { limit: 30 } })
   const snapshot = useWorkspaceTaskSnapshot({ taskId: binding.taskId, runLimit: 100 })
+  const sessionIdsByRunId = useMemo(
+    () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
+    [snapshot.data?.runs],
+  )
   const sideBusy = snapshot.data?.runs.some(isRunActive) ?? false
   const completed = snapshot.data?.runs.some(run => run.status === 'completed') ?? false
   const back = useBringBackSideChat(binding.parentConversationId)
@@ -141,6 +145,7 @@ function SideChatContent({
       <div className="min-h-0 flex-1 overflow-hidden [&>section]:h-full">
         <WorkspaceConversation
           conversationId={binding.conversationId}
+          sessionIdsByRunId={sessionIdsByRunId}
           workspacePath={runContext?.workspacePath}
           onOpenFile={openChatFile}
           scope={detail.data ? { projectId: detail.data.task.projectId, checkoutId: activeCheckoutId } : undefined}

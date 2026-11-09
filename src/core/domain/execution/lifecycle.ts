@@ -1,4 +1,4 @@
-import type { AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
+import type { AgentGoalState, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
 import type { TaskStatus } from '@/shared/schemas/workspace.js'
 
 const terminalRunStatuses: ReadonlySet<AgentRunStatus> = new Set([
@@ -42,6 +42,11 @@ export type RunTransitionFailure = 'terminal' | 'invalid-transition'
 export type RunTransitionResult =
   { readonly ok: true; readonly run: AgentRun } | { readonly ok: false; readonly reason: RunTransitionFailure }
 
+export type GoalTurnBoundaryFailure = 'goal-not-active' | 'turn-already-running' | 'stale-turn'
+export type GoalTurnBoundaryResult =
+  | { readonly ok: true; readonly run: AgentRun }
+  | { readonly ok: false; readonly reason: GoalTurnBoundaryFailure }
+
 export const isAgentRunTerminal = (status: AgentRunStatus): boolean => terminalRunStatuses.has(status)
 
 /** A finished attempt is immutable. Retrying always creates a new AgentRun. */
@@ -49,7 +54,11 @@ export const transitionAgentRun = (
   run: AgentRun,
   status: AgentRunStatus,
   at: string,
-  details: { readonly nativeTurnId?: string | null; readonly failure?: string | null } = {},
+  details: {
+    readonly nativeTurnId?: string | null
+    readonly failure?: string | null
+    readonly goal?: AgentGoalState | null
+  } = {},
 ): RunTransitionResult => {
   if (isAgentRunTerminal(run.status)) return { ok: false, reason: 'terminal' }
   if (!allowedRunTransitions[run.status].has(status)) return { ok: false, reason: 'invalid-transition' }
@@ -63,8 +72,28 @@ export const transitionAgentRun = (
       ...(isAgentRunTerminal(status) ? { finishedAt: at } : {}),
       ...(details.nativeTurnId !== undefined ? { nativeTurnId: details.nativeTurnId } : {}),
       ...(details.failure !== undefined ? { failure: details.failure } : {}),
+      ...(details.goal !== undefined ? { goal: details.goal } : {}),
     },
   }
+}
+
+/** A goal can advance its native turn identity only after its prior turn completed. */
+export const startAgentGoalTurn = (run: AgentRun, nativeTurnId: string, at: string): GoalTurnBoundaryResult => {
+  if (run.goal?.status !== 'active') return { ok: false, reason: 'goal-not-active' }
+  if (run.nativeTurnId != null) return { ok: false, reason: 'turn-already-running' }
+  if (run.status === 'starting') {
+    const transitioned = transitionAgentRun(run, 'running', at, { nativeTurnId })
+    return transitioned.ok ? transitioned : { ok: false, reason: 'turn-already-running' }
+  }
+  if (run.status !== 'running' && run.status !== 'awaitingInput' && run.status !== 'interruptRequested')
+    return { ok: false, reason: 'turn-already-running' }
+  return { ok: true, run: { ...run, nativeTurnId } }
+}
+
+/** Ends one native turn while preserving the owning Run and its durable Goal state. */
+export const completeAgentGoalTurn = (run: AgentRun, nativeTurnId: string): GoalTurnBoundaryResult => {
+  if (run.goal == null || run.nativeTurnId !== nativeTurnId) return { ok: false, reason: 'stale-turn' }
+  return { ok: true, run: { ...run, nativeTurnId: null } }
 }
 
 const allowedTaskTransitions: Readonly<Record<TaskStatus, ReadonlySet<TaskStatus>>> = {

@@ -33,13 +33,13 @@ describe('claudeModelChoices', () => {
       ],
       240,
     )
+    // The CLI's `default` pointer is not a model: the picker's blank Default choice sends no model.
     expect(choices.map(choice => [choice.id, choice.label, choice.description, choice.modes?.length])).toEqual([
-      ['default', 'Default (Opus 5 with 1M context)', 'Best for everyday, complex tasks', 5],
       ['claude-fable-5-1[1m]', 'Fable 5.1', 'Most capable for your hardest and longest-running tasks', 5],
       ['sonnet', 'Sonnet 5', 'Most efficient for everyday tasks', 0],
       ['haiku', 'Haiku 4.5', 'Fastest for quick answers', 0],
     ])
-    expect(choices[1]?.modes?.[3]).toEqual({ id: 'xhigh', label: 'Extra high' })
+    expect(choices[0]?.modes?.[3]).toEqual({ id: 'xhigh', label: 'Extra high' })
   })
 })
 

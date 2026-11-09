@@ -20,7 +20,6 @@ import {
   SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
-  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuBadge,
@@ -93,7 +92,6 @@ function AnalyticsNavigation() {
 
   return (
     <SidebarGroup>
-      <SidebarGroupLabel>Analytics</SidebarGroupLabel>
       <SidebarGroupContent>
         <SidebarMenu>
           {NAV_SECTIONS.map(section => (

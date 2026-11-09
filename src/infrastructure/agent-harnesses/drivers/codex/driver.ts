@@ -1,6 +1,7 @@
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
 import * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
@@ -30,6 +31,8 @@ import type {
   AgentCapabilities,
   AgentConnectionIdentity,
   AgentDriverEvent,
+  AgentGoalState,
+  AgentPromptCatalog,
   AgentReconcileEvent,
   AgentRequestDecision,
   AgentToolMetadata,
@@ -57,6 +60,27 @@ const ModelList = Schema.Struct({
     }),
   ),
   nextCursor: Schema.optional(Schema.NullOr(Schema.String)),
+})
+const CodexSkillsList = Schema.Struct({
+  data: Schema.Array(
+    Schema.Struct({
+      cwd: Schema.String,
+      skills: Schema.Array(
+        Schema.Struct({
+          name: Schema.String,
+          enabled: Schema.Boolean,
+          description: Schema.optional(Schema.String),
+          shortDescription: Schema.optional(Schema.String),
+          interface: Schema.optional(
+            Schema.Struct({
+              shortDescription: Schema.optional(Schema.String),
+              userInvocable: Schema.optional(Schema.Boolean),
+            }),
+          ),
+        }),
+      ),
+    }),
+  ),
 })
 
 const EFFORT_LABELS: Readonly<Record<string, string>> = {
@@ -92,6 +116,38 @@ const discoverModels = Effect.fnUntraced(function* (client: JsonRpcClient): Effe
   }
   return { ...capabilities, models: models.slice(0, 240), modes: defaultModes }
 })
+const discoverPromptCatalog = Effect.fnUntraced(function* (
+  client: JsonRpcClient,
+  workspacePath: string,
+): Effect.fn.Return<AgentPromptCatalog, AgentDriverError> {
+  const response = yield* client.request('skills/list', { cwds: [workspacePath] }).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(CodexSkillsList)),
+    Effect.timeoutOption('5 seconds'),
+    Effect.flatMap(
+      Option.match({
+        onNone: () => Effect.fail(failure('timeout', 'Codex skill discovery timed out.')),
+        onSome: Effect.succeed,
+      }),
+    ),
+    Effect.mapError(error =>
+      error instanceof AgentDriverError ? error : failure('protocol-error', 'Codex skill catalog could not be read.'),
+    ),
+  )
+  const matchingEntry = response.data.find(entry => entry.cwd === workspacePath)
+  const skills = (matchingEntry?.skills ?? []).slice(0, 512).map(skill => ({
+    name: skill.name,
+    enabled: skill.enabled,
+    ...(skill.description || skill.shortDescription || skill.interface?.shortDescription
+      ? { description: skill.description ?? skill.shortDescription ?? skill.interface?.shortDescription }
+      : {}),
+    ...(skill.interface?.userInvocable !== undefined ? { userInvocable: skill.interface.userInvocable } : {}),
+  }))
+  return {
+    skills,
+    skillsComplete: true,
+    commands: [{ name: 'compact', description: 'Compact this conversation to free up context.' }],
+  }
+})
 const ThreadResponse = Schema.Struct({ thread: Schema.Struct({ id: Schema.String }) })
 const ResumedThreadResponse = Schema.Struct({
   cwd: Schema.String,
@@ -111,6 +167,17 @@ const TurnResponse = Schema.Struct({
     status: Schema.Literals(['completed', 'interrupted', 'failed', 'inProgress']),
   }),
 })
+const CompactResponse = Schema.Struct({
+  turn: Schema.optional(
+    Schema.Struct({
+      id: Schema.optional(Schema.String),
+      status: Schema.optional(Schema.Literals(['completed', 'interrupted', 'failed', 'inProgress'])),
+    }),
+  ),
+})
+const GoalResponse = Schema.Struct({ goal: Schema.optional(Schema.NullOr(Schema.Unknown)) })
+const GoalNotification = Schema.Struct({ threadId: Schema.String, goal: Schema.optional(Schema.NullOr(Schema.Unknown)) })
+const GoalClearedNotification = Schema.Struct({ threadId: Schema.String })
 const ThreadRef = Schema.Struct({
   threadId: Schema.String,
   turnId: Schema.optional(Schema.String),
@@ -180,8 +247,13 @@ const PlanNotification = Schema.Struct({
 const RequestDetails = Schema.Struct({
   threadId: Schema.String,
   turnId: Schema.optional(Schema.String),
+  itemId: Schema.optional(Schema.String),
+  cwd: Schema.optional(Schema.String),
+  path: Schema.optional(Schema.String),
+  paths: Schema.optional(Schema.Array(Schema.String)),
   command: Schema.optional(Schema.NullOr(Schema.Union([Schema.String, Schema.Array(Schema.String)]))),
   reason: Schema.optional(Schema.NullOr(Schema.String)),
+  permissions: Schema.optional(Schema.Unknown),
   questions: Schema.optional(
     Schema.NullOr(
       Schema.Array(
@@ -201,6 +273,28 @@ const RequestDetails = Schema.Struct({
   ),
   prompt: Schema.optional(Schema.String),
 })
+const PermissionRequestDetails = Schema.Struct({
+  fileSystem: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        read: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
+        write: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
+        entries: Schema.optional(
+          Schema.NullOr(
+            Schema.Array(
+              Schema.Struct({
+                access: Schema.String,
+                path: Schema.optional(Schema.String),
+                pattern: Schema.optional(Schema.String),
+              }),
+            ),
+          ),
+        ),
+      }),
+    ),
+  ),
+  network: Schema.optional(Schema.Unknown),
+})
 
 const supported = {
   support: 'supported',
@@ -210,7 +304,7 @@ const supported = {
 const limitedRequests = {
   support: 'supported',
   restrictions: [
-    'Command/file approvals and structured user questions only; other native request families are rejected.',
+    'Command/file/additional-permission approvals and structured user questions only; other native request families are rejected.',
   ],
   evidence: [{ source: 'protocol', detail: 'Codex App Server server requests' }],
 } as const
@@ -251,6 +345,7 @@ interface PendingRequest {
   readonly threadId: string
   readonly nativeTurnId: string
   readonly method: string
+  readonly permissions?: unknown
   readonly questionOptions: ReadonlyMap<string, ReadonlyMap<string, string>>
   readonly customQuestionIds: ReadonlySet<string>
 }
@@ -260,12 +355,14 @@ interface ActiveRun {
   readonly generation: number
   readonly events: Queue.Queue<AgentDriverEvent, AgentDriverError | import('effect/Cause').Done<void>>
   nativeTurnId?: string
+  goal?: AgentGoalState | null
   overflowed?: boolean
   failed?: boolean
   terminal?: boolean
   cancelWanted?: boolean
   cancelExpectedNativeTurnId?: string
   interruptRequested?: boolean
+  acceptanceConfirmed?: boolean
   replayingPreAcceptance?: boolean
   preAcceptanceBytes: number
   readonly preAcceptance: JsonRpcEvent[]
@@ -279,6 +376,7 @@ interface SessionState {
   readonly submittedRunIds: Set<AgentRunId>
   readonly replay: ReadonlyArray<AgentReconcileEvent>
   readonly eventLock: Semaphore.Semaphore
+  goal?: AgentGoalState | null
   activeRun?: ActiveRun
 }
 
@@ -293,6 +391,7 @@ const codexAccessPolicy = (accessMode: AgentAccessMode): CodexAccessPolicy => {
     case 'approval-required':
       return { approvalPolicy: 'untrusted', sandbox: 'read-only', sandboxPolicy: { type: 'readOnly' } }
     case 'auto-accept-edits':
+    case 'auto':
       return { approvalPolicy: 'on-request', sandbox: 'workspace-write', sandboxPolicy: { type: 'workspaceWrite' } }
     case 'full-access':
       return { approvalPolicy: 'never', sandbox: 'danger-full-access', sandboxPolicy: { type: 'dangerFullAccess' } }
@@ -322,6 +421,49 @@ const getNativeTurnId = (value: unknown): string | undefined =>
   decode(DeltaNotification, value)?.turnId ??
   decode(TurnStateNotification, value)?.turnId ??
   decode(TurnStateNotification, value)?.turn?.id
+
+type GoalCommand =
+  | { readonly kind: 'set'; readonly objective: string }
+  | { readonly kind: 'get' | 'pause' | 'resume' | 'clear' }
+
+function parseGoalCommand(prompt: string | undefined): GoalCommand | undefined {
+  if (!prompt || !/^\/goal(?:\s|$)/.test(prompt)) return undefined
+  const argument = prompt.slice('/goal'.length).trim()
+  if (!argument || argument === 'get' || argument === 'show') return { kind: 'get' }
+  if (argument === 'pause') return { kind: 'pause' }
+  if (argument === 'resume') return { kind: 'resume' }
+  if (argument === 'clear') return { kind: 'clear' }
+  if (argument.startsWith('set ')) return { kind: 'set', objective: argument.slice(4).trim() }
+  return { kind: 'set', objective: argument }
+}
+
+function normalizeNativeGoal(value: unknown): AgentGoalState | null | undefined {
+  if (value === null || value === undefined) return null
+  if (typeof value !== 'object' || value === null) return undefined
+  const native = value as Record<string, unknown>
+  const statuses = ['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'] as const
+  if (typeof native.objective !== 'string' || !native.objective.trim() || !statuses.includes(native.status as (typeof statuses)[number]))
+    return undefined
+  const now = Date.now()
+  const tokenBudget = typeof native.tokenBudget === 'number' && Number.isInteger(native.tokenBudget) && native.tokenBudget > 0
+    ? native.tokenBudget
+    : null
+  const tokensUsed = typeof native.tokensUsed === 'number' && Number.isInteger(native.tokensUsed) && native.tokensUsed >= 0
+    ? native.tokensUsed
+    : 0
+  const timeUsedSeconds = typeof native.timeUsedSeconds === 'number' && Number.isInteger(native.timeUsedSeconds) && native.timeUsedSeconds >= 0
+    ? native.timeUsedSeconds
+    : 0
+  return {
+    objective: native.objective,
+    status: native.status as AgentGoalState['status'],
+    tokenBudget,
+    tokensUsed,
+    timeUsedSeconds,
+    createdAt: now,
+    updatedAt: now,
+  }
+}
 
 /** Native Codex App Server JSONL driver. The process and dispatcher belong to the caller's Scope. */
 export function codexAgentDriverConnect(options: {
@@ -366,6 +508,7 @@ export function codexAgentDriverFromTransport(
     const connection: AgentDriverConnection = {
       identity,
       discover: () => discoverModels(client),
+      discoverPromptCatalog: workspacePath => discoverPromptCatalog(client, workspacePath),
       openSession: context => openSession(client, context, undefined, sessions, requests, connectionScope),
       loadSession: (context, native) => openSession(client, context, native, sessions, requests, connectionScope),
       close: deadlineMs =>
@@ -432,6 +575,20 @@ function openSession(
     if (!thread?.thread.id) return yield* failure('protocol-error', 'Codex returned an invalid thread response.')
     if (resumed && resumed.cwd !== context.workspacePath)
       return yield* failure('invalid-state', 'The resumed Codex thread belongs to a different workspace path.')
+    let persistedGoal: AgentGoalState | null = null
+    if (native) {
+      persistedGoal = yield* readNativeGoal(client, thread.thread.id)
+      if (persistedGoal?.status === 'active') {
+        yield* setNativeGoal(client, thread.thread.id, { status: 'paused' }).pipe(
+          Effect.mapError(error =>
+            failure('outcome-uncertain', `Codex goal pause on session recovery could not be confirmed: ${error.message}`),
+          ),
+        )
+        persistedGoal = yield* readNativeGoal(client, thread.thread.id)
+        if (persistedGoal?.status !== 'paused')
+          return yield* failure('outcome-uncertain', 'The resumed Codex goal could not be confirmed paused.')
+      }
+    }
     const history = resumed
       ? (resumed.thread.turns?.flatMap(turn =>
           turn.items.flatMap(item => {
@@ -476,6 +633,7 @@ function openSession(
       submittedRunIds: new Set(),
       replay,
       eventLock,
+      goal: persistedGoal,
     }
     sessions.set(thread.thread.id, state)
     const sessionIdentity = { nativeSessionId: thread.thread.id, generation: context.generation }
@@ -504,6 +662,37 @@ function openSession(
   })
 }
 
+function readNativeGoal(client: JsonRpcClient, threadId: string) {
+  return Effect.gen(function* () {
+    const response = yield* client.request('thread/goal/get', { threadId }).pipe(Effect.mapError(toDriverFailure))
+    const decoded = decode(GoalResponse, response)
+    if (!decoded) return yield* failure('protocol-error', 'Codex returned an invalid thread goal response.')
+    const goal = normalizeNativeGoal(decoded.goal)
+    if (goal === undefined) return yield* failure('protocol-error', 'Codex returned an unsupported thread goal state.')
+    return goal
+  })
+}
+
+function setNativeGoal(
+  client: JsonRpcClient,
+  threadId: string,
+  update: { readonly status: 'active' | 'paused'; readonly objective?: string; readonly tokenBudget?: number | null },
+) {
+  return Effect.gen(function* () {
+    yield* client.request('thread/goal/set', { threadId, ...update }).pipe(Effect.mapError(toDriverFailure))
+    return yield* readNativeGoal(client, threadId)
+  })
+}
+
+function clearNativeGoal(client: JsonRpcClient, threadId: string) {
+  return Effect.gen(function* () {
+    yield* client.request('thread/goal/clear', { threadId }).pipe(Effect.mapError(toDriverFailure))
+    const goal = yield* readNativeGoal(client, threadId)
+    if (goal !== null) return yield* failure('protocol-error', 'Codex did not confirm that the thread goal was cleared.')
+    return null
+  })
+}
+
 function submit(
   client: JsonRpcClient,
   state: SessionState,
@@ -525,6 +714,23 @@ function submit(
       return yield* new UnsupportedAgentOperation({
         operation: 'submit',
         message: 'Assistant transcript replay is not accepted as turn input; Codex retains its own thread history.',
+      })
+    const prompt = input.messages.length === 1 ? input.messages[0]?.content.trim() : undefined
+    const compactCommand = prompt === '/compact'
+    const goalCommand = parseGoalCommand(prompt)
+    if (prompt && /^\/compact(?:\s|$)/.test(prompt) && !compactCommand)
+      return yield* failure('invalid-state', 'Codex /compact does not accept arguments.')
+    if (compactCommand && (input.attachmentIds.length > 0 || (input.attachments?.length ?? 0) > 0))
+      return yield* new UnsupportedAgentOperation({
+        operation: 'submit',
+        message: 'Codex /compact does not accept attachments. Remove the attachments or send a regular message.',
+      })
+    if (goalCommand?.kind === 'set' && (!goalCommand.objective || goalCommand.objective.length > 4000))
+      return yield* failure('invalid-state', 'Codex goals must contain between 1 and 4,000 characters.')
+    if (goalCommand && (input.attachmentIds.length > 0 || (input.attachments?.length ?? 0) > 0))
+      return yield* new UnsupportedAgentOperation({
+        operation: 'submit',
+        message: 'Codex /goal commands do not accept attachments.',
       })
     const content: CodexPromptContent[] = input.messages.map(message => ({
       type: 'text' as const,
@@ -551,9 +757,15 @@ function submit(
       const oldest = state.submittedRunIds.values().next().value
       if (oldest !== undefined && oldest !== run.id) state.submittedRunIds.delete(oldest)
     }
-    const tracker = yield* Effect.forkIn(startTurn(client, state, run, content, requests, sessions), connectionScope, {
-      startImmediately: true,
-    })
+    const tracker = yield* Effect.forkIn(
+      compactCommand
+        ? startCompact(client, state, run, requests, sessions)
+        : goalCommand
+          ? startGoalCommand(client, state, run, goalCommand, requests, sessions)
+          : startTurn(client, state, run, content, requests, sessions),
+      connectionScope,
+      { startImmediately: true },
+    )
     return yield* Fiber.join(tracker).pipe(
       Effect.onInterrupt(() =>
         Effect.sync(() => {
@@ -572,6 +784,89 @@ function submit(
 
 type CodexPromptContent =
   { readonly type: 'text'; readonly text: string } | { readonly type: 'image'; readonly url: string }
+
+function startGoalCommand(
+  client: JsonRpcClient,
+  state: SessionState,
+  run: ActiveRun,
+  command: GoalCommand,
+  requests: Map<string, PendingRequest>,
+  sessions: Map<string, SessionState>,
+) {
+  return Effect.gen(function* () {
+    let goal: AgentGoalState | null
+    switch (command.kind) {
+      case 'set':
+        goal = yield* setNativeGoal(client, state.nativeSessionId, {
+          objective: command.objective,
+          status: 'active',
+        })
+        break
+      case 'resume': {
+        const current = yield* readNativeGoal(client, state.nativeSessionId)
+        if (!current) return yield* failure('invalid-state', 'There is no Codex goal to resume.')
+        goal = yield* setNativeGoal(client, state.nativeSessionId, { status: 'active' })
+        break
+      }
+      case 'pause':
+        goal = yield* setNativeGoal(client, state.nativeSessionId, { status: 'paused' })
+        break
+      case 'clear':
+        goal = yield* clearNativeGoal(client, state.nativeSessionId)
+        break
+      case 'get':
+        goal = yield* readNativeGoal(client, state.nativeSessionId)
+        break
+    }
+    state.goal = goal
+    run.goal = goal
+    yield* offerEvent(state, run, {
+      kind: 'goalUpdated',
+      nativeSessionId: state.nativeSessionId,
+      generation: run.generation,
+      goal,
+    })
+    if (command.kind === 'set' || command.kind === 'resume') {
+      if (!goal || goal.status !== 'active')
+        return yield* failure('protocol-error', 'Codex did not confirm an active goal.')
+      yield* state.eventLock.withPermit(
+        Effect.sync(() => {
+          run.acceptanceConfirmed = true
+          run.replayingPreAcceptance = true
+        }),
+      )
+      while (true) {
+        const batch = yield* state.eventLock.withPermit(
+          Effect.sync(() => {
+            if (run.preAcceptance.length === 0) {
+              run.replayingPreAcceptance = false
+              return undefined
+            }
+            const events = run.preAcceptance.splice(0)
+            run.preAcceptanceBytes = 0
+            return events
+          }),
+        )
+        if (!batch) break
+        for (const event of batch) yield* handleEvent(client, event, sessions, requests, true)
+      }
+      return { nativeSessionId: state.nativeSessionId, generation: run.generation }
+    }
+    const terminalEvent: AgentDriverEvent =
+      command.kind === 'get' && goal?.status === 'complete'
+        ? { kind: 'turnCompleted' }
+        : command.kind === 'get' && goal?.status === 'blocked'
+          ? { kind: 'turnFailed', message: 'Codex reported that the goal is blocked.' }
+          : command.kind === 'get' && (goal?.status === 'budgetLimited' || goal?.status === 'usageLimited')
+            ? { kind: 'turnFailed', message: `Codex goal ended with status ${goal.status}.` }
+            : { kind: 'turnInterrupted' }
+    yield* offerEvent(state, run, terminalEvent)
+    run.terminal = true
+    if (state.activeRun?.id === run.id) state.activeRun = undefined
+    yield* state.eventLock.withPermit(Queue.end(run.events))
+    return { nativeSessionId: state.nativeSessionId, generation: run.generation }
+  })
+}
 
 function startTurn(
   client: JsonRpcClient,
@@ -615,6 +910,7 @@ function startTurn(
     yield* state.eventLock.withPermit(
       Effect.sync(() => {
         run.nativeTurnId = turn.turn.id
+        run.acceptanceConfirmed = true
         run.replayingPreAcceptance = true
       }),
     )
@@ -647,6 +943,98 @@ function startTurn(
             : undefined
     if (initialTerminal) {
       yield* offerEvent(state, run, initialTerminal)
+      if (state.activeRun?.id === run.id) {
+        run.terminal = true
+        state.activeRun = undefined
+        yield* state.eventLock.withPermit(Queue.end(run.events))
+      }
+    }
+    if (run.cancelWanted && state.activeRun?.id === run.id) yield* requestNativeInterrupt(client, state, run)
+    return {
+      ...(run.nativeTurnId ? { nativeTurnId: run.nativeTurnId } : {}),
+      nativeSessionId: state.nativeSessionId,
+      generation: run.generation,
+    }
+  })
+}
+
+function startCompact(
+  client: JsonRpcClient,
+  state: SessionState,
+  run: ActiveRun,
+  requests: Map<string, PendingRequest>,
+  sessions: Map<string, SessionState>,
+) {
+  return Effect.gen(function* () {
+    const response = yield* client.requestAfterIncoming('thread/compact/start', { threadId: state.nativeSessionId }).pipe(
+      Effect.mapError(error =>
+        error.reason === 'closed' || error.reason === 'write-failed'
+          ? failure('outcome-uncertain', 'Codex may have accepted context compaction before the connection closed.')
+          : error.reason === 'request-failed'
+            ? failure('protocol-error', 'Codex rejected the context compaction operation.')
+            : toDriverFailure(error),
+      ),
+      Effect.tapError(error =>
+        failRun(
+          client,
+          state,
+          run,
+          error,
+          requests,
+          error.message === 'Codex rejected the context compaction operation.',
+        ),
+      ),
+    )
+    const compact = decode(CompactResponse, response)
+    if (!compact) {
+      const error = failure('protocol-error', 'Codex returned an invalid context compaction response.')
+      yield* failRun(client, state, run, error, requests)
+      return yield* error
+    }
+    const eventTurnId = run.preAcceptance.find(
+      event => event._tag === 'Notification' && event.method === 'turn/started',
+    )
+    const startedTurnId = eventTurnId ? getNativeTurnId(eventTurnId.params) : undefined
+    if (compact.turn?.id && startedTurnId && compact.turn.id !== startedTurnId) {
+      const error = failure('protocol-error', 'Codex returned a compaction turn ID that conflicts with its native events.')
+      yield* failRun(client, state, run, error, requests)
+      return yield* error
+    }
+    yield* state.eventLock.withPermit(
+      Effect.sync(() => {
+        run.nativeTurnId = compact.turn?.id ?? startedTurnId
+        run.acceptanceConfirmed = true
+        run.replayingPreAcceptance = true
+      }),
+    )
+    while (true) {
+      const batch = yield* state.eventLock.withPermit(
+        Effect.sync(() => {
+          if (run.preAcceptance.length === 0) {
+            run.replayingPreAcceptance = false
+            return undefined
+          }
+          const events = run.preAcceptance.splice(0)
+          run.preAcceptanceBytes = 0
+          return events
+        }),
+      )
+      if (!batch) break
+      for (const event of batch) yield* handleEvent(client, event, sessions, requests, true)
+    }
+    const terminal = compact.turn?.status
+    if (terminal === 'completed' || terminal === 'interrupted' || terminal === 'failed') {
+      const event: AgentDriverEvent =
+        terminal === 'completed'
+          ? { kind: 'turnCompleted', ...(run.nativeTurnId ? { nativeTurnId: run.nativeTurnId } : {}) }
+          : terminal === 'interrupted'
+            ? { kind: 'turnInterrupted', ...(run.nativeTurnId ? { nativeTurnId: run.nativeTurnId } : {}) }
+            : {
+                kind: 'turnFailed',
+                ...(run.nativeTurnId ? { nativeTurnId: run.nativeTurnId } : {}),
+                message: 'Codex reported that context compaction failed.',
+              }
+      yield* offerEvent(state, run, event)
       if (state.activeRun?.id === run.id) {
         run.terminal = true
         state.activeRun = undefined
@@ -711,6 +1099,32 @@ function interrupt(client: JsonRpcClient, state: SessionState, runId: AgentRunId
     const run = state.runs.get(runId)
     if (!run || state.activeRun?.id !== runId)
       return yield* failure('invalid-state', 'There is no active Codex turn for this run.')
+    if (run.generation !== state.context.generation)
+      return yield* failure('invalid-state', 'The Codex goal belongs to a stale session generation.')
+    if (run.goal?.status === 'active') {
+      const paused = yield* setNativeGoal(client, state.nativeSessionId, { status: 'paused' }).pipe(
+        Effect.mapError(error =>
+          failure('outcome-uncertain', `Codex goal pause could not be confirmed before stopping: ${error.message}`),
+        ),
+      )
+      if (paused?.status !== 'paused')
+        return yield* failure('outcome-uncertain', 'Codex did not confirm that the active goal was paused.')
+      run.goal = paused
+      state.goal = paused
+      yield* offerEvent(state, run, {
+        kind: 'goalUpdated',
+        nativeSessionId: state.nativeSessionId,
+        generation: run.generation,
+        goal: paused,
+      })
+      if (!run.nativeTurnId) {
+        yield* offerEvent(state, run, { kind: 'turnInterrupted' })
+        run.terminal = true
+        state.activeRun = undefined
+        yield* state.eventLock.withPermit(Queue.end(run.events))
+        return { acknowledged: true, termination: 'interrupted' as const }
+      }
+    }
     if (!run.nativeTurnId) {
       if (!run.cancelWanted) run.cancelExpectedNativeTurnId = expected
       run.cancelWanted = true
@@ -735,6 +1149,44 @@ function steer(
 ) {
   return Effect.gen(function* () {
     const run = state.runs.get(runId)
+    const goalControl = parseGoalCommand(message.trim())
+    if (goalControl?.kind === 'pause' || goalControl?.kind === 'clear') {
+      if (
+        !run ||
+        state.activeRun?.id !== runId ||
+        run.generation !== state.context.generation ||
+        run.goal?.status !== 'active'
+      )
+        return yield* failure('invalid-state', 'There is no active Codex goal for this run.')
+      if (expected && run.nativeTurnId && expected !== run.nativeTurnId)
+        return yield* failure('invalid-state', 'The expected Codex turn is stale.')
+      const goal =
+        goalControl.kind === 'pause'
+          ? yield* setNativeGoal(client, state.nativeSessionId, { status: 'paused' })
+          : yield* clearNativeGoal(client, state.nativeSessionId)
+      if (goalControl.kind === 'pause' && goal?.status !== 'paused')
+        return yield* failure('outcome-uncertain', 'Codex did not confirm that the goal was paused.')
+      state.goal = goal
+      run.goal = goal
+      yield* offerEvent(state, run, {
+        kind: 'goalUpdated',
+        nativeSessionId: state.nativeSessionId,
+        generation: run.generation,
+        goal,
+      })
+      if (run.nativeTurnId) {
+        run.interruptRequested = true
+        yield* client
+          .request('turn/interrupt', { threadId: state.nativeSessionId, turnId: run.nativeTurnId })
+          .pipe(Effect.mapError(toMutationFailure))
+      } else {
+        yield* offerEvent(state, run, { kind: 'turnInterrupted' })
+        run.terminal = true
+        state.activeRun = undefined
+        yield* state.eventLock.withPermit(Queue.end(run.events))
+      }
+      return { outcome: 'accepted' as const }
+    }
     if (!run?.nativeTurnId || state.activeRun?.id !== runId)
       return yield* failure('invalid-state', 'There is no active Codex turn to steer.')
     if (!expected || run.nativeTurnId !== expected)
@@ -794,6 +1246,14 @@ function respond(
 }
 
 function responseFor(pending: PendingRequest, decision: AgentRequestDecision): unknown | undefined {
+  if (pending.method === 'item/permissions/requestApproval') {
+    if (decision.kind === 'approve' && (decision.optionId === undefined || decision.optionId === 'allow-once'))
+      return { permissions: pending.permissions, scope: 'turn' }
+    if (decision.kind === 'approve' && decision.optionId === 'allow-session')
+      return { permissions: pending.permissions, scope: 'session' }
+    if (decision.kind === 'deny' || decision.kind === 'cancel') return { permissions: {}, scope: 'turn' }
+    return undefined
+  }
   if (pending.method === 'item/tool/requestUserInput') {
     if (decision.kind !== 'answers') return undefined
     const answerEntries: Array<readonly [string, { readonly answers: ReadonlyArray<string> }]> = []
@@ -822,8 +1282,56 @@ function responseFor(pending: PendingRequest, decision: AgentRequestDecision): u
     if (decision.kind === 'deny') return { decision: 'decline' }
     if (decision.kind === 'approve' && (decision.optionId === undefined || decision.optionId === 'allow-once'))
       return { decision: 'accept' }
+    if (decision.kind === 'approve' && decision.optionId === 'allow-session') return { decision: 'acceptForSession' }
   }
   return undefined
+}
+
+function codexRequestTool(
+  method: string,
+  details: Schema.Schema.Type<typeof RequestDetails>,
+): AgentToolMetadata | undefined {
+  if (method === 'item/permissions/requestApproval') {
+    const permissions = Schema.decodeUnknownOption(PermissionRequestDetails)(details.permissions)
+    if (permissions._tag !== 'Some') return { category: 'other', ...(details.cwd ? { cwd: details.cwd } : {}) }
+    const fileSystem = permissions.value.fileSystem
+    const read = [
+      ...(fileSystem?.read ?? []),
+      ...(fileSystem?.entries ?? []).flatMap(entry =>
+        entry.access === 'read' ? [entry.path, entry.pattern].flatMap(value => (value ? [value] : [])) : [],
+      ),
+    ]
+    const write = [
+      ...(fileSystem?.write ?? []),
+      ...(fileSystem?.entries ?? []).flatMap(entry =>
+        entry.access === 'write' ? [entry.path, entry.pattern].flatMap(value => (value ? [value] : [])) : [],
+      ),
+    ]
+    const paths = [...new Set([...read, ...write])].slice(0, 32)
+    const category = write.length
+      ? 'fileWrite'
+      : read.length
+        ? 'fileRead'
+        : permissions.value.network
+          ? 'web'
+          : 'command'
+    return {
+      category,
+      ...(details.cwd ? { cwd: details.cwd } : {}),
+      ...(paths.length ? { paths } : {}),
+      description: boundedNativeText(JSON.stringify(details.permissions) ?? 'Requested additional permissions.', 2048),
+    }
+  }
+  const category = method === 'item/commandExecution/requestApproval' ? 'command' : 'fileWrite'
+  const command = typeof details.command === 'string' ? details.command : details.command?.join(' ')
+  const paths = [...(details.paths ?? []), ...(details.path ? [details.path] : [])]
+  return {
+    category,
+    ...(command ? { command: boundedNativeText(command, 2048) } : {}),
+    ...(details.cwd ? { cwd: details.cwd } : {}),
+    ...(paths.length ? { paths: [...new Set(paths)].slice(0, 32) } : {}),
+    ...(details.reason ? { description: boundedNativeText(details.reason, 2048) } : {}),
+  }
 }
 
 function dispatch(
@@ -935,13 +1443,107 @@ function handleEvent(
     if (event._tag === 'Notification') {
       const threadId = getThreadId(event.params)
       const state = threadId ? sessions.get(threadId) : undefined
+      if (state && event.method === 'thread/goal/updated') {
+        const notification = decode(GoalNotification, event.params)
+        const goal = notification ? normalizeNativeGoal(notification.goal) : undefined
+        if (!notification || goal === undefined) return
+        state.goal = goal
+        const goalRun = state.activeRun
+        if (goalRun) {
+          goalRun.goal = goal
+          yield* offerEvent(state, goalRun, {
+            kind: 'goalUpdated',
+            nativeSessionId: state.nativeSessionId,
+            generation: goalRun.generation,
+            goal,
+          })
+        }
+        return
+      }
+      if (state && event.method === 'thread/goal/cleared') {
+        const notification = decode(GoalClearedNotification, event.params)
+        if (!notification) return
+        state.goal = null
+        const goalRun = state.activeRun
+        if (goalRun) {
+          goalRun.goal = null
+          yield* offerEvent(state, goalRun, {
+            kind: 'goalUpdated',
+            nativeSessionId: state.nativeSessionId,
+            generation: goalRun.generation,
+            goal: null,
+          })
+        }
+        return
+      }
       if (!state?.activeRun || state.activeRun.failed) return
       const run = state.activeRun
-      if (!fromPreAcceptance && (!run.nativeTurnId || run.replayingPreAcceptance)) {
+      if (!fromPreAcceptance && (!run.acceptanceConfirmed || run.replayingPreAcceptance)) {
         yield* bufferPreAcceptance(state, run, event)
         return
       }
       const notificationTurnId = getNativeTurnId(event.params)
+      if (run.goal?.status === 'active' && event.method === 'turn/started') {
+        if (!notificationTurnId || run.nativeTurnId) return
+        run.nativeTurnId = notificationTurnId
+        yield* offerEvent(state, run, {
+          kind: 'goalTurnStarted',
+          nativeSessionId: state.nativeSessionId,
+          generation: run.generation,
+          nativeTurnId: notificationTurnId,
+        })
+        return
+      }
+      if (run.goal && (event.method === 'turn/completed' || event.method === 'turn/interrupted' || event.method === 'turn/failed')) {
+        if (!notificationTurnId || notificationTurnId !== run.nativeTurnId) return
+        const turnStatus =
+          event.method === 'turn/interrupted'
+            ? 'interrupted'
+            : event.method === 'turn/failed'
+              ? 'failed'
+              : decode(TurnStateNotification, event.params)?.turn?.status
+        if (turnStatus !== 'completed' && turnStatus !== 'interrupted' && turnStatus !== 'failed') return
+        yield* offerEvent(state, run, {
+          kind: 'goalTurnCompleted',
+          nativeSessionId: state.nativeSessionId,
+          generation: run.generation,
+          nativeTurnId: notificationTurnId,
+          status: turnStatus,
+        })
+        run.nativeTurnId = undefined
+        const goal = yield* readNativeGoal(client, state.nativeSessionId).pipe(
+          Effect.catch(error => {
+            return Effect.gen(function* () {
+              yield* offerEvent(state, run, {
+                kind: 'nativeNotice',
+                message: `Codex goal status could not be confirmed after its native turn: ${error.message}`,
+              })
+              return run.goal ?? null
+            })
+          }),
+        )
+        run.goal = goal
+        state.goal = goal
+        yield* offerEvent(state, run, {
+          kind: 'goalUpdated',
+          nativeSessionId: state.nativeSessionId,
+          generation: run.generation,
+          goal,
+        })
+        if (goal?.status === 'active' && !run.interruptRequested) return
+        const terminalEvent: AgentDriverEvent =
+          goal?.status === 'complete'
+            ? { kind: 'turnCompleted', nativeTurnId: notificationTurnId }
+            : goal?.status === 'blocked' || goal?.status === 'usageLimited' || goal?.status === 'budgetLimited' || turnStatus === 'failed'
+              ? { kind: 'turnFailed', nativeTurnId: notificationTurnId, message: `Codex goal ended with status ${goal?.status ?? turnStatus}.` }
+              : { kind: 'turnInterrupted', nativeTurnId: notificationTurnId }
+        yield* offerEvent(state, run, terminalEvent)
+        run.terminal = true
+        state.activeRun = undefined
+        for (const [requestId, pending] of requests) if (pending.runId === run.id) requests.delete(requestId)
+        yield* state.eventLock.withPermit(Queue.end(run.events))
+        return
+      }
       if (notificationTurnId && run.nativeTurnId && notificationTurnId !== run.nativeTurnId) return
       const nativeTurnId = notificationTurnId ?? run.nativeTurnId
       if (nativeTurnId) run.nativeTurnId = nativeTurnId
@@ -991,7 +1593,7 @@ function handleEvent(
     const details = decode(RequestDetails, event.params)
     const state = details ? sessions.get(details.threadId) : undefined
     const run = state?.activeRun
-    if (run && !run.failed && !fromPreAcceptance && (!run.nativeTurnId || run.replayingPreAcceptance)) {
+    if (run && !run.failed && !fromPreAcceptance && (!run.acceptanceConfirmed || run.replayingPreAcceptance)) {
       const buffered = yield* bufferPreAcceptance(state, run, event)
       if (!buffered)
         yield* client
@@ -1002,6 +1604,7 @@ function handleEvent(
     const supportedMethod =
       event.method === 'item/commandExecution/requestApproval' ||
       event.method === 'item/fileChange/requestApproval' ||
+      event.method === 'item/permissions/requestApproval' ||
       event.method === 'item/tool/requestUserInput'
     if (
       !details ||
@@ -1012,6 +1615,8 @@ function handleEvent(
       !details.turnId ||
       !run.nativeTurnId ||
       details.turnId !== run.nativeTurnId ||
+      (event.method === 'item/permissions/requestApproval' &&
+        Schema.decodeUnknownOption(PermissionRequestDetails)(details.permissions)._tag !== 'Some') ||
       requests.size >= MAX_PENDING_NATIVE_REQUESTS
     ) {
       // Never infer approval. An unknown approval remains unapproved and is rejected explicitly.
@@ -1039,6 +1644,7 @@ function handleEvent(
       threadId: state.nativeSessionId,
       nativeTurnId: run.nativeTurnId,
       method: event.method,
+      ...(event.method === 'item/permissions/requestApproval' ? { permissions: details.permissions } : {}),
       questionOptions,
       customQuestionIds: new Set(
         (details.questions ?? [])
@@ -1047,6 +1653,7 @@ function handleEvent(
       ),
     })
     const questionRequest = event.method === 'item/tool/requestUserInput'
+    const permissionRequest = event.method === 'item/permissions/requestApproval'
     const questions = questionRequest
       ? (details.questions ?? []).map(question => ({
           id: question.id,
@@ -1062,6 +1669,7 @@ function handleEvent(
           })),
         }))
       : []
+    const requestTool = codexRequestTool(event.method, details)
     const approvalOptions = questionRequest
       ? undefined
       : [
@@ -1071,6 +1679,13 @@ function handleEvent(
             scope: 'once' as const,
             kind: 'allow' as const,
             decision: { kind: 'approve' as const, optionId: 'allow-once' },
+          },
+          {
+            id: 'allow-session',
+            label: 'Allow for this session',
+            scope: 'session' as const,
+            kind: 'allowAlways' as const,
+            decision: { kind: 'approve' as const, optionId: 'allow-session' },
           },
           { id: 'decline', label: 'Decline', kind: 'deny' as const, decision: { kind: 'deny' as const } },
           { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const, decision: { kind: 'cancel' as const } },
@@ -1087,7 +1702,10 @@ function handleEvent(
           details.reason ??
           (typeof details.command === 'string'
             ? details.command
-            : (details.command?.join(' ') ?? 'Codex requests permission.')),
+            : (details.command?.join(' ') ??
+              (permissionRequest ? 'Codex requests additional permissions.' : 'Codex requests permission.'))),
+        ...(details.itemId ? { toolCallId: details.itemId } : {}),
+        ...(requestTool ? { tool: requestTool } : {}),
         ...(approvalOptions ? { options: approvalOptions } : {}),
         questions,
         sessionId: state.context.sessionId,

@@ -110,6 +110,12 @@ A durable association to one native agent conversation and its driver,
 connection and checkout context. It is not a process.
 _Avoid_: run, subprocess
 
+**Agent Goal**:
+A persistent objective tracked by a Harness inside an Agent Session, with its
+own status and usage accounting. It does not replace the Task's objective or
+delivery lifecycle.
+_Avoid_: task, run
+
 **Driver Connection**:
 A scoped runtime resource for protocol IO and process resources. Its lifetime
 may serve one or more native Agent Sessions when the driver supports it.

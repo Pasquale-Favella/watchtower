@@ -3,6 +3,7 @@ import * as Schema from 'effect/Schema'
 import {
   agentAccessModeSchema,
   agentAccountSchema,
+  agentConfigOptionSchema,
   agentModelChoiceSchema,
   MAX_AGENT_CATALOG_CHOICES,
 } from './execution.js'
@@ -65,6 +66,7 @@ export const workspaceConnectionInspectionSchema = Schema.Struct({
     reconcile: capabilitySchema,
     models: choiceFactsSchema,
     modes: choiceFactsSchema,
+    configOptions: Schema.optional(Schema.Array(agentConfigOptionSchema)),
     promptContent: Schema.optional(Schema.Struct({ images: Schema.Boolean, files: Schema.Boolean })),
   }),
 })

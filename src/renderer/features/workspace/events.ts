@@ -2,7 +2,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
 import type { WorkspaceEventFrame } from '@/shared/rpc/workspace.js'
-import { agentDriverEventSchema, type AgentRunStatus } from '@/shared/schemas/execution.js'
+import { agentDriverEventSchema, type AgentGoalState, type AgentRunStatus } from '@/shared/schemas/execution.js'
 import { conversationIdSchema } from '@/shared/schemas/workspace.js'
 import type { WorkspaceExecutionEvent } from '@/shared/schemas/workspace-store.js'
 
@@ -17,6 +17,7 @@ export interface WorkspaceRunProjection {
   readonly runId: WorkspaceExecutionEvent['runId']
   readonly conversationId: Schema.Schema.Type<typeof conversationIdSchema> | null
   readonly nativeTurnId: string | null
+  readonly goal?: AgentGoalState | null
   readonly failedDelivery: boolean
   readonly generation: number
   readonly status: AgentRunStatus
@@ -68,6 +69,7 @@ function projectRun(
   const identity = decodeRunIdentity(event.data)
   let conversationId = previous?.conversationId ?? null
   let nativeTurnId = previous?.nativeTurnId ?? null
+  let goal = previous?.goal
   if (Option.isSome(identity)) {
     conversationId = identity.value.conversationId ?? conversationId
     nativeTurnId = identity.value.nativeTurnId ?? nativeTurnId
@@ -114,6 +116,17 @@ function projectRun(
       if (Option.isNone(decoded)) break
       const driver = decoded.value
       switch (driver.kind) {
+        case 'goalUpdated':
+          goal = driver.goal
+          break
+        case 'goalTurnStarted':
+          nativeTurnId = driver.nativeTurnId
+          status = 'running'
+          break
+        case 'goalTurnCompleted':
+          if (nativeTurnId === driver.nativeTurnId) nativeTurnId = null
+          status = 'running'
+          break
         case 'turnStarted':
           nativeTurnId = driver.nativeTurnId ?? nativeTurnId
           status = 'running'
@@ -150,6 +163,7 @@ function projectRun(
     runId: event.runId,
     conversationId,
     nativeTurnId,
+    ...(goal !== undefined ? { goal } : {}),
     failedDelivery,
     generation: event.generation,
     status,

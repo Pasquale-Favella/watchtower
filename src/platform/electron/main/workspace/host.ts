@@ -23,6 +23,7 @@ import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
 import {
   ConnectionInspectionError,
+  discoverWorkspacePromptCatalog,
   inspectWorkspaceConnection,
 } from '@/platform/electron/main/workspace/connection-inspection.js'
 import type { WorkspaceWorkerSupervisorOptions } from '@/platform/electron/main/workspace/supervisor.js'
@@ -30,6 +31,7 @@ import {
   WorkspaceWorkerSupervisor,
   WorkspaceWorkerSupervisorLive,
 } from '@/platform/electron/main/workspace/supervisor.js'
+import type { AgentPromptCatalog } from '@/shared/schemas/execution.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
 import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
 import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
@@ -60,6 +62,7 @@ export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
 
 /** How long a successful connection inspection is reused before it is inspected again. */
 const INSPECTION_TTL = '10 minutes'
+const PROMPT_CATALOG_TTL = '5 minutes'
 
 type SupervisorContext = Context.Context<WorkspaceWorkerSupervisor>
 type Execution = ExecutionService['Service']
@@ -88,11 +91,21 @@ export class WorkspaceHost extends Context.Service<
     >
     /** Lazy catalog read that does not open the workspace worker or acquire ExecutionService. */
     readonly listConnections?: Effect.Effect<ReadonlyArray<WorkspaceConnection>, WorkspaceHostError>
+    /** Already observed facts, read without starting a native catalog probe. */
+    readonly observedConnectionInspections?: Effect.Effect<ReadonlyArray<WorkspaceConnectionInspection>>
     readonly inspectConnection?: (
       connectionId: string,
       request?: { readonly refresh?: boolean },
     ) => Effect.Effect<
       WorkspaceConnectionInspection,
+      WorkspaceHostError | ConnectionInspectionError | HarnessConnectionResolutionError | AgentDriverError,
+      ChildProcessSpawner.ChildProcessSpawner
+    >
+    readonly discoverPromptCatalog?: (
+      connectionId: string,
+      workspacePath: string,
+    ) => Effect.Effect<
+      AgentPromptCatalog,
       WorkspaceHostError | ConnectionInspectionError | HarnessConnectionResolutionError | AgentDriverError,
       ChildProcessSpawner.ChildProcessSpawner
     >
@@ -291,6 +304,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       // One shared inspection per connection: a picker opened after startup reads
       // the warm result instead of spawning the agent again. Failures are never kept, so a retry inspects anew.
       const inspections = new Map<string, CachedInspection>()
+      const observedInspections = new Map<string, WorkspaceConnectionInspection>()
       const inspectConnection = (connectionId: string, request: { readonly refresh?: boolean } = {}) =>
         Effect.gen(function* () {
           let cached = inspections.get(connectionId)
@@ -301,7 +315,51 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             cached = inspections.get(connectionId) ?? created
             inspections.set(connectionId, cached)
           }
-          if (request.refresh) yield* cached[1]
+          if (request.refresh) {
+            observedInspections.delete(connectionId)
+            yield* cached[1]
+          }
+          const result = yield* cached[0]
+          observedInspections.set(connectionId, result)
+          return result
+        })
+      const discoverPromptCatalogOnce = (connectionId: string, workspacePath: string) =>
+        Effect.flatMap(getConnectionCatalog, catalog =>
+          Effect.flatMap(getDrivers(), drivers =>
+            discoverWorkspacePromptCatalog(catalog.connections, drivers, connectionId, workspacePath, {
+              initializeDeadlineMs: options.connectionInspectionDeadlineMs,
+              cleanupDeadlineMs: options.connectionCleanupDeadlineMs,
+            }),
+          ),
+        ).pipe(
+          Effect.mapError(error =>
+            error instanceof WorkspaceHostError ||
+            error instanceof ConnectionInspectionError ||
+            error instanceof HarnessConnectionResolutionError ||
+            error instanceof AgentDriverError
+              ? error
+              : new WorkspaceHostError({ message: 'Provider prompt catalog could not be loaded.' }),
+          ),
+        )
+      type PromptCatalogRead = ReturnType<typeof discoverPromptCatalogOnce>
+      type CachedPromptCatalog = readonly [get: PromptCatalogRead, invalidate: Effect.Effect<void>]
+      const promptCatalogs = new Map<string, CachedPromptCatalog>()
+      const discoverPromptCatalog = (connectionId: string, workspacePath: string) =>
+        Effect.gen(function* () {
+          const key = JSON.stringify([connectionId, workspacePath])
+          let cached = promptCatalogs.get(key)
+          if (!cached) {
+            const created = yield* discoverPromptCatalogOnce(connectionId, workspacePath).pipe(
+              Effect.cachedInvalidateWithTTL(exit => (Exit.isSuccess(exit) ? PROMPT_CATALOG_TTL : 0)),
+            )
+            cached = promptCatalogs.get(key) ?? created
+            promptCatalogs.set(key, cached)
+            while (promptCatalogs.size > 64) {
+              const oldest = promptCatalogs.keys().next()
+              if (oldest.done) break
+              promptCatalogs.delete(oldest.value)
+            }
+          }
           return yield* cached[0]
         })
 
@@ -554,6 +612,8 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         withExecution,
         listConnections: getConnectionCatalog.pipe(Effect.map(catalog => catalog.rows)),
         inspectConnection,
+        observedConnectionInspections: Effect.sync(() => [...observedInspections.values()]),
+        discoverPromptCatalog,
         ...(options.prewarmConnections
           ? {
               prewarmConnections: Effect.flatMap(getConnectionCatalog, catalog =>

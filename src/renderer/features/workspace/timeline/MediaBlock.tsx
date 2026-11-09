@@ -6,6 +6,7 @@ import { Button } from '@/renderer/components/ui/button'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context'
 
 import { usePromptAttachmentPreview } from '../prompt-context-hooks'
+import { visiblePromptAttachments } from '../prompt-editor.js'
 
 export function MediaBlock({
   mediaType,
@@ -57,10 +58,7 @@ function Attachment({ attachment }: { readonly attachment: PromptAttachment }): 
           {pending ? 'Loading image…' : attachment.name}
         </Button>
       ) : (
-        <span className="break-all">
-          {attachment.source === 'skill' || attachment.source === 'command' ? '/' : ''}
-          {attachment.name}
-        </span>
+        <span className="break-all">{attachment.name}</span>
       )}
       {error && (
         <p role="status" className="text-muted-foreground">
@@ -75,10 +73,12 @@ export function MessageAttachments({
   attachments,
 }: {
   readonly attachments: readonly PromptAttachment[]
-}): React.JSX.Element {
+}): React.JSX.Element | null {
+  const visibleAttachments = visiblePromptAttachments(attachments)
+  if (!visibleAttachments.length) return null
   return (
     <ul className="mt-3 flex flex-wrap gap-2" aria-label="Message attachments">
-      {attachments.map(attachment => (
+      {visibleAttachments.map(attachment => (
         <li key={attachment.id} className="max-w-full">
           <Attachment attachment={attachment} />
         </li>

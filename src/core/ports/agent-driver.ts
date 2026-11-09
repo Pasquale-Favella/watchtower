@@ -9,7 +9,9 @@ import type {
   AgentAccount,
   AgentCapabilities,
   AgentConnectionIdentity,
+  AgentConfigOption,
   AgentDriverEvent,
+  AgentPromptCatalog,
   AgentReconcileEvent,
   AgentRequestDecision,
   AgentSessionIdentity,
@@ -56,6 +58,7 @@ export interface AgentSessionContext {
   readonly generation: number
   readonly modelId?: string | undefined
   readonly modeId?: string | undefined
+  readonly configValues?: Readonly<Record<string, string>> | undefined
   /** Absent is treated as the fail-safe default; drivers never widen a missing value. */
   readonly accessMode?: AgentAccessMode | undefined
 }
@@ -131,6 +134,7 @@ export interface AgentDriverSession {
 
 /** What a catalog probe learned. `signIn` is present only when the agent reports its account. */
 export interface AgentCatalogProbe extends Pick<AgentCapabilities, 'models' | 'modes'> {
+  readonly configOptions?: ReadonlyArray<AgentConfigOption> | undefined
   readonly signIn?:
     | {
         readonly status: 'authenticated' | 'unauthenticated'
@@ -144,6 +148,8 @@ export interface AgentCatalogProbe extends Pick<AgentCapabilities, 'models' | 'm
 export interface AgentDriverConnection {
   readonly identity: AgentConnectionIdentity
   readonly discover: () => Effect.Effect<AgentCapabilities, AgentDriverError>
+  /** Provider-native skill and slash-command catalog for the selected checkout. */
+  readonly discoverPromptCatalog?: (workspacePath: string) => Effect.Effect<AgentPromptCatalog, AgentDriverError>
   /**
    * Disposable probe for the model and mode catalogs a passive discover cannot report, and the signed-in account
    * when the agent exposes one. It may open a throwaway native session, so only connection inspection calls it,

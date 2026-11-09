@@ -4,6 +4,7 @@ import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-c
 export interface EffortChoice {
   readonly id: string
   readonly label: string
+  readonly description?: string | undefined
 }
 
 export interface ModelChoice {
@@ -73,7 +74,7 @@ export function effortFor(input: {
   return model.modes ?? input.connectionEffort ?? []
 }
 
-const REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'])
+const REASONING_LEVELS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'thinking'])
 
 /** "Effort" for reasoning levels (Claude, Codex, OpenCode); "Mode" for agent-defined session modes. */
 export function effortTitleFor(options: readonly EffortChoice[] | null): 'Effort' | 'Mode' {

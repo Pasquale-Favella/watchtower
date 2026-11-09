@@ -90,6 +90,7 @@ export const workspaceStartRunRequestSchema = Schema.Struct({
   attachments: beginRunFields.attachments,
   modelId: beginRunFields.modelId,
   modeId: beginRunFields.modeId,
+  configValues: beginRunFields.configValues,
   accessMode: beginRunFields.accessMode,
   nativeSessionId: beginRunFields.nativeSessionId,
   retryOfRunId: beginRunFields.retryOfRunId,
@@ -125,6 +126,11 @@ export const WorkspaceRpcGroup = RpcGroup.make(
   Rpc.make('workspace:attachPromptContext', {
     payload: PromptContext.attachPromptContextSchema,
     success: PromptContext.promptAttachmentSchema,
+    error,
+  }),
+  Rpc.make('workspace:resolvePromptReference', {
+    payload: PromptContext.resolvePromptReferenceSchema,
+    success: PromptContext.resolvedPromptReferenceSchema,
     error,
   }),
   Rpc.make('workspace:status', { success: workspaceStatusSchema, error }),
@@ -356,6 +362,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       connectionId: Store.enqueueFollowUpCommandSchema.fields.connectionId,
       modelId: Store.enqueueFollowUpCommandSchema.fields.modelId,
       modeId: Store.enqueueFollowUpCommandSchema.fields.modeId,
+      configValues: Store.enqueueFollowUpCommandSchema.fields.configValues,
       accessMode: Store.enqueueFollowUpCommandSchema.fields.accessMode,
     }),
     success: Store.followUpReceiptSchema,

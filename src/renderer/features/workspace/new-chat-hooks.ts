@@ -86,6 +86,7 @@ export function useNewChatDraft() {
       modelId = '',
       modeId = '',
       accessMode?: AgentAccessMode,
+      configValues?: Readonly<Record<string, string>>,
     ) =>
       saveComposerPreference({
         conversationId,
@@ -93,6 +94,7 @@ export function useNewChatDraft() {
         connectionId,
         modelId,
         modeId,
+        ...(configValues ? { configValues } : {}),
         ...(accessMode ? { accessMode } : {}),
       }),
     [saveComposerPreference],

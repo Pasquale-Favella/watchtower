@@ -2,6 +2,7 @@ import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
+import { promptConversationSearchSchema, promptConversationMatchesSchema } from '@/shared/schemas/prompt-context.js'
 import {
   beginRunCommandSchema,
   checkoutRegistrationReceiptSchema,
@@ -49,7 +50,7 @@ import {
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 13
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 14
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -181,6 +182,11 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:listTasks', {
     payload: Schema.Struct({ projectId: projectIdSchema, options: Schema.optional(workspaceEntityPageOptionsSchema) }),
     success: workspaceTaskReadPageSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:searchPromptConversations', {
+    payload: promptConversationSearchSchema,
+    success: promptConversationMatchesSchema,
     error,
   }),
   Rpc.make('workspace-worker:readTaskDetail', {

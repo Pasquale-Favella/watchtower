@@ -74,6 +74,10 @@ function TaskConversation({
   const resources = useWorkspacePanelResources(ownerKey, panel)
   const appendDraft = useDraftAppend()
   const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
+  const sessionIdsByRunId = useMemo(
+    () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
+    [snapshot.data?.runs],
+  )
   const detail = useWorkspaceTask({
     taskId,
     options: { limit: 30, ...(afterConversationId ? { afterId: afterConversationId } : {}) },
@@ -198,6 +202,7 @@ function TaskConversation({
             {conversation ? (
               <WorkspaceConversation
                 conversationId={conversation.id}
+                sessionIdsByRunId={sessionIdsByRunId}
                 workspacePath={runContext?.workspacePath}
                 onOpenFile={panel.openFile}
                 scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
@@ -208,7 +213,11 @@ function TaskConversation({
           </div>
           {conversation && (
             <div key={conversation.id} className="shrink-0">
-              <WorkspaceComposer task={task} conversationId={conversation.id} />
+              <WorkspaceComposer
+                task={task}
+                conversationId={conversation.id}
+                onSideChatCreated={id => panel.addSurface('side-chat', id)}
+              />
             </div>
           )}
           <WorkspaceTerminalDrawer

@@ -1,12 +1,13 @@
 import * as Schema from 'effect/Schema'
 
-import { agentAccessModeSchema } from '@/shared/schemas/execution.js'
+import { agentAccessModeSchema, agentConfigValuesSchema } from '@/shared/schemas/execution.js'
+import { WORKSPACE_PROMPT_MAX_LENGTH } from '@/shared/schemas/prompt-context.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
 const STORAGE_KEY = 'watchtower.workspace.drafts.v1'
 export const WORKSPACE_DRAFT_RETENTION_MS = 60 * 24 * 60 * 60 * 1000
 export const WORKSPACE_DRAFT_MAX_CONVERSATIONS = 40
-export const WORKSPACE_DRAFT_MAX_LENGTH = 12_000
+export const WORKSPACE_DRAFT_MAX_LENGTH = WORKSPACE_PROMPT_MAX_LENGTH
 
 const draftSchema = Schema.Struct({ text: Schema.String, updatedAt: Schema.Number })
 const draftsSchema = Schema.Record(Schema.String, draftSchema)
@@ -15,6 +16,7 @@ const composerPreferenceSchema = Schema.Struct({
   connectionId: Schema.optional(Schema.String),
   modelId: Schema.optional(Schema.String),
   modeId: Schema.optional(Schema.String),
+  configValues: Schema.optional(agentConfigValuesSchema),
   accessMode: Schema.optional(agentAccessModeSchema),
   resumeNativeContext: Schema.optional(Schema.Boolean),
   resumeSessionId: Schema.optional(Schema.String),

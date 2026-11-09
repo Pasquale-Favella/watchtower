@@ -1489,7 +1489,7 @@ describe('ExecutionService', () => {
     )
     const prompts: Array<string | undefined> = []
     const loadedSessions: Array<string> = []
-    const loadedContexts: Array<{ modelId?: string; modeId?: string }> = []
+    const loadedContexts: Array<Pick<AgentSessionContext, 'modelId' | 'modeId' | 'configValues'>> = []
     let eventIndex = 0
     const session = makeSession({
       events: () => {
@@ -1513,7 +1513,11 @@ describe('ExecutionService', () => {
             loadSession: (context, identity) =>
               Effect.sync(() => {
                 loadedSessions.push(identity.nativeSessionId)
-                loadedContexts.push({ modelId: context.modelId, modeId: context.modeId })
+                loadedContexts.push({
+                  modelId: context.modelId,
+                  modeId: context.modeId,
+                  configValues: context.configValues,
+                })
                 return session
               }),
           }),
@@ -1543,6 +1547,7 @@ describe('ExecutionService', () => {
             connectionId: 'connection-1',
             modelId: 'captured-model',
             modeId: 'captured-mode',
+            configValues: { agent: 'reviewer', thought_level: 'high' },
             prompt,
           }),
         )
@@ -1552,7 +1557,13 @@ describe('ExecutionService', () => {
       await run(Deferred.await(submitSignals[1]!))
       expect(prompts).toEqual([command.prompt, 'First queued prompt'])
       expect(loadedSessions).toEqual(['native-session'])
-      expect(loadedContexts).toEqual([{ modelId: 'captured-model', modeId: 'captured-mode' }])
+      expect(loadedContexts).toEqual([
+        {
+          modelId: 'captured-model',
+          modeId: 'captured-mode',
+          configValues: { agent: 'reviewer', thought_level: 'high' },
+        },
+      ])
 
       await run(Deferred.succeed(turnReleases[1]!, undefined))
       await run(Deferred.await(submitSignals[2]!))

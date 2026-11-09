@@ -5,6 +5,7 @@ import {
   decodeConversationEvent,
   decodeConversationPayload,
   mergeConversationItems,
+  projectConversationView,
 } from '../src/renderer/features/workspace/conversation-view.js'
 import { nextConversationRequest } from '../src/renderer/features/workspace/lib.js'
 import type { ConversationId } from '../src/shared/schemas/workspace.js'
@@ -79,6 +80,32 @@ describe('conversation durable view projection', () => {
   it('preserves a user message attached to a duplicated run event', () => {
     const message = { id: 'message-1', content: 'Original prompt', createdAt: '2026-10-30T12:00:00Z' }
     expect(mergeConversationItems([item(1, message)], [item(1)])[0]?.userMessage).toEqual(message)
+  })
+
+  it('marks the transcript when a queued run switches native agent sessions', () => {
+    const firstMessage = { id: 'message-1', content: 'First prompt', createdAt: '2026-10-30T12:00:00Z' }
+    const secondMessage = { id: 'message-2', content: 'Fresh prompt', createdAt: '2026-10-30T12:01:00Z' }
+    const first = {
+      ...item(1, firstMessage),
+      event: { ...event(1), kind: 'runQueued' as const, runId: 'run-1' as WorkspaceExecutionEvent['runId'] },
+    }
+    const second = {
+      ...item(2, secondMessage),
+      event: { ...event(2), kind: 'runQueued' as const, runId: 'run-2' as WorkspaceExecutionEvent['runId'] },
+    }
+
+    const entries = projectConversationView([first, second], new Map(), new Map([
+      ['run-1', 'session-1'],
+      ['run-2', 'session-2'],
+    ])).entries
+
+    expect(entries
+      .filter(entry => entry.kind !== 'status' || entry.notice === 'newSession')
+      .map(entry => entry.kind === 'status' ? entry.notice : entry.kind)).toEqual([
+      'user',
+      'newSession',
+      'user',
+    ])
   })
 
   it('decodes only valid driver events and ignores summarized payload bodies', () => {

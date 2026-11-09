@@ -3,16 +3,15 @@ import * as Layer from 'effect/Layer'
 import * as Stream from 'effect/Stream'
 
 import { nativeHandlers } from '../../src/platform/electron/main/rpc/native-handlers.js'
+import { CheckoutActionsRpcGroup } from '../../src/shared/rpc/checkout-actions.js'
 import { CheckoutInspectionRpcGroup } from '../../src/shared/rpc/checkout-inspection.js'
+import { CheckoutNavigationRpcGroup } from '../../src/shared/rpc/checkout-navigation.js'
 import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'
 import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
 import { TerminalRpcGroup } from '../../src/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '../../src/shared/rpc/workspace.js'
-
-import { CheckoutNavigationRpcGroup } from '../../src/shared/rpc/checkout-navigation.js'
-import { CheckoutActionsRpcGroup } from '../../src/shared/rpc/checkout-actions.js'
-import { WorkspacePreviewRpcGroup } from '../../src/shared/rpc/workspace-preview.js'
 import { WorkspaceDeviceRpcGroup } from '../../src/shared/rpc/workspace-devices.js'
+import { WorkspacePreviewRpcGroup } from '../../src/shared/rpc/workspace-preview.js'
 import { WorkspacePullRequestRpcGroup } from '../../src/shared/rpc/workspace-pull-requests.js'
 import { WorkspaceSideChatRpcGroup } from '../../src/shared/rpc/workspace-side-chats.js'
 
@@ -121,6 +120,7 @@ export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:importAttachment': unexpected,
   'workspace:previewAttachment': unexpected,
   'workspace:searchPromptContext': unexpected,
+  'workspace:resolvePromptReference': unexpected,
   'workspace:attachPromptContext': unexpected,
   'workspace:listConnections': unexpected,
   'workspace:inspectConnection': unexpected,

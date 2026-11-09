@@ -63,6 +63,300 @@ function* connect(server: ReturnType<typeof fakeServer>) {
 }
 
 describe('Codex native App Server driver', () => {
+  it('discovers workspace skills and native slash commands from skills/list', async () => {
+    const server = fakeServer()
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          if (!connection.discoverPromptCatalog)
+            return yield* Effect.die(new Error('Codex must expose prompt catalog discovery'))
+          const discovering = yield* Effect.forkScoped(connection.discoverPromptCatalog(context.workspacePath))
+          const request = yield* server.read
+          expect(request.method).toBe('skills/list')
+          expect(request.params).toEqual({ cwds: [context.workspacePath] })
+          yield* server.send({
+            id: request.id,
+            result: {
+              data: [
+                {
+                  cwd: context.workspacePath,
+                  skills: [
+                    {
+                      name: 'review',
+                      enabled: true,
+                      description: 'Review the current changes',
+                      shortDescription: 'Review changes',
+                      interface: { shortDescription: 'Review changes', userInvocable: true },
+                    },
+                    { name: 'internal', enabled: false },
+                  ],
+                },
+              ],
+            },
+          })
+          return yield* Fiber.join(discovering)
+        }),
+      ),
+    )
+
+    expect(catalog.skills).toEqual([
+      { name: 'review', enabled: true, description: 'Review the current changes', userInvocable: true },
+      { name: 'internal', enabled: false },
+    ])
+    expect(catalog.skillsComplete).toBe(true)
+    expect(catalog.commands).toEqual([
+      { name: 'compact', description: 'Compact this conversation to free up context.' },
+    ])
+  })
+
+  it('does not use skills returned for another checkout when the requested cwd is absent', async () => {
+    const server = fakeServer()
+    const catalog = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          if (!connection.discoverPromptCatalog)
+            return yield* Effect.die(new Error('Codex must expose prompt catalog discovery'))
+          const discovering = yield* Effect.forkScoped(connection.discoverPromptCatalog(context.workspacePath))
+          const request = yield* server.read
+          yield* server.send({
+            id: request.id,
+            result: {
+              data: [{ cwd: 'C:\\another-checkout', skills: [{ name: 'foreign-skill', enabled: true }] }],
+            },
+          })
+          return yield* Fiber.join(discovering)
+        }),
+      ),
+    )
+
+    expect(catalog.skills).toEqual([])
+    expect(catalog.skillsComplete).toBe(true)
+  })
+
+  it('owns a native goal across announced turns and pauses it before interrupting', async () => {
+    const server = fakeServer()
+    const events = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-goal' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-goal' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({
+              runId,
+              messages: [{ role: 'user', content: '/goal Finish the migration' }],
+              attachmentIds: [],
+            }),
+          )
+          const setting = yield* server.read
+          expect(setting.method).toBe('thread/goal/set')
+          expect(setting.params).toEqual({
+            threadId: 'thread-goal',
+            objective: 'Finish the migration',
+            status: 'active',
+          })
+          const initialGoal = {
+            objective: 'Finish the migration',
+            status: 'active',
+            tokenBudget: null,
+            tokensUsed: 0,
+            timeUsedSeconds: 0,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          }
+          yield* server.send({ id: setting.id, result: { goal: initialGoal } })
+          const initialRead = yield* server.read
+          expect(initialRead.method).toBe('thread/goal/get')
+          yield* server.send({ id: initialRead.id, result: { goal: initialGoal } })
+          const accepted = yield* Fiber.join(submitting)
+          expect(accepted.nativeTurnId).toBeUndefined()
+          expect(accepted.nativeSessionId).toBe('thread-goal')
+          expect(server.output).toBeDefined()
+
+          const collecting = yield* Effect.forkScoped(Stream.runCollect(session.events(runId)))
+          yield* server.send({
+            method: 'turn/started',
+            params: { threadId: 'thread-goal', turn: { id: 'goal-turn-1' } },
+          })
+          yield* server.send({
+            method: 'turn/completed',
+            params: { threadId: 'thread-goal', turn: { id: 'goal-turn-1', status: 'completed' } },
+          })
+          const nextGoalRead = yield* server.read
+          expect(nextGoalRead.method).toBe('thread/goal/get')
+          yield* server.send({ id: nextGoalRead.id, result: { goal: initialGoal } })
+          yield* server.send({
+            method: 'turn/started',
+            params: { threadId: 'thread-goal', turn: { id: 'goal-turn-2' } },
+          })
+
+          const pausing = yield* Effect.forkScoped(session.steer(runId, 'goal-turn-2', '/goal pause'))
+          const pause = yield* server.read
+          expect(pause.method).toBe('thread/goal/set')
+          expect(pause.params).toEqual({ threadId: 'thread-goal', status: 'paused' })
+          yield* server.send({ id: pause.id, result: { goal: { ...initialGoal, status: 'paused' } } })
+          const pauseRead = yield* server.read
+          expect(pauseRead.method).toBe('thread/goal/get')
+          yield* server.send({ id: pauseRead.id, result: { goal: { ...initialGoal, status: 'paused' } } })
+          const interrupt = yield* server.read
+          expect(interrupt.method).toBe('turn/interrupt')
+          expect(interrupt.params).toEqual({ threadId: 'thread-goal', turnId: 'goal-turn-2' })
+          yield* server.send({ id: interrupt.id, result: {} })
+          expect(yield* Fiber.join(pausing)).toEqual({ outcome: 'accepted' })
+          yield* server.send({
+            method: 'turn/interrupted',
+            params: { threadId: 'thread-goal', turnId: 'goal-turn-2' },
+          })
+          const finalGoalRead = yield* server.read
+          expect(finalGoalRead.method).toBe('thread/goal/get')
+          yield* server.send({ id: finalGoalRead.id, result: { goal: { ...initialGoal, status: 'paused' } } })
+          return yield* Fiber.join(collecting)
+        }),
+      ),
+    )
+
+    expect(events.map(event => event.kind)).toEqual([
+      'goalUpdated',
+      'goalTurnStarted',
+      'goalTurnCompleted',
+      'goalUpdated',
+      'goalTurnStarted',
+      'goalUpdated',
+      'goalTurnCompleted',
+      'goalUpdated',
+      'turnInterrupted',
+    ])
+    expect(events.filter(event => event.kind === 'goalTurnStarted').map(event => event.nativeTurnId)).toEqual([
+      'goal-turn-1',
+      'goal-turn-2',
+    ])
+  })
+
+  it('runs /compact through the native method and binds only the native turn ID', async () => {
+    const server = fakeServer()
+    const events = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-compact' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-compact' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: '/compact' }], attachmentIds: [] }),
+          )
+          const request = yield* server.read
+          expect(request.method).toBe('thread/compact/start')
+          expect(request.params).toEqual({ threadId: 'thread-compact' })
+          const reading = yield* Effect.forkScoped(Stream.runCollect(session.events(runId)))
+          yield* server.send({
+            method: 'turn/started',
+            params: { threadId: 'thread-compact', turn: { id: 'native-compact-turn' } },
+          })
+          yield* server.send({ id: request.id, result: {} })
+          const accepted = yield* Fiber.join(submitting)
+          expect(accepted).toEqual({
+            nativeTurnId: 'native-compact-turn',
+            nativeSessionId: 'thread-compact',
+            generation: context.generation,
+          })
+          yield* server.send({
+            method: 'item/agentMessage/delta',
+            params: {
+              threadId: 'thread-compact',
+              turnId: 'native-compact-turn',
+              itemId: 'compact-message',
+              delta: 'Context compacted.',
+            },
+          })
+          yield* server.send({
+            method: 'turn/completed',
+            params: { threadId: 'thread-compact', turn: { id: 'native-compact-turn', status: 'completed' } },
+          })
+          return yield* Fiber.join(reading)
+        }),
+      ),
+    )
+
+    expect(events.map(event => event.kind)).toEqual(['turnStarted', 'textDelta', 'turnCompleted'])
+    expect(events.every(event => !('nativeTurnId' in event) || event.nativeTurnId === 'native-compact-turn')).toBe(true)
+  })
+
+  it('leaves the native turn ID absent until Codex announces it', async () => {
+    const server = fakeServer()
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-compact-late-id' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-compact-late-id' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: '/compact' }], attachmentIds: [] }),
+          )
+          const request = yield* server.read
+          expect(request.method).toBe('thread/compact/start')
+          yield* server.send({ id: request.id, result: {} })
+          const accepted = yield* Fiber.join(submitting)
+          expect(accepted).toEqual({ nativeSessionId: 'thread-compact-late-id', generation: context.generation })
+          const reading = yield* Effect.forkScoped(Stream.runCollect(session.events(runId)))
+          yield* server.send({
+            method: 'turn/started',
+            params: { threadId: 'thread-compact-late-id', turn: { id: 'native-late-turn' } },
+          })
+          yield* server.send({
+            method: 'turn/completed',
+            params: { threadId: 'thread-compact-late-id', turn: { id: 'native-late-turn', status: 'completed' } },
+          })
+          return yield* Fiber.join(reading)
+        }),
+      ),
+    )
+
+    expect(result).toEqual([
+      { kind: 'turnStarted', nativeTurnId: 'native-late-turn' },
+      { kind: 'turnCompleted', nativeTurnId: 'native-late-turn' },
+    ])
+  })
+
+  it('surfaces an unsupported /compact RPC as a typed driver failure', async () => {
+    const server = fakeServer()
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-no-compact' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-no-compact' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            Effect.match(
+              session.submit({ runId, messages: [{ role: 'user', content: '/compact' }], attachmentIds: [] }),
+              { onFailure: left => ({ _tag: 'Left' as const, left }), onSuccess: right => ({ _tag: 'Right' as const, right }) },
+            ),
+          )
+          const request = yield* server.read
+          expect(request.method).toBe('thread/compact/start')
+          yield* server.send({ id: request.id, error: { code: -32601, message: 'Method not found' } })
+          return yield* Fiber.join(submitting)
+        }),
+      ),
+    )
+
+    expect(result._tag).toBe('Left')
+    if (result._tag === 'Left')
+      expect(result.left).toMatchObject({ _tag: 'AgentDriverError', code: 'protocol-error' })
+  })
+
   it.each([
     { size: 40000, control: false },
     { size: 40000, control: true },
@@ -495,7 +789,13 @@ describe('Codex native App Server driver', () => {
           yield* server.send({
             id: 'native-approval-1',
             method: 'item/commandExecution/requestApproval',
-            params: { threadId: 'thread-native-1', turnId: accepted.nativeTurnId, command: 'git status' },
+            params: {
+              threadId: 'thread-native-1',
+              turnId: accepted.nativeTurnId,
+              itemId: 'item-command-1',
+              cwd: 'C:\\workspace',
+              command: 'git status',
+            },
           })
           const pending = yield* Effect.tryPromise({
             try: () => iterator.next(),
@@ -508,6 +808,8 @@ describe('Codex native App Server driver', () => {
               sessionId: context.sessionId,
               generation: context.generation,
               prompt: 'git status',
+              toolCallId: 'item-command-1',
+              tool: { category: 'command', command: 'git status', cwd: 'C:\\workspace' },
             },
           })
           const noAutomaticDecision = yield* Queue.size(server.output)
@@ -524,7 +826,7 @@ describe('Codex native App Server driver', () => {
           const unavailableChoice = yield* Effect.exit(
             session.respond(runId, request.requestId, context.generation, {
               kind: 'approve',
-              optionId: 'allow-session',
+              optionId: 'allow-project',
             }),
           )
           expect(unavailableChoice._tag).toBe('Failure')
@@ -540,6 +842,87 @@ describe('Codex native App Server driver', () => {
             catch: () => new Error('event stream failed'),
           })
           expect(approvalResolved.value).toMatchObject({ kind: 'requestResolved', requestId: request.requestId })
+
+          yield* server.send({
+            id: 'native-session-approval-1',
+            method: 'item/commandExecution/requestApproval',
+            params: {
+              threadId: 'thread-native-1',
+              turnId: accepted.nativeTurnId,
+              itemId: 'item-session-approval-1',
+              command: 'git status --short',
+            },
+          })
+          const sessionApprovalEvent = yield* Effect.tryPromise({
+            try: () => iterator.next(),
+            catch: () => new Error('event stream failed'),
+          })
+          if (sessionApprovalEvent.done) throw new Error('Expected a pending session approval')
+          const sessionApproval =
+            sessionApprovalEvent.value.kind === 'requestPending' ? sessionApprovalEvent.value.request : undefined
+          expect(sessionApproval?.options?.map(option => option.id)).toEqual([
+            'allow-once',
+            'allow-session',
+            'decline',
+            'cancel',
+          ])
+          if (!sessionApproval) throw new Error('Expected a pending session approval')
+          yield* session.respond(runId, sessionApproval.requestId, context.generation, {
+            kind: 'approve',
+            optionId: 'allow-session',
+          })
+          expect(yield* server.read).toEqual({
+            id: 'native-session-approval-1',
+            result: { decision: 'acceptForSession' },
+          })
+          yield* Effect.tryPromise({ try: () => iterator.next(), catch: () => new Error('event stream failed') })
+
+          const permissions = {
+            fileSystem: {
+              read: ['C:\\workspace\\src'],
+              write: ['C:\\workspace\\output'],
+              entries: [{ type: 'glob_pattern', pattern: 'C:\\workspace\\**', access: 'write' }],
+            },
+            network: { enabled: true },
+          }
+          yield* server.send({
+            id: 'native-permissions-1',
+            method: 'item/permissions/requestApproval',
+            params: {
+              threadId: 'thread-native-1',
+              turnId: accepted.nativeTurnId,
+              itemId: 'item-permissions-1',
+              cwd: 'C:\\workspace',
+              reason: 'The task needs to write generated files.',
+              permissions,
+            },
+          })
+          const permissionEvent = yield* Effect.tryPromise({
+            try: () => iterator.next(),
+            catch: () => new Error('event stream failed'),
+          })
+          const permissionRequest =
+            permissionEvent.value?.kind === 'requestPending' ? permissionEvent.value.request : undefined
+          expect(permissionRequest).toMatchObject({
+            kind: 'approval',
+            prompt: 'The task needs to write generated files.',
+            toolCallId: 'item-permissions-1',
+            tool: {
+              category: 'fileWrite',
+              cwd: 'C:\\workspace',
+              paths: ['C:\\workspace\\src', 'C:\\workspace\\output', 'C:\\workspace\\**'],
+            },
+          })
+          if (!permissionRequest) throw new Error('Expected a pending permissions request')
+          yield* session.respond(runId, permissionRequest.requestId, context.generation, {
+            kind: 'approve',
+            optionId: 'allow-session',
+          })
+          expect(yield* server.read).toEqual({
+            id: 'native-permissions-1',
+            result: { permissions, scope: 'session' },
+          })
+          yield* Effect.tryPromise({ try: () => iterator.next(), catch: () => new Error('event stream failed') })
 
           yield* server.send({
             id: 'native-question-1',

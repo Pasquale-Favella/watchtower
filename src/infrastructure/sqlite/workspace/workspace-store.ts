@@ -7,8 +7,9 @@ import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/sql/SqlClient'
 
-import { transitionAgentRun } from '@/core/domain/execution/lifecycle.js'
+import { completeAgentGoalTurn, startAgentGoalTurn, transitionAgentRun } from '@/core/domain/execution/lifecycle.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { searchPromptConversations } from '@/infrastructure/sqlite/workspace/prompt-conversation-search.js'
 import {
   executeSqliteScript,
   runSqliteMigrations,
@@ -18,6 +19,7 @@ import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schema
 import {
   agentAccessModeSchema,
   agentCapabilitiesSchema,
+  agentConfigValuesSchema,
   agentDriverEventSchema,
   agentRunSchema,
   DEFAULT_AGENT_ACCESS_MODE,
@@ -265,6 +267,13 @@ const migrations = [
     name: 'hold_follow_up_queue_until_explicit_resume',
     up: executeSqliteScript(`
       ALTER TABLE workspace_follow_up_queue ADD COLUMN held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0, 1));
+    `),
+  },
+  {
+    version: 12,
+    name: 'persist_agent_config_values',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_dispatch_intent ADD COLUMN config_values TEXT NOT NULL DEFAULT '{}';
     `),
   },
 ] as const
@@ -689,7 +698,7 @@ const makeService = Effect.gen(function* () {
             yield* sql`INSERT INTO workspace_agent_run (id, task_id, checkout_id, generation, status, submitted_at, payload) VALUES (${run.id}, ${run.taskId}, ${command.checkoutId}, ${run.generation}, 'queued', ${run.submittedAt}, ${encode(run)})`
             yield* sql`INSERT INTO workspace_message (id, run_id, conversation_id, role, content, created_at) VALUES (${`user:${run.id}`}, ${run.id}, ${command.conversationId}, 'user', ${command.prompt}, ${command.issuedAt})`
             yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, access_mode, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.accessMode ?? DEFAULT_AGENT_ACCESS_MODE}, ${command.nativeSessionId ?? null}, 'pending')`
-            yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
+            yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])}, config_values = ${encode(command.configValues ?? {})} WHERE run_id = ${run.id}`
             yield* sql`UPDATE workspace_message SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
             yield* appendEvent(run, 'runQueued', command.issuedAt, {
               conversationId: command.conversationId,
@@ -812,6 +821,7 @@ const makeService = Effect.gen(function* () {
               attachments: yield* decodeJson(promptAttachmentsSchema)(String(intent.attachments ?? '[]')),
               modelId: intent.model_id as string | null,
               modeId: intent.mode_id as string | null,
+              configValues: yield* decodeJson(agentConfigValuesSchema)(String(intent.config_values ?? '{}')),
               accessMode,
               nativeSessionId: intent.requested_native_session_id as string | null,
             } as DispatchClaim
@@ -1092,6 +1102,14 @@ const makeService = Effect.gen(function* () {
 
             const event = command.event as AgentDriverEvent
             if (
+              (event.kind === 'goalUpdated' || event.kind === 'goalTurnStarted' || event.kind === 'goalTurnCompleted') &&
+              (event.nativeSessionId !== row.session_native_session_id || event.generation !== run.generation)
+            ) {
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Native goal event does not match the Run session and generation'),
+              )
+            }
+            if (
               row.state === 'claimed' &&
               (event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed')
             )
@@ -1125,13 +1143,37 @@ const makeService = Effect.gen(function* () {
             const suppliedTurnId =
               row.state === 'claimed'
                 ? undefined
-                : event.kind === 'turnStarted' ||
+                : event.kind === 'goalTurnStarted' ||
+                    event.kind === 'goalTurnCompleted' ||
+                    event.kind === 'turnStarted' ||
                     event.kind === 'turnCompleted' ||
                     event.kind === 'turnInterrupted' ||
                     event.kind === 'turnFailed'
                   ? event.nativeTurnId
                   : undefined
             const currentTurnId = run.nativeTurnId ?? (row.native_turn_id as string | null) ?? null
+            if (event.kind === 'goalTurnStarted' && (run.goal?.status !== 'active' || currentTurnId !== null))
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Native goal turn can start only after an active goal boundary'),
+              )
+            if (
+              event.kind === 'goalTurnCompleted' &&
+              (run.goal?.status === undefined || currentTurnId !== event.nativeTurnId)
+            )
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Native goal turn completion does not match the active turn'),
+              )
+            if (event.kind === 'turnStarted' && run.goal?.status === 'active')
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Active native goals must use a goal turn boundary'),
+              )
+            if (
+              (event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed') &&
+              run.goal?.status === 'active'
+            )
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'An active native goal cannot terminate its owning Run'),
+              )
             if (
               suppliedTurnId &&
               ((currentTurnId && suppliedTurnId !== currentTurnId) ||
@@ -1155,6 +1197,29 @@ const makeService = Effect.gen(function* () {
                 safeError('invalid-transition', 'Terminal Run cannot accept another driver event'),
               )
             switch (event.kind) {
+              case 'goalUpdated':
+                updatedRun = { ...run, goal: event.goal }
+                if (event.goal?.status === 'active' && updatedRun.status === 'starting')
+                  updatedRun = yield* transition(updatedRun, 'running', command.occurredAt)
+                break
+              case 'goalTurnStarted':
+                {
+                  const boundary = startAgentGoalTurn(run, event.nativeTurnId, command.occurredAt)
+                  if (!boundary.ok)
+                    return yield* Effect.fail(safeError('invalid-transition', 'Goal turn start is not valid for this Run'))
+                  updatedRun = boundary.run
+                }
+                break
+              case 'goalTurnCompleted':
+                {
+                  const boundary = completeAgentGoalTurn(run, event.nativeTurnId)
+                  if (!boundary.ok)
+                    return yield* Effect.fail(
+                      safeError('invalid-transition', 'Goal turn completion does not match the active turn'),
+                    )
+                  updatedRun = boundary.run
+                }
+                break
               case 'capabilitiesUpdated':
                 if (run.sessionId)
                   yield* sql`UPDATE workspace_agent_session SET capabilities = ${encode(event.capabilities)} WHERE id = ${run.sessionId}`
@@ -1195,7 +1260,11 @@ const makeService = Effect.gen(function* () {
               default:
                 break
             }
-            if (nativeTurnId !== null && updatedRun.nativeTurnId !== nativeTurnId)
+            if (
+              event.kind !== 'goalTurnCompleted' &&
+              nativeTurnId !== null &&
+              updatedRun.nativeTurnId !== nativeTurnId
+            )
               updatedRun = { ...updatedRun, nativeTurnId }
 
             yield* persistRun(updatedRun)
@@ -1231,6 +1300,8 @@ const makeService = Effect.gen(function* () {
             }
             if (nativeTurnId !== null)
               yield* sql`UPDATE workspace_dispatch_intent SET native_turn_id = ${nativeTurnId} WHERE run_id = ${runId}`
+            else if (event.kind === 'goalTurnCompleted')
+              yield* sql`UPDATE workspace_dispatch_intent SET native_turn_id = NULL WHERE run_id = ${runId}`
             const storedEvent =
               row.state === 'claimed' && suppliedTurnId !== undefined
                 ? { ...event, nativeTurnId: undefined }
@@ -1799,6 +1870,7 @@ const makeService = Effect.gen(function* () {
               connectionId: followUp.connectionId ?? command.connectionId,
               modelId: followUp.modelId === undefined ? command.modelId : followUp.modelId,
               modeId: followUp.modeId === undefined ? command.modeId : followUp.modeId,
+              configValues: followUp.configValues ?? command.configValues,
               accessMode: followUp.accessMode === undefined ? command.accessMode : followUp.accessMode,
               nativeSessionId: followUp.nativeSessionId ?? command.nativeSessionId,
             })
@@ -2866,6 +2938,7 @@ const makeService = Effect.gen(function* () {
     )
 
   return WorkspaceStore.of({
+    searchPromptConversations: request => guard(searchPromptConversations(sql, request)),
     registerProject,
     registerCheckout,
     createTask,

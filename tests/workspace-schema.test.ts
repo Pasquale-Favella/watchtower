@@ -511,6 +511,7 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:listProjects',
         'workspace-worker:getProject',
         'workspace-worker:listTasks',
+        'workspace-worker:searchPromptConversations',
         'workspace-worker:readTaskDetail',
         'workspace-worker:readConversationPage',
         'workspace-worker:listNativeAgentSessions',

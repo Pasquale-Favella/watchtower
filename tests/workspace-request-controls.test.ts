@@ -6,6 +6,7 @@ import {
   questionAnswerLabels,
   questionDecision,
   requestIsCurrent,
+  requestLabel,
   requestResponseState,
 } from '../src/renderer/features/workspace/request-controls.js'
 import type { AgentRequest, AgentRun } from '../src/shared/schemas/execution.js'
@@ -51,6 +52,14 @@ const context: WorkspaceRunContext = {
 }
 
 describe('workspace request controls', () => {
+  it('labels approvals by the tool category when the driver supplies one', () => {
+    expect(requestLabel({ ...approval, tool: { category: 'command' } })).toBe('Command approval')
+    expect(requestLabel({ ...approval, tool: { category: 'fileRead' } })).toBe('File read approval')
+    expect(requestLabel({ ...approval, tool: { category: 'fileWrite' } })).toBe('File change approval')
+    expect(requestLabel({ ...approval, tool: { category: 'mcp' } })).toBe('App access approval')
+    expect(requestLabel(approval)).toBe('Approval requested')
+  })
+
   it('preserves exact one-shot, decline and cancel choices while disabling scope widening', () => {
     const options = approval.options ?? []
     const [once, session, decline, cancel] = options

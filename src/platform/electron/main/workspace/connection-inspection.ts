@@ -8,6 +8,7 @@ import * as Scope from 'effect/Scope'
 import { agentDriverAccessModes, AgentDriverError } from '@/core/ports/agent-driver.js'
 import type { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
+import type { AgentPromptCatalog } from '@/shared/schemas/execution.js'
 import { MAX_AGENT_CATALOG_CHOICES } from '@/shared/schemas/execution.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
 import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
@@ -23,6 +24,7 @@ export class ConnectionInspectionError extends Schema.TaggedError<ConnectionInsp
     message: Schema.Literals([
       'Connection inspection failed.',
       'Connection inspection timed out.',
+      'Prompt catalog discovery timed out.',
       'Connection identity did not match the selected installation.',
       'Connection cleanup could not be confirmed.',
     ]),
@@ -95,7 +97,10 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
       const probing =
         discovered._tag === 'Success' &&
         connection.probeCatalog !== undefined &&
-        (discovered.value.models.length === 0 || discovered.value.modes.length === 0)
+        (discovered.value.models.length === 0 ||
+          discovered.value.modes.length === 0 ||
+          discovered.value.configOptions === undefined ||
+          discovered.value.configOptions.length === 0)
       const probed =
         probing && connection.probeCatalog
           ? yield* connection.probeCatalog().pipe(
@@ -109,6 +114,7 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
 
       const capabilities = {
         ...discovered.value,
+        configOptions: probed?.configOptions ?? discovered.value.configOptions,
         models: (discovered.value.models.length ? discovered.value.models : (probed?.models ?? [])).slice(
           0,
           MAX_AGENT_CATALOG_CHOICES,
@@ -157,8 +163,73 @@ export const inspectWorkspaceConnection = Effect.fn('inspectWorkspaceConnection'
             items: capabilities.modes,
           },
           ...(capabilities.promptContent ? { promptContent: capabilities.promptContent } : {}),
+          ...(capabilities.configOptions ? { configOptions: capabilities.configOptions } : {}),
         },
       }
+    }),
+  )
+})
+
+/** Discover the selected provider's workspace-scoped skills and slash commands in a disposable connection. */
+export const discoverWorkspacePromptCatalog = Effect.fn('discoverWorkspacePromptCatalog')(function* (
+  catalog: ReadonlyArray<HarnessConnection>,
+  drivers: AgentDriverRegistry['Service'],
+  connectionId: string,
+  workspacePath: string,
+  options: ConnectionInspectionOptions = {},
+): Effect.fn.Return<
+  AgentPromptCatalog,
+  ConnectionInspectionError | AgentDriverError | HarnessConnectionResolutionError
+> {
+  const initializeDeadlineMs = options.initializeDeadlineMs ?? 15_000
+  const cleanupDeadlineMs = options.cleanupDeadlineMs ?? 5_000
+  const selected = catalog.find(connection => connection.id === connectionId)
+  if (!selected) return yield* new ConnectionInspectionError({ message: 'Connection inspection failed.' })
+
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const resolverContext = yield* Layer.build(HarnessConnectionResolver.layer([selected]))
+      const resolver = Context.get(resolverContext, HarnessConnectionResolver)
+      const driver = yield* drivers.resolve(selected.driverId)
+      const resolved = yield* resolver.resolve(connectionId, selected.driverId)
+      const connection = yield* timed(
+        driver.connect(resolved),
+        initializeDeadlineMs,
+        'Connection inspection timed out.',
+      )
+      let cleanupConfirmed = false
+      const closeConnection = Effect.fnUntraced(function* () {
+        const result = yield* Effect.exit(
+          Effect.timeoutOption(connection.close(cleanupDeadlineMs), `${cleanupDeadlineMs} millis`),
+        )
+        if (result._tag === 'Failure' || Option.isNone(result.value))
+          return yield* new ConnectionInspectionError({ message: 'Connection cleanup could not be confirmed.' })
+        cleanupConfirmed = true
+      })
+      const scope = yield* Effect.scope
+      yield* Scope.addFinalizerExit(scope, () =>
+        Effect.suspend(() => (cleanupConfirmed ? Effect.void : closeConnection())).pipe(Effect.orDie),
+      )
+      if (connection.identity.id !== connectionId || connection.identity.driverId !== selected.driverId) {
+        yield* closeConnection()
+        return yield* new ConnectionInspectionError({
+          message: 'Connection identity did not match the selected installation.',
+        })
+      }
+      if (!connection.discoverPromptCatalog) {
+        yield* closeConnection()
+        return yield* new AgentDriverError({
+          code: 'protocol-error',
+          message: 'The selected agent does not expose a workspace prompt catalog.',
+        })
+      }
+      const promptCatalog = yield* timed(
+        connection.discoverPromptCatalog(workspacePath),
+        initializeDeadlineMs,
+        'Prompt catalog discovery timed out.',
+      )
+      yield* closeConnection()
+      return promptCatalog
     }),
   )
 })

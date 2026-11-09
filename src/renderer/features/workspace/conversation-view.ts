@@ -120,6 +120,7 @@ export interface ConversationAssistantTurn {
 
 export interface ConversationStatusNotice {
   readonly kind: 'status'
+  readonly notice?: 'newSession'
   readonly id: string
   readonly sequence: number
   readonly event: WorkspaceExecutionEvent
@@ -338,6 +339,7 @@ function activityFor(runs: ReadonlyMap<string, MutableRun>): ConversationActivit
 export function projectConversationView(
   items: readonly WorkspaceConversationPageItem[],
   hydratedEvents: ReadonlyMap<number, WorkspaceExecutionEvent> = new Map(),
+  sessionIdsByRunId: ReadonlyMap<string, string | null> = new Map(),
 ): ConversationProjection {
   const ordered = [...items].sort((a, b) => a.event.sequence - b.event.sequence)
   const entries: Array<ConversationUserMessage | ConversationStatusNotice | MutableAssistantTurn> = []
@@ -347,9 +349,23 @@ export function projectConversationView(
   const requestBlocks: RequestBlockIndex = new Map()
   const runs = new Map<string, MutableRun>()
   const lastTurn = { current: null as MutableAssistantTurn | null }
+  let previousNativeSessionId: string | null = null
 
   for (const item of ordered) {
     const { event } = item
+    if (event.kind === 'runQueued') {
+      const sessionId = sessionIdsByRunId.get(event.runId)
+      if (sessionId && previousNativeSessionId && sessionId !== previousNativeSessionId) {
+        entries.push({
+          kind: 'status',
+          notice: 'newSession',
+          id: `new-session:${event.sequence}`,
+          sequence: event.sequence,
+          event,
+        })
+      }
+      if (sessionId) previousNativeSessionId = sessionId
+    }
     if (item.userMessage && !users.has(item.userMessage.id)) {
       const user: ConversationUserMessage = {
         kind: 'user',
@@ -681,6 +697,8 @@ export function eventSummary(event: WorkspaceExecutionEvent): string {
       return 'Follow-up delivery updated'
     case 'driverEvent':
       return 'Agent activity'
+    default:
+      return 'Run activity'
   }
 }
 
@@ -718,6 +736,8 @@ export function driverEventSummary(event: AgentDriverEvent): string {
       return 'Usage reported'
     case 'nativeNotice':
       return 'Agent notice'
+    default:
+      return 'Agent activity'
   }
 }
 

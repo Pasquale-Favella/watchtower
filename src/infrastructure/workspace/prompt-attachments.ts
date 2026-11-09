@@ -1,21 +1,25 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdir, open, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 import * as Schema from 'effect/Schema'
 
+import { discoverLocalPromptCatalog } from '@/infrastructure/workspace/prompt-local-catalog.js'
+import { nativePromptPathSearch } from '@/infrastructure/workspace/prompt-native-search.js'
+import { invalidatePromptPathInventory } from '@/infrastructure/workspace/prompt-path-search.js'
 import {
   PROMPT_ATTACHMENT_MAX_BYTES,
+  PROMPT_CONTEXT_SEARCH_MAX_RESULTS,
   type PromptAttachment,
   promptAttachmentSchema,
   type ResolvedPromptAttachment,
 } from '@/shared/schemas/prompt-context.js'
+import { insertRankedSearchResult, scorePromptCommandMatch, scorePromptSkillMatch } from '@/shared/search-ranking.js'
 
 const exec = promisify(execFile)
 const imageTypes = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp'])
-const commandRoots = ['.agents/skills', '.claude/skills', '.codex/skills', '.claude/commands', '.codex/prompts']
 const metadataSchema = Schema.Struct({ ...promptAttachmentSchema.fields, content: Schema.String })
 
 function identifyContent(bytes: Buffer, declared: string): { mediaType: string; content: string } {
@@ -43,7 +47,16 @@ function identifyContent(bytes: Buffer, declared: string): { mediaType: string; 
 
 function digest(value: Omit<ResolvedPromptAttachment, 'id'>): string {
   return createHash('sha256')
-    .update(JSON.stringify([value.name, value.size, value.source, value.mediaType, value.content]))
+    .update(
+      JSON.stringify([
+        value.name,
+        value.size,
+        value.source,
+        value.mediaType,
+        value.content,
+        ...(value.token === undefined ? [] : [value.token]),
+      ]),
+    )
     .digest('hex')
 }
 
@@ -54,16 +67,17 @@ export function createPromptAttachmentStore(directory: string) {
     name: string,
     declared: string,
     source: PromptAttachment['source'],
+    token?: string,
   ): Promise<PromptAttachment> {
     if (bytes.length > PROMPT_ATTACHMENT_MAX_BYTES) throw new Error('The file exceeds 4 MiB.')
-    const value = { name, size: bytes.length, source, ...identifyContent(bytes, declared) }
+    const value = { name, size: bytes.length, source, ...(token ? { token } : {}), ...identifyContent(bytes, declared) }
     const id = digest(value)
     await mkdir(directory, { recursive: true })
     const file = join(directory, `${id}.json`)
     await writeFile(file, JSON.stringify({ id, ...value }), { flag: 'wx', mode: 0o600 }).catch(error => {
       if (error.code !== 'EEXIST') throw error
     })
-    return { id, name, size: value.size, source, mediaType: value.mediaType }
+    return { id, name, size: value.size, source, ...(value.token ? { token: value.token } : {}), mediaType: value.mediaType }
   }
 
   async function load(reference: PromptAttachment): Promise<ResolvedPromptAttachment> {
@@ -73,7 +87,7 @@ export function createPromptAttachmentStore(directory: string) {
     const { id, ...value } = parsed
     if (
       digest(value) !== id ||
-      ['name', 'mediaType', 'source', 'size'].some(key => Reflect.get(value, key) !== Reflect.get(reference, key))
+      ['name', 'mediaType', 'source', 'size', 'token'].some(key => Reflect.get(value, key) !== Reflect.get(reference, key))
     )
       throw new Error('Attachment snapshot failed integrity validation.')
     const assetDirectory = join(directory, id)
@@ -123,64 +137,46 @@ export function createPromptAttachmentStore(directory: string) {
     }
   }
 
-  async function commands(root: string) {
-    const items: Array<{ path: string; label: string; kind: 'skill' | 'command' }> = []
-    for (const base of commandRoots) {
-      const entries = await readdir(join(root, base), { withFileTypes: true }).catch(() => [])
-      for (const entry of entries.slice(0, 200)) {
-        if (entry.isSymbolicLink()) continue
-        const isSkill = base.endsWith('/skills')
-        const path = isSkill ? `${base}/${entry.name}/SKILL.md` : `${base}/${entry.name}`
-        if ((isSkill && entry.isDirectory()) || (!isSkill && entry.isFile() && entry.name.endsWith('.md'))) {
-          if (
-            await stat(join(root, path))
-              .then(info => info.isFile())
-              .catch(() => false)
-          )
-            items.push({ path, label: entry.name.replace(/\.md$/, ''), kind: isSkill ? 'skill' : 'command' })
-        }
-      }
-    }
-    return items
-  }
-
   return {
     import: (input: { readonly name: string; readonly mediaType: string; readonly data: string }) =>
       save(Buffer.from(input.data, 'base64'), input.name, input.mediaType, 'file'),
     resolve: (references: readonly PromptAttachment[]) => Promise.all(references.map(load)),
     async preview(reference: PromptAttachment): Promise<string | null> {
       const value = await load(reference)
-      return imageTypes.has(value.mediaType) ? `data:${value.mediaType};base64,${value.content}` : null
+      if (imageTypes.has(value.mediaType) || value.mediaType === 'application/pdf')
+        return `data:${value.mediaType};base64,${value.content}`
+      if (value.mediaType === 'text/plain') {
+        const limit = 256 * 1024
+        const text = value.content.slice(0, limit) + (value.content.length > limit ? '\n[Preview limited to 256 KiB of text.]' : '')
+        return `data:text/plain;charset=utf-8;base64,${Buffer.from(text, 'utf8').toString('base64')}`
+      }
+      return null
     },
     async search(root: string, kind: 'file' | 'command', query: string) {
-      const needle = query.toLocaleLowerCase()
-      let items: Array<{ path: string; label: string; kind: 'file' | 'skill' | 'command' }>
-      if (kind === 'command') items = await commands(root)
-      else {
-        const result = await exec('git', ['-C', root, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], {
-          windowsHide: true,
-          maxBuffer: 4 * 1024 * 1024,
-          timeout: 5000,
-        })
-        const paths = new Set(result.stdout.split('\0').filter(Boolean))
-        for (const path of [...paths]) {
-          const parts = path.split('/')
-          for (let index = 1; index < parts.length; index++) paths.add(`${parts.slice(0, index).join('/')}/`)
-        }
-        items = [...paths].map(path => ({
-          path,
-          label: path,
-          kind: 'file' as const,
-        }))
+      if (kind === 'file') return nativePromptPathSearch.search(root, query)
+      const needle = query.trim().toLocaleLowerCase()
+      const ranked: Array<{
+        item: { path: string; label: string; description?: string; kind: 'skill' | 'command' }
+        score: number
+        tieBreaker: string
+      }> = []
+      let matchCount = 0
+      for (const item of await discoverLocalPromptCatalog(root)) {
+        const score = item.kind === 'skill'
+          ? scorePromptSkillMatch(item.label, item.description, needle)
+          : scorePromptCommandMatch(item.label, item.description, needle)
+        if (score === null) continue
+        matchCount += 1
+        insertRankedSearchResult(ranked, { item, score, tieBreaker: item.path }, PROMPT_CONTEXT_SEARCH_MAX_RESULTS)
       }
-      const matched = items
-        .filter(item => item.label.toLocaleLowerCase().includes(needle))
-        .sort((a, b) => a.label.localeCompare(b.label))
-      return { items: matched.slice(0, 30), truncated: matched.length > 30 }
+      return { items: ranked.map(result => result.item), truncated: matchCount > PROMPT_CONTEXT_SEARCH_MAX_RESULTS }
     },
     async attach(root: string, path: string, kind: 'file' | 'skill' | 'command'): Promise<PromptAttachment> {
-      if (kind !== 'file' && !(await commands(root)).some(item => item.path === path && item.kind === kind))
-        throw new Error('The command is no longer available in this checkout.')
+      const localEntry =
+        kind === 'file'
+          ? undefined
+          : (await discoverLocalPromptCatalog(root)).find(item => item.path === path && item.kind === kind)
+      if (kind !== 'file' && !localEntry) throw new Error('The command is no longer available in this checkout.')
       if (kind === 'file' && path.endsWith('/')) {
         const canonicalRoot = await realpath(root)
         const target = await realpath(resolve(root, path))
@@ -201,10 +197,17 @@ export function createPromptAttachmentStore(directory: string) {
           { windowsHide: true, maxBuffer: 1024 * 1024, timeout: 5000 },
         )
         const paths = result.stdout.split('\0').filter(Boolean)
+        invalidatePromptPathInventory(root)
         const listing = `Directory reference ${JSON.stringify(path)} in the selected checkout. Inspect files using your tools.\n${paths.slice(0, 200).join('\n')}${paths.length > 200 ? '\nListing limited to 200 files.' : ''}`
         return save(Buffer.from(listing, 'utf8'), path, 'text/plain', 'reference')
       }
-      return save(await checkoutFile(root, path), path, '', kind === 'file' ? 'reference' : kind)
+      return save(
+        await checkoutFile(root, path),
+        path,
+        '',
+        kind === 'file' ? 'reference' : kind,
+        localEntry ? `${kind === 'skill' ? '$' : '/'}${localEntry.label}` : undefined,
+      )
     },
   }
 }

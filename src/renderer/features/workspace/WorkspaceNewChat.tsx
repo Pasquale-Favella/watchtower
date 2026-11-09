@@ -20,11 +20,13 @@ import type { WorkspaceProjectReadPage } from '@/shared/schemas/workspace-store.
 import { useWorkspaceAgentPreferences } from './agent-preferences.js'
 import type { CheckoutMode } from './checkout-strip-state.js'
 import { shouldSubmitComposerKey } from './composer-state.js'
+import { configOptionsForModel, configValuesForOptions } from './config-values.js'
 import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connection-hooks.js'
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
 import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChatProjects } from './new-chat-hooks.js'
 import { NEW_CHAT_DRAFT_MAX_LENGTH, newChatTaskTitle } from './new-chat-state.js'
+import { parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { promptWithAttachments } from './prompt-editor.js'
 import { rememberRightPanelSurface, resourceSurface, transferRightPanelState } from './right-panel/right-panel-state.js'
@@ -38,10 +40,11 @@ import { transferDraftPanelContext, useDraftPanelContext } from './use-workspace
 import { useWorkspacePanelResources } from './use-workspace-panel-resources.js'
 import { WorkspaceAgentPicker } from './WorkspaceAgentPicker.js'
 import { WorkspaceChatHeader } from './WorkspaceChatHeader.js'
-import type { WorkspaceImageContext } from './WorkspaceImageAnnotation.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
+import type { WorkspaceImageContext } from './WorkspaceImageAnnotation.js'
 import { WorkspacePanelHost } from './WorkspacePanelHost.js'
 import { WorkspaceProjectPicker } from './WorkspaceProjectPicker.js'
+import type { PromptInputHandle } from './WorkspacePromptEditor.js'
 import { WorkspacePromptInput } from './WorkspacePromptInput.js'
 import { WorkspaceRunDetails } from './WorkspaceRunDetails.js'
 
@@ -59,6 +62,7 @@ type CreationIntent = {
   readonly driverId: string
   readonly modelId: string | null
   readonly modeId: string | null
+  readonly configValues: Readonly<Record<string, string>>
   readonly accessMode: AgentAccessMode
   /** Set when the chat runs in a new worktree created from this base branch. */
   readonly worktree: { readonly commandId: string; readonly baseBranch: string } | null
@@ -85,11 +89,21 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     useNewChatDraft()
   const attachments = usePromptAttachments('new-chat')
   const draftRef = useRef(draft)
-  const promptRef = useRef<HTMLTextAreaElement>(null)
-  const agentPickerRef = useRef<{ open: () => void }>(null)
+  const promptRef = useRef<PromptInputHandle>(null)
+  const agentPickerRef = useRef<{ open: (query?: string) => void }>(null)
   const creationLock = useRef(false)
-  const { connectionId, setConnectionId, modelId, setModelId, modeId, setModeId, accessMode, setAccessMode } =
-    useWorkspaceAgentPreferences()
+  const {
+    connectionId,
+    setConnectionId,
+    modelId,
+    setModelId,
+    modeId,
+    setModeId,
+    configValues: rememberedConfigValues,
+    setConfigValue,
+    accessMode,
+    setAccessMode,
+  } = useWorkspaceAgentPreferences()
   const inspectedConnection = useRef('')
   const [projectCursor, setProjectCursor] = useState<string | undefined>()
   const [priorProjectPages, setPriorProjectPages] = useState<WorkspaceProjectReadPage['items']>([])
@@ -116,6 +130,10 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   const inspected = inspect.data?.connectionId === connectionId ? inspect.data : null
   const selectedConnection = connections.data?.items.find(item => item.connectionId === connectionId) ?? null
   const capabilities = inspected?.capabilities
+  const configOptions = configOptionsForModel(
+    capabilities?.configOptions ?? [],
+    capabilities?.models.items.find(model => model.id === modelId),
+  )
   const canSubmit = Boolean(
     selectedConnection &&
     inspected &&
@@ -256,6 +274,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         creation.modelId ?? '',
         creation.modeId ?? '',
         creation.accessMode,
+        creation.configValues,
       )
       const command: WorkspaceRequest<'workspace:startRun'> = {
         commandId: creation.startCommandId,
@@ -270,6 +289,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         modelId: creation.modelId,
         modeId: creation.modeId,
         accessMode: creation.accessMode,
+        ...(Object.keys(creation.configValues).length > 0 ? { configValues: creation.configValues } : {}),
         nativeSessionId: null,
         retryOfRunId: null,
       }
@@ -306,6 +326,13 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   }
 
   const submit = () => {
+    const promptCommand = parseWorkspacePromptCommand(draft, [])
+    if (promptCommand?.kind === 'model') {
+      writeDraft('')
+      agentPickerRef.current?.open(promptCommand.query)
+      return
+    }
+    if (promptCommand?.kind === 'clear') return
     const prompt = promptWithAttachments(draft, attachments.items)
     if (
       !prompt ||
@@ -326,6 +353,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       driverId: selectedConnection.driverId,
       modelId: modelId || null,
       modeId: modeId || null,
+      configValues: configValuesForOptions(configOptions, rememberedConfigValues),
       accessMode: access.mode,
       worktree:
         projectId && checkout.mode === 'worktree'
@@ -352,11 +380,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       : Boolean(
           project.data && !project.error && project.data.project.id === projectId && !project.data.project.archivedAt,
         )
-  const keyDown = (event: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (
-      !shouldSubmitComposerKey({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing })
-    )
-      return
+  const keyDown = (event: globalThis.KeyboardEvent) => {
+    if (!shouldSubmitComposerKey({ key: event.key, shiftKey: event.shiftKey, isComposing: event.isComposing })) return
     event.preventDefault()
     submit()
   }
@@ -465,8 +490,9 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                 autoFocus
                 attachments={attachments}
                 projectId={projectId}
+                connectionId={connectionId}
                 maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
-                onOpenModelPicker={() => agentPickerRef.current?.open()}
+                onOpenModelPicker={query => agentPickerRef.current?.open(query)}
                 controls={
                   <WorkspaceAgentPicker
                     controlRef={agentPickerRef}
@@ -474,6 +500,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                     connectionId={connectionId}
                     modelId={modelId}
                     modeId={modeId}
+                    configValues={rememberedConfigValues}
                     inspection={inspected}
                     pending={inspect.pending}
                     access={{ ...access, onChange: setAccessMode }}
@@ -481,10 +508,11 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                       setConnectionId(selected)
                     }}
                     onModelChange={id => {
-                      setModelId(id)
+                      setModelId(id, inspected?.capabilities.configOptions ?? [])
                       setModeId('')
                     }}
                     onModeChange={setModeId}
+                    onConfigValueChange={setConfigValue}
                   />
                 }
                 contextStrip={
