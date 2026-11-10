@@ -30,7 +30,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 2
+          # PR base commits can predate the shallow merge checkout.
+          fetch-depth: 0
       - name: Classify changed files
         id: changes
         run: node scripts/ci-changes.cjs
