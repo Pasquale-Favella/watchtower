@@ -85,7 +85,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci --loglevel verbose
+      - run: npm ci
       # The inventory is derived from conditional tests, so new win32-only
       # cases join this run automatically. Baseline process suites are preserved.
       - name: Discover, exercise and verify Windows-only test branches
