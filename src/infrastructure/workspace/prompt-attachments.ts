@@ -169,7 +169,13 @@ export function createPromptAttachmentStore(directory: string) {
         matchCount += 1
         insertRankedSearchResult(ranked, { item, score, tieBreaker: item.path }, PROMPT_CONTEXT_SEARCH_MAX_RESULTS)
       }
-      return { items: ranked.map(result => result.item), truncated: matchCount > PROMPT_CONTEXT_SEARCH_MAX_RESULTS }
+      return {
+        items: ranked.map(({ item }) => ({
+          ...item,
+          ...(item.description ? { description: item.description.slice(0, 512) } : {}),
+        })),
+        truncated: matchCount > PROMPT_CONTEXT_SEARCH_MAX_RESULTS,
+      }
     },
     async attach(root: string, path: string, kind: 'file' | 'skill' | 'command'): Promise<PromptAttachment> {
       const localEntry =

@@ -5,8 +5,6 @@ import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import * as Schema from 'effect/Schema'
 
-import { parseSkillFrontmatter } from './skill-frontmatter.js'
-
 import { type AgentPromptCatalog, agentPromptCatalogSchema } from '@/shared/schemas/execution.js'
 import { PROMPT_CONTEXT_SEARCH_MAX_RESULTS, type PromptContextSearchResult } from '@/shared/schemas/prompt-context.js'
 import {
@@ -16,6 +14,8 @@ import {
   scorePromptCommandMatch,
   scorePromptSkillMatch,
 } from '@/shared/search-ranking.js'
+
+import { parseSkillFrontmatter } from './skill-frontmatter.js'
 
 function isMissingPath(cause: unknown): boolean {
   return cause instanceof Error && 'code' in cause && (cause.code === 'ENOENT' || cause.code === 'ENOTDIR')
@@ -324,6 +324,7 @@ export function mergePromptContextSearch(
       path: skill.name,
       label: skill.name,
       kind: 'providerSkill' as const,
+      ...(skill.scope ? { scope: skill.scope } : {}),
       ...(skill.description ? { description: skill.description } : {}),
     })),
   )
@@ -371,7 +372,10 @@ export function mergePromptContextSearch(
     )
   }
   return {
-    items: ranked.map(result => result.item),
+    items: ranked.map(({ item }) => ({
+      ...item,
+      ...(item.description ? { description: item.description.slice(0, 512) } : {}),
+    })),
     truncated: local.truncated || matchCount > PROMPT_CONTEXT_SEARCH_MAX_RESULTS,
   }
 }

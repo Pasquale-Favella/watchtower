@@ -1,3 +1,5 @@
+import { resolve } from 'node:path'
+
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
@@ -68,14 +70,17 @@ const CodexSkillsList = Schema.Struct({
       skills: Schema.Array(
         Schema.Struct({
           name: Schema.String,
+          scope: Schema.optional(Schema.String),
           enabled: Schema.Boolean,
-          description: Schema.optional(Schema.String),
-          shortDescription: Schema.optional(Schema.String),
+          description: Schema.optional(Schema.NullOr(Schema.String)),
+          shortDescription: Schema.optional(Schema.NullOr(Schema.String)),
           interface: Schema.optional(
-            Schema.Struct({
-              shortDescription: Schema.optional(Schema.String),
-              userInvocable: Schema.optional(Schema.Boolean),
-            }),
+            Schema.NullOr(
+              Schema.Struct({
+                shortDescription: Schema.optional(Schema.NullOr(Schema.String)),
+                userInvocable: Schema.optional(Schema.Boolean),
+              }),
+            ),
           ),
         }),
       ),
@@ -133,12 +138,19 @@ const discoverPromptCatalog = Effect.fnUntraced(function* (
       error instanceof AgentDriverError ? error : failure('protocol-error', 'Codex skill catalog could not be read.'),
     ),
   )
-  const matchingEntry = response.data.find(entry => entry.cwd === workspacePath)
+  const requested = resolve(workspacePath)
+  const matchingEntry = response.data.find(entry => {
+    const returned = resolve(entry.cwd)
+    return process.platform === 'win32'
+      ? returned.toLowerCase() === requested.toLowerCase()
+      : returned === requested
+  })
   const skills = (matchingEntry?.skills ?? []).slice(0, 512).map(skill => ({
     name: skill.name,
+    ...(skill.scope ? { scope: skill.scope } : {}),
     enabled: skill.enabled,
     ...(skill.description || skill.shortDescription || skill.interface?.shortDescription
-      ? { description: skill.description ?? skill.shortDescription ?? skill.interface?.shortDescription }
+      ? { description: skill.description ?? skill.shortDescription ?? skill.interface?.shortDescription ?? undefined }
       : {}),
     ...(skill.interface?.userInvocable !== undefined ? { userInvocable: skill.interface.userInvocable } : {}),
   }))

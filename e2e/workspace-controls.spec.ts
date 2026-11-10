@@ -154,6 +154,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     const fileMenu = newChat.getByRole('listbox', { name: 'Files, models, and conversations', exact: true })
     const sameNameFiles = fileMenu.getByRole('option', { name: /^shared\.ts\b/ })
     await expect(sameNameFiles).toHaveCount(2)
+    await fileMenu.screenshot({ path: test.info().outputPath('workspace-mention-results.png') })
     await sameNameFiles.filter({ hasText: 'server' }).click()
     await expect(newPrompt.locator('[data-composer-mention]')).toHaveAttribute('path', 'server/shared.ts')
     await newPrompt.fill('@wpi')
@@ -171,7 +172,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await newPrompt.fill('/skill:rev')
     await expect(newChat.getByRole('option', { name: /^\/skill:review\b/ })).toBeVisible()
     await newPrompt.press('Tab')
-    await expect(newPrompt.locator('[data-composer-skill]')).toHaveText('$review')
+    await expect(newPrompt.locator('[data-composer-skill]')).toHaveText('review')
     await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toHaveCount(0)
     await newPrompt.fill('/mdl')
     await expect(newChat.getByRole('option', { name: /^\/model\b/ })).toBeVisible()
@@ -198,7 +199,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await newPrompt.fill('Inspect this checkout\n@README.md $rev')
     await expect(newChat.getByRole('option', { name: /^\$review\b/ })).toBeVisible()
     await newPrompt.press('Tab')
-    await expect(newPrompt).toContainText('$review')
+    await expect(newPrompt).toContainText('review')
     await newChat.locator('input[type=file]').setInputFiles({
       name: 'context.txt',
       mimeType: 'text/plain',

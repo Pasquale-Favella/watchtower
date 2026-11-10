@@ -59,6 +59,7 @@ export const searchPromptContextSchema = Schema.Struct({
 })
 export const promptContextItemSchema = Schema.Struct({
   path: name,
+  scope: Schema.optional(Schema.String),
   label: name,
   description: Schema.optional(Schema.String.check(Schema.isMaxLength(512))),
   kind: Schema.Literals(['file', 'skill', 'command', 'providerSkill', 'providerCommand', 'model', 'conversation', 'pullRequest']),

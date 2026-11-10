@@ -16,6 +16,28 @@ const native = (name: string, description?: string): PromptMenuItem => ({
 })
 
 describe('workspace prompt search', () => {
+  it.each(['', 'review'])('groups skills without a scope first and sorts names within each scope for query %s', query => {
+    const items: PromptMenuItem[] = [
+      native('review-command'),
+      { ...skill('Z-system-review'), scope: 'system' },
+      { ...skill('Z-app-review'), scope: 'app' },
+      { ...skill('Z-repo-review'), scope: 'repo' },
+      skill('Z-review'),
+      { ...skill('A-system-review'), scope: 'system' },
+      { ...skill('A-app-review'), scope: 'app' },
+      { ...skill('A-repo-review'), scope: 'repo' },
+      skill('A-review'),
+    ]
+    const result = searchPromptItems(items, query)
+    expect(result[0]?.category).toBe('native')
+    expect(result.filter(item => item.category === 'skill').map(item => item.label)).toEqual([
+      'A-review', 'Z-review',
+      'A-repo-review', 'Z-repo-review',
+      'A-app-review', 'Z-app-review',
+      'A-system-review', 'Z-system-review',
+    ])
+  })
+
   it('limits provider commands and disk commands to the first thing typed, keeping skills and actions anywhere', () => {
     const items = [
       native('compact'),

@@ -40,6 +40,21 @@ afterEach(async () => {
 })
 
 describe('workspace prompt context', () => {
+  it('returns nested local skills with bounded descriptions while searching their full metadata', async () => {
+    const { root, store } = await fixture()
+    const skillDirectory = join(root, '.agents', 'skills', 'group', 'nested', 'review')
+    await mkdir(skillDirectory, { recursive: true })
+    const description = 'Review changes '.repeat(60) + 'unique-search-term'
+    await writeFile(join(skillDirectory, 'SKILL.md'), `---\nname: nested-review\ndescription: ${description}\n---\nInstructions`)
+    const result = await store.search(root, 'command', 'unique-search-term')
+    expect(result.items).toEqual([{
+      path: '.agents/skills/group/nested/review/SKILL.md',
+      label: 'nested-review',
+      kind: 'skill',
+      description: description.slice(0, 512),
+    }])
+  })
+
   it('captures content once and validates metadata and bytes on replay', async () => {
     const { root, store, directory } = await fixture()
     await writeFile(join(root, 'README.md'), 'Original content')

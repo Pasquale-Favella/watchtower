@@ -106,6 +106,7 @@ export const agentSlashCommandSchema = Schema.Struct({
 })
 export const agentPromptSkillSchema = Schema.Struct({
   name: text,
+  scope: optionalText,
   description: optionalText,
   enabled: Schema.Boolean,
   userInvocable: Schema.optional(Schema.Boolean),

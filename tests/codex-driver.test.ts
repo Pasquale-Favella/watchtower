@@ -63,7 +63,7 @@ function* connect(server: ReturnType<typeof fakeServer>) {
 }
 
 describe('Codex native App Server driver', () => {
-  it('discovers workspace skills and native slash commands from skills/list', async () => {
+  it.each([context.workspacePath, `${context.workspacePath}/.`])('discovers workspace skills and native slash commands for cwd %s', async returnedCwd => {
     const server = fakeServer()
     const catalog = await Effect.runPromise(
       Effect.scoped(
@@ -80,16 +80,19 @@ describe('Codex native App Server driver', () => {
             result: {
               data: [
                 {
-                  cwd: context.workspacePath,
+                  cwd: returnedCwd,
                   skills: [
                     {
                       name: 'review',
+                      scope: 'repo',
                       enabled: true,
                       description: 'Review the current changes',
                       shortDescription: 'Review changes',
                       interface: { shortDescription: 'Review changes', userInvocable: true },
                     },
-                    { name: 'internal', enabled: false },
+                    { name: 'app-skill', scope: 'app', enabled: true },
+                    { name: 'system-skill', scope: 'system', enabled: true },
+                    { name: 'internal', enabled: false, description: null, shortDescription: null, interface: null },
                   ],
                 },
               ],
@@ -101,7 +104,9 @@ describe('Codex native App Server driver', () => {
     )
 
     expect(catalog.skills).toEqual([
-      { name: 'review', enabled: true, description: 'Review the current changes', userInvocable: true },
+      { name: 'review', scope: 'repo', enabled: true, description: 'Review the current changes', userInvocable: true },
+      { name: 'app-skill', scope: 'app', enabled: true },
+      { name: 'system-skill', scope: 'system', enabled: true },
       { name: 'internal', enabled: false },
     ])
     expect(catalog.skillsComplete).toBe(true)

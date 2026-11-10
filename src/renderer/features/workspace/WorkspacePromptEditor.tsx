@@ -3,14 +3,23 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model'
 import type { Plugin as ProseMirrorPlugin } from '@tiptap/pm/state'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
-import { EditorContent, useEditor } from '@tiptap/react'
+import { EditorContent, type NodeViewProps, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
+import { Box } from 'lucide-react'
 import { type Ref, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 
+import {
+  Popover,
+  PopoverContent,
+  PopoverDescription,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@/renderer/components/ui/popover.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
 import { limitPromptEdit } from './prompt-editor.js'
 import { type PromptInlineToken, type PromptSegment, splitPromptTokens } from './prompt-tokens.js'
+import { WorkspaceFileIcon } from './WorkspaceFileIcon.js'
 
 export type PromptInputSelection = {
   readonly start: number
@@ -28,7 +37,7 @@ export type PromptInputHandle = {
 
 type Props = {
   readonly value: string
-  readonly skills: readonly { readonly name: string; readonly label: string }[]
+  readonly skills: readonly { readonly name: string; readonly label: string; readonly description?: string }[]
   readonly attachments: readonly PromptAttachment[]
   readonly onChange: (value: string, start: number, end: number) => void
   readonly onSelectionChange: (value: string, start: number, end: number) => void
@@ -71,6 +80,36 @@ type PromptEditorInstance = NonNullable<ReturnType<typeof useEditor>>
 const PROMPT_EDITOR_CLASS =
   'text-foreground max-h-60 min-h-24 w-full overflow-y-auto rounded-t-2xl bg-transparent p-3.5 text-[13px] leading-relaxed outline-none'
 
+const PROMPT_MENTION_CLASS =
+  'group/mention relative inline-flex max-w-full items-baseline gap-[0.2em] rounded-sm align-baseline font-medium leading-normal text-[oklch(0.62_0.11_215)] data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1'
+
+function PromptMentionView({ node, selected }: NodeViewProps): React.JSX.Element {
+  const path = String(node.attrs.path ?? '')
+  const attachment = node.attrs.record as PromptAttachment | null
+  return (
+    <NodeViewWrapper
+      as="span"
+      data-composer-mention=""
+      data-selected={selected || undefined}
+      data-prompt-attachment={attachment ? JSON.stringify(attachment) : undefined}
+      path={path}
+      contentEditable={false}
+      spellCheck={false}
+      dir="ltr"
+      title={path}
+      aria-label={`File reference ${path}`}
+      className={PROMPT_MENTION_CLASS}
+    >
+      <span aria-hidden="true" className="inline-flex shrink-0 self-center [&_svg]:size-[1em]">
+        <WorkspaceFileIcon path={path} />
+      </span>
+      <span className="min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] transition-colors group-hover/mention:decoration-current">
+        {String(node.attrs.label ?? '')}
+      </span>
+    </NodeViewWrapper>
+  )
+}
+
 const PromptMention = Node.create({
   name: 'composer-mention',
   group: 'inline',
@@ -96,12 +135,15 @@ const PromptMention = Node.create({
         'data-composer-mention': '',
         ...(attachment ? { 'data-prompt-attachment': JSON.stringify(attachment) } : {}),
         contenteditable: 'false',
-        class: 'bg-muted/70 text-muted-foreground rounded-sm px-1 text-[0.9em]',
+        class: PROMPT_MENTION_CLASS,
         title: node.attrs.path,
         'aria-label': `File reference ${node.attrs.path}`,
       }),
       node.attrs.label,
     ]
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(PromptMentionView)
   },
 })
 
@@ -138,6 +180,42 @@ const PromptAttachment = Node.create({
   },
 })
 
+const PROMPT_SKILL_CLASS =
+  'group/skill inline-flex max-w-full items-center gap-[0.2em] rounded-sm align-baseline font-medium leading-normal text-[oklch(0.62_0.16_322)]'
+
+function PromptSkillView({ node, selected }: NodeViewProps): React.JSX.Element {
+  const label = String(node.attrs.label ?? node.attrs.skillName ?? '')
+  const description = String(node.attrs.description ?? '').trim()
+  return (
+    <NodeViewWrapper
+      as="span"
+      data-composer-skill=""
+      contentEditable={false}
+      spellCheck={false}
+      data-selected={selected || undefined}
+      className="data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 relative inline-flex max-w-full items-baseline rounded-sm select-none data-[selected=true]:ring-1"
+    >
+      <Popover>
+        <PopoverTrigger
+          className={`${PROMPT_SKILL_CLASS} cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current`}
+          aria-label={`Skill ${label}. Show details`}
+        >
+          <Box aria-hidden="true" className="size-[1em] shrink-0" strokeWidth={1.85} />
+          <span className="min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] transition-colors group-hover/skill:decoration-current">
+            {label}
+          </span>
+        </PopoverTrigger>
+        <PopoverContent side="top" className="w-80 max-w-[calc(100vw-2rem)] gap-3 p-4" aria-label={`Skill ${label}`}>
+          <PopoverTitle>{label}</PopoverTitle>
+          <PopoverDescription className="break-words whitespace-pre-wrap">
+            {description || 'No description is available for this skill.'}
+          </PopoverDescription>
+        </PopoverContent>
+      </Popover>
+    </NodeViewWrapper>
+  )
+}
+
 const PromptSkill = Node.create({
   name: 'composer-skill',
   group: 'inline',
@@ -147,6 +225,7 @@ const PromptSkill = Node.create({
   addAttributes() {
     return {
       skillName: { default: '' },
+      description: { default: '' },
       source: { default: '' },
       label: { default: '' },
       prefix: { default: '$' },
@@ -161,12 +240,15 @@ const PromptSkill = Node.create({
       mergeAttributes(HTMLAttributes, {
         'data-composer-skill': '',
         contenteditable: 'false',
-        class: 'bg-muted/70 text-muted-foreground rounded-sm px-1 text-[0.9em]',
+        class: PROMPT_SKILL_CLASS,
         title: `${node.attrs.prefix}${node.attrs.label}`,
         'aria-label': `Skill ${node.attrs.label}`,
       }),
-      `${node.attrs.prefix}${node.attrs.label}`,
+      node.attrs.label,
     ]
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(PromptSkillView)
   },
 })
 
@@ -349,7 +431,7 @@ function documentContent(
     if (segment.type === 'text') {
       appendText(segment.text)
     } else {
-      paragraphs[paragraphs.length - 1]?.push(promptTokenNode(segment))
+      paragraphs[paragraphs.length - 1]?.push(promptTokenNode(segment, skills))
     }
   }
 
@@ -359,7 +441,10 @@ function documentContent(
   }
 }
 
-function promptTokenNode(segment: Exclude<PromptSegment, { readonly type: 'text' }>): JSONContent {
+function promptTokenNode(
+  segment: Exclude<PromptSegment, { readonly type: 'text' }>,
+  skills: Props['skills'],
+): JSONContent {
   if (segment.type === 'mention')
     return {
       type: 'composer-mention',
@@ -374,6 +459,7 @@ function promptTokenNode(segment: Exclude<PromptSegment, { readonly type: 'text'
     type: 'composer-skill',
     attrs: {
       skillName: segment.name,
+      description: skills.find(skill => skill.name === segment.name)?.description ?? '',
       source: segment.source,
       label: segment.label,
       prefix: Array.from(segment.source)[0] ?? '$',

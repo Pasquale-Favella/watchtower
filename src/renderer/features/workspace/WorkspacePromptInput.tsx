@@ -28,9 +28,10 @@ import {
   visiblePromptAttachments,
 } from './prompt-editor.js'
 import { backspacePromptCodeFence, continuePromptCodeFence, indentPromptBlock } from './prompt-markdown.js'
-import { type PromptMenuItem, searchPromptItems, slashPromptItems } from './prompt-search.js'
+import { type PromptMenuItem, promptSkillScopeLabel, searchPromptItems, slashPromptItems } from './prompt-search.js'
 import { type PromptStashEntry, readPromptStash, writePromptStash } from './prompt-stash.js'
 import { collectPromptInlineTokens } from './prompt-tokens.js'
+import { PromptMentionResult } from './PromptMentionResult.js'
 import { type PromptInputHandle, WorkspacePromptEditor } from './WorkspacePromptEditor.js'
 
 type Props = {
@@ -203,7 +204,8 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         query: query.query,
       }
     }
-    return hasSkillReference ? { ...shared, kind: 'command' as const, query: '' } : null
+    // Load the cached catalog as soon as the composer opens, before the first menu trigger.
+    return props.connectionId || hasSkillReference ? { ...shared, kind: 'command' as const, query: '' } : null
   }, [
     query,
     props.projectId,
@@ -216,16 +218,21 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   const search = usePromptContextSearch(request)
   const resolvePromptReference = useResolvePromptReference()
   const promptSkills = useMemo(() => {
-    const skills = new Map<string, { readonly name: string; readonly label: string }>()
+    const skills = new Map<string, { readonly name: string; readonly label: string; readonly description?: string }>()
     for (const item of search.data?.items ?? []) {
       if (item.kind === 'skill' || item.kind === 'providerSkill')
-        skills.set(item.label.toLocaleLowerCase(), { name: item.label, label: item.label })
+        skills.set(item.label.toLocaleLowerCase(), {
+          name: item.label,
+          label: item.label,
+          description: item.description,
+        })
     }
     for (const attachment of props.attachments.items) {
       if (attachment.source !== 'skill') continue
       const invocation = attachment.token?.trim() ?? skillPromptToken(attachment.name).trim()
       const name = invocation.replace(/^\p{Sc}/u, '')
-      skills.set(name, { name, label: name })
+      const key = name.toLocaleLowerCase()
+      if (!skills.has(key)) skills.set(key, { name, label: name })
     }
     return [...skills.values()]
   }, [search.data?.items, props.attachments.items])
@@ -299,6 +306,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
               label: entry.label,
               description: entry.description ?? entry.path,
               category,
+              scope: entry.scope ?? (entry.kind === 'skill' ? 'project' : undefined),
               path: entry.path,
             },
       source: { kind: entry.kind, path: entry.path, label: entry.label },
@@ -800,7 +808,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
       >
         {trigger && (
           <div
-            className="bg-popover text-popover-foreground absolute inset-x-5.5 bottom-full z-20 mb-2 overflow-hidden rounded-2xl border p-1 shadow-md"
+            className={`text-popover-foreground absolute inset-x-5.5 z-20 overflow-hidden border p-1 ${trigger.kind === 'file' ? 'bg-card bottom-[calc(100%-1px)] rounded-t-2xl border-b-0 pb-2 shadow-[var(--card-shadow)]' : 'bg-popover bottom-full mb-2 rounded-2xl shadow-md'}`}
             role="listbox"
             id={menuId}
             aria-label={
@@ -819,8 +827,8 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
                 : trigger.kind === 'pullRequest'
                   ? 'Pull requests in this checkout'
                   : trigger.kind === 'skill'
-                    ? 'Project skills'
-                    : 'Project skills and commands'}
+                    ? 'Agent and project skills'
+                    : 'Agent and project skills and commands'}
             </p>
             <div className="max-h-72 min-h-0 overflow-y-auto">
               {query === trigger &&
@@ -836,48 +844,56 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
                     onMouseEnter={() => setActive(index)}
                     onClick={() => void pick(index)}
                   >
-                    {item.view.category === 'file' ? (
-                      item.view.path?.endsWith('/') ? (
-                        <Folder className="text-muted-foreground size-4 shrink-0" />
-                      ) : (
-                        <File className="text-muted-foreground size-4 shrink-0" />
-                      )
-                    ) : item.view.category === 'model' ||
-                      item.view.category === 'conversation' ||
-                      item.view.category === 'pullRequest' ? (
-                      <File className="text-muted-foreground size-4 shrink-0" />
+                    {trigger.kind === 'file' ? (
+                      <PromptMentionResult item={item.view} />
                     ) : (
-                      <Slash className="text-muted-foreground size-4 shrink-0" />
-                    )}
-                    <span className="flex min-w-0 flex-1 items-center gap-2">
-                      <span className="max-w-[45%] min-w-0 shrink-0 truncate font-medium">
+                      <>
                         {item.view.category === 'file' ? (
-                          item.view.label
-                        ) : item.view.category === 'model' || item.view.category === 'conversation' ? (
-                          `@${item.view.label}`
-                        ) : item.view.category === 'pullRequest' ? (
-                          `#${item.view.label}`
-                        ) : trigger.kind === 'skill' ? (
-                          `$${item.view.label}`
-                        ) : item.view.category === 'skill' ? (
-                          <>
-                            <span className="text-muted-foreground">/skill:</span>
-                            {item.view.label}
-                          </>
+                          item.view.path?.endsWith('/') ? (
+                            <Folder className="text-muted-foreground size-4 shrink-0" />
+                          ) : (
+                            <File className="text-muted-foreground size-4 shrink-0" />
+                          )
+                        ) : item.view.category === 'model' ||
+                          item.view.category === 'conversation' ||
+                          item.view.category === 'pullRequest' ? (
+                          <File className="text-muted-foreground size-4 shrink-0" />
                         ) : (
-                          `/${item.view.label}`
+                          <Slash className="text-muted-foreground size-4 shrink-0" />
                         )}
-                      </span>
-                      {item.view.description && (
-                        <span className="text-muted-foreground min-w-0 flex-1 truncate">{item.view.description}</span>
-                      )}
-                      {item.view.category === 'skill' && (
-                        <Badge variant="secondary" className="ms-auto shrink-0">
-                          <Folder data-icon="inline-start" />
-                          {trigger.kind === 'skill' ? 'Project Skill' : 'Project'}
-                        </Badge>
-                      )}
-                    </span>
+                        <span className="flex min-w-0 flex-1 items-center gap-2">
+                          <span className="max-w-[45%] min-w-0 shrink-0 truncate font-medium">
+                            {item.view.category === 'file' ? (
+                              item.view.label
+                            ) : item.view.category === 'model' || item.view.category === 'conversation' ? (
+                              `@${item.view.label}`
+                            ) : item.view.category === 'pullRequest' ? (
+                              `#${item.view.label}`
+                            ) : trigger.kind === 'skill' ? (
+                              `$${item.view.label}`
+                            ) : item.view.category === 'skill' ? (
+                              <>
+                                <span className="text-muted-foreground">/skill:</span>
+                                {item.view.label}
+                              </>
+                            ) : (
+                              `/${item.view.label}`
+                            )}
+                          </span>
+                          {item.view.description && (
+                            <span className="text-muted-foreground min-w-0 flex-1 truncate">
+                              {item.view.description}
+                            </span>
+                          )}
+                          {item.view.category === 'skill' && (
+                            <Badge variant="secondary" className="ms-auto shrink-0">
+                              <Folder data-icon="inline-start" />
+                              {promptSkillScopeLabel(item.view.scope)}
+                            </Badge>
+                          )}
+                        </span>
+                      </>
+                    )}
                   </button>
                 ))}
               {(!items.length || query !== trigger) && (

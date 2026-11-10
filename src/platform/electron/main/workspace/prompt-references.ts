@@ -10,9 +10,9 @@ import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { filePromptToken } from '@/shared/prompt-links.js'
 import { agentDriverEventSchema } from '@/shared/schemas/execution.js'
 import type { PromptContextSearchResult } from '@/shared/schemas/prompt-context.js'
-import { conversationIdSchema, type ConversationId, type Task, taskIdSchema } from '@/shared/schemas/workspace.js'
+import { type ConversationId, conversationIdSchema, type Task, taskIdSchema } from '@/shared/schemas/workspace.js'
 import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
-import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
+import type { WorkspaceConversationPageItem, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 import { workspaceConversationMessageSchema, workspaceExecutionEventSchema, type WorkspacePayloadReference } from '@/shared/schemas/workspace-store.js'
 import { normalizeSearchQuery, scorePromptCommandMatch } from '@/shared/search-ranking.js'
 
@@ -89,7 +89,7 @@ export function createPromptReferenceIndex(store: WorkspaceStore['Service']) {
     return yield* cached[0]
   })
   return {
-    search: (query: string, excludeTaskId?: string, excludeConversationId?: ConversationId) =>
+    search: (query: string, excludeTaskId?: string, excludeConversationId?: ConversationId): Effect.Effect<Item[], WorkspaceStoreError> =>
       store.searchPromptConversations
         ? Effect.map(store.searchPromptConversations({ query, ...(excludeConversationId ? { excludeConversationId } : {}) }), matches => matches.map(match => ({
             kind: 'conversation' as const,
