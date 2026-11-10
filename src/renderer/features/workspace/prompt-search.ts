@@ -95,14 +95,17 @@ function skillScopeOrder(scope: string | undefined): number {
 /** Filter by relevance, then group matching skills by scope and name. */
 export function searchPromptItems(items: readonly PromptMenuItem[], query: string): PromptMenuItem[] {
   const matches = rankedBy(items, scorePromptItem, query)
-  const skills = matches.filter(item => item.category === 'skill').sort((a, b) =>
-    skillScopeOrder(a.scope) - skillScopeOrder(b.scope) ||
-    a.scope?.localeCompare(b.scope ?? '', undefined, { sensitivity: 'base' }) ||
-    a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }) ||
-    a.id.localeCompare(b.id),
-  )
+  const skills = matches
+    .filter(item => item.category === 'skill')
+    .sort(
+      (a, b) =>
+        skillScopeOrder(a.scope) - skillScopeOrder(b.scope) ||
+        a.scope?.localeCompare(b.scope ?? '', undefined, { sensitivity: 'base' }) ||
+        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' }) ||
+        a.id.localeCompare(b.id),
+    )
   let skillIndex = 0
-  return matches.map(item => item.category === 'skill' ? (skills[skillIndex++] ?? item) : item)
+  return matches.map(item => (item.category === 'skill' ? (skills[skillIndex++] ?? item) : item))
 }
 
 /** Rank file and folder paths the way a fuzzy finder would: shallower and earlier matches first. */

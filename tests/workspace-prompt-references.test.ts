@@ -6,9 +6,20 @@ import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
-import { createPromptReferenceFiles, createPromptReferenceIndex, searchMentionModels, searchMentionTasks } from '@/platform/electron/main/workspace/prompt-references.js'
+import {
+  createPromptReferenceFiles,
+  createPromptReferenceIndex,
+  searchMentionModels,
+  searchMentionTasks,
+} from '@/platform/electron/main/workspace/prompt-references.js'
 import { collectPromptInlineTokens } from '@/renderer/features/workspace/prompt-tokens.js'
-import { agentRunIdSchema, conversationIdSchema, projectIdSchema, type Task, taskIdSchema } from '@/shared/schemas/workspace.js'
+import {
+  agentRunIdSchema,
+  conversationIdSchema,
+  projectIdSchema,
+  type Task,
+  taskIdSchema,
+} from '@/shared/schemas/workspace.js'
 import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
 
 const directories: string[] = []
@@ -17,13 +28,25 @@ afterEach(async () => {
 })
 const issued = '2026-11-09T12:00:00.000Z'
 function task(id: string, title = id): Task {
-  return { id: taskIdSchema.make(id), projectId: projectIdSchema.make('project'), title, description: '', status: 'open', createdAt: issued, updatedAt: issued }
+  return {
+    id: taskIdSchema.make(id),
+    projectId: projectIdSchema.make('project'),
+    title,
+    description: '',
+    status: 'open',
+    createdAt: issued,
+    updatedAt: issued,
+  }
 }
 
 describe('workspace prompt references', () => {
   it('matches model and provider words while leaving bare and single-letter @ for files and chats', () => {
     const models = [
-      { connection: { connectionId: 'claude', label: 'Claude', harnessKind: 'claude' }, id: 'opus-4', label: 'Claude Opus 4' },
+      {
+        connection: { connectionId: 'claude', label: 'Claude', harnessKind: 'claude' },
+        id: 'opus-4',
+        label: 'Claude Opus 4',
+      },
       { connection: { connectionId: 'codex', label: 'Codex', harnessKind: 'codex' }, id: 'gpt-6', label: 'GPT 6' },
     ]
     expect(searchMentionModels(models, '')).toEqual([])
@@ -36,22 +59,35 @@ describe('workspace prompt references', () => {
   })
 
   it('searches titles with fuzzy fallback, excludes the current chat and favors recent matches', () => {
-    expect(searchMentionTasks([task('current', 'Review composer'), task('other', 'Review composer'), task('unrelated')], 'rvw', 'current'))
-      .toEqual([{ kind: 'conversation', path: 'other', label: 'Review composer', description: 'Chat context' }])
+    expect(
+      searchMentionTasks(
+        [task('current', 'Review composer'), task('other', 'Review composer'), task('unrelated')],
+        'rvw',
+        'current',
+      ),
+    ).toEqual([{ kind: 'conversation', path: 'other', label: 'Review composer', description: 'Chat context' }])
     expect(searchMentionTasks([{ ...task('archived'), archivedAt: issued }], '')).toEqual([])
   })
 
   it('indexes every project and task page before matching an older chat title', async () => {
     const calls: string[] = []
     const store = {
-      listProjects: (options: { afterId?: string }) => Effect.sync(() => {
-        calls.push(`projects:${options.afterId ?? ''}`)
-        return { items: [{ id: projectIdSchema.make(options.afterId ? 'project-b' : 'project-a') }], nextAfterId: options.afterId ? null : 'project-a' }
-      }),
-      listTasks: (id: string, options: { afterId?: string }) => Effect.sync(() => {
-        calls.push(`${id}:${options.afterId ?? ''}`)
-        return { items: [task(options.afterId ? 'target' : id, options.afterId ? 'Older matching chat' : 'Other')], nextAfterId: !options.afterId && id === 'project-b' ? 'next' : null }
-      }),
+      listProjects: (options: { afterId?: string }) =>
+        Effect.sync(() => {
+          calls.push(`projects:${options.afterId ?? ''}`)
+          return {
+            items: [{ id: projectIdSchema.make(options.afterId ? 'project-b' : 'project-a') }],
+            nextAfterId: options.afterId ? null : 'project-a',
+          }
+        }),
+      listTasks: (id: string, options: { afterId?: string }) =>
+        Effect.sync(() => {
+          calls.push(`${id}:${options.afterId ?? ''}`)
+          return {
+            items: [task(options.afterId ? 'target' : id, options.afterId ? 'Older matching chat' : 'Other')],
+            nextAfterId: !options.afterId && id === 'project-b' ? 'next' : null,
+          }
+        }),
     } as unknown as WorkspaceStore['Service']
     const index = createPromptReferenceIndex(store)
     expect((await Effect.runPromise(index.search('older')))[0]?.path).toBe('target')
@@ -67,15 +103,31 @@ describe('workspace prompt references', () => {
     const sourceTask = task('source', 'Review old changes')
     const conversationId = conversationIdSchema.make('conversation')
     const item: WorkspaceConversationPageItem = {
-      event: { sequence: 1, schemaVersion: 1, kind: 'driverEvent', runId: agentRunIdSchema.make('run'), taskId: sourceTask.id, generation: 1, occurredAt: issued, data: { event: { kind: 'textDelta', text: 'Original reply' } } },
+      event: {
+        sequence: 1,
+        schemaVersion: 1,
+        kind: 'driverEvent',
+        runId: agentRunIdSchema.make('run'),
+        taskId: sourceTask.id,
+        generation: 1,
+        occurredAt: issued,
+        data: { event: { kind: 'textDelta', text: 'Original reply' } },
+      },
       userMessage: { id: 'message', content: 'Original question', createdAt: issued },
     }
     const store = {
-      readTaskDetail: () => Effect.succeed({ task: sourceTask, conversations: [{ id: conversationId }], nextAfterConversationId: null }),
-      readConversationPage: (_id: string, after: number, _limit: number, watermark?: number) => Effect.sync(() => {
-        watermarks.push(watermark)
-        return { items: after === 0 ? [item] : [], highWatermark: 2, hasMore: after === 0, nextAfterSequence: after === 0 ? 1 : null }
-      }),
+      readTaskDetail: () =>
+        Effect.succeed({ task: sourceTask, conversations: [{ id: conversationId }], nextAfterConversationId: null }),
+      readConversationPage: (_id: string, after: number, _limit: number, watermark?: number) =>
+        Effect.sync(() => {
+          watermarks.push(watermark)
+          return {
+            items: after === 0 ? [item] : [],
+            highWatermark: 2,
+            hasMore: after === 0,
+            nextAfterSequence: after === 0 ? 1 : null,
+          }
+        }),
     } as unknown as WorkspaceStore['Service']
     const result = await Effect.runPromise(files.conversation(store, sourceTask.id))
     const [token] = collectPromptInlineTokens(result.text)

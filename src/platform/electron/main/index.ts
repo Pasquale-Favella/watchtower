@@ -98,7 +98,7 @@ import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc
 import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
 import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
 import { TerminalRpcError } from '@/shared/rpc/terminal.js'
-import { pullRequestRpcMessages,WorkspacePullRequestRpcError } from '@/shared/rpc/workspace-pull-requests.js'
+import { pullRequestRpcMessages, WorkspacePullRequestRpcError } from '@/shared/rpc/workspace-pull-requests.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
 
 /**
@@ -507,7 +507,9 @@ app.whenReady().then(async () => {
                 coachHandlers(agents.native),
                 workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject>>>({
                   attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
-                  promptReferences: createPromptReferenceFiles(join(app.getPath('userData'), 'workspace', 'prompt-references')),
+                  promptReferences: createPromptReferenceFiles(
+                    join(app.getPath('userData'), 'workspace', 'prompt-references'),
+                  ),
                   chooseProjectDirectory: () =>
                     Effect.tryPromise({
                       try: async () => {

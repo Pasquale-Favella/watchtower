@@ -116,7 +116,11 @@ export function WorkspaceConversation({
   )
   return (
     <MarkdownNavigationContext value={navigation}>
-      <WorkspaceConversationView key={conversationId} conversationId={conversationId} sessionIdsByRunId={sessionIdsByRunId} />
+      <WorkspaceConversationView
+        key={conversationId}
+        conversationId={conversationId}
+        sessionIdsByRunId={sessionIdsByRunId}
+      />
     </MarkdownNavigationContext>
   )
 }

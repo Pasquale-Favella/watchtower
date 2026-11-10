@@ -45,14 +45,19 @@ describe('workspace prompt context', () => {
     const skillDirectory = join(root, '.agents', 'skills', 'group', 'nested', 'review')
     await mkdir(skillDirectory, { recursive: true })
     const description = 'Review changes '.repeat(60) + 'unique-search-term'
-    await writeFile(join(skillDirectory, 'SKILL.md'), `---\nname: nested-review\ndescription: ${description}\n---\nInstructions`)
+    await writeFile(
+      join(skillDirectory, 'SKILL.md'),
+      `---\nname: nested-review\ndescription: ${description}\n---\nInstructions`,
+    )
     const result = await store.search(root, 'command', 'unique-search-term')
-    expect(result.items).toEqual([{
-      path: '.agents/skills/group/nested/review/SKILL.md',
-      label: 'nested-review',
-      kind: 'skill',
-      description: description.slice(0, 512),
-    }])
+    expect(result.items).toEqual([
+      {
+        path: '.agents/skills/group/nested/review/SKILL.md',
+        label: 'nested-review',
+        kind: 'skill',
+        description: description.slice(0, 512),
+      },
+    ])
   })
 
   it('captures content once and validates metadata and bytes on replay', async () => {

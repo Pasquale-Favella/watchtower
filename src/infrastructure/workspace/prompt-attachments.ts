@@ -77,7 +77,14 @@ export function createPromptAttachmentStore(directory: string) {
     await writeFile(file, JSON.stringify({ id, ...value }), { flag: 'wx', mode: 0o600 }).catch(error => {
       if (error.code !== 'EEXIST') throw error
     })
-    return { id, name, size: value.size, source, ...(value.token ? { token: value.token } : {}), mediaType: value.mediaType }
+    return {
+      id,
+      name,
+      size: value.size,
+      source,
+      ...(value.token ? { token: value.token } : {}),
+      mediaType: value.mediaType,
+    }
   }
 
   async function load(reference: PromptAttachment): Promise<ResolvedPromptAttachment> {
@@ -87,7 +94,9 @@ export function createPromptAttachmentStore(directory: string) {
     const { id, ...value } = parsed
     if (
       digest(value) !== id ||
-      ['name', 'mediaType', 'source', 'size', 'token'].some(key => Reflect.get(value, key) !== Reflect.get(reference, key))
+      ['name', 'mediaType', 'source', 'size', 'token'].some(
+        key => Reflect.get(value, key) !== Reflect.get(reference, key),
+      )
     )
       throw new Error('Attachment snapshot failed integrity validation.')
     const assetDirectory = join(directory, id)
@@ -147,7 +156,9 @@ export function createPromptAttachmentStore(directory: string) {
         return `data:${value.mediaType};base64,${value.content}`
       if (value.mediaType === 'text/plain') {
         const limit = 256 * 1024
-        const text = value.content.slice(0, limit) + (value.content.length > limit ? '\n[Preview limited to 256 KiB of text.]' : '')
+        const text =
+          value.content.slice(0, limit) +
+          (value.content.length > limit ? '\n[Preview limited to 256 KiB of text.]' : '')
         return `data:text/plain;charset=utf-8;base64,${Buffer.from(text, 'utf8').toString('base64')}`
       }
       return null
@@ -162,9 +173,10 @@ export function createPromptAttachmentStore(directory: string) {
       }> = []
       let matchCount = 0
       for (const item of await discoverLocalPromptCatalog(root)) {
-        const score = item.kind === 'skill'
-          ? scorePromptSkillMatch(item.label, item.description, needle)
-          : scorePromptCommandMatch(item.label, item.description, needle)
+        const score =
+          item.kind === 'skill'
+            ? scorePromptSkillMatch(item.label, item.description, needle)
+            : scorePromptCommandMatch(item.label, item.description, needle)
         if (score === null) continue
         matchCount += 1
         insertRankedSearchResult(ranked, { item, score, tieBreaker: item.path }, PROMPT_CONTEXT_SEARCH_MAX_RESULTS)

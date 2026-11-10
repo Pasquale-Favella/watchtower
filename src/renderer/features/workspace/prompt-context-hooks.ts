@@ -42,11 +42,15 @@ const previewAtom = runtime.fn<PromptAttachment>()(request =>
 )
 export function usePromptContextSearch(request: WorkspaceRequest<'workspace:searchPromptContext'> | null) {
   const registry = useContext(RegistryContext)
-  const slot = useMemo(() => createRpcQuerySlot({
-    key: workspaceQueryKey,
-    query: (queryRequest: WorkspaceRequest<'workspace:searchPromptContext'>, id: string) =>
-      ApplicationClient.query('workspace:searchPromptContext', queryRequest, { serializationKey: id }),
-  }), [])
+  const slot = useMemo(
+    () =>
+      createRpcQuerySlot({
+        key: workspaceQueryKey,
+        query: (queryRequest: WorkspaceRequest<'workspace:searchPromptContext'>, id: string) =>
+          ApplicationClient.query('workspace:searchPromptContext', queryRequest, { serializationKey: id }),
+      }),
+    [],
+  )
   const selected = useAtomValue(slot.requestAtom)
   const result = useAtomValue(slot.resultAtom)
   const select = useAtomSet(slot.requestAtom)

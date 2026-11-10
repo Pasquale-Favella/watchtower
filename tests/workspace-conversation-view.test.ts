@@ -94,18 +94,20 @@ describe('conversation durable view projection', () => {
       event: { ...event(2), kind: 'runQueued' as const, runId: 'run-2' as WorkspaceExecutionEvent['runId'] },
     }
 
-    const entries = projectConversationView([first, second], new Map(), new Map([
-      ['run-1', 'session-1'],
-      ['run-2', 'session-2'],
-    ])).entries
+    const entries = projectConversationView(
+      [first, second],
+      new Map(),
+      new Map([
+        ['run-1', 'session-1'],
+        ['run-2', 'session-2'],
+      ]),
+    ).entries
 
-    expect(entries
-      .filter(entry => entry.kind !== 'status' || entry.notice === 'newSession')
-      .map(entry => entry.kind === 'status' ? entry.notice : entry.kind)).toEqual([
-      'user',
-      'newSession',
-      'user',
-    ])
+    expect(
+      entries
+        .filter(entry => entry.kind !== 'status' || entry.notice === 'newSession')
+        .map(entry => (entry.kind === 'status' ? entry.notice : entry.kind)),
+    ).toEqual(['user', 'newSession', 'user'])
   })
 
   it('decodes only valid driver events and ignores summarized payload bodies', () => {

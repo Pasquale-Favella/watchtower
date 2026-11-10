@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { type FSWatcher,watch } from 'node:fs'
+import { type FSWatcher, watch } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { promisify } from 'node:util'
 
@@ -21,9 +21,13 @@ const generations = new Map<string, number>()
 let retainedBytes = 0
 
 async function freshness(root: string): Promise<string> {
-  const values = await Promise.all(['.git/index', '.'].map(path =>
-    stat(`${root}/${path}`).then(info => `${info.mtimeMs}:${info.size}`).catch(() => 'missing'),
-  ))
+  const values = await Promise.all(
+    ['.git/index', '.'].map(path =>
+      stat(`${root}/${path}`)
+        .then(info => `${info.mtimeMs}:${info.size}`)
+        .catch(() => 'missing'),
+    ),
+  )
   return values.join('|')
 }
 
@@ -116,7 +120,10 @@ function watchCheckout(root: string): boolean {
   }
 }
 
-export async function searchPromptPaths(root: string, query: string): Promise<{
+export async function searchPromptPaths(
+  root: string,
+  query: string,
+): Promise<{
   items: RankedPath[]
   truncated: boolean
 }> {

@@ -209,12 +209,7 @@ function WorkspaceComposerContent({
     const latestSessionId = [...(snapshot.data?.runs ?? [])]
       .filter(run => runConversationIds.get(run.id) === conversationId && run.sessionId)
       .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]?.sessionId
-    if (
-      freshSessionRequested &&
-      previousSessionId &&
-      latestSessionId &&
-      latestSessionId !== previousSessionId
-    ) {
+    if (freshSessionRequested && previousSessionId && latestSessionId && latestSessionId !== previousSessionId) {
       setPreferences({ resumeNativeContext: true, resumeSessionId: '' })
     }
   }, [

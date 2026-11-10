@@ -168,7 +168,10 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await newPrompt.pressSequentially('@wpi')
     await expect(fileMenu.getByRole('option', { name: 'WorkspacePromptInput.tsx', exact: true })).toBeVisible()
     await newPrompt.press('Enter')
-    await expect(newPrompt.locator('[data-composer-mention]').last()).toHaveAttribute('path', 'WorkspacePromptInput.tsx')
+    await expect(newPrompt.locator('[data-composer-mention]').last()).toHaveAttribute(
+      'path',
+      'WorkspacePromptInput.tsx',
+    )
     await newPrompt.fill('/skill:rev')
     await expect(newChat.getByRole('option', { name: /^\/skill:review\b/ })).toBeVisible()
     await newPrompt.press('Tab')

@@ -13,7 +13,11 @@ import type { PromptContextSearchResult } from '@/shared/schemas/prompt-context.
 import { type ConversationId, conversationIdSchema, type Task, taskIdSchema } from '@/shared/schemas/workspace.js'
 import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
 import type { WorkspaceConversationPageItem, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
-import { workspaceConversationMessageSchema, workspaceExecutionEventSchema, type WorkspacePayloadReference } from '@/shared/schemas/workspace-store.js'
+import {
+  workspaceConversationMessageSchema,
+  workspaceExecutionEventSchema,
+  type WorkspacePayloadReference,
+} from '@/shared/schemas/workspace-store.js'
 import { normalizeSearchQuery, scorePromptCommandMatch } from '@/shared/search-ranking.js'
 
 type Item = PromptContextSearchResult['items'][number]
@@ -54,9 +58,17 @@ export function searchMentionTasks(tasks: readonly Task[], query: string, exclud
     .filter(task => !task.archivedAt && task.id !== excludeTaskId)
     .map(task => ({ task, score: needle ? scorePromptCommandMatch(task.title, undefined, needle) : 0 }))
     .filter((entry): entry is { task: Task; score: number } => entry.score !== null)
-    .sort((a, b) => a.score - b.score || b.task.updatedAt.localeCompare(a.task.updatedAt) || a.task.id.localeCompare(b.task.id))
+    .sort(
+      (a, b) =>
+        a.score - b.score || b.task.updatedAt.localeCompare(a.task.updatedAt) || a.task.id.localeCompare(b.task.id),
+    )
     .slice(0, 8)
-    .map(({ task }) => ({ kind: 'conversation', path: task.id, label: task.title.slice(0, 512), description: 'Chat context' }))
+    .map(({ task }) => ({
+      kind: 'conversation',
+      path: task.id,
+      label: task.title.slice(0, 512),
+      description: 'Chat context',
+    }))
 }
 
 /** One inventory per host; scans every page, so older chats remain searchable. */
@@ -89,14 +101,22 @@ export function createPromptReferenceIndex(store: WorkspaceStore['Service']) {
     return yield* cached[0]
   })
   return {
-    search: (query: string, excludeTaskId?: string, excludeConversationId?: ConversationId): Effect.Effect<Item[], WorkspaceStoreError> =>
+    search: (
+      query: string,
+      excludeTaskId?: string,
+      excludeConversationId?: ConversationId,
+    ): Effect.Effect<Item[], WorkspaceStoreError> =>
       store.searchPromptConversations
-        ? Effect.map(store.searchPromptConversations({ query, ...(excludeConversationId ? { excludeConversationId } : {}) }), matches => matches.map(match => ({
-            kind: 'conversation' as const,
-            path: JSON.stringify([match.taskId, match.conversationId]),
-            label: match.title,
-            description: 'Chat context',
-          })))
+        ? Effect.map(
+            store.searchPromptConversations({ query, ...(excludeConversationId ? { excludeConversationId } : {}) }),
+            matches =>
+              matches.map(match => ({
+                kind: 'conversation' as const,
+                path: JSON.stringify([match.taskId, match.conversationId]),
+                label: match.title,
+                description: 'Chat context',
+              })),
+          )
         : Effect.map(read(), tasks => searchMentionTasks(tasks, query, excludeTaskId)),
     invalidate: Effect.suspend(() => cached?.[1] ?? Effect.void),
   }
@@ -130,9 +150,14 @@ export function createPromptReferenceFiles(directory: string) {
     })
     return { text: filePromptToken(path.replaceAll('\\', '/')) }
   }
-  const conversation = Effect.fn('PromptReferences.conversation')(function* (store: WorkspaceStore['Service'], id: string) {
+  const conversation = Effect.fn('PromptReferences.conversation')(function* (
+    store: WorkspaceStore['Service'],
+    id: string,
+  ) {
     const parsed = id.startsWith('[') ? yield* Effect.try(() => JSON.parse(id) as unknown) : id
-    const identity = yield* Schema.decodeUnknownEffect(Schema.Union([taskIdSchema, Schema.Tuple([taskIdSchema, conversationIdSchema])]))(parsed)
+    const identity = yield* Schema.decodeUnknownEffect(
+      Schema.Union([taskIdSchema, Schema.Tuple([taskIdSchema, conversationIdSchema])]),
+    )(parsed)
     const taskId = typeof identity === 'string' ? identity : identity[0]
     const selectedId = typeof identity === 'string' ? undefined : identity[1]
     let detail = yield* store.readTaskDetail(taskId)
@@ -143,7 +168,11 @@ export function createPromptReferenceFiles(directory: string) {
       if (!detail.conversations.some(item => item.id === selectedId))
         return yield* Effect.fail(new Error('The referenced Conversation no longer belongs to this Task.'))
     }
-    const chunks = [`# Chat: ${detail.task.title}`, `Task: ${taskId}`, 'This is a read-only snapshot. It does not authorize sending messages to the source chat.']
+    const chunks = [
+      `# Chat: ${detail.task.title}`,
+      `Task: ${taskId}`,
+      'This is a read-only snapshot. It does not authorize sending messages to the source chat.',
+    ]
     let length = Buffer.byteLength(chunks.join('\n\n'))
     const truncated = '[Snapshot limited to 2 MiB. Additional history was not captured.]'
     function append(text: string): boolean {
@@ -181,7 +210,11 @@ export function createPromptReferenceFiles(directory: string) {
           if (row.userMessage?.payloadTruncated && row.userMessage.payloadRef) {
             const payload = yield* readPayload(row.userMessage.payloadRef)
             if (payload === undefined) append('[User message exceeds the snapshot limit and was not captured.]')
-            else item = { ...item, userMessage: yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)(payload) }
+            else
+              item = {
+                ...item,
+                userMessage: yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)(payload),
+              }
           }
           if (row.event.payloadTruncated && row.event.payloadRef) {
             const payload = yield* readPayload(row.event.payloadRef)

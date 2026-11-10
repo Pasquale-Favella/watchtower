@@ -3,16 +3,31 @@ import { parse as parseYaml } from 'yaml'
 
 export type SkillFrontmatter =
   | { readonly kind: 'missing' | 'malformed' }
-  | { readonly kind: 'parsed'; readonly name?: string; readonly description?: string; readonly userInvocable?: boolean; readonly userInvocationOnly?: boolean }
+  | {
+      readonly kind: 'parsed'
+      readonly name?: string
+      readonly description?: string
+      readonly userInvocable?: boolean
+      readonly userInvocationOnly?: boolean
+    }
 
 function booleanValue(value: unknown): boolean | undefined {
   if (typeof value === 'boolean') return value
   if (value === 0 || value === 1) return Boolean(value)
   if (typeof value !== 'string') return undefined
   switch (value.trim().toLowerCase()) {
-    case 'true': case 'yes': case 'on': case 'y': return true
-    case 'false': case 'no': case 'off': case 'n': return false
-    default: return undefined
+    case 'true':
+    case 'yes':
+    case 'on':
+    case 'y':
+      return true
+    case 'false':
+    case 'no':
+    case 'off':
+    case 'n':
+      return false
+    default:
+      return undefined
   }
 }
 
@@ -30,8 +45,11 @@ export function parseSkillFrontmatter(content: string): SkillFrontmatter {
       if (!/:[ \t]/.test(scalar) || /^(?:["'[\]{}|>&*!#%@`]|[-?:](?:[ \t]|$))/.test(scalar)) return line
       return `${prefix}${JSON.stringify(scalar)}${value.slice(scalar.length)}`
     })
-    try { parsed = parseYaml(repaired, { maxAliasCount: 20 }) }
-    catch { return { kind: 'malformed' } }
+    try {
+      parsed = parseYaml(repaired, { maxAliasCount: 20 })
+    } catch {
+      return { kind: 'malformed' }
+    }
   }
   const decoded = Schema.decodeUnknownOption(Schema.Record(Schema.String, Schema.Unknown))(parsed)
   if (decoded._tag === 'None') return { kind: 'malformed' }

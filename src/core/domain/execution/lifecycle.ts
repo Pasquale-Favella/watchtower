@@ -44,8 +44,7 @@ export type RunTransitionResult =
 
 export type GoalTurnBoundaryFailure = 'goal-not-active' | 'turn-already-running' | 'stale-turn'
 export type GoalTurnBoundaryResult =
-  | { readonly ok: true; readonly run: AgentRun }
-  | { readonly ok: false; readonly reason: GoalTurnBoundaryFailure }
+  { readonly ok: true; readonly run: AgentRun } | { readonly ok: false; readonly reason: GoalTurnBoundaryFailure }
 
 export const isAgentRunTerminal = (status: AgentRunStatus): boolean => terminalRunStatuses.has(status)
 

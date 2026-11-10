@@ -18,9 +18,7 @@ export function PromptMentionResult({ item }: Props): React.JSX.Element {
         <Cpu aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
       )}
       <span className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="max-w-[45%] min-w-0 shrink-0 truncate font-sans text-xs font-medium">
-          {item.label}
-        </span>
+        <span className="max-w-[45%] min-w-0 shrink-0 truncate font-sans text-xs font-medium">{item.label}</span>
         <span className="text-muted-foreground min-w-0 flex-1 truncate text-left text-xs">{item.description}</span>
       </span>
     </>

@@ -83,7 +83,8 @@ export function createNativePromptPathSearch() {
           const path = item.type === 'directory' ? `${normalized}/` : normalized
           return { path, label: path, kind: 'file' as const }
         }),
-        truncated: finder.isScanning() || result.value.totalMatched - (result.value.items.length - rows.length) > RESULT_LIMIT,
+        truncated:
+          finder.isScanning() || result.value.totalMatched - (result.value.items.length - rows.length) > RESULT_LIMIT,
       }
     } catch (cause) {
       await retire(root, owned)
@@ -93,7 +94,9 @@ export function createNativePromptPathSearch() {
       if (owned.retired) {
         if (owned.users === 0) (await owned.finder.catch(() => null))?.destroy()
       } else {
-        owned.timer = setTimeout(() => { void retire(root, owned).catch(() => {}) }, INDEX_IDLE_MS)
+        owned.timer = setTimeout(() => {
+          void retire(root, owned).catch(() => {})
+        }, INDEX_IDLE_MS)
         owned.timer.unref()
       }
     }

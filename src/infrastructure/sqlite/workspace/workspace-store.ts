@@ -1102,7 +1102,9 @@ const makeService = Effect.gen(function* () {
 
             const event = command.event as AgentDriverEvent
             if (
-              (event.kind === 'goalUpdated' || event.kind === 'goalTurnStarted' || event.kind === 'goalTurnCompleted') &&
+              (event.kind === 'goalUpdated' ||
+                event.kind === 'goalTurnStarted' ||
+                event.kind === 'goalTurnCompleted') &&
               (event.nativeSessionId !== row.session_native_session_id || event.generation !== run.generation)
             ) {
               return yield* Effect.fail(
@@ -1206,7 +1208,9 @@ const makeService = Effect.gen(function* () {
                 {
                   const boundary = startAgentGoalTurn(run, event.nativeTurnId, command.occurredAt)
                   if (!boundary.ok)
-                    return yield* Effect.fail(safeError('invalid-transition', 'Goal turn start is not valid for this Run'))
+                    return yield* Effect.fail(
+                      safeError('invalid-transition', 'Goal turn start is not valid for this Run'),
+                    )
                   updatedRun = boundary.run
                 }
                 break
@@ -1260,11 +1264,7 @@ const makeService = Effect.gen(function* () {
               default:
                 break
             }
-            if (
-              event.kind !== 'goalTurnCompleted' &&
-              nativeTurnId !== null &&
-              updatedRun.nativeTurnId !== nativeTurnId
-            )
+            if (event.kind !== 'goalTurnCompleted' && nativeTurnId !== null && updatedRun.nativeTurnId !== nativeTurnId)
               updatedRun = { ...updatedRun, nativeTurnId }
 
             yield* persistRun(updatedRun)

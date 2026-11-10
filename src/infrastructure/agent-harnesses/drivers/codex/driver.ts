@@ -141,9 +141,7 @@ const discoverPromptCatalog = Effect.fnUntraced(function* (
   const requested = resolve(workspacePath)
   const matchingEntry = response.data.find(entry => {
     const returned = resolve(entry.cwd)
-    return process.platform === 'win32'
-      ? returned.toLowerCase() === requested.toLowerCase()
-      : returned === requested
+    return process.platform === 'win32' ? returned.toLowerCase() === requested.toLowerCase() : returned === requested
   })
   const skills = (matchingEntry?.skills ?? []).slice(0, 512).map(skill => ({
     name: skill.name,
@@ -188,7 +186,10 @@ const CompactResponse = Schema.Struct({
   ),
 })
 const GoalResponse = Schema.Struct({ goal: Schema.optional(Schema.NullOr(Schema.Unknown)) })
-const GoalNotification = Schema.Struct({ threadId: Schema.String, goal: Schema.optional(Schema.NullOr(Schema.Unknown)) })
+const GoalNotification = Schema.Struct({
+  threadId: Schema.String,
+  goal: Schema.optional(Schema.NullOr(Schema.Unknown)),
+})
 const GoalClearedNotification = Schema.Struct({ threadId: Schema.String })
 const ThreadRef = Schema.Struct({
   threadId: Schema.String,
@@ -435,8 +436,7 @@ const getNativeTurnId = (value: unknown): string | undefined =>
   decode(TurnStateNotification, value)?.turn?.id
 
 type GoalCommand =
-  | { readonly kind: 'set'; readonly objective: string }
-  | { readonly kind: 'get' | 'pause' | 'resume' | 'clear' }
+  { readonly kind: 'set'; readonly objective: string } | { readonly kind: 'get' | 'pause' | 'resume' | 'clear' }
 
 function parseGoalCommand(prompt: string | undefined): GoalCommand | undefined {
   if (!prompt || !/^\/goal(?:\s|$)/.test(prompt)) return undefined
@@ -454,18 +454,27 @@ function normalizeNativeGoal(value: unknown): AgentGoalState | null | undefined 
   if (typeof value !== 'object' || value === null) return undefined
   const native = value as Record<string, unknown>
   const statuses = ['active', 'paused', 'blocked', 'usageLimited', 'budgetLimited', 'complete'] as const
-  if (typeof native.objective !== 'string' || !native.objective.trim() || !statuses.includes(native.status as (typeof statuses)[number]))
+  if (
+    typeof native.objective !== 'string' ||
+    !native.objective.trim() ||
+    !statuses.includes(native.status as (typeof statuses)[number])
+  )
     return undefined
   const now = Date.now()
-  const tokenBudget = typeof native.tokenBudget === 'number' && Number.isInteger(native.tokenBudget) && native.tokenBudget > 0
-    ? native.tokenBudget
-    : null
-  const tokensUsed = typeof native.tokensUsed === 'number' && Number.isInteger(native.tokensUsed) && native.tokensUsed >= 0
-    ? native.tokensUsed
-    : 0
-  const timeUsedSeconds = typeof native.timeUsedSeconds === 'number' && Number.isInteger(native.timeUsedSeconds) && native.timeUsedSeconds >= 0
-    ? native.timeUsedSeconds
-    : 0
+  const tokenBudget =
+    typeof native.tokenBudget === 'number' && Number.isInteger(native.tokenBudget) && native.tokenBudget > 0
+      ? native.tokenBudget
+      : null
+  const tokensUsed =
+    typeof native.tokensUsed === 'number' && Number.isInteger(native.tokensUsed) && native.tokensUsed >= 0
+      ? native.tokensUsed
+      : 0
+  const timeUsedSeconds =
+    typeof native.timeUsedSeconds === 'number' &&
+    Number.isInteger(native.timeUsedSeconds) &&
+    native.timeUsedSeconds >= 0
+      ? native.timeUsedSeconds
+      : 0
   return {
     objective: native.objective,
     status: native.status as AgentGoalState['status'],
@@ -593,7 +602,10 @@ function openSession(
       if (persistedGoal?.status === 'active') {
         yield* setNativeGoal(client, thread.thread.id, { status: 'paused' }).pipe(
           Effect.mapError(error =>
-            failure('outcome-uncertain', `Codex goal pause on session recovery could not be confirmed: ${error.message}`),
+            failure(
+              'outcome-uncertain',
+              `Codex goal pause on session recovery could not be confirmed: ${error.message}`,
+            ),
           ),
         )
         persistedGoal = yield* readNativeGoal(client, thread.thread.id)
@@ -700,7 +712,8 @@ function clearNativeGoal(client: JsonRpcClient, threadId: string) {
   return Effect.gen(function* () {
     yield* client.request('thread/goal/clear', { threadId }).pipe(Effect.mapError(toDriverFailure))
     const goal = yield* readNativeGoal(client, threadId)
-    if (goal !== null) return yield* failure('protocol-error', 'Codex did not confirm that the thread goal was cleared.')
+    if (goal !== null)
+      return yield* failure('protocol-error', 'Codex did not confirm that the thread goal was cleared.')
     return null
   })
 }
@@ -978,25 +991,27 @@ function startCompact(
   sessions: Map<string, SessionState>,
 ) {
   return Effect.gen(function* () {
-    const response = yield* client.requestAfterIncoming('thread/compact/start', { threadId: state.nativeSessionId }).pipe(
-      Effect.mapError(error =>
-        error.reason === 'closed' || error.reason === 'write-failed'
-          ? failure('outcome-uncertain', 'Codex may have accepted context compaction before the connection closed.')
-          : error.reason === 'request-failed'
-            ? failure('protocol-error', 'Codex rejected the context compaction operation.')
-            : toDriverFailure(error),
-      ),
-      Effect.tapError(error =>
-        failRun(
-          client,
-          state,
-          run,
-          error,
-          requests,
-          error.message === 'Codex rejected the context compaction operation.',
+    const response = yield* client
+      .requestAfterIncoming('thread/compact/start', { threadId: state.nativeSessionId })
+      .pipe(
+        Effect.mapError(error =>
+          error.reason === 'closed' || error.reason === 'write-failed'
+            ? failure('outcome-uncertain', 'Codex may have accepted context compaction before the connection closed.')
+            : error.reason === 'request-failed'
+              ? failure('protocol-error', 'Codex rejected the context compaction operation.')
+              : toDriverFailure(error),
         ),
-      ),
-    )
+        Effect.tapError(error =>
+          failRun(
+            client,
+            state,
+            run,
+            error,
+            requests,
+            error.message === 'Codex rejected the context compaction operation.',
+          ),
+        ),
+      )
     const compact = decode(CompactResponse, response)
     if (!compact) {
       const error = failure('protocol-error', 'Codex returned an invalid context compaction response.')
@@ -1008,7 +1023,10 @@ function startCompact(
     )
     const startedTurnId = eventTurnId ? getNativeTurnId(eventTurnId.params) : undefined
     if (compact.turn?.id && startedTurnId && compact.turn.id !== startedTurnId) {
-      const error = failure('protocol-error', 'Codex returned a compaction turn ID that conflicts with its native events.')
+      const error = failure(
+        'protocol-error',
+        'Codex returned a compaction turn ID that conflicts with its native events.',
+      )
       yield* failRun(client, state, run, error, requests)
       return yield* error
     }
@@ -1506,7 +1524,10 @@ function handleEvent(
         })
         return
       }
-      if (run.goal && (event.method === 'turn/completed' || event.method === 'turn/interrupted' || event.method === 'turn/failed')) {
+      if (
+        run.goal &&
+        (event.method === 'turn/completed' || event.method === 'turn/interrupted' || event.method === 'turn/failed')
+      ) {
         if (!notificationTurnId || notificationTurnId !== run.nativeTurnId) return
         const turnStatus =
           event.method === 'turn/interrupted'
@@ -1546,8 +1567,15 @@ function handleEvent(
         const terminalEvent: AgentDriverEvent =
           goal?.status === 'complete'
             ? { kind: 'turnCompleted', nativeTurnId: notificationTurnId }
-            : goal?.status === 'blocked' || goal?.status === 'usageLimited' || goal?.status === 'budgetLimited' || turnStatus === 'failed'
-              ? { kind: 'turnFailed', nativeTurnId: notificationTurnId, message: `Codex goal ended with status ${goal?.status ?? turnStatus}.` }
+            : goal?.status === 'blocked' ||
+                goal?.status === 'usageLimited' ||
+                goal?.status === 'budgetLimited' ||
+                turnStatus === 'failed'
+              ? {
+                  kind: 'turnFailed',
+                  nativeTurnId: notificationTurnId,
+                  message: `Codex goal ended with status ${goal?.status ?? turnStatus}.`,
+                }
               : { kind: 'turnInterrupted', nativeTurnId: notificationTurnId }
         yield* offerEvent(state, run, terminalEvent)
         run.terminal = true

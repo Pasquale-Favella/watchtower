@@ -2,11 +2,19 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type * as SqlClient from 'effect/sql/SqlClient'
 
-import { promptConversationMatchesSchema, type promptConversationSearchSchema } from '@/shared/schemas/prompt-context.js'
+import {
+  promptConversationMatchesSchema,
+  type promptConversationSearchSchema,
+} from '@/shared/schemas/prompt-context.js'
 import { conversationIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import { normalizeSearchQuery, scorePromptCommandMatch } from '@/shared/search-ranking.js'
 
-const rowSchema = Schema.Struct({ conversationId: conversationIdSchema, taskId: taskIdSchema, title: Schema.String, updatedAt: Schema.String })
+const rowSchema = Schema.Struct({
+  conversationId: conversationIdSchema,
+  taskId: taskIdSchema,
+  title: Schema.String,
+  updatedAt: Schema.String,
+})
 
 /** Rank titles inside the storage worker; only the best eight identities cross its RPC boundary. */
 export const searchPromptConversations = Effect.fn('WorkspaceStore.searchPromptConversations')(function* (
@@ -30,8 +38,19 @@ export const searchPromptConversations = Effect.fn('WorkspaceStore.searchPromptC
     const score = needle ? scorePromptCommandMatch(row.title, undefined, needle) : 0
     if (score === null) continue
     ranked.push({ row, score })
-    ranked.sort((a, b) => a.score - b.score || b.row.updatedAt.localeCompare(a.row.updatedAt) || a.row.conversationId.localeCompare(b.row.conversationId))
+    ranked.sort(
+      (a, b) =>
+        a.score - b.score ||
+        b.row.updatedAt.localeCompare(a.row.updatedAt) ||
+        a.row.conversationId.localeCompare(b.row.conversationId),
+    )
     if (ranked.length > 8) ranked.pop()
   }
-  return yield* Schema.decodeUnknownEffect(promptConversationMatchesSchema)(ranked.map(({ row }) => ({ conversationId: row.conversationId, taskId: row.taskId, title: row.title.slice(0, 512) })))
+  return yield* Schema.decodeUnknownEffect(promptConversationMatchesSchema)(
+    ranked.map(({ row }) => ({
+      conversationId: row.conversationId,
+      taskId: row.taskId,
+      title: row.title.slice(0, 512),
+    })),
+  )
 })

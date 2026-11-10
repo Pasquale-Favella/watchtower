@@ -15,7 +15,10 @@ it('captures local skill aliases and nested command names with their immutable c
     const commandPath = '.claude/commands/tools/review.md'
     await mkdir(join(root, '.agents/skills/disk-name'), { recursive: true })
     await mkdir(join(root, '.claude/commands/tools'), { recursive: true })
-    await writeFile(join(root, skillPath), '---\nname: custom-review\ndescription: Review changes\n---\nCheck the tests.')
+    await writeFile(
+      join(root, skillPath),
+      '---\nname: custom-review\ndescription: Review changes\n---\nCheck the tests.',
+    )
     await writeFile(join(root, commandPath), 'Review the selected tools.')
     const store = createPromptAttachmentStore(join(directory, 'assets'))
     const skill = await store.attach(root, skillPath, 'skill')

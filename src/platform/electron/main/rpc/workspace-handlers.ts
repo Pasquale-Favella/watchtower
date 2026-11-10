@@ -23,7 +23,11 @@ import { nativePromptPathSearch } from '@/infrastructure/workspace/prompt-native
 import { ConnectionInspectionError } from '@/platform/electron/main/workspace/connection-inspection.js'
 import { browseDirectories } from '@/platform/electron/main/workspace/directory-browse.js'
 import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
-import { createPromptReferenceIndex, type PromptReferenceFiles, searchMentionModels } from '@/platform/electron/main/workspace/prompt-references.js'
+import {
+  createPromptReferenceIndex,
+  type PromptReferenceFiles,
+  searchMentionModels,
+} from '@/platform/electron/main/workspace/prompt-references.js'
 import {
   WORKSPACE_RPC_PROTOCOL_VERSION,
   type WorkspaceEventFrame,
@@ -201,12 +205,15 @@ export function workspaceHandlers<R = never>(
         return registration.mainCheckout.path
       })
       const mentionModels = Effect.fnUntraced(function* (query: string) {
-        if (query.replace(/[:/\s-]/g, '').length < 2 || !host.listConnections || !host.observedConnectionInspections) return []
+        if (query.replace(/[:/\s-]/g, '').length < 2 || !host.listConnections || !host.observedConnectionInspections)
+          return []
         const connections = yield* host.listConnections
         const inspections = yield* host.observedConnectionInspections
         const catalogs = connections.map(connection =>
-          (inspections.find(inspection => inspection.connectionId === connection.connectionId)?.capabilities.models.items ?? [])
-            .map(model => ({ connection, id: model.id, label: model.label })),
+          (
+            inspections.find(inspection => inspection.connectionId === connection.connectionId)?.capabilities.models
+              .items ?? []
+          ).map(model => ({ connection, id: model.id, label: model.label })),
         )
         return searchMentionModels(catalogs.flat(), query)
       })
@@ -239,18 +246,34 @@ export function workspaceHandlers<R = never>(
                       const exact = yield* pullRequests.value.detail(root, Number(request.query)).pipe(Effect.option)
                       if (Option.isSome(exact)) matches.unshift(exact.value)
                     }
-                    if (numeric) matches.sort((a, b) => Number(String(b.number) === request.query) - Number(String(a.number) === request.query))
+                    if (numeric)
+                      matches.sort(
+                        (a, b) =>
+                          Number(String(b.number) === request.query) - Number(String(a.number) === request.query),
+                      )
                     return {
-                      items: matches.slice(0, 12).map(item => ({ kind: 'pullRequest' as const, path: String(item.number), label: `#${item.number}`, description: item.title.slice(0, 512) })),
+                      items: matches.slice(0, 12).map(item => ({
+                        kind: 'pullRequest' as const,
+                        path: String(item.number),
+                        label: `#${item.number}`,
+                        description: item.title.slice(0, 512),
+                      })),
                       truncated: result.truncated || matches.length > 12,
                     }
                   }
                   if (request.kind === 'file') {
-                    const [chats, models] = yield* Effect.all([
-                      read(() => referenceIndex.search(request.query, request.excludeTaskId, request.excludeConversationId)),
-                      mentionModels(request.query),
-                    ], { concurrency: 'unbounded' })
-                    const files = yield* Effect.flatMap(searchRoot(request), root => Effect.tryPromise(() => attachmentStore.search(root, 'file', request.query)))
+                    const [chats, models] = yield* Effect.all(
+                      [
+                        read(() =>
+                          referenceIndex.search(request.query, request.excludeTaskId, request.excludeConversationId),
+                        ),
+                        mentionModels(request.query),
+                      ],
+                      { concurrency: 'unbounded' },
+                    )
+                    const files = yield* Effect.flatMap(searchRoot(request), root =>
+                      Effect.tryPromise(() => attachmentStore.search(root, 'file', request.query)),
+                    )
                     return { items: [...chats, ...models, ...files.items], truncated: files.truncated }
                   }
                   const root = yield* searchRoot(request)
@@ -263,17 +286,19 @@ export function workspaceHandlers<R = never>(
               )
             : Effect.fail(failure('unavailable')),
         'workspace:resolvePromptReference': request =>
-          safe(Effect.gen(function* () {
-            const files = options.promptReferences
-            if (!files) return yield* failure('unavailable')
-            if (request.kind === 'conversation') return yield* read(() => files.conversation(store, request.path))
-            if (!request.projectId || Option.isNone(pullRequests) || !/^[1-9]\d*$/.test(request.path))
-              return yield* failure('invalid-request')
-            const root = yield* contextRoot({ ...request, projectId: request.projectId })
-            const detail = yield* pullRequests.value.detail(root, Number(request.path))
-            const content = `# Pull request #${detail.number}: ${detail.title}\n\n${detail.url}\n\nState: ${detail.state}\nBase: ${detail.baseRefName}\nHead: ${detail.headRefName}\n\n${detail.body}`
-            return yield* Effect.tryPromise(() => files.save(`PR-${detail.number}`, content))
-          })),
+          safe(
+            Effect.gen(function* () {
+              const files = options.promptReferences
+              if (!files) return yield* failure('unavailable')
+              if (request.kind === 'conversation') return yield* read(() => files.conversation(store, request.path))
+              if (!request.projectId || Option.isNone(pullRequests) || !/^[1-9]\d*$/.test(request.path))
+                return yield* failure('invalid-request')
+              const root = yield* contextRoot({ ...request, projectId: request.projectId })
+              const detail = yield* pullRequests.value.detail(root, Number(request.path))
+              const content = `# Pull request #${detail.number}: ${detail.title}\n\n${detail.url}\n\nState: ${detail.state}\nBase: ${detail.baseRefName}\nHead: ${detail.headRefName}\n\n${detail.body}`
+              return yield* Effect.tryPromise(() => files.save(`PR-${detail.number}`, content))
+            }),
+          ),
         'workspace:attachPromptContext': request =>
           attachmentStore
             ? safe(
@@ -341,17 +366,19 @@ export function workspaceHandlers<R = never>(
                 entityId('conversation', request.commandId),
               )
               const at = yield* timestamp
-              return yield* store.createTask({
-                commandId: request.commandId,
-                task: {
-                  id: taskId,
-                  projectId: request.projectId,
-                  title: request.title,
-                  description: request.description,
-                  createdAt: at,
-                },
-                conversation: { id: conversationId, createdAt: at },
-              }).pipe(Effect.tap(() => referenceIndex.invalidate))
+              return yield* store
+                .createTask({
+                  commandId: request.commandId,
+                  task: {
+                    id: taskId,
+                    projectId: request.projectId,
+                    title: request.title,
+                    description: request.description,
+                    createdAt: at,
+                  },
+                  conversation: { id: conversationId, createdAt: at },
+                })
+                .pipe(Effect.tap(() => referenceIndex.invalidate))
             }),
           ),
         'workspace:listProjects': ({ options }) => read(() => store.listProjects(options)),

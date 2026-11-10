@@ -1,4 +1,4 @@
-import { Effect, Fiber, Queue, Stream } from 'effect'
+import { Deferred, Effect, Fiber, Queue, Stream } from 'effect'
 import { describe, expect, it } from 'vitest'
 
 import type { AgentSessionContext } from '@/core/ports/agent-driver.js'
@@ -63,57 +63,66 @@ function* connect(server: ReturnType<typeof fakeServer>) {
 }
 
 describe('Codex native App Server driver', () => {
-  it.each([context.workspacePath, `${context.workspacePath}/.`])('discovers workspace skills and native slash commands for cwd %s', async returnedCwd => {
-    const server = fakeServer()
-    const catalog = await Effect.runPromise(
-      Effect.scoped(
-        Effect.gen(function* () {
-          const connection = yield* connect(server)
-          if (!connection.discoverPromptCatalog)
-            return yield* Effect.die(new Error('Codex must expose prompt catalog discovery'))
-          const discovering = yield* Effect.forkScoped(connection.discoverPromptCatalog(context.workspacePath))
-          const request = yield* server.read
-          expect(request.method).toBe('skills/list')
-          expect(request.params).toEqual({ cwds: [context.workspacePath] })
-          yield* server.send({
-            id: request.id,
-            result: {
-              data: [
-                {
-                  cwd: returnedCwd,
-                  skills: [
-                    {
-                      name: 'review',
-                      scope: 'repo',
-                      enabled: true,
-                      description: 'Review the current changes',
-                      shortDescription: 'Review changes',
-                      interface: { shortDescription: 'Review changes', userInvocable: true },
-                    },
-                    { name: 'app-skill', scope: 'app', enabled: true },
-                    { name: 'system-skill', scope: 'system', enabled: true },
-                    { name: 'internal', enabled: false, description: null, shortDescription: null, interface: null },
-                  ],
-                },
-              ],
-            },
-          })
-          return yield* Fiber.join(discovering)
-        }),
-      ),
-    )
+  it.each([context.workspacePath, `${context.workspacePath}/.`])(
+    'discovers workspace skills and native slash commands for cwd %s',
+    async returnedCwd => {
+      const server = fakeServer()
+      const catalog = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* connect(server)
+            if (!connection.discoverPromptCatalog)
+              return yield* Effect.die(new Error('Codex must expose prompt catalog discovery'))
+            const discovering = yield* Effect.forkScoped(connection.discoverPromptCatalog(context.workspacePath))
+            const request = yield* server.read
+            expect(request.method).toBe('skills/list')
+            expect(request.params).toEqual({ cwds: [context.workspacePath] })
+            yield* server.send({
+              id: request.id,
+              result: {
+                data: [
+                  {
+                    cwd: returnedCwd,
+                    skills: [
+                      {
+                        name: 'review',
+                        scope: 'repo',
+                        enabled: true,
+                        description: 'Review the current changes',
+                        shortDescription: 'Review changes',
+                        interface: { shortDescription: 'Review changes', userInvocable: true },
+                      },
+                      { name: 'app-skill', scope: 'app', enabled: true },
+                      { name: 'system-skill', scope: 'system', enabled: true },
+                      { name: 'internal', enabled: false, description: null, shortDescription: null, interface: null },
+                    ],
+                  },
+                ],
+              },
+            })
+            return yield* Fiber.join(discovering)
+          }),
+        ),
+      )
 
-    expect(catalog.skills).toEqual([
-      { name: 'review', scope: 'repo', enabled: true, description: 'Review the current changes', userInvocable: true },
-      { name: 'app-skill', scope: 'app', enabled: true },
-      { name: 'system-skill', scope: 'system', enabled: true },
-      { name: 'internal', enabled: false },
-    ])
-    expect(catalog.skillsComplete).toBe(true)
-    expect(catalog.commands).toEqual([
-      { name: 'compact', description: 'Compact this conversation to free up context.' },
-    ])
-  })
+      expect(catalog.skills).toEqual([
+        {
+          name: 'review',
+          scope: 'repo',
+          enabled: true,
+          description: 'Review the current changes',
+          userInvocable: true,
+        },
+        { name: 'app-skill', scope: 'app', enabled: true },
+        { name: 'system-skill', scope: 'system', enabled: true },
+        { name: 'internal', enabled: false },
+      ])
+      expect(catalog.skillsComplete).toBe(true)
+      expect(catalog.commands).toEqual([
+        { name: 'compact', description: 'Compact this conversation to free up context.' },
+      ])
+    },
+  )
 
   it('does not use skills returned for another checkout when the requested cwd is absent', async () => {
     const server = fakeServer()
@@ -183,7 +192,17 @@ describe('Codex native App Server driver', () => {
           expect(accepted.nativeSessionId).toBe('thread-goal')
           expect(server.output).toBeDefined()
 
-          const collecting = yield* Effect.forkScoped(Stream.runCollect(session.events(runId)))
+          const secondTurnStarted = yield* Deferred.make<void>()
+          const collecting = yield* Effect.forkScoped(
+            session.events(runId).pipe(
+              Stream.tap(event =>
+                event.kind === 'goalTurnStarted' && event.nativeTurnId === 'goal-turn-2'
+                  ? Deferred.succeed(secondTurnStarted, undefined)
+                  : Effect.void,
+              ),
+              Stream.runCollect,
+            ),
+          )
           yield* server.send({
             method: 'turn/started',
             params: { threadId: 'thread-goal', turn: { id: 'goal-turn-1' } },
@@ -200,6 +219,7 @@ describe('Codex native App Server driver', () => {
             params: { threadId: 'thread-goal', turn: { id: 'goal-turn-2' } },
           })
 
+          yield* Deferred.await(secondTurnStarted)
           const pausing = yield* Effect.forkScoped(session.steer(runId, 'goal-turn-2', '/goal pause'))
           const pause = yield* server.read
           expect(pause.method).toBe('thread/goal/set')
@@ -346,7 +366,10 @@ describe('Codex native App Server driver', () => {
           const submitting = yield* Effect.forkScoped(
             Effect.match(
               session.submit({ runId, messages: [{ role: 'user', content: '/compact' }], attachmentIds: [] }),
-              { onFailure: left => ({ _tag: 'Left' as const, left }), onSuccess: right => ({ _tag: 'Right' as const, right }) },
+              {
+                onFailure: left => ({ _tag: 'Left' as const, left }),
+                onSuccess: right => ({ _tag: 'Right' as const, right }),
+              },
             ),
           )
           const request = yield* server.read
@@ -358,8 +381,7 @@ describe('Codex native App Server driver', () => {
     )
 
     expect(result._tag).toBe('Left')
-    if (result._tag === 'Left')
-      expect(result.left).toMatchObject({ _tag: 'AgentDriverError', code: 'protocol-error' })
+    if (result._tag === 'Left') expect(result.left).toMatchObject({ _tag: 'AgentDriverError', code: 'protocol-error' })
   })
 
   it.each([
@@ -729,6 +751,9 @@ describe('Codex native App Server driver', () => {
             id: resume.id,
             result: { cwd: context.workspacePath, thread: { id: 'thread-policy-resume', turns: [] } },
           })
+          const goalRead = yield* server.read
+          expect(goalRead.method).toBe('thread/goal/get')
+          yield* server.send({ id: goalRead.id, result: { goal: null } })
           yield* Fiber.join(loading)
           yield* connection.close(100)
         }),
@@ -1077,6 +1102,9 @@ describe('Codex native App Server driver', () => {
               },
             },
           })
+          const goalRead = yield* server.read
+          expect(goalRead.method).toBe('thread/goal/get')
+          yield* server.send({ id: goalRead.id, result: { goal: null } })
           const session = yield* Fiber.join(opening)
           return yield* Stream.runCollect(session.reconcile())
         }),
