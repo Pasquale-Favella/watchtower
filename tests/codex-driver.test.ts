@@ -1803,25 +1803,23 @@ describe('Codex native App Server driver', () => {
   })
 })
 
-it.skipIf(process.env.CODEX_APP_SERVER_SMOKE !== '1')(
-  'performs an installed Codex App Server handshake without starting inference',
-  async () => {
-    const { NodeServices } = await import('@effect/platform-node')
-    const identity = await Effect.runPromise(
-      Effect.scoped(
-        codexAgentDriverConnect({ connectionId: 'codex-installed-smoke' }).pipe(
-          Effect.provide(NodeServices.layer),
-          Effect.timeout('15 seconds'),
-          Effect.flatMap(connection =>
-            Effect.gen(function* () {
-              const result = connection.identity
-              yield* connection.close(1000)
-              return result
-            }),
-          ),
+it('performs an installed Codex App Server handshake without starting inference', async context => {
+  if (process.env.CODEX_APP_SERVER_SMOKE !== '1') return context.skip()
+  const { NodeServices } = await import('@effect/platform-node')
+  const identity = await Effect.runPromise(
+    Effect.scoped(
+      codexAgentDriverConnect({ connectionId: 'codex-installed-smoke' }).pipe(
+        Effect.provide(NodeServices.layer),
+        Effect.timeout('15 seconds'),
+        Effect.flatMap(connection =>
+          Effect.gen(function* () {
+            const result = connection.identity
+            yield* connection.close(1000)
+            return result
+          }),
         ),
       ),
-    )
-    expect(identity.driverId).toBe('codex-app-server')
-  },
-)
+    ),
+  )
+  expect(identity.driverId).toBe('codex-app-server')
+})

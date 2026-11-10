@@ -130,7 +130,7 @@ describe('Copilot JSONL Effect parser', () => {
     expect(calculateCost).toHaveBeenCalledWith('gpt-4.1', 0, 7, 0, 0, 0)
   })
 
-  it('sums resumed shutdown legs, subtracts cache tokens, and excludes output from rollups', async () => {
+  it('serves each resumed shutdown leg as its own delta, subtracting cache tokens', async () => {
     const source = await makeSource()
     await writeFile(
       source.path,
@@ -162,15 +162,29 @@ describe('Copilot JSONL Effect parser', () => {
     )
 
     expect(unparsed).toBe(0)
-    expect(calls).toHaveLength(1)
+    // One call per leg under the leg's own key. The second leg reports LESS than
+    // the first, which is a fresh accounting epoch (the CLI resets at a
+    // compaction) and is taken at face value rather than clamped to nothing.
+    expect(calls.map(call => call.deduplicationKey)).toEqual([
+      'copilot:session:shutdown:gpt-4.1:1',
+      'copilot:session:shutdown:gpt-4.1:2',
+    ])
     expect(calls[0]).toMatchObject({
       model: 'gpt-4.1',
-      inputTokens: 53,
-      cacheReadInputTokens: 9,
-      cacheCreationInputTokens: 5,
+      inputTokens: 32,
+      cacheReadInputTokens: 5,
+      cacheCreationInputTokens: 3,
       outputTokens: 0,
-      reasoningTokens: 3,
+      reasoningTokens: 2,
       costIsEstimated: false,
+    })
+    expect(calls[1]).toMatchObject({
+      model: 'gpt-4.1',
+      inputTokens: 21,
+      cacheReadInputTokens: 4,
+      cacheCreationInputTokens: 2,
+      outputTokens: 0,
+      reasoningTokens: 1,
     })
   })
 
@@ -226,6 +240,27 @@ describe('Copilot JSONL Effect parser', () => {
     expect(calculateCost).toHaveBeenCalledTimes(1)
     expect(calculateCost).toHaveBeenCalledWith('next-model', 0, 5, 0, 0, 0)
     expect(seenKeys).not.toContain('copilot:session:zero')
+  })
+
+  it('keeps model-only assistant messages when outputTokens is absent', async () => {
+    const source = await makeSource()
+    await writeFile(
+      source.path,
+      JSON.stringify({
+        type: 'assistant.message',
+        timestamp: '2026-11-06T09:41:46.260Z',
+        data: { messageId: 'model-only', model: 'gpt-6-luna' },
+      }),
+    )
+
+    const calls = await collect(source)
+
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({
+      model: 'gpt-6-luna',
+      outputTokens: 0,
+      deduplicationKey: 'copilot:session:model-only',
+    })
   })
 
   it('propagates a valid per-message model through an externally seen duplicate', async () => {

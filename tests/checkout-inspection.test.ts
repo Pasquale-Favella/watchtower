@@ -337,7 +337,8 @@ describe('checkout inspection: containment', () => {
     })
   })
 
-  it.runIf(canCreateFileLink())('does not read through a file link that leaves the checkout', async () => {
+  it('does not read through a file link that leaves the checkout', async context => {
+    if (!canCreateFileLink()) return context.skip()
     const root = scratch()
     const main = repository(join(root, 'file-link'), { 'tracked.txt': 'x\n' })
     const outsideFile = join(root, 'secret.txt')

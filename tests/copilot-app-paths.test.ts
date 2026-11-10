@@ -107,8 +107,7 @@ describe('getAgentTracesDbPath (WATCHTOWER_COPILOT_OTEL_DB + APPDATA seams)', ()
   })
 
   // Windows-only branch: `platformFor(paths).appData` feeds the candidate
-  // search there and nowhere else. CI is ubuntu (test.yml), so this pins the
-  // Windows branch on the Windows dev box only.
+  // search there and nowhere else. Windows CI exercises this branch explicitly.
   it.skipIf(osPlatform() !== 'win32')(
     'APPDATA: the snapshot root is the root, and "" never becomes the homedir default',
     () => {

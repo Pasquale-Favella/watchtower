@@ -74,7 +74,7 @@ jobs:
       - run: npm test -- --run
 
   windows-process-regression:
-    name: Windows process source regressions
+    name: Windows process and provider regressions
     needs: changes
     if: needs.changes.outputs.checks == 'true'
     runs-on: windows-latest
@@ -86,13 +86,10 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --loglevel verbose
-      - name: Exercise Windows process cleanup and command shims
-        run: >-
-          npm test -- --run
-          tests/agents-process-tree.test.ts
-          tests/command-runner.test.ts
-          tests/command-runner-start.test.ts
-          tests/command-runner-fast-exit.test.ts
+      # The inventory is derived from conditional tests, so new win32-only
+      # cases join this run automatically. Baseline process suites are preserved.
+      - name: Discover, exercise and verify Windows-only test branches
+        run: node scripts/ci-verify-win32-tests.cjs
 
   application:
     name: Application checks

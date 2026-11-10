@@ -80,6 +80,8 @@ type StoreRow = {
   createdAt?: string | null
   cwd?: string | null
   repository?: string | null
+  /** GitHub's billed figure for the request, in nano-AIU. */
+  nanoAiu?: number | null
 }
 
 /** Build a real `session-store.db` in a temp dir; one usage row per input. */
@@ -96,8 +98,8 @@ function makeStore(prefix: string, rows: StoreRow[] = []): { dbPath: string; ses
   const insertUsage = db.prepare(
     `INSERT INTO assistant_usage_events
        (session_id, turn_index, model, input_tokens, output_tokens,
-        cache_read_tokens, cache_write_tokens, reasoning_tokens, initiator, created_at)
-     VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        cache_read_tokens, cache_write_tokens, reasoning_tokens, initiator, created_at, total_nano_aiu)
+     VALUES (?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   )
   for (const row of rows) {
     insertSession.run(row.sessionId, row.cwd ?? 'C:\\work\\demo', row.repository ?? null)
@@ -113,6 +115,7 @@ function makeStore(prefix: string, rows: StoreRow[] = []): { dbPath: string; ses
       row.reasoning ?? 0,
       row.initiator ?? 'agent',
       row.createdAt ?? '2026-03-01T10:00:00.000Z',
+      row.nanoAiu ?? null,
     )
   }
   db.close()
@@ -277,10 +280,12 @@ describe('session-store.db: reading and pricing a request row', () => {
     expect(call!.costUSD).toBeLessThan(calculateCost('claude-sonnet-4-5', 50_000, 500, 8_000, 40_000, 0))
   })
 
-  it('prices a non-compaction row on its input/cache alone, leaving output to the per-turn event', async () => {
+  it('prices a non-compaction row of a LOCAL session on its input/cache alone', async () => {
+    // The per-turn event below owns the output, so the row prices without it.
     const dirs = storeDirs('tr-store-price-noncompaction-', [
       { sessionId: 'sess-1', input: 50_000, output: 500, cacheRead: 40_000, cacheWrite: 8_000, initiator: 'agent' },
     ])
+    writeShutdownSession(dirs.sessionState, 'sess-1', ROLLUP_ONE_MODEL, { messageId: 'msg-1', outputTokens: 500 })
     const [call] = await parseAll(dirs)
     expect(call!.outputTokens).toBe(0)
     expect(call!.costUSD).toBe(calculateCost('claude-sonnet-4-5', 2_000, 0, 8_000, 40_000, 0))
@@ -416,9 +421,125 @@ describe('session-store.db: output ownership (compaction rows)', () => {
   })
 })
 
+describe('session-store.db: output ownership (sessions with no local journal)', () => {
+  it('keeps a store-only session’s output — no per-turn event will ever own it', async () => {
+    // No `session-state/sess-1/events.jsonl`: an ACP host, the desktop app or a
+    // store synced from another checkout. The row is the only record of it.
+    const dirs = storeDirs('tr-store-nonlocal-output-', [
+      { sessionId: 'sess-1', input: 50_000, output: 500, cacheRead: 40_000, cacheWrite: 8_000, initiator: 'agent' },
+    ])
+    const [call] = await parseAll(dirs)
+
+    expect(call!.outputTokens).toBe(500)
+    expect(call!.costUSD).toBe(calculateCost('claude-sonnet-4-5', 2_000, 500, 8_000, 40_000, 0))
+  })
+
+  it('keeps output per row for a non-local session, compaction rows included', async () => {
+    const dirs = storeDirs('tr-store-nonlocal-multi-', [
+      { sessionId: 'sess-acp', model: 'gpt-4.1', input: 1_000, output: 100, initiator: 'agent' },
+      { sessionId: 'sess-acp', model: 'claude-sonnet-4-5', input: 2_000, output: 200, initiator: 'agent' },
+      { sessionId: 'sess-acp', model: 'claude-sonnet-4-5', input: 3_000, output: 300, initiator: 'compaction' },
+    ])
+    const calls = await parseAll(dirs)
+
+    expect(calls.map(c => c.outputTokens)).toEqual([100, 200, 300])
+    // The whole session's output is accounted exactly once across the scan.
+    expect(calls.reduce((sum, c) => sum + c.outputTokens, 0)).toBe(600)
+  })
+
+  it('still hands output to the per-turn event when the session IS local', async () => {
+    const dirs = storeDirs('tr-store-local-output-', [
+      { sessionId: 'sess-1', input: 50_000, output: 500, cacheRead: 40_000, cacheWrite: 8_000, initiator: 'agent' },
+    ])
+    mkdirSync(join(dirs.sessionState, 'sess-1'), { recursive: true })
+    writeFileSync(join(dirs.sessionState, 'sess-1', 'events.jsonl'), '')
+
+    const [call] = await parseAll(dirs)
+    expect(call!.outputTokens).toBe(0)
+  })
+})
+
+describe('session-store.db: GitHub’s billed figure', () => {
+  it('prices the request at total_nano_aiu when the schema carries it', async () => {
+    // 2,500,000,000 nano-AIU = 2.5 credits = $0.025, whatever its tokens say.
+    const dirs = storeDirs('tr-store-bill-', [
+      { sessionId: 'sess-1', input: 50_000, output: 500, cacheRead: 40_000, nanoAiu: 2_500_000_000 },
+    ])
+    const [call] = await parseAll(dirs)
+
+    expect(call!.costUSD).toBeCloseTo(0.025, 10)
+    // A real bill, not a token estimate.
+    expect(call!.costIsEstimated).toBe(false)
+    // The tokens are still recorded as the CLI wrote them.
+    expect(call!.inputTokens).toBe(10_000)
+  })
+
+  it('falls back to token pricing for a store that predates the billing column', async () => {
+    const dirs = storeDirs('tr-store-nobill-', [{ sessionId: 'sess-1', input: 50_000, output: 500 }])
+    // Drop the column to model an older CLI, then re-parse.
+    const db = new DatabaseSync(join(dirname(dirs.sessionState), 'session-store.db'))
+    db.exec('ALTER TABLE assistant_usage_events DROP COLUMN total_nano_aiu')
+    db.close()
+
+    const [call] = await parseAll(dirs)
+    expect(call!.costUSD).toBe(calculateCost('claude-sonnet-4-5', 50_000, 500, 0, 0, 0))
+  })
+})
+
 // ---------------------------------------------------------------------------
 // The shutdown rollup reconciliation
 // ---------------------------------------------------------------------------
+
+describe('session-store.db: the session.shutdown residual', () => {
+  it('serves what the rollup claims beyond the store rows, once', async () => {
+    // Rollup: 50_000 cache-inclusive (2_000 uncached) + 40_000 read + 8_000 write.
+    // Rows only describe 20_000 cache-inclusive (5_000 uncached) + 15_000 read, so
+    // 25_000 read and 8_000 write were never rowed — a pruned row or a crash.
+    const dirs = storeDirs('tr-store-residual-', [
+      { sessionId: 'sess-1', input: 20_000, cacheRead: 15_000, initiator: 'compaction' },
+    ])
+    writeShutdownSession(dirs.sessionState, 'sess-1', ROLLUP_ONE_MODEL)
+
+    const calls = await parseAll(dirs)
+    const residual = calls.find(c => c.deduplicationKey.includes(':shutdown-residual:'))!
+    expect(residual).toBeDefined()
+    // Keyed by the leg's own instant, never by its position, so a journal
+    // discovered later cannot rename a key the cache already holds.
+    expect(residual.deduplicationKey).toMatch(/^copilot:sess-1:shutdown-residual:claude-sonnet-4-5:/)
+    expect(residual.inputTokens).toBe(0)
+    expect(residual.cacheReadInputTokens).toBe(25_000)
+    expect(residual.cacheCreationInputTokens).toBe(8_000)
+
+    // And the rollup's own figure is still counted exactly once across the scan.
+    expect(calls.reduce((sum, c) => sum + c.cacheReadInputTokens, 0)).toBe(40_000)
+    expect(calls.reduce((sum, c) => sum + c.cacheCreationInputTokens, 0)).toBe(8_000)
+  })
+
+  it('gives a withheld row its own output call when the journal has no per-turn output', async () => {
+    // The CLI 1.0.8x / VS Code agent-host shape: `assistant.message` carries no
+    // `outputTokens`, so no per-turn event can own the output — and an ACP host is
+    // killed before it ever writes a shutdown. The 500 tokens live only in the
+    // store row, which serves them as its own call.
+    const dirs = storeDirs('tr-store-agent-host-output-', [
+      { sessionId: 'sess-1', input: 50_000, output: 500, cacheRead: 40_000, cacheWrite: 8_000 },
+    ])
+    writeShutdownSession(dirs.sessionState, 'sess-1', ROLLUP_ONE_MODEL)
+
+    const calls = await parseAll(dirs)
+    const owner = calls.find(c => c.deduplicationKey.includes(':store-output:'))!
+    expect(owner).toBeDefined()
+    expect(owner.outputTokens).toBe(500)
+    expect(owner.inputTokens).toBe(0)
+    // The store row keeps its input and cache and hands only the output over.
+    const row = calls.find(c => c.deduplicationKey.startsWith('copilot-store:'))!
+    expect(row.outputTokens).toBe(0)
+    expect(row.inputTokens).toBe(2_000)
+    // The leg is covered row by row, so it serves nothing — and the output is
+    // billed exactly once.
+    expect(calls.some(c => c.deduplicationKey.startsWith('copilot:sess-1:shutdown'))).toBe(false)
+    expect(calls.reduce((sum, c) => sum + c.outputTokens, 0)).toBe(500)
+  })
+})
 
 describe('session-store.db: the session.shutdown rollup', () => {
   it('suppresses the rollup for a (session, model) the store covers', async () => {
@@ -428,7 +549,7 @@ describe('session-store.db: the session.shutdown rollup', () => {
     writeShutdownSession(dirs.sessionState, 'sess-1', ROLLUP_ONE_MODEL, { messageId: 'msg-1', outputTokens: 500 })
 
     const calls = await parseAll(dirs)
-    expect(calls.some(c => c.deduplicationKey === 'copilot:sess-1:shutdown:claude-sonnet-4-5')).toBe(false)
+    expect(calls.some(c => c.deduplicationKey === 'copilot:sess-1:shutdown:claude-sonnet-4-5:1')).toBe(false)
 
     // And the input/cache tokens are still counted exactly once, via the store.
     const storeRow = calls.find(c => c.deduplicationKey.startsWith('copilot-store:'))!
@@ -450,8 +571,14 @@ describe('session-store.db: the session.shutdown rollup', () => {
     writeShutdownSession(dirs.sessionState, 'sess-2', ROLLUP_ONE_MODEL)
 
     const calls = await parseAll(dirs)
-    expect(calls.some(c => c.deduplicationKey === 'copilot:sess-1:shutdown:claude-sonnet-4-5')).toBe(false)
-    expect(calls.some(c => c.deduplicationKey === 'copilot:sess-2:shutdown:claude-sonnet-4-5')).toBe(true)
+    // sess-1 is covered by the store: nothing its leg reports may re-serve the
+    // input or cache the rows already served.
+    expect(calls.some(c => c.deduplicationKey.startsWith('copilot:sess-1:shutdown') && c.inputTokens > 0)).toBe(false)
+    // sess-2 has no rows at all, so its leg serves whole, keyed by its own leg.
+    const uncovered = calls.find(c => c.deduplicationKey === 'copilot:sess-2:shutdown:claude-sonnet-4-5:1')
+    expect(uncovered).toBeDefined()
+    expect(uncovered!.inputTokens).toBe(2_000)
+    expect(uncovered!.cacheReadInputTokens).toBe(40_000)
   })
 
   it('leaves the rollup completely untouched when there is no store at all', async () => {
@@ -459,7 +586,7 @@ describe('session-store.db: the session.shutdown rollup', () => {
     writeShutdownSession(dirs.sessionState, 'sess-1', ROLLUP_ONE_MODEL, { messageId: 'msg-1', outputTokens: 500 })
 
     const calls = await parseAll(dirs)
-    const rollup = calls.find(c => c.deduplicationKey === 'copilot:sess-1:shutdown:claude-sonnet-4-5')
+    const rollup = calls.find(c => c.deduplicationKey === 'copilot:sess-1:shutdown:claude-sonnet-4-5:1')
     expect(rollup).toBeDefined()
     expect(rollup!.inputTokens).toBe(2_000)
     expect(rollup!.cacheReadInputTokens).toBe(40_000)
@@ -477,8 +604,20 @@ describe('session-store.db: the session.shutdown rollup', () => {
     })
 
     const calls = await parseAll(dirs)
-    expect(calls.some(c => c.deduplicationKey === 'copilot:sess-1:shutdown:claude-sonnet-4-5')).toBe(false)
-    expect(calls.some(c => c.deduplicationKey === 'copilot:sess-1:shutdown:gpt-4o')).toBe(true)
+    // Only the covered model is reconciled; the other model keeps its leg whole,
+    // which is what makes the decision per (session, model).
+    expect(
+      calls.some(
+        c =>
+          c.deduplicationKey.startsWith('copilot:sess-1:shutdown') &&
+          c.model === 'claude-sonnet-4-5' &&
+          c.inputTokens > 0,
+      ),
+    ).toBe(false)
+    const uncovered = calls.find(c => c.deduplicationKey === 'copilot:sess-1:shutdown:gpt-4o:1')
+    expect(uncovered).toBeDefined()
+    expect(uncovered!.inputTokens).toBe(1_000)
+    expect(uncovered!.outputTokens).toBe(200)
   })
 })
 
@@ -608,7 +747,9 @@ describe('session-store.db: the dedup key', () => {
     // The namespaces this provider uses, none of which may be reachable from a
     // store key: the rollup, the per-turn event, chatSessions, JetBrains, OTel.
     for (const foreign of [
-      'copilot:sess-1:shutdown:claude-sonnet-4-5',
+      'copilot:sess-1:shutdown:claude-sonnet-4-5:1',
+      'copilot:sess-1:shutdown-residual:claude-sonnet-4-5:2026-01-01T00:00:00.000Z',
+      'copilot:sess-1:store-output:1:abcdef',
       'copilot:sess-1:msg-1',
       'copilot-chatsession:sess-1:r1',
       'copilot:jb:sess-1:abcdef012345:1',
