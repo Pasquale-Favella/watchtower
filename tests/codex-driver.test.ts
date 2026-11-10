@@ -192,7 +192,7 @@ describe('Codex native App Server driver', () => {
           expect(accepted.nativeSessionId).toBe('thread-goal')
           expect(server.output).toBeDefined()
 
-          const secondTurnStarted = yield* Deferred.make<void>()
+          const secondTurnStarted = yield* Deferred.make<undefined>()
           const collecting = yield* Effect.forkScoped(
             session.events(runId).pipe(
               Stream.tap(event =>

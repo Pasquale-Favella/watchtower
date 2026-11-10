@@ -85,7 +85,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --loglevel verbose
       - name: Exercise Windows process cleanup and command shims
         run: >-
           npm test -- --run
