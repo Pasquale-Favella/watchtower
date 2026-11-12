@@ -56,6 +56,40 @@ describe('prompt inline tokens', () => {
     expect(splitPromptTokens('$review', name => ({ label: name }))).toEqual([{ type: 'text', text: '$review' }])
   })
 
+  it('recognizes submitted end-of-message file, skill and known command tokens', () => {
+    const command = { label: 'tools/review' }
+    expect(collectPromptInlineTokens('Read @"src/nested path.md"', { allowTrailingEnd: true })).toEqual([
+      {
+        type: 'mention',
+        value: 'src/nested path.md',
+        source: '@"src/nested path.md"',
+        start: 5,
+        end: 'Read @"src/nested path.md"'.length,
+      },
+    ])
+    expect(splitPromptTokens('$review', name => ({ label: name }), { allowTrailingEnd: true })).toEqual([
+      { type: 'skill', name: 'review', source: '$review', label: 'review' },
+    ])
+    expect(
+      splitPromptTokens('/tools/review', undefined, {
+        allowTrailingEnd: true,
+        resolveCommand: name => (name === 'tools/review' ? command : null),
+      }),
+    ).toEqual([{ type: 'command', name: 'tools/review', source: '/tools/review', label: 'tools/review' }])
+    expect(
+      splitPromptTokens('/src/file.ts', undefined, { allowTrailingEnd: true, resolveCommand: () => null }),
+    ).toEqual([{ type: 'text', text: '/src/file.ts' }])
+    expect(collectPromptInlineTokens('@src/file.ts')).toEqual([])
+  })
+
+  it('leaves email, package, decorator, currency and unknown command text plain', () => {
+    const text = 'person@example.com @scope/package @Injectable( $5 /src/file.ts'
+    expect(collectPromptInlineTokens(text, { allowTrailingEnd: true, resolveCommand: () => null })).toEqual([])
+    expect(splitPromptTokens(text, name => ({ label: name }), { allowTrailingEnd: true })).toEqual([
+      { type: 'text', text },
+    ])
+  })
+
   it('does not interpret currency amounts as skill references', () => {
     expect(collectPromptInlineTokens('Paid $5, €9.99, and $10k today')).toEqual([])
     expect(splitPromptTokens('Paid $5, €9.99, and $10k today')).toEqual([

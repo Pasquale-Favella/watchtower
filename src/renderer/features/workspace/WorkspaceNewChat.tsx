@@ -28,7 +28,13 @@ import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChat
 import { NEW_CHAT_DRAFT_MAX_LENGTH, newChatTaskTitle } from './new-chat-state.js'
 import { parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
-import { promptWithAttachments } from './prompt-editor.js'
+import { filePromptToken, promptWithAttachments } from './prompt-editor.js'
+import {
+  promptWithReviewComments,
+  type ReviewComment,
+  reviewCommentsIncludedInPrompt,
+} from './review/review-comments.js'
+import { useReviewComments } from './review/use-review-comments.js'
 import { rememberRightPanelSurface, resourceSurface, transferRightPanelState } from './right-panel/right-panel-state.js'
 import { useRightPanel } from './right-panel/use-right-panel.js'
 import { useTerminalAdoption } from './terminal/use-terminal-adoption.js'
@@ -73,6 +79,7 @@ type CreationIntent = {
   readonly startCommandId: string
   readonly terminalTarget: DraftTerminalTarget
   readonly panelKey: string
+  readonly reviewComments: readonly ReviewComment[]
 }
 
 const projectRequest = (projectId: ProjectId | null): WorkspaceRequest<'workspace:getProject'> | null =>
@@ -88,6 +95,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   const { draft, setDraft, clearDraft, copyDraftToConversation, clearConversationDraft, saveConversationPreference } =
     useNewChatDraft()
   const attachments = usePromptAttachments('new-chat')
+  const reviewComments = useReviewComments(panelContext.key)
   const draftRef = useRef(draft)
   const promptRef = useRef<PromptInputHandle>(null)
   const agentPickerRef = useRef<{ open: (query?: string) => void }>(null)
@@ -242,6 +250,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       setCreating(false)
       creationLock.current = false
 
+      reviewComments.copyTo(receipt.conversationId, creation.reviewComments)
       const checkoutId = worktree?.id ?? target?.mainCheckout.id ?? creation.checkoutId
       const adoptedTerminals = await terminalAdoption.adopt(
         creation.terminalTarget,
@@ -310,6 +319,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       onStarted(targetProjectId, receipt.taskId, receipt.conversationId)
       try {
         await startRun.execute(command)
+        reviewComments.clearCaptured(creation.reviewComments)
+        reviewComments.clearIn(receipt.conversationId, creation.reviewComments)
         attachments.clearIn(receipt.conversationId, creation.attachments)
       } catch {
         // The Conversation owns delivery errors after navigation.
@@ -333,7 +344,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       return
     }
     if (promptCommand?.kind === 'clear') return
-    const prompt = promptWithAttachments(draft, attachments.items)
+    const prompt = promptWithReviewComments(promptWithAttachments(draft, attachments.items), reviewComments.items)
     if (
       !prompt ||
       attachmentBlocked ||
@@ -366,6 +377,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       startCommandId: crypto.randomUUID(),
       terminalTarget: panelContext.target,
       panelKey: panelContext.key,
+      reviewComments: [...reviewCommentsIncludedInPrompt(prompt, reviewComments.items)],
     }
     void createAndStart(creation)
   }
@@ -405,7 +417,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   }
   function referencePath(path: string): void {
     const text = draftRef.current
-    writeDraft(`${text}${text && !/\s$/.test(text) ? ' ' : ''}@${path} `)
+    writeDraft(`${text}${text && !/\s$/.test(text) ? ' ' : ''}${filePromptToken(path)}`)
     promptRef.current?.focus()
   }
   async function addImage(image: WorkspaceImageContext): Promise<void> {
@@ -483,6 +495,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                 )}
               </div>
               <WorkspacePromptInput
+                reviewOwnerKey={panelContext.key}
                 value={draft}
                 onChange={writeDraft}
                 onKeyDown={keyDown}
@@ -543,7 +556,10 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                     aria-label="Send"
                     title="Send"
                     disabled={
-                      !promptWithAttachments(draft, attachments.items) ||
+                      !promptWithReviewComments(
+                        promptWithAttachments(draft, attachments.items),
+                        reviewComments.items,
+                      ) ||
                       attachmentBlocked ||
                       !canSubmit ||
                       creating ||

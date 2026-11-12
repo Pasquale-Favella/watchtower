@@ -9,10 +9,12 @@ import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { isMac } from '../platform-labels.js'
+import { ReviewCommentsProvider } from '../review/ReviewCommentsProvider.js'
 import { isTerminalFocusTarget } from '../terminal/terminal-keys.js'
+import type { WorkspaceImageContext } from '../WorkspaceImageAnnotation.js'
 import { closePanelSurfaces } from './close-panel-surfaces.js'
 import { DiffTab } from './DiffTab.js'
-import { FilesTab, FileViewer } from './FilesTab.js'
+import { FilePanel, FilesTab } from './FilesTab.js'
 import { InspectionNotice } from './inspection-ui.js'
 import {
   browserStorage,
@@ -27,6 +29,7 @@ import {
   writeRightPanelWidth,
 } from './right-panel-state.js'
 import { PanelLauncher, RightPanelTabs } from './RightPanelTabs.js'
+import { useFlushFileEdits } from './use-file-edit-session.js'
 import { type RightPanelControls, useRightPanel } from './use-right-panel.js'
 
 const REFRESH_DEBOUNCE_MS = 250
@@ -40,8 +43,10 @@ export interface WorkspaceRightPanelProps {
   readonly onOpenChange?: ((open: boolean) => void) | undefined
   readonly tab?: RightPanelSurface | undefined
   readonly onTabChange?: ((tab: RightPanelSurface) => void) | undefined
+  readonly reviewOwnerKey?: string | undefined
   readonly refreshKey: number
   readonly onReferencePath: (path: string) => void
+  readonly onAddImage?: ((image: WorkspaceImageContext) => Promise<void>) | undefined
   readonly renderSurface?: ((surface: RightPanelSurface, visible: boolean) => React.ReactNode) | undefined
   readonly titleForSurface?: ((surface: RightPanelSurface) => string) | undefined
   readonly onAddBrowser?: (() => void) | undefined
@@ -59,6 +64,15 @@ export interface WorkspaceRightPanelProps {
 }
 
 export function WorkspaceRightPanel(props: WorkspaceRightPanelProps): React.JSX.Element {
+  return (
+    <ReviewCommentsProvider ownerKey={props.reviewOwnerKey ?? `project:${props.projectId ?? 'none'}`}>
+      <WorkspaceRightPanelContent {...props} />
+    </ReviewCommentsProvider>
+  )
+}
+
+function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.Element {
+  const flushFileEdits = useFlushFileEdits()
   const { controls: providedControls, tab, onTabChange, open, onOpenChange } = props
   const local = useRightPanel(providedControls ? null : `project:${props.projectId ?? 'none'}`)
   const controls = useMemo(
@@ -82,12 +96,38 @@ export function WorkspaceRightPanel(props: WorkspaceRightPanelProps): React.JSX.
   const idPrefix = useId()
   const [mountedSurfaces, setMountedSurfaces] = useState<ReadonlySet<RightPanelSurface>>(() => new Set())
   const activeSurface = controls.active
+  const [reveal, setReveal] = useState<{ readonly path: string; readonly line: number } | null>(null)
+  useEffect(() => {
+    function revealComment(event: Event): void {
+      const detail = (event as CustomEvent<{ ownerKey: string; path: string; line: number; mode: string }>).detail
+      if (detail.ownerKey !== props.reviewOwnerKey) return
+      if (detail.mode === 'diff') controls.openSurface('diff')
+      else {
+        setReveal({ path: detail.path, line: detail.line })
+        controls.openFile(detail.path)
+      }
+    }
+    window.addEventListener('watchtower:reveal-review-comment', revealComment)
+    return () => window.removeEventListener('watchtower:reveal-review-comment', revealComment)
+  }, [controls, props.reviewOwnerKey])
   if (controls.open && activeSurface && !mountedSurfaces.has(activeSurface)) {
     setMountedSurfaces(previous => new Set([...previous, activeSurface]))
   }
   const [closeError, setCloseError] = useState<string | null>(null)
   const closing = useRef(false)
-  const beforeCloseSurface = props.beforeCloseSurface
+  const closeProjectId = props.projectId
+  const closeCheckoutId = props.checkoutId
+  const confirmSurfaceClose = props.beforeCloseSurface
+  const beforeCloseSurface = useCallback(
+    async (surface: RightPanelSurface): Promise<boolean> => {
+      if (surfaceKind(surface) === 'file' && closeProjectId) {
+        if (!(await flushFileEdits(checkoutScope(closeProjectId, closeCheckoutId), surfaceResource(surface))))
+          return false
+      }
+      return (await confirmSurfaceClose?.(surface)) ?? true
+    },
+    [closeProjectId, closeCheckoutId, confirmSurfaceClose, flushFileEdits],
+  )
   const onCloseSurface = props.onCloseSurface
 
   const closeSurfaces = useCallback(
@@ -220,22 +260,34 @@ export function WorkspaceRightPanel(props: WorkspaceRightPanelProps): React.JSX.
           )
             body = props.renderSurface?.(surface, visible)
           else if (!scope) body = <InspectionNotice>Choose a project to inspect its checkout.</InspectionNotice>
-          else if (kind === 'diff') body = <DiffTab scope={scope} revision={revision} />
+          else if (kind === 'diff')
+            body = (
+              <DiffTab
+                scope={scope}
+                revision={revision}
+                onOpenFile={path => controls.openFile(path)}
+                onReferencePath={props.onReferencePath}
+              />
+            )
           else if (kind === 'files')
             body = (
               <FilesTab
                 scope={scope}
                 revision={revision}
                 onReferencePath={props.onReferencePath}
+                onAddImage={props.onAddImage}
                 onOpenFile={path => controls.openFile(path)}
               />
             )
           else
             body = (
-              <FileViewer
+              <FilePanel
                 scope={scope}
                 revision={revision}
                 path={surfaceResource(surface)}
+                revealLine={reveal?.path === surfaceResource(surface) ? reveal.line : null}
+                onAddImage={props.onAddImage}
+                onOpenFile={path => controls.openFile(path)}
                 onReferencePath={props.onReferencePath}
               />
             )
@@ -394,8 +446,10 @@ function useInspectionRevision(open: boolean, refreshKey: number) {
       timer = window.setTimeout(bump, REFRESH_DEBOUNCE_MS)
     }
     window.addEventListener('focus', onFocus)
+    window.addEventListener('watchtower:checkout-files-changed', onFocus)
     return () => {
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('watchtower:checkout-files-changed', onFocus)
       window.clearTimeout(timer)
     }
   }, [open, bump])

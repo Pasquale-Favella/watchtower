@@ -1,6 +1,7 @@
 import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
 import { useCallback, useContext, useEffect } from 'react'
 
+import { filePromptToken } from '@/shared/prompt-links.js'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
@@ -52,7 +53,7 @@ export function useWorkspaceDraft(conversationId: ConversationId) {
   }
 }
 
-/** Appends an `@path` reference to a Conversation's draft, for actions outside the composer. */
+/** Appends a Markdown file reference to a Conversation's draft, for actions outside the composer. */
 export function useDraftReference() {
   const drafts = useAtomValue(workspaceDraftsAtom)
   const update = useAtomSet(updateWorkspaceDraftAtom)
@@ -60,7 +61,7 @@ export function useDraftReference() {
     (conversationId: ConversationId, path: string) => {
       const text = drafts[conversationId]?.text ?? ''
       const separator = text && !/\s$/.test(text) ? ' ' : ''
-      update({ conversationId, text: `${text}${separator}@${path} ` })
+      update({ conversationId, text: `${text}${separator}${filePromptToken(path)}` })
     },
     [drafts, update],
   )

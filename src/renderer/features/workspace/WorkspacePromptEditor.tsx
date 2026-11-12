@@ -5,7 +5,6 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { EditorContent, type NodeViewProps, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import { Box } from 'lucide-react'
 import { type Ref, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 
 import {
@@ -17,9 +16,9 @@ import {
 } from '@/renderer/components/ui/popover.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
-import { limitPromptEdit } from './prompt-editor.js'
+import { commandPromptToken, limitPromptEdit } from './prompt-editor.js'
 import { type PromptInlineToken, type PromptSegment, splitPromptTokens } from './prompt-tokens.js'
-import { WorkspaceFileIcon } from './WorkspaceFileIcon.js'
+import { PromptReferenceChip, promptReferenceChipClass } from './PromptReferenceChip.js'
 
 export type PromptInputSelection = {
   readonly start: number
@@ -38,6 +37,7 @@ export type PromptInputHandle = {
 type Props = {
   readonly value: string
   readonly skills: readonly { readonly name: string; readonly label: string; readonly description?: string }[]
+  readonly commands: readonly string[]
   readonly attachments: readonly PromptAttachment[]
   readonly onChange: (value: string, start: number, end: number) => void
   readonly onSelectionChange: (value: string, start: number, end: number) => void
@@ -79,9 +79,7 @@ type PromptEditorInstance = NonNullable<ReturnType<typeof useEditor>>
 
 const PROMPT_EDITOR_CLASS =
   'text-foreground max-h-60 min-h-24 w-full overflow-y-auto rounded-t-2xl bg-transparent p-3.5 text-[13px] leading-relaxed outline-none'
-
-const PROMPT_MENTION_CLASS =
-  'group/mention relative inline-flex max-w-full items-baseline gap-[0.2em] rounded-sm align-baseline font-medium leading-normal text-[oklch(0.62_0.11_215)] data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1'
+const PROMPT_MENTION_CLASS = `${promptReferenceChipClass('file')} data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1`
 
 function PromptMentionView({ node, selected }: NodeViewProps): React.JSX.Element {
   const path = String(node.attrs.path ?? '')
@@ -98,14 +96,9 @@ function PromptMentionView({ node, selected }: NodeViewProps): React.JSX.Element
       dir="ltr"
       title={path}
       aria-label={`File reference ${path}`}
-      className={PROMPT_MENTION_CLASS}
+      className="data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1"
     >
-      <span aria-hidden="true" className="inline-flex shrink-0 self-center [&_svg]:size-[1em]">
-        <WorkspaceFileIcon path={path} />
-      </span>
-      <span className="min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] transition-colors group-hover/mention:decoration-current">
-        {String(node.attrs.label ?? '')}
-      </span>
+      <PromptReferenceChip kind="file" path={path} label={String(node.attrs.label ?? '')} />
     </NodeViewWrapper>
   )
 }
@@ -180,12 +173,10 @@ const PromptAttachment = Node.create({
   },
 })
 
-const PROMPT_SKILL_CLASS =
-  'group/skill inline-flex max-w-full items-center gap-[0.2em] rounded-sm align-baseline font-medium leading-normal text-[oklch(0.62_0.16_322)]'
-
 function PromptSkillView({ node, selected }: NodeViewProps): React.JSX.Element {
   const label = String(node.attrs.label ?? node.attrs.skillName ?? '')
   const description = String(node.attrs.description ?? '').trim()
+  const isCommand = String(node.attrs.prefix ?? '$') === '/'
   return (
     <NodeViewWrapper
       as="span"
@@ -197,18 +188,19 @@ function PromptSkillView({ node, selected }: NodeViewProps): React.JSX.Element {
     >
       <Popover>
         <PopoverTrigger
-          className={`${PROMPT_SKILL_CLASS} cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current`}
-          aria-label={`Skill ${label}. Show details`}
+          className="cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          aria-label={`${isCommand ? 'Command' : 'Skill'} ${label}. Show details`}
         >
-          <Box aria-hidden="true" className="size-[1em] shrink-0" strokeWidth={1.85} />
-          <span className="min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] transition-colors group-hover/skill:decoration-current">
-            {label}
-          </span>
+          <PromptReferenceChip kind={isCommand ? 'command' : 'skill'} label={label} />
         </PopoverTrigger>
-        <PopoverContent side="top" className="w-80 max-w-[calc(100vw-2rem)] gap-3 p-4" aria-label={`Skill ${label}`}>
+        <PopoverContent
+          side="top"
+          className="w-80 max-w-[calc(100vw-2rem)] gap-3 p-4"
+          aria-label={`${isCommand ? 'Command' : 'Skill'} ${label}`}
+        >
           <PopoverTitle>{label}</PopoverTitle>
           <PopoverDescription className="break-words whitespace-pre-wrap">
-            {description || 'No description is available for this skill.'}
+            {description || `No description is available for this ${isCommand ? 'command' : 'skill'}.`}
           </PopoverDescription>
         </PopoverContent>
       </Popover>
@@ -240,9 +232,9 @@ const PromptSkill = Node.create({
       mergeAttributes(HTMLAttributes, {
         'data-composer-skill': '',
         contenteditable: 'false',
-        class: PROMPT_SKILL_CLASS,
+        class: promptReferenceChipClass(node.attrs.prefix === '/' ? 'command' : 'skill'),
         title: `${node.attrs.prefix}${node.attrs.label}`,
-        'aria-label': `Skill ${node.attrs.label}`,
+        'aria-label': `${node.attrs.prefix === '/' ? 'Command' : 'Skill'} ${node.attrs.label}`,
       }),
       node.attrs.label,
     ]
@@ -409,6 +401,7 @@ function promptMarkdownDecorations(
 function documentContent(
   value: string,
   skills: Props['skills'],
+  commands: Props['commands'],
   attachments: Props['attachments'],
   preserveTrailingFrom: readonly PromptInlineToken[] = [],
 ): JSONContent {
@@ -423,6 +416,15 @@ function documentContent(
 
   const segments = splitPromptTokens(value, name => skills.find(skill => skill.name === name) ?? null, {
     preserveTrailingFrom,
+    resolveCommand: name => {
+      const attached = attachments.find(
+        attachment =>
+          attachment.source === 'command' &&
+          (attachment.token?.trim() ?? commandPromptToken(attachment.name).trim()) === `/${name}`,
+      )
+      const catalogName = commands.find(command => command.replace(/^\//, '') === name)
+      return attached || catalogName ? { label: name } : null
+    },
     resolveAttachment: id => attachments.find(attachment => attachment.id === id) ?? null,
     resolveReference: path =>
       attachments.find(attachment => attachment.source === 'reference' && attachment.name === path) ?? null,
@@ -462,7 +464,7 @@ function promptTokenNode(
       description: skills.find(skill => skill.name === segment.name)?.description ?? '',
       source: segment.source,
       label: segment.label,
-      prefix: Array.from(segment.source)[0] ?? '$',
+      prefix: segment.type === 'command' ? '/' : (Array.from(segment.source)[0] ?? '$'),
     },
   }
 }
@@ -500,7 +502,7 @@ function readDocument(doc: ProseMirrorNode): PromptDocument {
           const record = node.attrs.record as PromptAttachment | null
           tokenValue = record?.id ?? ''
         } else {
-          type = 'skill'
+          type = node.attrs.prefix === '/' ? 'command' : 'skill'
           tokenValue = typeof node.attrs.skillName === 'string' ? node.attrs.skillName : ''
         }
         if (tokenValue) {
@@ -578,11 +580,14 @@ function setEditorValue(
   value: string,
   cursor: number,
   skills: Props['skills'],
+  commands: Props['commands'],
   attachments: Props['attachments'],
   preserveTrailingFrom: readonly PromptInlineToken[] = [],
   selectionEnd = cursor,
 ): PromptDocument {
-  editor.commands.setContent(documentContent(value, skills, attachments, preserveTrailingFrom), { emitUpdate: false })
+  editor.commands.setContent(documentContent(value, skills, commands, attachments, preserveTrailingFrom), {
+    emitUpdate: false,
+  })
   const document = readDocument(editor.state.doc)
   editor.commands.setTextSelection({
     from: markdownToPosition(document, cursor),
@@ -622,7 +627,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
   const editor = useEditor(
     {
       extensions: [...PROMPT_EXTENSIONS, PROMPT_MARKDOWN_EXTENSION],
-      content: documentContent(props.value, props.skills, props.attachments),
+      content: documentContent(props.value, props.skills, props.commands, props.attachments),
       editorProps: {
         attributes: editorAttributes(props),
         handleKeyDown: (_view, event) => {
@@ -652,6 +657,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
             limited.value,
             limited.cursor,
             propsRef.current.skills,
+            propsRef.current.commands,
             propsRef.current.attachments,
             document.inlineTokens,
           )
@@ -662,7 +668,13 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
 
         acceptedValueRef.current = document.value
         const normalized = updated.schema.nodeFromJSON(
-          documentContent(document.value, propsRef.current.skills, propsRef.current.attachments, document.inlineTokens),
+          documentContent(
+            document.value,
+            propsRef.current.skills,
+            propsRef.current.commands,
+            propsRef.current.attachments,
+            document.inlineTokens,
+          ),
         )
         if (!updated.state.doc.eq(normalized)) {
           document = setEditorValue(
@@ -670,6 +682,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
             document.value,
             cursor,
             propsRef.current.skills,
+            propsRef.current.commands,
             propsRef.current.attachments,
             document.inlineTokens,
           )
@@ -733,6 +746,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
           limited.value,
           limited.cursor,
           propsRef.current.skills,
+          propsRef.current.commands,
           propsRef.current.attachments,
           currentDocument.inlineTokens,
           selectionEnd,
@@ -754,7 +768,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
     const cursor =
       snapshot.value === props.value ? positionToMarkdown(snapshot, editor.state.selection.from) : props.value.length
     const normalized = editor.schema.nodeFromJSON(
-      documentContent(props.value, props.skills, props.attachments, snapshot.inlineTokens),
+      documentContent(props.value, props.skills, props.commands, props.attachments, snapshot.inlineTokens),
     )
     if (snapshot.value !== props.value || !editor.state.doc.eq(normalized)) {
       acceptedValueRef.current = props.value
@@ -763,6 +777,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
         props.value,
         cursor,
         props.skills,
+        props.commands,
         props.attachments,
         snapshot.inlineTokens,
       )
@@ -770,7 +785,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
       propsRef.current.onSelectionChange(props.value, selection.start, selection.end)
     }
     acceptedValueRef.current = props.value
-  }, [editor, props.value, props.skills, props.attachments])
+  }, [editor, props.value, props.skills, props.commands, props.attachments])
 
   useEffect(() => {
     if (!editor) return

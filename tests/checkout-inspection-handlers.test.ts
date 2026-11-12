@@ -35,6 +35,8 @@ function fakeInspection(overrides: Partial<CheckoutInspection['Service']> = {}) 
       diffPreview: () => diagnostic('failed'),
       filePatch: () => diagnostic('failed'),
       branches: () => diagnostic('failed'),
+      commits: () => diagnostic('failed'),
+      writeFile: () => diagnostic('failed'),
       listEntries: () => diagnostic('failed'),
       readFile: () => diagnostic('failed'),
       ...overrides,
@@ -62,6 +64,34 @@ function run<A, E>(
 }
 
 describe('checkout inspection RPC handlers', () => {
+  it('passes guarded saves through the resolved checkout and sanitizes conflicts', async () => {
+    const writeFile = vi.fn((_root: string, _request: { readonly path: string }) =>
+      Effect.fail(new CheckoutInspectionError({ code: 'conflict', message: leaked })),
+    )
+    const error = await run(fakeInspection({ writeFile }), client =>
+      Effect.flip(client['checkout:writeFile']({ projectId, path: 'x', content: 'mine', expectedContent: 'before' })),
+    )
+    expect(writeFile).toHaveBeenCalledWith(
+      '/canonical/checkout',
+      expect.objectContaining({ path: 'x', content: 'mine', expectedContent: 'before' }),
+    )
+    expect(error).toMatchObject({ code: 'conflict', message: 'The file changed on disk. Reload it before saving.' })
+    expect(JSON.stringify(error)).not.toContain('private')
+  })
+
+  it('does not run guarded saves when path validation fails', async () => {
+    const writeFile = vi.fn(() => Effect.succeed(emptyFile))
+    const exit = await run(fakeInspection({ writeFile }), client =>
+      Effect.exit(
+        Effect.suspend(() =>
+          client['checkout:writeFile']({ projectId, path: '../x', content: 'mine', expectedContent: 'before' }),
+        ),
+      ),
+    )
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(writeFile).not.toHaveBeenCalled()
+  })
+
   it('replaces diagnostic text with fixed messages and never forwards Git output', async () => {
     const error = await run(fakeInspection(), client =>
       Effect.flip(client['checkout:diffPreview']({ projectId, source: { kind: 'working-tree' } })),

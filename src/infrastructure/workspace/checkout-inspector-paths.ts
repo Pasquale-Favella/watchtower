@@ -95,7 +95,12 @@ export const readBoundedFile = (absolute: string, limit: number) =>
           if (!result.bytesRead) break
           length += result.bytesRead
         }
-        return { bytes: bytes.subarray(0, length), size: info.size, truncated: info.size > limit }
+        return {
+          bytes: bytes.subarray(0, length),
+          size: info.size,
+          truncated: info.size > limit,
+          revision: `${info.mtimeMs}:${info.ctimeMs}:${info.size}`,
+        }
       } finally {
         await handle.close()
       }

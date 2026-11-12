@@ -32,6 +32,7 @@ import { type PromptMenuItem, promptSkillScopeLabel, searchPromptItems, slashPro
 import { type PromptStashEntry, readPromptStash, writePromptStash } from './prompt-stash.js'
 import { collectPromptInlineTokens } from './prompt-tokens.js'
 import { PromptMentionResult } from './PromptMentionResult.js'
+import { ReviewCommentChips } from './review/ReviewCommentChips.js'
 import { type PromptInputHandle, WorkspacePromptEditor } from './WorkspacePromptEditor.js'
 
 type Props = {
@@ -43,6 +44,7 @@ type Props = {
     readonly description: string
     readonly inputHint?: string
   }[]
+  readonly reviewOwnerKey?: string | undefined
   readonly value: string
   readonly onChange: (value: string) => void
   readonly onKeyDown: (event: globalThis.KeyboardEvent) => void
@@ -236,6 +238,22 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     }
     return [...skills.values()]
   }, [search.data?.items, props.attachments.items])
+  const promptCommands = useMemo(
+    () => [
+      ...new Set([
+        ...(props.nativeCommands ?? []).map(command => command.name),
+        ...(search.data?.items ?? [])
+          .filter(item => item.kind === 'command' || item.kind === 'providerCommand')
+          .map(item => item.label),
+        ...props.attachments.items
+          .filter(attachment => attachment.source === 'command')
+          .map(attachment =>
+            (attachment.token?.trim() ?? commandPromptToken(attachment.name).trim()).replace(/^\//, ''),
+          ),
+      ]),
+    ],
+    [props.nativeCommands, props.attachments.items, search.data?.items],
+  )
   const promptStart = (query?.start ?? 1) === 0
   type MenuRow = {
     readonly view: PromptMenuItem
@@ -790,7 +808,10 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         aria-busy={working}
         className={`border-border bg-card focus-within:border-ring focus-within:ring-ring/50 relative rounded-2xl border shadow-[var(--card-shadow)] transition-colors focus-within:ring-3 ${dragging ? 'ring-ring ring-2' : ''}`}
         onDragOver={event => {
-          if (event.dataTransfer.types.includes('Files')) {
+          if (
+            event.dataTransfer.types.includes('Files') ||
+            event.dataTransfer.types.includes('application/x-watchtower-file-reference')
+          ) {
             event.preventDefault()
             setDragging(true)
           }
@@ -799,6 +820,18 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false)
         }}
         onDrop={event => {
+          const reference = event.dataTransfer.getData('application/x-watchtower-file-reference')
+          if (reference) {
+            event.preventDefault()
+            event.stopPropagation()
+            setDragging(false)
+            const value = inputRef.current?.getValue() ?? props.value
+            const selection = inputRef.current?.getSelection() ?? { start: value.length, end: value.length }
+            const next = `${value.slice(0, selection.start)}${reference}${value.slice(selection.end)}`
+            inputRef.current?.setValue(next, selection.start + reference.length)
+            inputRef.current?.focus()
+            return
+          }
           if (event.dataTransfer.files.length) {
             event.preventDefault()
             setDragging(false)
@@ -806,6 +839,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           }
         }}
       >
+        {props.reviewOwnerKey && <ReviewCommentChips ownerKey={props.reviewOwnerKey} />}
         {trigger && (
           <div
             className={`text-popover-foreground absolute inset-x-5.5 z-20 overflow-hidden border p-1 ${trigger.kind === 'file' ? 'bg-card bottom-[calc(100%-1px)] rounded-t-2xl border-b-0 pb-2 shadow-[var(--card-shadow)]' : 'bg-popover bottom-full mb-2 rounded-2xl shadow-md'}`}
@@ -945,6 +979,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           inputRef={inputRef}
           value={props.value}
           skills={promptSkills}
+          commands={promptCommands}
           attachments={props.attachments.items}
           onChange={update}
           onSelectionChange={updateTriggerFromInput}

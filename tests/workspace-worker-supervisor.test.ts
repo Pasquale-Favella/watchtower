@@ -71,6 +71,57 @@ const fixture = (name: string, options: Partial<WorkspaceWorkerSupervisorOptions
 }
 
 describe('workspace worker supervisor', () => {
+  it('retries a failed initial worker startup only after its thread has exited', async () => {
+    let starts = 0
+    const { runtime, workers } = fixture('startup-retry', {
+      maxReplacements: 1,
+      restartBackoffMs: 20,
+      workerFactory: (path, data) => {
+        starts += 1
+        if (starts === 1) return new Worker('throw new Error("transient startup failure")', { eval: true })
+        expect(workers[0]?.threadId).toBe(-1)
+        return new Worker(path, { workerData: data })
+      },
+    })
+    try {
+      const supervisor = await runtime.runPromise(WorkspaceWorkerSupervisor)
+      expect(starts).toBe(2)
+      expect(workers).toHaveLength(2)
+      expect(workers[0]?.threadId).toBe(-1)
+      expect(workers[1]?.threadId).not.toBe(-1)
+      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.status))).toEqual({
+        state: 'ready',
+        lastFailure: null,
+      })
+      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch))).toBe(1)
+    } finally {
+      await runtime.dispose()
+    }
+    expect(workers.every(worker => worker.threadId === -1)).toBe(true)
+  }, 15_000)
+
+  it('does not retry an initial invalid workspace configuration', async () => {
+    let starts = 0
+    const { runtime, workers } = fixture('invalid-startup-data', {
+      filename: 'relative-workspace.db',
+      workerFactory: (path, data) => {
+        starts += 1
+        return new Worker(path, { workerData: data })
+      },
+    })
+    try {
+      const supervisor = await runtime.runPromise(WorkspaceWorkerSupervisor)
+      expect(starts).toBe(0)
+      expect(workers).toHaveLength(0)
+      expect(await Effect.runPromise(SubscriptionRef.get(supervisor.status))).toEqual({
+        state: 'unavailable',
+        lastFailure: 'Workspace storage is unavailable.',
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('advances its durable owner epoch across a complete application runtime restart', async () => {
     const first = fixture('application-restart')
     await first.runtime.runPromise(WorkspaceWorkerSupervisor)

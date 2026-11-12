@@ -22,6 +22,13 @@ export type PromptInlineToken =
       readonly end: number
     }
   | {
+      readonly type: 'command'
+      readonly value: string
+      readonly source: string
+      readonly start: number
+      readonly end: number
+    }
+  | {
       readonly type: 'attachment'
       readonly value: string
       readonly source: string
@@ -31,6 +38,8 @@ export type PromptInlineToken =
 
 export interface PromptInlineTokensOptions {
   readonly preserveTrailingFrom?: readonly PromptInlineToken[]
+  readonly resolveCommand?: (name: string) => { readonly label: string } | null
+  readonly allowTrailingEnd?: boolean
   readonly resolveAttachment?: (id: string) => PromptAttachment | null
   readonly resolveReference?: (path: string) => PromptAttachment | null
 }
@@ -45,6 +54,7 @@ export type PromptSegment =
       readonly attachment?: PromptAttachment
     }
   | { readonly type: 'skill'; readonly name: string; readonly source: string; readonly label: string }
+  | { readonly type: 'command'; readonly name: string; readonly source: string; readonly label: string }
   | {
       readonly type: 'attachment'
       readonly id: string
@@ -57,15 +67,9 @@ export type PromptSegment =
 const SKILL_MENTION_SOURCE =
   /(^|\s)\p{Sc}(?![0-9][0-9_]*(?:[kKmMbBtT]|[eE][0-9]+)?(?:\s|$))(?=[a-zA-Z0-9:_-]*[a-zA-Z])([a-zA-Z0-9][a-zA-Z0-9:_-]*)/u
     .source
-const SKILL_TOKEN_REGEX = new RegExp(`${SKILL_MENTION_SOURCE}(?=\\s)`, 'gu')
 export const SKILL_MENTION_PATTERN = new RegExp(`${SKILL_MENTION_SOURCE}(?=\\s|$)`, 'gu')
-const MENTION_TOKEN_REGEX = /(^|\s)@(?:"((?:\\.|[^"\\])*)"|([^\s@"]+))(?=\s)/g
 // Bound unmatched-bracket rescans to avoid quadratic work; only basenames survive.
 const MAX_FILE_LINK_LABEL_LENGTH = 512
-const FILE_LINK_TOKEN_REGEX = new RegExp(
-  `(^|\\s)\\[((?:\\\\.|[^\\]\\\\]){0,${MAX_FILE_LINK_LABEL_LENGTH}})\\]\\(([^)\\s]+)\\)(?=\\s)`,
-  'g',
-)
 const URI_SCHEME_REGEX = /^[A-Za-z][A-Za-z0-9+.-]*:/
 const WINDOWS_DRIVE_PATH_REGEX = /^[A-Za-z]:[\\/]/
 const SCOPED_PACKAGE_REFERENCE_REGEX = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9_-]*(?:\/[^\s@"]+)*$/
@@ -81,10 +85,16 @@ export function basenameOfPath(path: string): string {
   return basename
 }
 
-function collectMentionTokens(text: string): PromptInlineToken[] {
+function collectMentionTokens(text: string, allowTrailingEnd: boolean): PromptInlineToken[] {
   const matches: PromptInlineToken[] = []
+  const delimiter = allowTrailingEnd ? '(?=\\s|$)' : '(?=\\s)'
+  const fileLinkTokenRegex = new RegExp(
+    `(^|\\s)\\[((?:\\\\.|[^\\]\\\\]){0,${MAX_FILE_LINK_LABEL_LENGTH}})\\]\\(([^)\\s]+)\\)${delimiter}`,
+    'g',
+  )
+  const mentionTokenRegex = new RegExp(`(^|\\s)@(?:"((?:\\\\.|[^"\\\\])*)"|([^\\s@"]+))${delimiter}`, 'g')
 
-  for (const match of text.matchAll(FILE_LINK_TOKEN_REGEX)) {
+  for (const match of text.matchAll(fileLinkTokenRegex)) {
     const fullMatch = match[0]
     const prefix = match[1] ?? ''
     const label = (match[2] ?? '').replaceAll(/\\(.)/g, '$1')
@@ -110,7 +120,7 @@ function collectMentionTokens(text: string): PromptInlineToken[] {
     matches.push({ type: 'mention', value: path, source: text.slice(start, end), start, end })
   }
 
-  for (const match of text.matchAll(MENTION_TOKEN_REGEX)) {
+  for (const match of text.matchAll(mentionTokenRegex)) {
     const fullMatch = match[0]
     const prefix = match[1] ?? ''
     const quotedPath = match[2]
@@ -134,9 +144,10 @@ export function collectPromptInlineTokens(
   text: string,
   options: PromptInlineTokensOptions = {},
 ): readonly PromptInlineToken[] {
-  const matches = collectMentionTokens(text)
+  const matches = collectMentionTokens(text, options.allowTrailingEnd ?? false)
+  const skillTokenRegex = new RegExp(`${SKILL_MENTION_SOURCE}(?=${options.allowTrailingEnd ? '\\s|$' : '\\s'})`, 'gu')
 
-  for (const match of text.matchAll(SKILL_TOKEN_REGEX)) {
+  for (const match of text.matchAll(skillTokenRegex)) {
     const fullMatch = match[0]
     const prefix = match[1] ?? ''
     const value = match[2] ?? ''
@@ -144,6 +155,20 @@ export function collectPromptInlineTokens(
     const start = (match.index ?? 0) + prefix.length
     const end = start + fullMatch.length - prefix.length
     matches.push({ type: 'skill', value, source: text.slice(start, end), start, end })
+  }
+
+  const commandDelimiter = options.allowTrailingEnd ? '(?=\\s|$)' : '(?=\\s)'
+  const commandTokenRegex = new RegExp(
+    `(^|\\s)\\/([a-zA-Z0-9][a-zA-Z0-9:_-]*(?:\\/[a-zA-Z0-9][a-zA-Z0-9:_-]*)*)${commandDelimiter}`,
+    'g',
+  )
+  for (const match of text.matchAll(commandTokenRegex)) {
+    const prefix = match[1] ?? ''
+    const value = match[2] ?? ''
+    if (!value || !options.resolveCommand?.(value)) continue
+    const start = (match.index ?? 0) + prefix.length
+    const end = start + match[0].length - prefix.length
+    matches.push({ type: 'command', value, source: text.slice(start, end), start, end })
   }
 
   for (const token of options.preserveTrailingFrom ?? []) {
@@ -211,6 +236,15 @@ export function splitPromptTokens(
       continue
     }
     const skill = resolveSkill(match.value)
+    if (match.type === 'command') {
+      const command = options.resolveCommand?.(match.value)
+      if (!command) {
+        pushText(match.source)
+        continue
+      }
+      segments.push({ type: 'command', name: match.value, source: match.source, label: command.label })
+      continue
+    }
     if (!skill) {
       pushText(match.source)
       continue

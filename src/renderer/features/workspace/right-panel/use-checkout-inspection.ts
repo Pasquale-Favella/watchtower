@@ -1,4 +1,3 @@
-import { useAtomSet } from '@effect/atom-react'
 import { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Schema from 'effect/Schema'
 import { useEffect, useRef, useState } from 'react'
@@ -14,6 +13,7 @@ import type {
   FilePatch,
 } from '@/shared/schemas/checkout-inspection.js'
 
+import { useWorkspaceOperation } from '../use-workspace-operation.js'
 import {
   checkoutBranchesAtom,
   checkoutDiffPreviewAtom,
@@ -87,7 +87,7 @@ export function useCheckoutDiffPreview(
   source: DiffSourceSelector,
   revision: number,
 ): InspectionState<DiffSource> {
-  const execute = useAtomSet(checkoutDiffPreviewAtom, { mode: 'promise' })
+  const execute = useWorkspaceOperation(checkoutDiffPreviewAtom)
   const identity = JSON.stringify(['diff', scope, source])
   return useInspectionQuery(identity, revision, () => execute({ ...scope, source }))
 }
@@ -96,6 +96,8 @@ export interface FilePatchTarget {
   readonly source: DiffSourceSelector
   readonly path: string
   readonly previousPath?: string | undefined
+  readonly includeContents?: boolean | undefined
+  readonly contextLines?: number | undefined
 }
 
 export function useCheckoutFilePatch(
@@ -103,7 +105,7 @@ export function useCheckoutFilePatch(
   target: FilePatchTarget | null,
   revision: number,
 ): InspectionState<FilePatch> {
-  const execute = useAtomSet(checkoutFilePatchAtom, { mode: 'promise' })
+  const execute = useWorkspaceOperation(checkoutFilePatchAtom)
   const identity = target === null ? null : JSON.stringify(['patch', scope, target])
   return useInspectionQuery(identity, revision, () => {
     if (target === null) return Promise.reject(new Error('No file selected'))
@@ -116,7 +118,7 @@ export function useCheckoutBranches(
   enabled: boolean,
   revision: number,
 ): InspectionState<CheckoutBranchList> {
-  const execute = useAtomSet(checkoutBranchesAtom, { mode: 'promise' })
+  const execute = useWorkspaceOperation(checkoutBranchesAtom)
   const identity = enabled ? JSON.stringify(['branches', scope]) : null
   return useInspectionQuery(identity, revision, () => execute(scope))
 }
@@ -126,9 +128,9 @@ export function useCheckoutDirectory(
   path: string,
   revision: number,
 ): InspectionState<DirectoryListing> {
-  const execute = useAtomSet(checkoutListEntriesAtom, { mode: 'promise' })
+  const execute = useWorkspaceOperation(checkoutListEntriesAtom)
   const identity = JSON.stringify(['directory', scope, path])
-  return useInspectionQuery(identity, revision, () => execute({ ...scope, path }))
+  return useInspectionQuery(identity, revision, () => execute({ ...scope, path, includeIgnored: true }))
 }
 
 export function useCheckoutFileContent(
@@ -136,10 +138,10 @@ export function useCheckoutFileContent(
   path: string | null,
   revision: number,
 ): InspectionState<FileContent> {
-  const execute = useAtomSet(checkoutReadFileAtom, { mode: 'promise' })
+  const execute = useWorkspaceOperation(checkoutReadFileAtom)
   const identity = path === null ? null : JSON.stringify(['file', scope, path])
   return useInspectionQuery(identity, revision, () => {
     if (path === null) return Promise.reject(new Error('No file selected'))
-    return execute({ ...scope, path })
+    return execute({ ...scope, path, includeIgnored: true })
   })
 }

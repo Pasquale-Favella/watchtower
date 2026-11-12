@@ -43,6 +43,9 @@ const EFFECT_COMPOSITION_ROOTS = [
   'src/infrastructure/agent-harnesses/process-tree.ts',
   'src/platform/electron/workers/context.ts',
   'src/platform/electron/workers/client.ts',
+  'src/renderer/features/workspace/right-panel/code-processing.worker.ts',
+  'src/renderer/features/workspace/right-panel/csv-preview.worker.ts',
+  'src/renderer/features/workspace/right-panel/file-previews/preview.worker.ts',
 ]
 const processBoundaryZones = [
   {

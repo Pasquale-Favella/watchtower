@@ -12,6 +12,7 @@ export const checkoutInspectionRpcMessages = {
   'outside-checkout': 'Paths must stay inside the checkout.',
   'path-not-found': 'The path was not found in the checkout.',
   'base-unavailable': 'Choose a base branch that exists in this checkout.',
+  conflict: 'The file changed on disk. Reload it before saving.',
   failed: 'Checkout inspection failed.',
 } as const
 
@@ -27,6 +28,7 @@ export class CheckoutInspectionRpcError extends Schema.TaggedError<CheckoutInspe
       'outside-checkout',
       'path-not-found',
       'base-unavailable',
+      'conflict',
       'failed',
     ]),
     message: Schema.Literals(Object.values(checkoutInspectionRpcMessages)),
@@ -52,6 +54,11 @@ export const CheckoutInspectionRpcGroup = RpcGroup.make(
     success: Inspection.checkoutBranchListSchema,
     error,
   }),
+  Rpc.make('checkout:commits', {
+    payload: Inspection.checkoutScopeSchema,
+    success: Inspection.checkoutCommitListSchema,
+    error,
+  }),
   Rpc.make('checkout:listEntries', {
     payload: Inspection.listEntriesRequestSchema,
     success: Inspection.directoryListingSchema,
@@ -59,6 +66,11 @@ export const CheckoutInspectionRpcGroup = RpcGroup.make(
   }),
   Rpc.make('checkout:readFile', {
     payload: Inspection.readFileRequestSchema,
+    success: Inspection.fileContentSchema,
+    error,
+  }),
+  Rpc.make('checkout:writeFile', {
+    payload: Inspection.writeFileRequestSchema,
     success: Inspection.fileContentSchema,
     error,
   }),

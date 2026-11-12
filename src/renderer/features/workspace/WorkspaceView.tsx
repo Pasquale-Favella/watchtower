@@ -4,7 +4,12 @@ import { Button } from '@/renderer/components/ui/button'
 import type { DraftTerminalTarget, TerminalTarget } from '@/shared/schemas/terminal.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
-import { useWorkspaceProject, useWorkspaceTask, useWorkspaceTaskSnapshot } from './hooks.js'
+import {
+  useWorkspaceNativeAgentSessions,
+  useWorkspaceProject,
+  useWorkspaceTask,
+  useWorkspaceTaskSnapshot,
+} from './hooks.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
@@ -74,6 +79,7 @@ function TaskConversation({
   const resources = useWorkspacePanelResources(ownerKey, panel)
   const appendDraft = useDraftAppend()
   const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
+  const nativeSessions = useWorkspaceNativeAgentSessions({ taskId, options: { limit: 50 } })
   const sessionIdsByRunId = useMemo(
     () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
     [snapshot.data?.runs],
@@ -82,6 +88,15 @@ function TaskConversation({
     taskId,
     options: { limit: 30, ...(afterConversationId ? { afterId: afterConversationId } : {}) },
   })
+  const conversations = detail.data?.conversations ?? []
+  const conversation = conversations.find(item => item.id === selectedConversationId) ?? conversations[0]
+  const promptCommands = useMemo(
+    () =>
+      nativeSessions.data?.items
+        .filter(session => session.conversationId === conversation?.id)
+        .flatMap(session => session.capabilities?.commands?.map(command => command.name) ?? []) ?? [],
+    [nativeSessions.data?.items, conversation?.id],
+  )
   const project = useWorkspaceProject(detail.data ? { projectId: detail.data.task.projectId } : null)
 
   useEffect(() => {
@@ -132,8 +147,6 @@ function TaskConversation({
       </>
     )
 
-  const conversations = detail.data.conversations
-  const conversation = conversations.find(item => item.id === selectedConversationId) ?? conversations[0]
   const nextConversationId = detail.data.nextAfterConversationId
   const task = detail.data.task
   const hasSeveral = detail.data.totalConversations > 1
@@ -203,6 +216,7 @@ function TaskConversation({
               <WorkspaceConversation
                 conversationId={conversation.id}
                 sessionIdsByRunId={sessionIdsByRunId}
+                promptCommands={promptCommands}
                 workspacePath={runContext?.workspacePath}
                 onOpenFile={panel.openFile}
                 scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
@@ -290,6 +304,7 @@ function TaskRightPanel({
       {...panel}
       projectId={projectId}
       refreshKey={refreshKey}
+      reviewOwnerKey={conversationId ?? panel.ownerKey}
       onReferencePath={path => conversationId && referenceInDraft(conversationId, path)}
       onReferenceText={text => conversationId && appendDraft(conversationId, text)}
       onAddImage={

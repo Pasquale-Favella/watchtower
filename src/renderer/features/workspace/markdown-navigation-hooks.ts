@@ -1,4 +1,3 @@
-import { useAtomSet } from '@effect/atom-react'
 import * as Schema from 'effect/Schema'
 import { useCallback } from 'react'
 
@@ -6,11 +5,12 @@ import { isEmbeddedMarkdownImage } from '@/renderer/components/markdown/markdown
 import { checkoutFilePathSchema, type CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 
 import { checkoutReadFileAtom } from './right-panel/checkout-inspection-atoms.js'
+import { useWorkspaceOperation } from './use-workspace-operation.js'
 
 export function useMarkdownImageLoader(
   scope: CheckoutScope | null,
 ): ((path: string) => Promise<string | null>) | undefined {
-  const read = useAtomSet(checkoutReadFileAtom, { mode: 'promise' })
+  const read = useWorkspaceOperation(checkoutReadFileAtom)
   const projectId = scope?.projectId
   const checkoutId = scope?.checkoutId
   const load = useCallback(

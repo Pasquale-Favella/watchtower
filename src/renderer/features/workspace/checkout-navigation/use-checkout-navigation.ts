@@ -5,7 +5,8 @@ import { useEffect, useRef, useState } from 'react'
 import { type CheckoutEditor, checkoutEditorSchema } from '@/shared/rpc/checkout-navigation.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 
-import { openCheckoutFileAtom, revealCheckoutFileAtom } from './atoms.js'
+import { useWorkspaceOperation } from '../use-workspace-operation.js'
+import { downloadCheckoutFileAtom, openCheckoutFileAtom, revealCheckoutFileAtom } from './atoms.js'
 
 const EDITOR_STORAGE_KEY = 'watchtower.workspace.file-editor.v1'
 
@@ -23,6 +24,7 @@ function readEditor(): CheckoutEditor {
 }
 
 export function useCheckoutNavigation(scope: CheckoutScope, path: string | null) {
+  const downloadFile = useWorkspaceOperation(downloadCheckoutFileAtom)
   const openFile = useAtomSet(openCheckoutFileAtom, { mode: 'promise' })
   const revealFile = useAtomSet(revealCheckoutFileAtom, { mode: 'promise' })
   const [editor, setEditor] = useState(readEditor)
@@ -51,6 +53,12 @@ export function useCheckoutNavigation(scope: CheckoutScope, path: string | null)
     }
   }
   return {
+    download: async (): Promise<boolean> =>
+      path
+        ? run(async () => {
+            await downloadFile({ ...scope, path })
+          })
+        : false,
     editor,
     pending,
     error: failure?.identity === identity ? failure.message : null,

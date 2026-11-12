@@ -48,7 +48,6 @@ import {
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import { TerminalHostLive } from '@/infrastructure/terminal/terminal-host.js'
 import { CheckoutActionsLive } from '@/infrastructure/workspace/checkout-actions.js'
-import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
 import { WorkspaceDevicesLive } from '@/infrastructure/workspace/devices.js'
 import { createPromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
 import { WorkspacePullRequestsLive } from '@/infrastructure/workspace/pull-requests.js'
@@ -91,6 +90,7 @@ import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electro
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import { createPromptReferenceFiles } from '@/platform/electron/main/workspace/prompt-references.js'
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
+import { checkoutInspectionWorkerLayer } from '@/platform/electron/workers/checkout/client.js'
 import { DbWorkerClient } from '@/platform/electron/workers/client.js'
 import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
 import { LedgerMcpPool } from '@/platform/mcp/pool.js'
@@ -232,7 +232,7 @@ const workspaceLayer = WorkspaceProjectSetupLive.pipe(
     Layer.mergeAll(
       CheckoutResolverLive,
       CheckoutBranchesLive,
-      CheckoutInspectionLive,
+      checkoutInspectionWorkerLayer(join(__dirname, 'checkout-worker.js')),
       CheckoutActionsLive,
       WorkspaceDevicesLive,
       WorkspacePullRequestsLive,

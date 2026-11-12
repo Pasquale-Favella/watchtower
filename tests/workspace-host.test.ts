@@ -261,6 +261,11 @@ describe('lazy application WorkspaceHost', () => {
       await second.runtime.runPromise(host.ensureOpen)
       await expect.poll(() => submissions).toHaveLength(1)
       expect(submissions[0]).toMatch(/^queued-run:durable-queue-/)
+      await expect
+        .poll(
+          async () => (await second.runtime.runPromise(host.store.readTaskSnapshot(input.task.id, 10))).runs[0]?.status,
+        )
+        .toBe('completed')
     } finally {
       await second.runtime.dispose()
     }
@@ -389,7 +394,7 @@ describe('lazy application WorkspaceHost', () => {
     }
   })
 
-  it('keeps an initial open failure sticky until a new application host is created', async () => {
+  it('keeps an initial open failure sticky after the bounded startup retry budget is exhausted', async () => {
     let attempts = 0
     const { runtime } = fixture('sticky-open', () => {
       attempts += 1
@@ -402,7 +407,7 @@ describe('lazy application WorkspaceHost', () => {
       await expect(runtime.runPromise(host.store.pageEvents(0, 1))).rejects.toMatchObject({
         _tag: 'WorkspaceStoreError',
       })
-      expect(attempts).toBe(1)
+      expect(attempts).toBe(4)
       expect(await Effect.runPromise(SubscriptionRef.get(host.status))).toMatchObject({ state: 'unavailable' })
     } finally {
       await runtime.dispose()

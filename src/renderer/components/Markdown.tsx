@@ -23,6 +23,10 @@ const plugins = {
   math: createMathPlugin({ singleDollarTextMath: true }),
   mermaid: createMermaidPlugin({ config: { securityLevel: 'strict', startOnLoad: false } }),
 }
+const promptReferencePlugins = {
+  ...plugins,
+  math: createMathPlugin({ singleDollarTextMath: false }),
+}
 
 const components: Components = {
   a: MarkdownLink,
@@ -53,19 +57,28 @@ const rehypePlugins: NonNullable<StreamdownProps['rehypePlugins']> = [
 export interface MarkdownProps {
   children: string
   streaming?: boolean
+  remarkPlugins?: NonNullable<StreamdownProps['remarkPlugins']>
+  components?: Components
+  singleDollarMath?: boolean
 }
 
-export const Markdown = memo(function Markdown({ children, streaming = false }: MarkdownProps): React.JSX.Element {
+export const Markdown = memo(function Markdown({
+  children,
+  streaming = false,
+  remarkPlugins: additionalRemarkPlugins = [],
+  components: additionalComponents,
+  singleDollarMath = true,
+}: MarkdownProps): React.JSX.Element {
   return (
     <Streamdown
       className="watchtower-markdown"
       mode="streaming"
       isAnimating={streaming}
       parseIncompleteMarkdown={streaming}
-      plugins={plugins}
+      plugins={singleDollarMath ? plugins : promptReferencePlugins}
       rehypePlugins={rehypePlugins}
-      remarkPlugins={remarkPlugins}
-      components={components}
+      remarkPlugins={[...remarkPlugins, ...additionalRemarkPlugins]}
+      components={{ ...components, ...additionalComponents }}
       urlTransform={markdownUrlTransform}
       skipHtml
       lineNumbers={false}

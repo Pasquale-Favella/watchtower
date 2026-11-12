@@ -1,24 +1,31 @@
 import { open, readlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as Semaphore from 'effect/Semaphore'
 
 import {
   type CheckoutFilePatchRequest,
   CheckoutInspection,
   CheckoutInspectionError,
+  type CheckoutReadOptions,
+  type CheckoutWriteFileRequest,
 } from '@/core/ports/checkout-inspection.js'
 import { CommandRunner } from '@/core/ports/process.js'
 import {
   CHECKOUT_BRANCH_LIMIT,
+  CHECKOUT_COMMIT_LIMIT,
   CHECKOUT_DIFF_FILE_LIMIT,
   CHECKOUT_DIRECTORY_ENTRY_LIMIT,
   CHECKOUT_FILE_MAX_BYTES,
   CHECKOUT_PATCH_MAX_BYTES,
+  CHECKOUT_PREVIEW_MAX_BYTES,
   CHECKOUT_UNTRACKED_SCAN_LIMIT,
   type CheckoutBranchList,
+  type CheckoutCommitList,
   type DiffFile,
   type DiffSource,
   type DiffSourceSelector,
@@ -213,11 +220,13 @@ const untrackedChange = Effect.fn('CheckoutInspection.untrackedChange')(function
 const collectChanges = Effect.fn('CheckoutInspection.collectChanges')(function* (
   runner: CommandRunnerService,
   cwd: string,
-  base: string,
+  comparison: readonly string[],
+  includeUntracked = true,
+  ignoreWhitespace = false,
 ): Effect.fn.Return<{ readonly files: readonly DiffFile[]; readonly truncated: boolean }, CheckoutInspectionError> {
-  const flags = ['--no-color', '--no-ext-diff', '--no-textconv', '-M']
-  const numstat = yield* runGit(runner, cwd, ['diff', ...flags, '--numstat', '-z', base, '--'])
-  const nameStatus = yield* runGit(runner, cwd, ['diff', ...flags, '--name-status', '-z', base, '--'])
+  const flags = ['--no-color', '--no-ext-diff', '--no-textconv', '-M', ...(ignoreWhitespace ? ['-w'] : [])]
+  const numstat = yield* runGit(runner, cwd, ['diff', ...flags, '--numstat', '-z', ...comparison, '--'])
+  const nameStatus = yield* runGit(runner, cwd, ['diff', ...flags, '--name-status', '-z', ...comparison, '--'])
   if (numstat.exitCode !== 0 || nameStatus.exitCode !== 0)
     return yield* fail('failed', 'Git could not compare the checkout')
   let truncated = numstat.truncated || nameStatus.truncated
@@ -227,7 +236,9 @@ const collectChanges = Effect.fn('CheckoutInspection.collectChanges')(function* 
     ...(stats.get(entry.path) ?? { additions: 0, deletions: 0, binary: false }),
   }))
 
-  const untracked = yield* runGit(runner, cwd, ['ls-files', '-z', '--others', '--exclude-standard'])
+  const untracked = includeUntracked
+    ? yield* runGit(runner, cwd, ['ls-files', '-z', '--others', '--exclude-standard'])
+    : { exitCode: 0, stdout: '', truncated: false }
   if (untracked.exitCode !== 0) return yield* fail('failed', 'Git could not list untracked files')
   truncated = truncated || untracked.truncated
   let untrackedPaths = parseNulList(untracked.stdout).filter(path => !path.endsWith('/'))
@@ -261,7 +272,7 @@ const diffPreview = Effect.fn('CheckoutInspection.diffPreview')(function* (
   const headRef = yield* currentBranch(runner, cwd)
   if (source.kind === 'working-tree') {
     const base = head ?? (yield* emptyTreeRevision(runner, cwd))
-    const changes = yield* collectChanges(runner, cwd, base)
+    const changes = yield* collectChanges(runner, cwd, [base], true, source.ignoreWhitespace)
     return {
       id: 'working-tree',
       kind: 'working-tree',
@@ -272,8 +283,36 @@ const diffPreview = Effect.fn('CheckoutInspection.diffPreview')(function* (
       truncated: changes.truncated,
     }
   }
+  if (source.kind === 'staged') {
+    const base = head ?? (yield* emptyTreeRevision(runner, cwd))
+    const changes = yield* collectChanges(runner, cwd, ['--cached', base], false, source.ignoreWhitespace)
+    return {
+      id: 'staged',
+      kind: 'staged',
+      title: 'Staged changes',
+      baseRef: head === null ? null : 'HEAD',
+      headRef,
+      files: [...changes.files],
+      truncated: changes.truncated,
+    }
+  }
+  if (source.kind === 'commit') {
+    const revision = yield* verifiedCommit(runner, cwd, source.commit)
+    if (revision === null) return yield* fail('base-unavailable', 'The commit does not exist in this checkout')
+    const parent = (yield* verifiedCommit(runner, cwd, `${revision}^`)) ?? (yield* emptyTreeRevision(runner, cwd))
+    const changes = yield* collectChanges(runner, cwd, [parent, revision], false, source.ignoreWhitespace)
+    return {
+      id: `commit:${revision}`,
+      kind: 'commit',
+      title: `Commit ${revision.slice(0, 8)}`,
+      baseRef: parent,
+      headRef: revision,
+      files: [...changes.files],
+      truncated: changes.truncated,
+    }
+  }
   const range = yield* branchRangeBase(runner, cwd, head, source.baseRef)
-  const changes = yield* collectChanges(runner, cwd, range.revision)
+  const changes = yield* collectChanges(runner, cwd, [range.revision], true, source.ignoreWhitespace)
   return {
     id: `branch-range:${range.base.name}`,
     kind: 'branch-range',
@@ -291,7 +330,12 @@ const patchBaseRevision = Effect.fn('CheckoutInspection.patchBaseRevision')(func
   source: DiffSourceSelector,
 ): Effect.fn.Return<string, CheckoutInspectionError> {
   const head = yield* verifiedCommit(runner, cwd, 'HEAD')
-  if (source.kind === 'working-tree') return head ?? (yield* emptyTreeRevision(runner, cwd))
+  if (source.kind === 'working-tree' || source.kind === 'staged') return head ?? (yield* emptyTreeRevision(runner, cwd))
+  if (source.kind === 'commit') {
+    const revision = yield* verifiedCommit(runner, cwd, source.commit)
+    if (revision === null) return yield* fail('base-unavailable', 'The commit does not exist in this checkout')
+    return (yield* verifiedCommit(runner, cwd, `${revision}^`)) ?? (yield* emptyTreeRevision(runner, cwd))
+  }
   return (yield* branchRangeBase(runner, cwd, head, source.baseRef)).revision
 })
 
@@ -309,6 +353,7 @@ function addedFilePatch(path: string, text: string, mode: '100644' | '120000', t
 const untrackedPatch = Effect.fn('CheckoutInspection.untrackedPatch')(function* (
   cwd: string,
   path: string,
+  includeContents = false,
 ): Effect.fn.Return<FilePatch, CheckoutInspectionError> {
   const metadata = yield* entryMetadata(join(cwd, path))
   if (metadata.isSymbolicLink()) {
@@ -316,14 +361,16 @@ const untrackedPatch = Effect.fn('CheckoutInspection.untrackedPatch')(function* 
       try: () => readlink(join(cwd, path)),
       catch: () => fail('path-not-found', 'The link could not be read'),
     })
-    return toPatch(addedFilePatch(path, target, '120000', false), false)
+    const patch = toPatch(addedFilePatch(path, target, '120000', false), false)
+    return includeContents ? { ...patch, oldContent: '', newContent: target } : patch
   }
   const contained = yield* resolveContainedPath(cwd, path)
   const read = yield* readBoundedFile(contained.absolute, CHECKOUT_FILE_MAX_BYTES)
   if (looksBinary(read.bytes)) return { binary: true, patch: '', truncated: false }
   const text = decodeUtf8(read.bytes, read.truncated)
   if (text === null) return { binary: true, patch: '', truncated: false }
-  return toPatch(addedFilePatch(path, text, '100644', read.truncated), read.truncated)
+  const patch = toPatch(addedFilePatch(path, text, '100644', read.truncated), read.truncated)
+  return includeContents && !patch.truncated ? { ...patch, oldContent: '', newContent: text } : patch
 })
 
 /** Caps the patch text to its byte budget; a cut at a multi-byte boundary decodes as a replacement character. */
@@ -342,20 +389,94 @@ const filePatch = Effect.fn('CheckoutInspection.filePatch')(function* (
   if (!paths.every(path => isContainedCheckoutPath(path)))
     return yield* fail('outside-checkout', 'Paths must stay inside the checkout')
   const cwd = yield* requireRepository(runner, root)
-  const untracked = yield* runGit(runner, cwd, ['ls-files', '-z', '--others', '--exclude-standard', '--', request.path])
-  if (untracked.exitCode === 0 && parseNulList(untracked.stdout).includes(request.path))
-    return yield* untrackedPatch(cwd, request.path)
+  if (request.source.kind === 'working-tree' || request.source.kind === 'branch-range') {
+    const untracked = yield* runGit(runner, cwd, [
+      'ls-files',
+      '-z',
+      '--others',
+      '--exclude-standard',
+      '--',
+      request.path,
+    ])
+    if (untracked.exitCode === 0 && parseNulList(untracked.stdout).includes(request.path)) {
+      return yield* untrackedPatch(cwd, request.path, request.includeContents)
+    }
+  }
   const base = yield* patchBaseRevision(runner, cwd, request.source)
   const result = yield* runGit(
     runner,
     cwd,
-    ['diff', '--no-color', '--no-ext-diff', '--no-textconv', '-M', '-U3', base, '--', ...paths],
+    [
+      'diff',
+      '--no-color',
+      '--no-ext-diff',
+      '--no-textconv',
+      '-M',
+      `-U${request.contextLines ?? 3}`,
+      ...(request.source.ignoreWhitespace ? ['-w'] : []),
+      ...(request.source.kind === 'staged'
+        ? ['--cached', base]
+        : request.source.kind === 'commit'
+          ? [base, request.source.commit]
+          : [base]),
+      '--',
+      ...paths,
+    ],
     CHECKOUT_PATCH_MAX_BYTES,
   )
   if (result.exitCode !== 0 && !result.truncated) return yield* fail('failed', 'Git could not produce the patch')
   if (/^Binary files .+ differ$/m.test(result.stdout) || /^GIT binary patch$/m.test(result.stdout))
     return { binary: true, patch: '', truncated: false }
-  return { binary: false, patch: result.stdout, truncated: result.truncated }
+  const patch: FilePatch = { binary: false, patch: result.stdout, truncated: result.truncated }
+  if (!request.includeContents || patch.truncated || patch.patch === '') return patch
+  const oldContent = yield* gitFileContent(runner, cwd, base, request.previousPath ?? request.path)
+  let newContent: string | null
+  if (request.source.kind === 'commit')
+    newContent = yield* gitFileContent(runner, cwd, request.source.commit, request.path)
+  else if (request.source.kind === 'staged') newContent = yield* gitFileContent(runner, cwd, '', request.path)
+  else {
+    const current = yield* readFile(runner, cwd, request.path).pipe(Effect.option)
+    newContent = Option.isSome(current) ? current.value.content : ''
+  }
+  return { ...patch, ...(oldContent === null ? {} : { oldContent }), ...(newContent === null ? {} : { newContent }) }
+})
+
+const gitFileContent = Effect.fn('CheckoutInspection.gitFileContent')(function* (
+  runner: CommandRunnerService,
+  cwd: string,
+  revision: string,
+  path: string,
+): Effect.fn.Return<string | null, CheckoutInspectionError> {
+  const result = yield* runGit(runner, cwd, ['show', `${revision}:${path}`], CHECKOUT_FILE_MAX_BYTES)
+  if (result.exitCode !== 0) return ''
+  if (result.truncated || result.stdout.includes('\0') || result.stdout.includes('\uFFFD')) return null
+  return result.stdout
+})
+
+const commits = Effect.fn('CheckoutInspection.commits')(function* (
+  runner: CommandRunnerService,
+  root: string,
+): Effect.fn.Return<CheckoutCommitList, CheckoutInspectionError> {
+  const cwd = yield* requireRepository(runner, root)
+  if ((yield* verifiedCommit(runner, cwd, 'HEAD')) === null) return { items: [], truncated: false }
+  const result = yield* runGit(runner, cwd, [
+    'log',
+    `--max-count=${CHECKOUT_COMMIT_LIMIT + 1}`,
+    '--format=%H%x00%s%x00%aI%x00',
+    '--',
+  ])
+  if (result.exitCode !== 0) return yield* fail('failed', 'Git could not list commits')
+  const fields = result.stdout.split('\0')
+  const items: CheckoutCommitList['items'][number][] = []
+  for (let index = 0; index + 2 < fields.length; index += 3) {
+    const hash = fields[index]?.trim() ?? ''
+    if (!/^[0-9a-f]{40,64}$/.test(hash)) continue
+    items.push({ hash, subject: fields[index + 1] ?? '', authoredAt: fields[index + 2] ?? '' })
+  }
+  return {
+    items: items.slice(0, CHECKOUT_COMMIT_LIMIT),
+    truncated: result.truncated || items.length > CHECKOUT_COMMIT_LIMIT,
+  }
 })
 
 const branches = Effect.fn('CheckoutInspection.branches')(function* (
@@ -424,6 +545,7 @@ const listEntries = Effect.fn('CheckoutInspection.listEntries')(function* (
   runner: CommandRunnerService,
   root: string,
   path: string,
+  options: CheckoutReadOptions = {},
 ): Effect.fn.Return<DirectoryListing, CheckoutInspectionError> {
   const target = yield* resolveContainedPath(root, path)
   const info = yield* regularFileSize(target.absolute)
@@ -431,7 +553,8 @@ const listEntries = Effect.fn('CheckoutInspection.listEntries')(function* (
   const visible = yield* visibleChildren(runner, root, path)
   const dirents = yield* readDirectoryEntries(target.absolute)
   const candidates = dirents.filter(
-    dirent => dirent.name.toLowerCase() !== '.git' && (visible === null || visible.has(dirent.name)),
+    dirent =>
+      dirent.name.toLowerCase() !== '.git' && (options.includeIgnored || visible === null || visible.has(dirent.name)),
   )
   const built = yield* Effect.forEach(
     candidates,
@@ -448,6 +571,7 @@ const listEntries = Effect.fn('CheckoutInspection.listEntries')(function* (
               )
         const entry: DirectoryEntry = {
           name: dirent.name,
+          ...(visible !== null && !visible.has(dirent.name) ? { ignored: true } : {}),
           path: path === '' ? dirent.name : `${path}/${dirent.name}`,
           kind,
           size,
@@ -481,7 +605,11 @@ const isListedFile = Effect.fn('CheckoutInspection.isListedFile')(function* (
 
 /** Image formats are recognized from their bytes, never from a repository-controlled extension. */
 export function checkoutImagePreviewDataUrl(bytes: Uint8Array, truncated: boolean): string | null {
-  if (truncated || bytes.byteLength === 0 || bytes.byteLength > CHECKOUT_FILE_MAX_BYTES) return null
+  return imagePreviewDataUrl(bytes, truncated, CHECKOUT_FILE_MAX_BYTES)
+}
+
+function imagePreviewDataUrl(bytes: Uint8Array, truncated: boolean, limit: number): string | null {
+  if (truncated || bytes.byteLength === 0 || bytes.byteLength > limit) return null
   const header = Buffer.from(bytes.subarray(0, 16))
   let mediaType: string | null = null
   if (
@@ -506,21 +634,57 @@ export function checkoutImagePreviewDataUrl(bytes: Uint8Array, truncated: boolea
   return mediaType ? `data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}` : null
 }
 
+/** Passive preview formats. Active documents use octet-stream and are rendered in a sandbox by the UI. */
+export function checkoutPreviewDataUrl(bytes: Uint8Array, truncated: boolean): string | null {
+  if (truncated || bytes.byteLength === 0 || bytes.byteLength > CHECKOUT_PREVIEW_MAX_BYTES) return null
+  const image = imagePreviewDataUrl(bytes, truncated, CHECKOUT_PREVIEW_MAX_BYTES)
+  if (image !== null) return image
+  const header = Buffer.from(bytes.subarray(0, 16))
+  let mediaType: string | null = null
+  if (header.toString('ascii', 0, 5) === '%PDF-') mediaType = 'application/pdf'
+  else if (header.toString('ascii', 0, 4) === 'wOFF') mediaType = 'font/woff'
+  else if (header.toString('ascii', 0, 4) === 'wOF2') mediaType = 'font/woff2'
+  else if (header.toString('ascii', 0, 4) === 'OTTO') mediaType = 'font/otf'
+  else if (header.subarray(0, 4).equals(Buffer.from([0, 1, 0, 0]))) mediaType = 'font/ttf'
+  else if (header.toString('ascii', 0, 4) === 'fLaC') mediaType = 'audio/flac'
+  else if (header.toString('ascii', 0, 4) === 'OggS') mediaType = 'audio/ogg'
+  else if (header.toString('ascii', 0, 3) === 'ID3' || (bytes[0] === 0xff && ((bytes[1] ?? 0) & 0xe0) === 0xe0))
+    mediaType = 'audio/mpeg'
+  else if (header.toString('ascii', 0, 4) === 'RIFF' && header.toString('ascii', 8, 12) === 'WAVE')
+    mediaType = 'audio/wav'
+  else if (header.toString('ascii', 4, 8) === 'ftyp') mediaType = 'video/mp4'
+  else if (header.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) mediaType = 'video/webm'
+  else if (looksBinary(bytes) || decodeUtf8(bytes, false) === null) mediaType = 'application/octet-stream'
+  return mediaType ? `data:${mediaType};base64,${Buffer.from(bytes).toString('base64')}` : null
+}
+
 const readFile = Effect.fn('CheckoutInspection.readFile')(function* (
   runner: CommandRunnerService,
   root: string,
   path: string,
+  options: CheckoutReadOptions = {},
 ): Effect.fn.Return<FileContent, CheckoutInspectionError> {
   if (path === '') return yield* fail('invalid-request', 'A file path is required')
   const target = yield* resolveContainedPath(root, path)
   const info = yield* regularFileSize(target.absolute)
   if (!info.isFile()) return yield* fail('path-not-found', 'The path is not a file')
-  if (!(yield* isListedFile(runner, root, path))) return yield* fail('path-not-found', 'The file is not listed')
-  const read = yield* readBoundedFile(target.absolute, CHECKOUT_FILE_MAX_BYTES)
+  if (!options.includeIgnored && !(yield* isListedFile(runner, root, path)))
+    return yield* fail('path-not-found', 'The file is not listed')
+  let read = yield* readBoundedFile(target.absolute, CHECKOUT_FILE_MAX_BYTES)
   const text = looksBinary(read.bytes) ? null : decodeUtf8(read.bytes, read.truncated)
-  const previewDataUrl = checkoutImagePreviewDataUrl(read.bytes, read.truncated)
+  if (read.truncated && read.size <= CHECKOUT_PREVIEW_MAX_BYTES && checkoutPreviewDataUrl(read.bytes, false) !== null)
+    read = yield* readBoundedFile(target.absolute, CHECKOUT_PREVIEW_MAX_BYTES)
+  const textDocument = /\.(?:ipynb|rtf)$/i.test(path)
+  if (read.truncated && textDocument && read.size <= 8 * 1024 * 1024)
+    read = yield* readBoundedFile(target.absolute, 8 * 1024 * 1024)
+  const previewDataUrl =
+    checkoutPreviewDataUrl(read.bytes, read.truncated) ??
+    (textDocument && read.size > CHECKOUT_FILE_MAX_BYTES && !read.truncated
+      ? `data:application/octet-stream;base64,${read.bytes.toString('base64')}`
+      : null)
   return {
     path,
+    revision: read.revision,
     size: read.size,
     binary: text === null || previewDataUrl !== null,
     content: previewDataUrl ? null : text,
@@ -529,17 +693,69 @@ const readFile = Effect.fn('CheckoutInspection.readFile')(function* (
   }
 })
 
-/** Pure repository inspection over the user's git CLI. Callers pass canonical checkout paths. */
+const writeFile = Effect.fn('CheckoutInspection.writeFile')(function* (
+  runner: CommandRunnerService,
+  fs: FileSystem.FileSystem,
+  root: string,
+  request: CheckoutWriteFileRequest,
+): Effect.fn.Return<FileContent, CheckoutInspectionError> {
+  const bytes = Buffer.from(request.content, 'utf8')
+  if (
+    bytes.byteLength > CHECKOUT_FILE_MAX_BYTES ||
+    request.content.includes('\0') ||
+    request.expectedContent.includes('\0') ||
+    decodeUtf8(bytes, false) !== request.content
+  )
+    return yield* fail('invalid-request', 'Only complete UTF-8 text files can be saved')
+  const target = yield* resolveContainedPath(root, request.path)
+  const current = yield* readFile(runner, root, request.path, request)
+  if (current.binary || current.truncated || current.content === null)
+    return yield* fail('invalid-request', 'Only complete UTF-8 text files can be saved')
+  if (current.content !== request.expectedContent)
+    return yield* fail('conflict', 'The file changed before it could be saved')
+  if (current.content === request.content) return current
+  const metadata = yield* regularFileSize(target.absolute)
+  return yield* Effect.scoped(
+    Effect.gen(function* () {
+      const temporary = yield* fs.makeTempFileScoped({
+        directory: dirname(target.absolute),
+        prefix: '.watchtower-save-',
+      })
+      yield* fs.writeFile(temporary, bytes)
+      yield* fs.chmod(temporary, metadata.mode)
+      const rechecked = yield* resolveContainedPath(root, request.path)
+      if (rechecked.absolute !== target.absolute)
+        return yield* fail('conflict', 'The file moved before it could be saved')
+      const latest = yield* readFile(runner, root, request.path, request)
+      if (latest.content !== request.expectedContent || latest.binary || latest.truncated)
+        return yield* fail('conflict', 'The file changed before it could be saved')
+      yield* fs.rename(temporary, target.absolute)
+      return yield* readFile(runner, root, request.path, request)
+    }),
+  ).pipe(
+    Effect.catch(error =>
+      error instanceof CheckoutInspectionError
+        ? Effect.fail(error)
+        : Effect.fail(fail('failed', 'The file could not be saved')),
+    ),
+  )
+})
+
+/** Checkout review and serialized text saves. Callers pass canonical checkout paths. */
 export const CheckoutInspectionLive = Layer.effect(
   CheckoutInspection,
   Effect.gen(function* () {
     const runner = yield* CommandRunner
+    const fs = yield* FileSystem.FileSystem
+    const writeGate = yield* Semaphore.make(1)
     return CheckoutInspection.of({
       diffPreview: (root, source) => diffPreview(runner, root, source),
       filePatch: (root, request) => filePatch(runner, root, request),
       branches: root => branches(runner, root),
-      listEntries: (root, path) => listEntries(runner, root, path),
-      readFile: (root, path) => readFile(runner, root, path),
+      commits: root => commits(runner, root),
+      listEntries: (root, path, options) => listEntries(runner, root, path, options),
+      readFile: (root, path, options) => readFile(runner, root, path, options),
+      writeFile: (root, request) => writeGate.withPermits(1)(writeFile(runner, fs, root, request)),
     })
   }),
 )

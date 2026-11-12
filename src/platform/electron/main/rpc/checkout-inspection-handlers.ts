@@ -39,7 +39,7 @@ export interface CheckoutInspectionHandlerOptions<R = never> {
   readonly resolveCheckoutPath: (request: CheckoutScope) => Effect.Effect<string, CheckoutInspectionRpcError, R>
 }
 
-/** Read-only checkout review handlers. They require the CheckoutInspection service from the caller's runtime. */
+/** Checkout review and text editing handlers. They require the CheckoutInspection service from the caller's runtime. */
 export function checkoutInspectionHandlers<R = never>(options: CheckoutInspectionHandlerOptions<R>) {
   return Layer.unwrap(
     Effect.gen(function* () {
@@ -54,11 +54,16 @@ export function checkoutInspectionHandlers<R = never>(options: CheckoutInspectio
               source: request.source,
               path: request.path,
               previousPath: request.previousPath,
+              includeContents: request.includeContents,
+              contextLines: request.contextLines,
             }),
           ),
         'checkout:branches': request => checkout(request, root => inspection.branches(root)),
-        'checkout:listEntries': request => checkout(request, root => inspection.listEntries(root, request.path)),
-        'checkout:readFile': request => checkout(request, root => inspection.readFile(root, request.path)),
+        'checkout:commits': request => checkout(request, root => inspection.commits(root)),
+        'checkout:listEntries': request =>
+          checkout(request, root => inspection.listEntries(root, request.path, request)),
+        'checkout:readFile': request => checkout(request, root => inspection.readFile(root, request.path, request)),
+        'checkout:writeFile': request => checkout(request, root => inspection.writeFile(root, request)),
       })
     }),
   )

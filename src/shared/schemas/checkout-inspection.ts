@@ -6,9 +6,11 @@ import { projectIdSchema, workspaceCheckoutIdSchema } from './workspace.js'
 export const CHECKOUT_DIFF_FILE_LIMIT = 2000
 export const CHECKOUT_UNTRACKED_SCAN_LIMIT = 5000
 export const CHECKOUT_BRANCH_LIMIT = 200
+export const CHECKOUT_COMMIT_LIMIT = 200
 export const CHECKOUT_DIRECTORY_ENTRY_LIMIT = 2000
 export const CHECKOUT_PATCH_MAX_BYTES = 1024 * 1024
 export const CHECKOUT_FILE_MAX_BYTES = 1024 * 1024
+export const CHECKOUT_PREVIEW_MAX_BYTES = 50 * 1024 * 1024
 
 const count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
 
@@ -57,8 +59,18 @@ export type CheckoutScope = Schema.Schema.Type<typeof checkoutScopeSchema>
 
 /** Uncommitted changes against HEAD, or the working tree against the merge-base with a base ref. */
 export const diffSourceSelectorSchema = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal('working-tree') }),
-  Schema.Struct({ kind: Schema.Literal('branch-range'), baseRef: Schema.optional(gitRefSchema) }),
+  Schema.Struct({ kind: Schema.Literal('working-tree'), ignoreWhitespace: Schema.optional(Schema.Boolean) }),
+  Schema.Struct({ kind: Schema.Literal('staged'), ignoreWhitespace: Schema.optional(Schema.Boolean) }),
+  Schema.Struct({
+    kind: Schema.Literal('commit'),
+    commit: gitRefSchema,
+    ignoreWhitespace: Schema.optional(Schema.Boolean),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal('branch-range'),
+    baseRef: Schema.optional(gitRefSchema),
+    ignoreWhitespace: Schema.optional(Schema.Boolean),
+  }),
 ])
 export type DiffSourceSelector = Schema.Schema.Type<typeof diffSourceSelectorSchema>
 
@@ -81,7 +93,7 @@ export type DiffFile = Schema.Schema.Type<typeof diffFileSchema>
 
 export const diffSourceSchema = Schema.Struct({
   id: Schema.String.check(Schema.isMaxLength(512)),
-  kind: Schema.Literals(['working-tree', 'branch-range']),
+  kind: Schema.Literals(['working-tree', 'branch-range', 'staged', 'commit']),
   title: Schema.String.check(Schema.isMaxLength(512)),
   baseRef: Schema.NullOr(Schema.String.check(Schema.isMaxLength(255))),
   headRef: Schema.NullOr(Schema.String.check(Schema.isMaxLength(255))),
@@ -95,11 +107,15 @@ export const filePatchRequestSchema = Schema.Struct({
   source: diffSourceSelectorSchema,
   path: checkoutFilePathSchema,
   previousPath: Schema.optional(checkoutFilePathSchema),
+  includeContents: Schema.optional(Schema.Boolean),
+  contextLines: Schema.optional(count.check(Schema.isLessThanOrEqualTo(100000))),
 })
 export const filePatchSchema = Schema.Struct({
   binary: Schema.Boolean,
   patch: Schema.String.check(Schema.isMaxLength(CHECKOUT_PATCH_MAX_BYTES * 4)),
   truncated: Schema.Boolean,
+  oldContent: Schema.optional(Schema.String.check(Schema.isMaxLength(CHECKOUT_FILE_MAX_BYTES * 4))),
+  newContent: Schema.optional(Schema.String.check(Schema.isMaxLength(CHECKOUT_FILE_MAX_BYTES * 4))),
 })
 export type FilePatch = Schema.Schema.Type<typeof filePatchSchema>
 export type FilePatchRequest = Schema.Schema.Type<typeof filePatchRequestSchema>
@@ -115,12 +131,26 @@ export const checkoutBranchListSchema = Schema.Struct({
 })
 export type CheckoutBranchList = Schema.Schema.Type<typeof checkoutBranchListSchema>
 
+export const checkoutCommitListSchema = Schema.Struct({
+  items: Schema.Array(
+    Schema.Struct({
+      hash: Schema.String.check(Schema.isPattern(/^[0-9a-f]{40,64}$/)),
+      subject: Schema.String,
+      authoredAt: Schema.String,
+    }),
+  ).check(Schema.isMaxLength(CHECKOUT_COMMIT_LIMIT)),
+  truncated: Schema.Boolean,
+})
+export type CheckoutCommitList = Schema.Schema.Type<typeof checkoutCommitListSchema>
+
 export const listEntriesRequestSchema = Schema.Struct({
   ...checkoutScopeSchema.fields,
+  includeIgnored: Schema.optional(Schema.Boolean),
   path: checkoutDirectoryPathSchema,
 })
 export type ListEntriesRequest = Schema.Schema.Type<typeof listEntriesRequestSchema>
 export const directoryEntrySchema = Schema.Struct({
+  ignored: Schema.optional(Schema.Boolean),
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(4096)),
   path: gitPathSchema,
   kind: Schema.Literals(['file', 'directory']),
@@ -136,21 +166,35 @@ export type DirectoryEntry = Schema.Schema.Type<typeof directoryEntrySchema>
 
 export const readFileRequestSchema = Schema.Struct({
   ...checkoutScopeSchema.fields,
+  includeIgnored: Schema.optional(Schema.Boolean),
   path: checkoutFilePathSchema,
 })
 export const fileContentSchema = Schema.Struct({
   path: gitPathSchema,
+  /** Identifies the on-disk bytes read, including a revert to previously seen content. */
+  revision: Schema.optional(Schema.String.check(Schema.isMaxLength(128))),
   size: count,
   binary: Schema.Boolean,
   /** UTF-8 text, or null when the file is binary or not valid UTF-8. */
   content: Schema.NullOr(Schema.String.check(Schema.isMaxLength(CHECKOUT_FILE_MAX_BYTES * 4))),
   previewDataUrl: Schema.optional(
     Schema.String.check(
-      Schema.isMaxLength(Math.ceil(CHECKOUT_FILE_MAX_BYTES / 3) * 4 + 64),
-      Schema.isPattern(/^data:image\/(?:png|jpeg|gif|webp|bmp);base64,[A-Za-z0-9+/]+={0,2}$/),
+      Schema.isMaxLength(Math.ceil(CHECKOUT_PREVIEW_MAX_BYTES / 3) * 4 + 128),
+      Schema.isPattern(
+        /^data:(?:image\/(?:png|jpeg|gif|webp|bmp|tiff)|audio\/(?:mpeg|wav|ogg|flac)|video\/(?:mp4|webm|ogg)|application\/(?:pdf|octet-stream)|font\/(?:woff|woff2|ttf|otf));base64,[A-Za-z0-9+/]+={0,2}$/,
+      ),
     ),
   ),
   truncated: Schema.Boolean,
 })
 export type FileContent = Schema.Schema.Type<typeof fileContentSchema>
 export type ReadFileRequest = Schema.Schema.Type<typeof readFileRequestSchema>
+
+export const writeFileRequestSchema = Schema.Struct({
+  ...checkoutScopeSchema.fields,
+  includeIgnored: Schema.optional(Schema.Boolean),
+  path: checkoutFilePathSchema,
+  content: Schema.String.check(Schema.isMaxLength(CHECKOUT_FILE_MAX_BYTES)),
+  expectedContent: Schema.String.check(Schema.isMaxLength(CHECKOUT_FILE_MAX_BYTES)),
+})
+export type WriteFileRequest = Schema.Schema.Type<typeof writeFileRequestSchema>

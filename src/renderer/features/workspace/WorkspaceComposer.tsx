@@ -51,6 +51,8 @@ import { activeGoalControl, parseWorkspacePromptCommand } from './prompt-command
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { promptWithAttachments, visiblePromptAttachments } from './prompt-editor.js'
 import { firstPendingRequest } from './request-drawer-state.js'
+import { promptWithReviewComments, reviewCommentsIncludedInPrompt } from './review/review-comments.js'
+import { useReviewComments } from './review/use-review-comments.js'
 import { useCreateSideChat } from './side-chat/hooks.js'
 import { usePendingStart } from './use-pending-start.js'
 import { usePromptHistory } from './use-prompt-history.js'
@@ -112,6 +114,7 @@ function WorkspaceComposerContent({
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
   const { accessMode: defaultAccessMode } = useWorkspaceAgentPreferences()
   const attachments = usePromptAttachments(conversationId)
+  const reviewComments = useReviewComments(conversationId)
   const inspectionRequested = useRef('')
   const agentPickerRef = useRef<{ open: (query?: string) => void }>(null)
   const [selectedConnectionId, setSelectedConnectionId] = useState('')
@@ -167,9 +170,12 @@ function WorkspaceComposerContent({
     const captured = capturePending(savedStart)
     if (!captured.error)
       void executeStart(savedStart.command)
-        .then(() => attachments.clearCaptured(savedStart.command.attachments ?? []))
+        .then(() => {
+          attachments.clearCaptured(savedStart.command.attachments ?? [])
+          reviewComments.clearCaptured(reviewCommentsIncludedInPrompt(savedStart.command.prompt, reviewComments.items))
+        })
         .catch(() => {})
-  }, [savedStart, capturePending, executeStart, attachments])
+  }, [savedStart, capturePending, executeStart, attachments, reviewComments])
   // Same page the request drawer reads, so the composer knows what the agent waits for without another read.
   const pendingRequests = useWorkspacePendingRequests(firstPendingRequest(task.id))
 
@@ -374,6 +380,7 @@ function WorkspaceComposerContent({
   const sendIntent = async (nextIntent: Intent) => {
     setError(null)
     setIntent(nextIntent)
+    const capturedComments = reviewCommentsIncludedInPrompt(nextIntent.prompt, reviewComments.items)
     try {
       if (nextIntent.kind === 'start') {
         const captured = pendingStarts.capture({
@@ -395,6 +402,7 @@ function WorkspaceComposerContent({
       else await steerRun.execute(nextIntent.command)
       if (canClearCapturedDraft(draftRef.current, nextIntent.draftValue)) setDraft('')
       attachments.clearCaptured(nextIntent.command.attachments ?? [])
+      reviewComments.clearCaptured(capturedComments)
       setIntent(null)
     } catch (cause) {
       if (nextIntent.kind === 'start') {
@@ -527,7 +535,7 @@ function WorkspaceComposerContent({
       }
       return
     }
-    const prompt = promptWithAttachments(draft, attachments.items)
+    const prompt = promptWithReviewComments(promptWithAttachments(draft, attachments.items), reviewComments.items)
     if (
       !prompt ||
       attachmentBlocked ||
@@ -647,7 +655,9 @@ function WorkspaceComposerContent({
           .filter(item => item.runId === activeRun.id && item.request.generation === activeRun.generation)
           .sort((a, b) => a.sequence - b.sequence)[0]?.request.kind ?? null)
       : null
-  const hasContent = Boolean(promptWithAttachments(draft, attachments.items))
+  const hasContent = Boolean(
+    promptWithReviewComments(promptWithAttachments(draft, attachments.items), reviewComments.items),
+  )
   const canStop = Boolean(activeRun && stopSupported)
   const stopPrimary = isStopPrimary({ busy, canStop, hasContent })
   const steer = () => {
@@ -657,10 +667,10 @@ function WorkspaceComposerContent({
       blocked ||
       intent ||
       attachmentBlocked ||
-      !promptWithAttachments(draft, attachments.items)
+      !promptWithReviewComments(promptWithAttachments(draft, attachments.items), reviewComments.items)
     )
       return
-    const prompt = promptWithAttachments(draft, attachments.items)
+    const prompt = promptWithReviewComments(promptWithAttachments(draft, attachments.items), reviewComments.items)
     void sendIntent({
       kind: 'steer',
       prompt,
@@ -950,6 +960,7 @@ function WorkspaceComposerContent({
         )}
         <WorkspaceRequests taskId={task.id} conversationId={conversationId} />
         <WorkspacePromptInput
+          reviewOwnerKey={conversationId}
           value={draft}
           autoFocus
           onChange={value => {

@@ -22,13 +22,19 @@ export const checkoutNavigationMessages = {
   'not-found': 'The file was not found in the checkout.',
   'choose-editor': 'Choose a code editor to open this file.',
   failed: 'Could not open the file. Check that the selected editor is installed.',
+  'save-failed': 'Could not save a copy of the file. Choose another destination and retry.',
 } as const
 export class CheckoutNavigationError extends Schema.TaggedError<CheckoutNavigationError>()('CheckoutNavigationError', {
-  code: Schema.Literals(['unavailable', 'outside-checkout', 'not-found', 'choose-editor', 'failed']),
+  code: Schema.Literals(['unavailable', 'outside-checkout', 'not-found', 'choose-editor', 'failed', 'save-failed']),
   message: Schema.Literals(Object.values(checkoutNavigationMessages)),
 }) {}
 
 export const CheckoutNavigationRpcGroup = RpcGroup.make(
+  Rpc.make('checkout:downloadFile', {
+    payload: checkoutNavigationPathSchema,
+    success: Schema.Boolean,
+    error: CheckoutNavigationError,
+  }),
   Rpc.make('checkout:openFile', {
     payload: checkoutOpenFileSchema,
     success: Schema.Void,

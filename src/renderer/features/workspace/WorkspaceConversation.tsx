@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Markdown } from '@/renderer/components/Markdown'
+import { Markdown, type MarkdownProps } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { Button } from '@/renderer/components/ui/button'
 import {
@@ -43,6 +43,7 @@ import {
   rememberPayload,
   wasPayloadReleased,
 } from './payload-cache.js'
+import { PROMPT_MESSAGE_MARKDOWN_COMPONENTS, remarkPromptMessageReferences } from './prompt-message-references.js'
 import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
 import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
@@ -102,12 +103,14 @@ export function WorkspaceConversation({
   onOpenFile,
   scope,
   sessionIdsByRunId,
+  promptCommands,
 }: {
   readonly conversationId: ConversationId
   readonly workspacePath?: string | undefined
   readonly onOpenFile?: ((path: string) => void) | undefined
   readonly scope?: CheckoutScope | undefined
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null> | undefined
+  readonly promptCommands?: readonly string[] | undefined
 }): React.JSX.Element {
   const loadImage = useMarkdownImageLoader(scope ?? null)
   const navigation = useMemo(
@@ -120,6 +123,7 @@ export function WorkspaceConversation({
         key={conversationId}
         conversationId={conversationId}
         sessionIdsByRunId={sessionIdsByRunId}
+        promptCommands={promptCommands}
       />
     </MarkdownNavigationContext>
   )
@@ -128,9 +132,11 @@ export function WorkspaceConversation({
 function WorkspaceConversationView({
   conversationId,
   sessionIdsByRunId = new Map(),
+  promptCommands = [],
 }: {
   readonly conversationId: ConversationId
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null>
+  readonly promptCommands?: readonly string[]
 }): React.JSX.Element {
   const { projection, stream } = useWorkspaceEvents()
   const { submissions, messageKeys, reconcile } = usePendingStart()
@@ -167,8 +173,24 @@ function WorkspaceConversationView({
   const payload = useWorkspacePayload(payloadRequest)
   const payloadPending = payloadRequest !== null
   const timelineExtraData = useMemo(
-    () => ({ activePayload, payloadResults, payloadPending, expandedFolds, disclosureChoices, preservedWorkTurns }),
-    [activePayload, payloadResults, payloadPending, expandedFolds, disclosureChoices, preservedWorkTurns],
+    () => ({
+      activePayload,
+      payloadResults,
+      payloadPending,
+      expandedFolds,
+      disclosureChoices,
+      preservedWorkTurns,
+      promptCommands,
+    }),
+    [
+      activePayload,
+      payloadResults,
+      payloadPending,
+      expandedFolds,
+      disclosureChoices,
+      preservedWorkTurns,
+      promptCommands,
+    ],
   )
 
   const requestKey = conversationRequest ? JSON.stringify(conversationRequest) : null
@@ -512,6 +534,7 @@ function WorkspaceConversationView({
               return (
                 <UserMessageEntry
                   entry={entry}
+                  promptCommands={promptCommands}
                   delivery={row.delivery}
                   activePayload={activePayload}
                   payloadResult={reference ? getPayloadResult(`message:${entry.message.id}`, reference) : null}
@@ -583,6 +606,7 @@ interface PayloadProps {
 
 function UserMessageEntry({
   entry,
+  promptCommands,
   delivery,
   activePayload,
   payloadResult,
@@ -591,9 +615,14 @@ function UserMessageEntry({
   onLoadPayload,
 }: PayloadProps & {
   readonly entry: ConversationUserMessage
+  readonly promptCommands: readonly string[]
   readonly delivery?: 'sending' | 'reconnecting' | 'sent'
 }): React.JSX.Element {
   const message = entry.message
+  const promptRemarkPlugins = useMemo<NonNullable<MarkdownProps['remarkPlugins']>>(
+    () => [[remarkPromptMessageReferences, { commands: promptCommands, attachments: message.attachments }]],
+    [promptCommands, message.attachments],
+  )
   const reference = messagePayloadReference(message)
   const fullMessage =
     payloadResult?.owner === `message:${message.id}` && reference && payloadResult.key === referenceKey(reference)
@@ -611,7 +640,13 @@ function UserMessageEntry({
       {content !== undefined && (
         <ExpandableMessage expandable={isCollapsibleMessage(content)}>
           <div className="typeset break-words">
-            <Markdown>{content}</Markdown>
+            <Markdown
+              remarkPlugins={promptRemarkPlugins}
+              components={PROMPT_MESSAGE_MARKDOWN_COMPONENTS}
+              singleDollarMath={false}
+            >
+              {content}
+            </Markdown>
           </div>
         </ExpandableMessage>
       )}

@@ -1,464 +1,451 @@
+import type { CodeViewHandle } from '@pierre/diffs/react'
 import {
   Check,
   ChevronDown,
-  ChevronRight,
   ChevronsDownUp,
   ChevronsUpDown,
-  Folder,
-  FolderOpen,
+  Columns2,
+  FlaskConicalOff,
+  FolderTree,
   GitBranch,
+  GitCommitHorizontal,
+  Pilcrow,
+  RefreshCw,
+  Rows3,
+  Search,
   WrapText,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { SegTabs } from '@/renderer/components/SegTabs'
 import { Button } from '@/renderer/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/renderer/components/ui/command'
-import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
-import { cn } from '@/renderer/shared/lib/utils'
-import type {
-  CheckoutBranchList,
-  CheckoutScope,
-  DiffFile,
-  DiffSource,
-  DiffSourceSelector,
-  FilePatch,
-} from '@/shared/schemas/checkout-inspection.js'
-
-import { CheckoutChangeActions } from './CheckoutChangeActions.js'
-import { buildDiffTree, diffFileKey, type DiffTreeNode, folderPaths } from './diff-tree.js'
-import { ChangeStats, InspectionNotice } from './inspection-ui.js'
-import { formatCompactCount, parseUnifiedDiff, splitDiffRows } from './unified-diff.js'
 import {
-  type InspectionState,
-  useCheckoutBranches,
-  useCheckoutDiffPreview,
-  useCheckoutFilePatch,
-} from './use-checkout-inspection.js'
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
+  DropdownMenuTrigger,
+} from '@/renderer/components/ui/dropdown-menu'
+import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import type { CheckoutScope, DiffSourceSelector } from '@/shared/schemas/checkout-inspection.js'
 
-type ScopeKind = 'working-tree' | 'branch-range'
+import type { ReviewAnnotationGroup } from '../review/AnnotationComment.js'
+import { useReviewComments } from '../review/use-review-comments.js'
+import { CheckoutChangeActions } from './CheckoutChangeActions.js'
+import { diffBranchChoices } from './diff-branch-choices.js'
+import { useDiffCommits, useDiffReviewPatches } from './diff-review-queries.js'
+import {
+  collapsedDiffFileKeys,
+  DIFF_PREFERENCES_KEY,
+  diffReviewSectionId,
+  isTestDiffPath,
+  readDiffPreferences,
+  readDiffReviewSection,
+  readExpandedDiffs,
+  shownDiffFiles,
+  writeExpandedDiffs,
+} from './diff-review-state.js'
+import { diffFileKey } from './diff-tree.js'
+import { DiffFileTree } from './DiffFileTree.js'
+import { DiffReviewCodeView } from './DiffReviewCodeView.js'
+import { ExplorerPane } from './ExplorerPane.js'
+import { ChangeStats, InspectionNotice } from './inspection-ui.js'
+import { browserStorage } from './right-panel-state.js'
+import { useCheckoutBranches, useCheckoutDiffPreview } from './use-checkout-inspection.js'
 
-const SCOPE_OPTIONS = [
-  { value: 'working-tree', label: 'Uncommitted' },
-  { value: 'branch-range', label: 'Branch' },
-]
-const STATUS_LETTER: Record<DiffFile['status'], string> = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R' }
-const STATUS_LABEL: Record<DiffFile['status'], string> = {
-  added: 'Added',
-  modified: 'Modified',
-  deleted: 'Deleted',
-  renamed: 'Renamed',
+type ScopeKind = 'working-tree' | 'branch-range' | 'staged' | 'commit'
+const SCOPE_LABELS: Record<ScopeKind, string> = {
+  'working-tree': 'Uncommitted changes',
+  'branch-range': 'Branch changes',
+  staged: 'Staged changes',
+  commit: 'Commit',
 }
-const STATUS_TONE: Record<DiffFile['status'], string> = {
-  added: 'text-success',
-  modified: 'text-warning',
-  deleted: 'text-destructive',
-  renamed: 'text-muted-foreground',
-}
-/** Rows beyond this count render behind an explicit control, so a large patch cannot stall the panel. */
-const RENDERED_ROW_LIMIT = 2000
 
 export interface DiffTabProps {
   readonly scope: CheckoutScope
   readonly revision: number
+  readonly onOpenFile?: ((path: string) => void) | undefined
+  readonly onReferencePath?: ((path: string) => void) | undefined
 }
 
-function selectorFor(kind: ScopeKind, baseRef: string | null): DiffSourceSelector {
-  if (kind === 'working-tree') return { kind: 'working-tree' }
-  return baseRef === null ? { kind: 'branch-range' } : { kind: 'branch-range', baseRef }
-}
-
-/** The path a row shows: `old → new` for a rename. */
-function fileLabel(file: DiffFile): string {
-  return file.previousPath === undefined ? file.path : `${file.previousPath} → ${file.path}`
-}
-
-function totalsOf(files: readonly DiffFile[]) {
-  return files.reduce(
+export function DiffTab(props: DiffTabProps): React.JSX.Element {
+  const scope = useMemo(
+    () => ({
+      projectId: props.scope.projectId,
+      ...(props.scope.checkoutId ? { checkoutId: props.scope.checkoutId } : {}),
+    }),
+    [props.scope.projectId, props.scope.checkoutId],
+  )
+  const [localRevision, setLocalRevision] = useState(0)
+  const revision = props.revision + localRevision
+  const [scopeKind, setScopeKind] = useState<ScopeKind>('working-tree')
+  const [baseRef, setBaseRef] = useState<string | null>(null)
+  const [commit, setCommit] = useState<string | null>(null)
+  const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [preferences, setPreferences] = useState(() => readDiffPreferences(browserStorage()))
+  const [searchRequest, setSearchRequest] = useState(0)
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
+  const [showGitActions, setShowGitActions] = useState(false)
+  const viewer = useRef<CodeViewHandle<ReviewAnnotationGroup, undefined>>(null)
+  const review = useReviewComments()
+  const pendingReveal = useRef<{ readonly path: string; readonly line: number; readonly sectionId: string } | null>(
+    null,
+  )
+  const selector = useMemo<DiffSourceSelector>(() => {
+    const ignoreWhitespace = preferences.ignoreWhitespace
+    if (scopeKind === 'commit' && commit) return { kind: 'commit', commit, ignoreWhitespace }
+    if (scopeKind === 'staged') return { kind: 'staged', ignoreWhitespace }
+    if (scopeKind === 'branch-range') return { kind: 'branch-range', ...(baseRef ? { baseRef } : {}), ignoreWhitespace }
+    return { kind: 'working-tree', ignoreWhitespace }
+  }, [scopeKind, commit, baseRef, preferences.ignoreWhitespace])
+  const preview = useCheckoutDiffPreview(scope, selector, revision)
+  const source = preview.data
+  const patches = useDiffReviewPatches(scope, source, revision, preferences.ignoreWhitespace)
+  const commits = useDiffCommits(scope, sourceMenuOpen, revision)
+  const collapseKey = JSON.stringify([scope, scopeKind, baseRef, commit])
+  const storedExpanded = useMemo(() => readExpandedDiffs(browserStorage(), collapseKey), [collapseKey])
+  const [folds, setFolds] = useState<{ readonly key: string; readonly values: ReadonlySet<string> }>(() => ({
+    key: collapseKey,
+    values: storedExpanded,
+  }))
+  const expanded = folds.key === collapseKey ? folds.values : storedExpanded
+  const collapsed = useMemo(() => collapsedDiffFileKeys(source?.files ?? [], expanded), [source, expanded])
+  const visibleFiles = useMemo(
+    () => shownDiffFiles(source?.files ?? [], preferences.hideTests, selectedPath),
+    [source, preferences.hideTests, selectedPath],
+  )
+  const sectionId = source ? diffReviewSectionId(scope, source, preferences.ignoreWhitespace) : ''
+  const allCollapsed = visibleFiles.length > 0 && visibleFiles.every(file => collapsed.has(diffFileKey(file)))
+  const testCount = source?.files.filter(file => isTestDiffPath(file.path)).length ?? 0
+  const totals = visibleFiles.reduce(
     (sum, file) => ({ additions: sum.additions + file.additions, deletions: sum.deletions + file.deletions }),
     { additions: 0, deletions: 0 },
   )
-}
 
-/** Changes in the checkout: uncommitted work, or the branch against a chosen base, with a per-file patch. */
-export function DiffTab({ scope, revision }: DiffTabProps) {
-  const [localRevision, setLocalRevision] = useState(0)
-  const currentRevision = revision + localRevision
-  const [scopeKind, setScopeKind] = useState<ScopeKind>('working-tree')
-  const [baseRef, setBaseRef] = useState<string | null>(null)
-  const [selectedKey, setSelectedKey] = useState<string | null>(null)
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set())
-  const [wrap, setWrap] = useState(false)
-  const [layout, setLayout] = useState<'unified' | 'split'>('unified')
+  useEffect(() => {
+    try {
+      localStorage.setItem(DIFF_PREFERENCES_KEY, JSON.stringify(preferences))
+    } catch {
+      /* Preferences remain local. */
+    }
+  }, [preferences])
+  useEffect(() => {
+    writeExpandedDiffs(browserStorage(), collapseKey, expanded)
+  }, [collapseKey, expanded])
 
-  const preview = useCheckoutDiffPreview(scope, selectorFor(scopeKind, baseRef), currentRevision)
-  const source = preview.data
-  const tree = useMemo(() => buildDiffTree(source?.files ?? []), [source])
-  const selected = source?.files.find(file => diffFileKey(file) === selectedKey) ?? null
-  // The patch request repeats the source's resolved base, so it always matches the list it came from.
-  const patch = useCheckoutFilePatch(
-    scope,
-    source && selected
-      ? { source: selectorFor(source.kind, source.baseRef), path: selected.path, previousPath: selected.previousPath }
-      : null,
-    currentRevision,
-  )
-
-  const toggleFolder = (path: string, open: boolean) =>
-    setCollapsed(previous => {
-      const next = new Set(previous)
-      if (open) next.delete(path)
-      else next.add(path)
-      return next
-    })
-
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-border flex flex-wrap items-center gap-1.5 border-b px-2.5 py-2">
-        <SegTabs
-          options={SCOPE_OPTIONS}
-          value={scopeKind}
-          onChange={value => {
-            setScopeKind(value === 'branch-range' ? 'branch-range' : 'working-tree')
-            setSelectedKey(null)
-          }}
-        />
-        {scopeKind === 'branch-range' ? (
-          <BaseRefPicker
-            scope={scope}
-            revision={currentRevision}
-            current={source?.baseRef ?? baseRef}
-            onSelect={name => {
-              setBaseRef(name)
-              setSelectedKey(null)
-            }}
-          />
-        ) : null}
-      </div>
-      {scopeKind === 'working-tree' && (
-        <CheckoutChangeActions
-          scope={scope}
-          revision={currentRevision}
-          selectedPath={selected?.path ?? null}
-          onChanged={() => setLocalRevision(value => value + 1)}
-        />
-      )}
-      <DiffBody
-        scope={scope}
-        revision={revision}
-        preview={preview}
-        source={source}
-        tree={tree}
-        collapsed={collapsed}
-        onToggleFolder={toggleFolder}
-        onCollapseAll={() => setCollapsed(new Set(folderPaths(tree)))}
-        onExpandAll={() => setCollapsed(new Set())}
-        selectedKey={selectedKey}
-        onSelect={setSelectedKey}
-        patch={patch}
-        selected={selected}
-        wrap={wrap}
-        onWrapChange={setWrap}
-        layout={layout}
-        onLayoutChange={setLayout}
-      />
-    </div>
-  )
-}
-
-interface DiffBodyProps {
-  readonly layout: 'unified' | 'split'
-  readonly onLayoutChange: (layout: 'unified' | 'split') => void
-  readonly scope: CheckoutScope
-  readonly revision: number
-  readonly preview: InspectionState<DiffSource>
-  readonly source: DiffSource | null | undefined
-  readonly tree: readonly DiffTreeNode[]
-  readonly collapsed: ReadonlySet<string>
-  readonly onToggleFolder: (path: string, open: boolean) => void
-  readonly onCollapseAll: () => void
-  readonly onExpandAll: () => void
-  readonly selectedKey: string | null
-  readonly onSelect: (key: string) => void
-  readonly patch: InspectionState<FilePatch>
-  readonly selected: DiffFile | null
-  readonly wrap: boolean
-  readonly onWrapChange: (wrap: boolean) => void
-}
-
-function DiffBody(props: DiffBodyProps) {
-  const { preview, source } = props
-  if (preview.error) return <InspectionNotice tone="error">{preview.error.message}</InspectionNotice>
-  if (preview.loading || !source) return <InspectionNotice>Loading changes…</InspectionNotice>
-  if (source.files.length === 0)
-    return (
-      <InspectionNotice>
-        {source.kind === 'working-tree' ? 'No uncommitted changes' : `No changes since ${source.baseRef ?? 'base'}`}
-      </InspectionNotice>
+  function updateExpanded(next: ReadonlySet<string>): void {
+    setFolds({ key: collapseKey, values: next })
+  }
+  function unfold(key: string): void {
+    if (!collapsed.has(key)) return
+    updateExpanded(new Set(expanded).add(key))
+  }
+  function toggle(key: string): void {
+    const next = new Set(expanded)
+    if (next.has(key)) next.delete(key)
+    else next.add(key)
+    updateExpanded(next)
+  }
+  function toggleAll(): void {
+    const next = new Set(expanded)
+    for (const file of visibleFiles) {
+      const key = diffFileKey(file)
+      if (allCollapsed) next.add(key)
+      else next.delete(key)
+    }
+    updateExpanded(next)
+  }
+  function reveal(path: string): void {
+    const file = source?.files.find(candidate => candidate.path === path)
+    if (!file) return
+    setSelectedPath(path)
+    unfold(diffFileKey(file))
+    patches.requestFile(path)
+    requestAnimationFrame(() => viewer.current?.scrollTo({ type: 'item', id: diffFileKey(file), align: 'start' }))
+  }
+  useEffect(() => {
+    function onReveal(event: Event): void {
+      const detail = (
+        event as CustomEvent<{ ownerKey: string; path: string; line: number; sectionId: string; mode: string }>
+      ).detail
+      if (!detail || detail.mode !== 'diff' || detail.ownerKey !== review.ownerKey) return
+      const target = readDiffReviewSection(detail.sectionId)
+      if (!target || target.scope.projectId !== scope.projectId || target.scope.checkoutId !== scope.checkoutId) return
+      pendingReveal.current = detail
+      setScopeKind(target.source.kind)
+      setBaseRef(target.source.kind === 'branch-range' ? (target.source.baseRef ?? null) : null)
+      setCommit(target.source.kind === 'commit' ? target.source.commit : null)
+      setPreferences(previous => ({ ...previous, ignoreWhitespace: target.source.ignoreWhitespace ?? false }))
+      setSelectedPath(detail.path)
+    }
+    window.addEventListener('watchtower:reveal-review-comment', onReveal)
+    return () => window.removeEventListener('watchtower:reveal-review-comment', onReveal)
+  }, [review.ownerKey, scope])
+  useEffect(() => {
+    const pending = pendingReveal.current
+    if (!pending || pending.sectionId !== sectionId) return
+    const file = source?.files.find(candidate => candidate.path === pending.path)
+    if (!file) return
+    patches.requestFile(file.path)
+    const key = diffFileKey(file)
+    if (collapsed.has(key)) {
+      const next = new Set(expanded)
+      next.add(key)
+      setFolds({ key: collapseKey, values: next })
+      return
+    }
+    if (!patches.files.has(key)) return
+    pendingReveal.current = null
+    const frame = requestAnimationFrame(() =>
+      viewer.current?.scrollTo({ type: 'line', id: key, lineNumber: pending.line, align: 'center' }),
     )
-  const totals = totalsOf(source.files)
+    return () => cancelAnimationFrame(frame)
+  }, [sectionId, source, patches, collapsed, expanded, collapseKey])
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-border text-muted-foreground flex items-center gap-2 border-b px-2.5 py-1.5 text-[11px]">
-        <span className="min-w-0 flex-1 truncate">
-          {source.truncated ? 'First ' : ''}
-          {source.files.length.toLocaleString()} {source.files.length === 1 ? 'file' : 'files'}
-        </span>
-        <ChangeStats additions={totals.additions} deletions={totals.deletions} />
-        <Button variant="ghost" size="icon-xs" aria-label="Expand all folders" onClick={props.onExpandAll}>
-          <ChevronsUpDown />
-        </Button>
-        <Button variant="ghost" size="icon-xs" aria-label="Collapse all folders" onClick={props.onCollapseAll}>
-          <ChevronsDownUp />
-        </Button>
-      </div>
-      {source.truncated ? (
-        <p className="border-border text-muted-foreground border-b px-2.5 py-1 text-[10.5px]">
-          Showing the first 2,000 files.
-        </p>
-      ) : null}
-      <div className="border-border max-h-[42%] min-h-20 shrink-0 overflow-auto border-b py-1">
-        <TreeRows
-          nodes={props.tree}
-          depth={0}
-          collapsed={props.collapsed}
-          onToggleFolder={props.onToggleFolder}
-          selectedKey={props.selectedKey}
-          onSelect={props.onSelect}
-        />
-      </div>
-      <PatchView
-        file={props.selected}
-        patch={props.patch}
-        wrap={props.wrap}
-        onWrapChange={props.onWrapChange}
-        layout={props.layout}
-        onLayoutChange={props.onLayoutChange}
-      />
-    </div>
-  )
-}
-
-interface TreeRowsProps {
-  readonly nodes: readonly DiffTreeNode[]
-  readonly depth: number
-  readonly collapsed: ReadonlySet<string>
-  readonly onToggleFolder: (path: string, open: boolean) => void
-  readonly selectedKey: string | null
-  readonly onSelect: (key: string) => void
-}
-
-function TreeRows(props: TreeRowsProps) {
-  return props.nodes.map(node =>
-    node.kind === 'folder' ? (
-      <FolderRow key={`folder:${node.path}`} node={node} {...props} />
-    ) : (
-      <FileRow
-        key={`file:${diffFileKey(node.file)}`}
-        name={node.name}
-        file={node.file}
-        depth={props.depth}
-        selected={props.selectedKey === diffFileKey(node.file)}
-        onSelect={props.onSelect}
-      />
-    ),
-  )
-}
-
-type FolderNode = Extract<DiffTreeNode, { kind: 'folder' }>
-
-function FolderRow({ node, ...props }: Omit<TreeRowsProps, 'nodes'> & { readonly node: FolderNode }) {
-  const open = !props.collapsed.has(node.path)
-  const Chevron = open ? ChevronDown : ChevronRight
-  const Glyph = open ? FolderOpen : Folder
-  return (
-    <Collapsible open={open} onOpenChange={next => props.onToggleFolder(node.path, next)}>
-      <CollapsibleTrigger
-        className="hover:bg-muted flex w-full items-center gap-1.5 rounded px-2 py-1 text-left text-[11.5px]"
-        style={{ paddingLeft: 8 + props.depth * 12 }}
-      >
-        <Chevron className="text-muted-foreground size-3 shrink-0" aria-hidden />
-        <Glyph className="text-muted-foreground size-3.5 shrink-0" aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{node.name}</span>
-        <ChangeStats additions={node.additions} deletions={node.deletions} />
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <TreeRows {...props} nodes={node.children} depth={props.depth + 1} />
-      </CollapsibleContent>
-    </Collapsible>
-  )
-}
-
-function FileRow({
-  name,
-  file,
-  depth,
-  selected,
-  onSelect,
-}: {
-  readonly name: string
-  readonly file: DiffFile
-  readonly depth: number
-  readonly selected: boolean
-  readonly onSelect: (key: string) => void
-}) {
-  const title = fileLabel(file)
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      title={title}
-      onClick={() => onSelect(diffFileKey(file))}
-      className={cn(
-        'hover:bg-muted flex w-full items-center gap-2 rounded px-2 py-1 text-left text-[11.5px]',
-        selected && 'bg-muted text-foreground',
-      )}
-      style={{ paddingLeft: 8 + depth * 12 + 16 }}
+    <div
+      className="flex min-h-0 min-w-0 flex-1 flex-col"
+      onKeyDownCapture={event => {
+        if ((event.ctrlKey || event.metaKey) && !event.altKey && event.key.toLowerCase() === 'f') {
+          event.preventDefault()
+          event.stopPropagation()
+          setSearchRequest(value => value + 1)
+        }
+      }}
     >
-      <span className={cn('w-3 shrink-0 text-center font-mono text-[10.5px] font-semibold', STATUS_TONE[file.status])}>
-        <span aria-hidden>{STATUS_LETTER[file.status]}</span>
-        <span className="sr-only">{STATUS_LABEL[file.status]}</span>
-      </span>
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      {file.binary ? (
-        <span className="text-muted-foreground shrink-0 text-[10px]">binary</span>
-      ) : (
-        <ChangeStats additions={file.additions} deletions={file.deletions} />
-      )}
-    </button>
-  )
-}
-
-interface PatchViewProps {
-  readonly layout: 'unified' | 'split'
-  readonly onLayoutChange: (layout: 'unified' | 'split') => void
-  readonly file: DiffFile | null
-  readonly patch: InspectionState<FilePatch>
-  readonly wrap: boolean
-  readonly onWrapChange: (wrap: boolean) => void
-}
-
-function PatchView({ file, patch, wrap, onWrapChange, layout, onLayoutChange }: PatchViewProps) {
-  if (file === null) return <InspectionNotice>Select a file to see its changes.</InspectionNotice>
-  const title = fileLabel(file)
-  const data = patch.data
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div className="border-border flex items-center gap-2 border-b px-2.5 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px]" title={title}>
-          {title}
-        </span>
-        <SegTabs
-          options={[
-            { value: 'unified', label: 'Unified' },
-            { value: 'split', label: 'Split' },
-          ]}
-          value={layout}
-          onChange={value => onLayoutChange(value === 'split' ? 'split' : 'unified')}
-        />
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Wrap lines"
-          aria-pressed={wrap}
-          title="Wrap lines"
-          onClick={() => onWrapChange(!wrap)}
-        >
-          <WrapText />
-        </Button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto">
-        {patch.error ? (
-          <InspectionNotice tone="error">{patch.error.message}</InspectionNotice>
-        ) : patch.loading || data === null ? (
-          <InspectionNotice>Loading diff…</InspectionNotice>
-        ) : data.binary ? (
-          <InspectionNotice>Binary file. Content is not shown.</InspectionNotice>
-        ) : data.patch.trim() === '' ? (
-          <InspectionNotice>No textual changes.</InspectionNotice>
-        ) : (
+      <div className="border-border flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b px-2 py-1">
+        <DropdownMenu open={sourceMenuOpen} onOpenChange={setSourceMenuOpen}>
+          <DropdownMenuTrigger
+            render={<Button variant="ghost" size="sm" className="h-7 min-w-0 gap-1 text-xs" aria-label="Diff source" />}
+          >
+            <span className="truncate">
+              {scopeKind === 'commit' && commit ? `Commit ${commit.slice(0, 7)}` : SCOPE_LABELS[scopeKind]}
+            </span>
+            <ChevronDown className="size-3" />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent className="w-72">
+            {(['working-tree', 'staged', 'branch-range'] as const).map(kind => (
+              <DropdownMenuItem
+                key={kind}
+                onClick={() => {
+                  setScopeKind(kind)
+                  setSelectedPath(null)
+                }}
+              >
+                {scopeKind === kind && <Check className="size-3.5" />} {SCOPE_LABELS[kind]}
+              </DropdownMenuItem>
+            ))}
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Commits</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-80 w-80">
+                <DropdownMenuLabel>Recent commits</DropdownMenuLabel>
+                {commits?.data?.items.map(item => (
+                  <DropdownMenuItem
+                    key={item.hash}
+                    title={item.subject}
+                    onClick={() => {
+                      setScopeKind('commit')
+                      setCommit(item.hash)
+                      setSelectedPath(null)
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{item.subject}</span>
+                    <span className="text-muted-foreground font-mono text-[10px]">{item.hash.slice(0, 7)}</span>
+                  </DropdownMenuItem>
+                ))}
+                {commits?.error && <DropdownMenuItem disabled>{commits.error}</DropdownMenuItem>}
+                {!commits && <DropdownMenuItem disabled>Loading commits...</DropdownMenuItem>}
+                {commits?.data?.items.length === 0 && (
+                  <DropdownMenuItem disabled>No commits on this branch.</DropdownMenuItem>
+                )}
+                {commits?.data?.truncated && (
+                  <DropdownMenuItem disabled>Showing the latest 100 commits.</DropdownMenuItem>
+                )}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {scopeKind === 'branch-range' && (
           <>
-            {layout === 'split' ? (
-              <SplitPatch patch={data.patch} wrap={wrap} />
-            ) : (
-              <UnifiedPatch patch={data.patch} wrap={wrap} />
-            )}
-            {data.truncated ? (
-              <p className="text-muted-foreground px-2.5 py-2 text-[10.5px]">Diff truncated at 1 MiB.</p>
-            ) : null}
+            <GitBranch className="text-muted-foreground size-3" />
+            <span className="text-muted-foreground max-w-28 truncate text-[11px]">{source?.headRef ?? 'HEAD'} vs</span>
+            <BaseRefPicker
+              scope={scope}
+              revision={revision}
+              current={source?.baseRef ?? baseRef}
+              onSelect={setBaseRef}
+            />
           </>
         )}
       </div>
+      <div className="border-border flex min-h-9 shrink-0 flex-wrap items-center gap-0.5 border-b px-2 py-1">
+        <span className="text-muted-foreground mr-auto text-[11px]">
+          {visibleFiles.length} {visibleFiles.length === 1 ? 'file' : 'files'}
+        </span>
+        {source && <ChangeStats {...totals} />}
+        <DiffAction label="Refresh diff" onClick={() => setLocalRevision(value => value + 1)}>
+          <RefreshCw />
+        </DiffAction>
+        <DiffAction label={allCollapsed ? 'Expand all files' : 'Collapse all files'} onClick={toggleAll}>
+          {allCollapsed ? <ChevronsUpDown /> : <ChevronsDownUp />}
+        </DiffAction>
+        <div className="border-border mx-1 flex rounded-md border p-0.5" role="group" aria-label="Diff layout">
+          <DiffAction
+            label="Stacked diff view"
+            pressed={preferences.layout === 'unified'}
+            onClick={() => setPreferences(previous => ({ ...previous, layout: 'unified' }))}
+          >
+            <Rows3 />
+          </DiffAction>
+          <DiffAction
+            label="Split diff view"
+            pressed={preferences.layout === 'split'}
+            onClick={() => setPreferences(previous => ({ ...previous, layout: 'split' }))}
+          >
+            <Columns2 />
+          </DiffAction>
+        </div>
+        <DiffAction
+          label={preferences.wrap ? 'Disable diff line wrapping' : 'Enable diff line wrapping'}
+          pressed={preferences.wrap}
+          onClick={() => setPreferences(previous => ({ ...previous, wrap: !previous.wrap }))}
+        >
+          <WrapText />
+        </DiffAction>
+        <DiffAction
+          label={preferences.ignoreWhitespace ? 'Show whitespace changes' : 'Hide whitespace changes'}
+          pressed={preferences.ignoreWhitespace}
+          onClick={() => setPreferences(previous => ({ ...previous, ignoreWhitespace: !previous.ignoreWhitespace }))}
+        >
+          <Pilcrow />
+        </DiffAction>
+        {testCount > 0 && (
+          <DiffAction
+            label={preferences.hideTests ? `Show ${testCount} hidden test files` : 'Hide test files'}
+            pressed={preferences.hideTests}
+            onClick={() => setPreferences(previous => ({ ...previous, hideTests: !previous.hideTests }))}
+          >
+            <FlaskConicalOff />
+          </DiffAction>
+        )}
+        <DiffAction
+          label={preferences.showTree ? 'Hide file tree' : 'Show file tree'}
+          pressed={preferences.showTree}
+          onClick={() => setPreferences(previous => ({ ...previous, showTree: !previous.showTree }))}
+        >
+          <FolderTree />
+        </DiffAction>
+        <DiffAction label="Find in diff" onClick={() => setSearchRequest(value => value + 1)}>
+          <Search />
+        </DiffAction>
+        {(scopeKind === 'working-tree' || scopeKind === 'staged') && (
+          <DiffAction label="Git actions" pressed={showGitActions} onClick={() => setShowGitActions(!showGitActions)}>
+            <GitCommitHorizontal />
+          </DiffAction>
+        )}
+      </div>
+      {showGitActions && (scopeKind === 'working-tree' || scopeKind === 'staged') && (
+        <CheckoutChangeActions
+          scope={scope}
+          revision={revision}
+          selectedPath={selectedPath}
+          onChanged={() => setLocalRevision(value => value + 1)}
+        />
+      )}
+      {preview.error ? (
+        <InspectionNotice tone="error">{preview.error.message}</InspectionNotice>
+      ) : preview.loading || !source ? (
+        <InspectionNotice>Loading changes...</InspectionNotice>
+      ) : source.files.length === 0 ? (
+        <InspectionNotice>No changes in this selection.</InspectionNotice>
+      ) : (
+        <>
+          {source.truncated && (
+            <p className="text-muted-foreground border-border border-b px-3 py-1 text-xs">
+              Showing the first 2,000 files. Totals are incomplete.
+            </p>
+          )}
+          <div className="flex min-h-0 min-w-0 flex-1">
+            {visibleFiles.length === 0 ? (
+              <InspectionNotice>All changed files are hidden by the test filter.</InspectionNotice>
+            ) : (
+              <DiffReviewCodeView
+                key={`${review.ownerKey}:${sectionId}`}
+                scope={scope}
+                files={visibleFiles}
+                patches={patches.files}
+                sectionId={sectionId}
+                searchRequest={searchRequest}
+                collapsed={collapsed}
+                wrap={preferences.wrap}
+                layout={preferences.layout}
+                onToggleFile={toggle}
+                onUnfoldFile={unfold}
+                onOpenFile={props.onOpenFile}
+                onReferencePath={props.onReferencePath}
+                onRequestFile={patches.requestFile}
+                onRetryFile={file => {
+                  void patches.request(file, true).catch(() => undefined)
+                }}
+                onLoadNext={patches.loadNext}
+                remaining={patches.missing.length}
+                viewerRef={viewer}
+              />
+            )}
+            {preferences.showTree && (
+              <ExplorerPane storageKey="watchtower.workspace.diff-tree-width.v1">
+                <DiffFileTree
+                  scope={scope}
+                  files={visibleFiles}
+                  selectedPath={selectedPath}
+                  onSelectFile={reveal}
+                  onOpenFile={props.onOpenFile}
+                  onReferencePath={props.onReferencePath}
+                />
+              </ExplorerPane>
+            )}
+          </div>
+        </>
+      )}
     </div>
   )
 }
 
-interface PatchRow {
-  readonly key: string
-  readonly kind: 'hunk' | 'addition' | 'deletion' | 'context' | 'note'
-  readonly oldNumber: number | null
-  readonly newNumber: number | null
-  readonly text: string
-}
-
-const ROW_TONE: Record<PatchRow['kind'], string> = {
-  hunk: 'bg-muted text-muted-foreground',
-  addition: 'bg-success/15',
-  deletion: 'bg-destructive/15',
-  context: '',
-  note: 'text-muted-foreground italic',
-}
-const SIGN: Record<PatchRow['kind'], string> = { hunk: '', addition: '+', deletion: '-', context: ' ', note: '' }
-
-/** Renders a unified patch with old and new line numbers. Each hunk header is its own row. */
-function UnifiedPatch({ patch, wrap }: { readonly patch: string; readonly wrap: boolean }) {
-  const rows = useMemo<PatchRow[]>(() => {
-    const result: PatchRow[] = []
-    parseUnifiedDiff(patch).hunks.forEach((hunk, hunkIndex) => {
-      result.push({ key: `h${hunkIndex}`, kind: 'hunk', oldNumber: null, newNumber: null, text: hunk.header })
-      hunk.lines.forEach((line, lineIndex) =>
-        result.push({
-          key: `h${hunkIndex}l${lineIndex}`,
-          kind: line.kind,
-          oldNumber: line.oldNumber,
-          newNumber: line.newNumber,
-          text: line.text,
-        }),
-      )
-    })
-    return result
-  }, [patch])
-  const [limit, setLimit] = useState(RENDERED_ROW_LIMIT)
-  const visible = rows.slice(0, limit)
+function DiffAction({
+  label,
+  pressed,
+  onClick,
+  children,
+}: {
+  readonly label: string
+  readonly pressed?: boolean
+  readonly onClick: () => void
+  readonly children: React.ReactNode
+}): React.JSX.Element {
   return (
-    <div className={cn('font-mono text-[11px] leading-5', wrap ? '' : 'w-max min-w-full')}>
-      {visible.map(row =>
-        row.kind === 'hunk' ? (
-          <div key={row.key} className={cn('px-2 py-0.5', ROW_TONE.hunk, wrap ? 'break-all' : 'whitespace-pre')}>
-            {row.text}
-          </div>
-        ) : (
-          <div key={row.key} className={cn('flex', ROW_TONE[row.kind])}>
-            <span className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums select-none">
-              {row.oldNumber ?? ''}
-            </span>
-            <span className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums select-none">
-              {row.newNumber ?? ''}
-            </span>
-            <span className="w-4 shrink-0 text-center select-none">{SIGN[row.kind]}</span>
-            <span className={cn('min-w-0 flex-1 pr-3', wrap ? 'break-all whitespace-pre-wrap' : 'whitespace-pre')}>
-              {row.text}
-            </span>
-          </div>
-        ),
-      )}
-      {rows.length > limit ? (
-        <Button variant="ghost" size="sm" className="m-2 text-[11.5px]" onClick={() => setLimit(rows.length)}>
-          Show all {formatCompactCount(rows.length)} lines
-        </Button>
-      ) : null}
-    </div>
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label={label}
+            aria-pressed={pressed}
+            onClick={onClick}
+            className={pressed ? 'bg-muted text-foreground' : undefined}
+          />
+        }
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -466,70 +453,14 @@ interface BaseRefPickerProps {
   readonly scope: CheckoutScope
   readonly revision: number
   readonly current: string | null
-  readonly onSelect: (name: string) => void
-}
-
-function SplitPatch({ patch, wrap }: { readonly patch: string; readonly wrap: boolean }): React.JSX.Element {
-  const rows = useMemo(() => splitDiffRows(parseUnifiedDiff(patch)), [patch])
-  const [limit, setLimit] = useState(RENDERED_ROW_LIMIT)
-  return (
-    <div className={cn('font-mono text-[11px] leading-5', wrap ? 'min-w-full' : 'w-max min-w-full')}>
-      <div className="border-border text-muted-foreground grid grid-cols-2 border-b text-center text-[10px]">
-        <span>Before</span>
-        <span>After</span>
-      </div>
-      {rows.slice(0, limit).map((row, index) =>
-        row.kind !== 'lines' ? (
-          <div key={index} className={cn('px-2 py-0.5', ROW_TONE[row.kind])}>
-            {row.text}
-          </div>
-        ) : (
-          <div key={index} className="grid grid-cols-2">
-            {(['before', 'after'] as const).map(side => {
-              const line = row[side]
-              return (
-                <div
-                  key={side}
-                  className={cn(
-                    'flex min-w-0',
-                    side === 'before' && 'border-border border-r',
-                    line && ROW_TONE[line.kind],
-                  )}
-                >
-                  <span className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums select-none">
-                    {(side === 'before' ? line?.oldNumber : line?.newNumber) ?? ''}
-                  </span>
-                  <span
-                    className={cn('min-w-0 flex-1 pr-3', wrap ? 'break-all whitespace-pre-wrap' : 'whitespace-pre')}
-                  >
-                    {line?.text ?? ''}
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        ),
-      )}
-      {rows.length > limit && (
-        <Button variant="ghost" size="sm" className="m-2 text-[11.5px]" onClick={() => setLimit(rows.length)}>
-          Show all {formatCompactCount(rows.length)} lines
-        </Button>
-      )}
-    </div>
-  )
-}
-
-/** The badge on a branch row: `remote` for remote refs, `current` for the checked-out branch. */
-function branchBadge(item: CheckoutBranchList['items'][number]): string {
-  if (item.kind === 'remote') return 'remote'
-  return item.current ? 'current' : ''
+  readonly onSelect: (name: string | null) => void
 }
 
 /** Chooses the base branch for the Branch scope from local and remote branches. */
-function BaseRefPicker({ scope, revision, current, onSelect }: BaseRefPickerProps) {
+function BaseRefPicker({ scope, revision, current, onSelect }: BaseRefPickerProps): React.JSX.Element {
   const [open, setOpen] = useState(false)
   const branches = useCheckoutBranches(scope, open, revision)
-  const items = branches.data?.items ?? []
+  const items = diffBranchChoices(branches.data?.items ?? [])
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
@@ -550,21 +481,57 @@ function BaseRefPicker({ scope, revision, current, onSelect }: BaseRefPickerProp
       <PopoverContent className="w-72 p-0" align="start">
         <Command>
           <CommandInput placeholder="Search branches…" aria-label="Search branches" />
+          {branches.error && (
+            <p role="alert" className="text-destructive p-2 text-xs">
+              {branches.error.message}
+            </p>
+          )}
+          <div className="border-border text-muted-foreground flex justify-between border-b px-3 py-1.5 text-[10px]">
+            <span>Branch</span>
+            <span>Remote</span>
+          </div>
           <CommandList className="max-h-64">
             <CommandEmpty>{branches.loading ? 'Loading branches…' : 'No matching branches.'}</CommandEmpty>
+            <CommandItem
+              value="Automatic"
+              onSelect={() => {
+                onSelect(null)
+                setOpen(false)
+              }}
+            >
+              Automatic
+            </CommandItem>
             {items.map(item => (
               <CommandItem
-                key={`${item.kind}:${item.name}`}
-                value={item.name}
+                key={item.label}
+                value={`${item.label} ${item.local ?? ''} ${item.remote ?? ''}`}
                 onSelect={() => {
-                  onSelect(item.name)
+                  onSelect(current === item.remote ? item.remote : (item.local ?? item.remote))
                   setOpen(false)
                 }}
                 className="text-[11.5px]"
               >
-                <span className="min-w-0 flex-1 truncate">{item.name}</span>
-                <span className="text-muted-foreground shrink-0 text-[10px]">{branchBadge(item)}</span>
-                {item.name === current ? <Check className="size-3.5 shrink-0" aria-hidden /> : null}
+                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {item.local && item.remote ? (
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label={`Use remote version of ${item.label}`}
+                    aria-checked={current === item.remote}
+                    onPointerDown={event => event.stopPropagation()}
+                    onClick={event => {
+                      event.stopPropagation()
+                      onSelect(current === item.remote ? item.local : item.remote)
+                    }}
+                    className={`border-border h-3.5 w-6 shrink-0 rounded-full border p-px ${current === item.remote ? 'bg-primary' : 'bg-muted'}`}
+                  >
+                    <span
+                      className={`bg-background block size-2.5 rounded-full transition-transform ${current === item.remote ? 'translate-x-2.5' : ''}`}
+                    />
+                  </button>
+                ) : item.remote ? (
+                  <Check role="img" aria-label="Remote only" className="text-muted-foreground size-3 shrink-0" />
+                ) : null}
               </CommandItem>
             ))}
           </CommandList>

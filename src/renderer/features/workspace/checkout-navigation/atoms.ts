@@ -9,6 +9,11 @@ const runtime = ApplicationClient.runtime.factory(get =>
   Layer.merge(get(ApplicationClient.runtime.layer), ApplicationProtocolLayer),
 )
 
+export const downloadCheckoutFileAtom = () =>
+  runtime.fn<CheckoutNavigationPath>()(request =>
+    Effect.flatMap(ApplicationClient, client => client('checkout:downloadFile', request)),
+  )
+
 export const openCheckoutFileAtom = Atom.keepAlive(
   runtime.fn<CheckoutOpenFile>()(request =>
     Effect.flatMap(ApplicationClient, client => client('checkout:openFile', request)),

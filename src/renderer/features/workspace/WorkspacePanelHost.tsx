@@ -34,6 +34,7 @@ interface Props {
   readonly panel: RightPanelControls
   readonly resources: ReturnType<typeof useWorkspacePanelResources>
   readonly ownerKey: string
+  readonly reviewOwnerKey?: string | undefined
   readonly terminalTarget: TerminalTarget
   readonly retainedTerminalTarget?: DraftTerminalTarget | undefined
   readonly refreshKey: number
@@ -201,11 +202,13 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
   return (
     <>
       <WorkspaceRightPanel
+        reviewOwnerKey={props.reviewOwnerKey ?? props.parent?.conversationId ?? props.ownerKey}
         projectId={props.projectId}
         checkoutId={props.checkoutId}
         controls={props.panel}
         refreshKey={props.refreshKey}
         onReferencePath={props.onReferencePath}
+        onAddImage={props.onAddImage}
         onAddBrowser={() => props.resources.openBrowser()}
         onAddTerminal={() => props.panel.addSurface('terminal')}
         onAddDevice={() => props.panel.addSurface('device')}

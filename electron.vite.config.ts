@@ -23,7 +23,8 @@ export default defineConfig({
           index: resolve('src/platform/electron/main/index.ts'),
           'ledger-mcp': resolve('src/platform/mcp/entry.ts'),
           'db-worker': resolve('src/platform/electron/workers/entry.ts'),
-          'workspace-worker': resolve('src/platform/electron/workers/workspace/entry.ts')
+          'workspace-worker': resolve('src/platform/electron/workers/workspace/entry.ts'),
+          'checkout-worker': resolve('src/platform/electron/workers/checkout/entry.ts')
         }
       }
     }
@@ -45,9 +46,16 @@ export default defineConfig({
       alias: sourceAlias
     },
     plugins: [react(), tailwindcss()],
+    worker: { format: 'es' },
     build: {
       assetsInlineLimit: 0,
       rollupOptions: {
+        output: {
+          // PDF.js loads decoder modules and ICC data beside the configured WASM URL.
+          assetFileNames: asset => asset.originalFileNames.some(path => /[/\\]pdfjs-dist[/\\]wasm[/\\]/.test(path))
+            ? 'assets/pdfjs/[name][extname]'
+            : 'assets/[name]-[hash][extname]'
+        },
         // Three pages: the full app, the floating background orb, and the
         // orb's spend panel (its own window, so the orb never resizes).
         input: {

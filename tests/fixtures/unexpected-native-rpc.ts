@@ -35,8 +35,10 @@ export const unexpectedCheckoutInspectionHandlers = CheckoutInspectionRpcGroup.t
   'checkout:diffPreview': unexpected,
   'checkout:filePatch': unexpected,
   'checkout:branches': unexpected,
+  'checkout:commits': unexpected,
   'checkout:listEntries': unexpected,
   'checkout:readFile': unexpected,
+  'checkout:writeFile': unexpected,
 })
 
 export const unexpectedTerminalHandlers = TerminalRpcGroup.toLayer({
@@ -53,6 +55,7 @@ export const unexpectedTerminalHandlers = TerminalRpcGroup.toLayer({
 const unexpectedCheckoutNavigationHandlers = CheckoutNavigationRpcGroup.toLayer({
   'checkout:openFile': unexpected,
   'checkout:revealFile': unexpected,
+  'checkout:downloadFile': unexpected,
 })
 
 const unexpectedCheckoutActionsRpcGroupHandlers = CheckoutActionsRpcGroup.toLayer({

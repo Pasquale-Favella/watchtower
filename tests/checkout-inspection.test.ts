@@ -389,6 +389,7 @@ describe('checkout inspection: files and directories', () => {
     await withInspection(async (inspection, run) => {
       expect(await run(inspection.readFile(main, 'tracked.txt'))).toEqual({
         path: 'tracked.txt',
+        revision: expect.any(String),
         size: 9,
         binary: false,
         content: 'original\n',

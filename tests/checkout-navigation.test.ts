@@ -1,7 +1,17 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as Effect from 'effect/Effect'
 import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Schema from 'effect/Schema'
@@ -45,7 +55,7 @@ function run<A, E>(
   return Effect.runPromise(
     Effect.gen(function* () {
       return yield* use(yield* clientEffect)
-    }).pipe(Effect.scoped, Effect.provide(handlers)),
+    }).pipe(Effect.scoped, Effect.provide(handlers), Effect.provide(NodeFileSystem.layer)),
   )
 }
 
@@ -59,6 +69,28 @@ afterEach(() => {
 })
 
 describe('checkout file navigation', () => {
+  it('downloads complete files through an explicit save destination without preview limits', async () => {
+    const { root, directory } = fixture()
+    const source = Buffer.alloc(2 * 1024 * 1024, 'x')
+    writeFileSync(join(root, 'large.txt'), source)
+    const destination = join(directory, 'copy.txt')
+    const adapter = { ...native(), chooseSavePath: vi.fn(async () => destination) }
+    expect(await run(root, adapter, client => client['checkout:downloadFile']({ projectId, path: 'large.txt' }))).toBe(
+      true,
+    )
+    expect(readFileSync(destination)).toEqual(source)
+    expect(adapter.chooseSavePath).toHaveBeenCalledWith('large.txt')
+  })
+
+  it('leaves disk unchanged when the file save dialog is canceled', async () => {
+    const { root, directory } = fixture()
+    writeFileSync(join(root, 'source.txt'), 'source')
+    const adapter = { ...native(), chooseSavePath: vi.fn(async () => null) }
+    expect(await run(root, adapter, client => client['checkout:downloadFile']({ projectId, path: 'source.txt' }))).toBe(
+      false,
+    )
+    expect(existsSync(join(directory, 'source.txt'))).toBe(false)
+  })
   it('encodes reserved characters and Unicode in editor paths on Windows and POSIX', () => {
     expect(checkoutEditorUri('vscode', 'C:\\repo\\a #?.ts')).toBe('vscode://file/C:/repo/a%20%23%3F.ts')
     expect(checkoutEditorUri('cursor', '/repo/你好 file.ts')).toBe('cursor://file/repo/%E4%BD%A0%E5%A5%BD%20file.ts')

@@ -76,14 +76,15 @@ describe('checkout image previews', () => {
       expect(Schema.is(fileContentSchema)(image)).toBe(true)
       expect(await runtime.runPromise(inspection.readFile(root, 'plain.txt'))).toEqual({
         path: 'plain.txt',
+        revision: expect.any(String),
         size: 11,
         binary: false,
         content: 'plain text\n',
         truncated: false,
       })
       const large = await runtime.runPromise(inspection.readFile(root, 'large.png'))
-      expect(large).toMatchObject({ binary: true, truncated: true })
-      expect(large.previewDataUrl).toBeUndefined()
+      expect(large).toMatchObject({ binary: true, truncated: false })
+      expect(large.previewDataUrl?.startsWith('data:image/png;base64,')).toBe(true)
     } finally {
       await runtime.dispose()
     }

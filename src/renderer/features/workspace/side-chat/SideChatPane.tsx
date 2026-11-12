@@ -7,7 +7,7 @@ import type { SideChatBinding } from '@/shared/schemas/workspace-side-chats.js'
 
 import { useOpenCheckoutFile } from '../checkout-navigation/use-checkout-navigation.js'
 import { isRunActive } from '../composer-state.js'
-import { useWorkspaceTask, useWorkspaceTaskSnapshot } from '../hooks.js'
+import { useWorkspaceNativeAgentSessions, useWorkspaceTask, useWorkspaceTaskSnapshot } from '../hooks.js'
 import { WorkspaceComposer } from '../WorkspaceComposer.js'
 import { WorkspaceConversation } from '../WorkspaceConversation.js'
 import { useBringBackSideChat, useSideChatBinding, useSideChatPreferences } from './hooks.js'
@@ -53,6 +53,7 @@ function SideChatContent({
 }: SideChatPaneProps & { readonly binding: SideChatBinding }): React.JSX.Element {
   const detail = useWorkspaceTask({ taskId: binding.taskId, options: { limit: 30 } })
   const snapshot = useWorkspaceTaskSnapshot({ taskId: binding.taskId, runLimit: 100 })
+  const nativeSessions = useWorkspaceNativeAgentSessions({ taskId: binding.taskId, options: { limit: 50 } })
   const sessionIdsByRunId = useMemo(
     () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
     [snapshot.data?.runs],
@@ -65,6 +66,13 @@ function SideChatContent({
   const [fileError, setFileError] = useState<string | null>(null)
   const openFile = useOpenCheckoutFile()
   const runContext = snapshot.data?.runContexts?.find(context => context.conversationId === binding.conversationId)
+  const promptCommands = useMemo(
+    () =>
+      nativeSessions.data?.items
+        .filter(session => session.conversationId === binding.conversationId)
+        .flatMap(session => session.capabilities?.commands?.map(command => command.name) ?? []) ?? [],
+    [nativeSessions.data?.items, binding.conversationId],
+  )
   const activeCheckoutId = runContext?.checkoutId ?? binding.checkoutId
   function openChatFile(path: string): void {
     setFileError(null)
@@ -146,6 +154,7 @@ function SideChatContent({
         <WorkspaceConversation
           conversationId={binding.conversationId}
           sessionIdsByRunId={sessionIdsByRunId}
+          promptCommands={promptCommands}
           workspacePath={runContext?.workspacePath}
           onOpenFile={openChatFile}
           scope={detail.data ? { projectId: detail.data.task.projectId, checkoutId: activeCheckoutId } : undefined}

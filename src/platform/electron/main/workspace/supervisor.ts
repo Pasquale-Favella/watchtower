@@ -171,14 +171,39 @@ export const WorkspaceWorkerSupervisorLive = (options: WorkspaceWorkerSupervisor
         yield* SubscriptionRef.set(status, { state: 'ready', lastFailure: null })
       })
 
-      const opened = yield* Effect.exit(openGeneration())
+      let opened = yield* Effect.exit(openGeneration())
       if (Exit.isFailure(opened)) {
-        if (current) yield* closeGeneration(current)
-        current = undefined
-        yield* SubscriptionRef.set(status, {
-          state: 'unavailable',
-          lastFailure: cleanupFailureCause ? CLEANUP_FAILED : UNAVAILABLE,
-        })
+        const canRetry = (cause: Cause.Cause<unknown>) => {
+          const error = Cause.findErrorOption(cause)
+          return (
+            error._tag === 'Some' &&
+            error.value instanceof WorkspaceStoreError &&
+            error.value.code === 'database-unavailable'
+          )
+        }
+        let attempts = 0
+        while (Exit.isFailure(opened) && canRetry(opened.cause) && attempts < maxReplacements && !cleanupFailureCause) {
+          const failedGeneration = current
+          if (failedGeneration) {
+            const closed = yield* Effect.exit(closeGeneration(failedGeneration))
+            current = undefined
+            if (Exit.isFailure(closed)) break
+          }
+          attempts += 1
+          yield* SubscriptionRef.set(status, { state: 'replacing', lastFailure: UNAVAILABLE })
+          yield* Effect.sleep(restartBackoffMs)
+          opened = yield* Effect.exit(openGeneration())
+        }
+        if (Exit.isFailure(opened)) {
+          if (current) {
+            yield* closeGeneration(current)
+            current = undefined
+          }
+          yield* SubscriptionRef.set(status, {
+            state: 'unavailable',
+            lastFailure: cleanupFailureCause ? CLEANUP_FAILED : UNAVAILABLE,
+          })
+        }
       }
 
       const store = new Proxy({} as WorkspaceStore['Service'], {
