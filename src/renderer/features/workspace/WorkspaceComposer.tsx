@@ -88,6 +88,7 @@ const snapshotRequest = (taskId: Task['id']): WorkspaceRequest<'workspace:readTa
 })
 
 type WorkspaceComposerProps = {
+  readonly onOpenFile?: ((path: string) => void) | undefined
   readonly task: Task
   readonly conversationId: ConversationId
   readonly allowInitialCheckoutChoice?: boolean | undefined
@@ -109,6 +110,7 @@ function WorkspaceComposerContent({
   conversationId,
   allowInitialCheckoutChoice = false,
   onSideChatCreated,
+  onOpenFile,
 }: WorkspaceComposerProps) {
   const appendDraft = useDraftAppend()
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
@@ -960,6 +962,7 @@ function WorkspaceComposerContent({
         )}
         <WorkspaceRequests taskId={task.id} conversationId={conversationId} />
         <WorkspacePromptInput
+          onOpenFile={onOpenFile}
           reviewOwnerKey={conversationId}
           value={draft}
           autoFocus

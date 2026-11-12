@@ -33,6 +33,20 @@ async function annotateRange(page: Page, surface: Locator, start: number, end: n
   await expect(surface.getByText(text, { exact: true })).toBeVisible()
 }
 
+async function openPromptFile(page: Page, panel: Locator, prompt: Locator, path: string): Promise<void> {
+  const draft = await prompt.textContent()
+  await panel.getByRole('tab', { name: 'Files', exact: true }).click()
+  await page
+    .locator('header[aria-label="Chat header"]')
+    .getByRole('button', { name: 'Right panel', exact: true })
+    .click()
+  await expect(panel).toBeHidden()
+  await prompt.getByRole('button', { name: `File reference ${path}`, exact: true }).click()
+  await expect(panel).toBeVisible()
+  await expect(panel.getByRole('tab', { name: path, exact: true })).toHaveAttribute('aria-selected', 'true')
+  await expect(prompt).toHaveText(draft ?? '')
+}
+
 test('native file editing saves to disk and review annotations survive navigation and reach the agent once', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'watchtower-review-'))
   const repository = join(directory, 'repository')
@@ -99,6 +113,11 @@ test('native file editing saves to disk and review annotations survive navigatio
     const panel = window.getByRole('complementary', { name: 'Right panel', exact: true })
     await panel.getByRole('button', { name: 'Files', exact: true }).click()
     await panel.getByRole('tabpanel').locator('[data-item-path="example.ts"]').click()
+    await panel.getByRole('tabpanel').getByRole('button', { name: 'File actions', exact: true }).click()
+    await window.getByRole('menuitem', { name: 'Add to chat', exact: true }).click()
+    const newPrompt = newChat.getByRole('textbox', { name: 'Prompt', exact: true })
+    await openPromptFile(window, panel, newPrompt, 'example.ts')
+    await newPrompt.fill('')
     const active = panel.getByRole('tabpanel')
     const surface = active.locator('[data-review-code-surface="example.ts"]')
     const editor = surface.locator('[contenteditable="true"]')
@@ -159,6 +178,7 @@ test('native file editing saves to disk and review annotations survive navigatio
     await panel.getByRole('tabpanel').getByRole('button', { name: 'File actions', exact: true }).click()
     await window.getByRole('menuitem', { name: 'Add to chat', exact: true }).click()
     await expect(prompt.locator('[aria-label="File reference other file.ts"]')).toBeVisible()
+    await openPromptFile(window, panel, prompt, 'other file.ts')
     await main.getByRole('button', { name: 'Send', exact: true }).click()
     const references = main.getByRole('article', { name: 'User message', exact: true }).last()
     await expect(

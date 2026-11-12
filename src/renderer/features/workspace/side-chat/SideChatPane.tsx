@@ -167,6 +167,7 @@ function SideChatContent({
       )}
       {detail.data && (
         <WorkspaceComposer
+          onOpenFile={openChatFile}
           key={binding.conversationId}
           task={detail.data.task}
           conversationId={binding.conversationId}

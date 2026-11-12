@@ -5,7 +5,7 @@ import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { EditorContent, type NodeViewProps, NodeViewWrapper, ReactNodeViewRenderer, useEditor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import { type Ref, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
+import { createContext, type Ref, useContext, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 
 import {
   Popover,
@@ -53,7 +53,10 @@ type Props = {
   readonly maxLength: number
   readonly richText?: boolean
   readonly onAttachmentClick: (id: string) => void
+  readonly onOpenFile?: ((path: string) => void) | undefined
 }
+
+const PromptFileNavigationContext = createContext<((path: string) => void) | undefined>(undefined)
 
 type PromptRun = {
   readonly markdownStart: number
@@ -82,6 +85,7 @@ const PROMPT_EDITOR_CLASS =
 const PROMPT_MENTION_CLASS = `${promptReferenceChipClass('file')} data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1`
 
 function PromptMentionView({ node, selected }: NodeViewProps): React.JSX.Element {
+  const openFile = useContext(PromptFileNavigationContext)
   const path = String(node.attrs.path ?? '')
   const attachment = node.attrs.record as PromptAttachment | null
   return (
@@ -95,10 +99,21 @@ function PromptMentionView({ node, selected }: NodeViewProps): React.JSX.Element
       spellCheck={false}
       dir="ltr"
       title={path}
-      aria-label={`File reference ${path}`}
+      aria-label={openFile ? undefined : `File reference ${path}`}
       className="data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1"
     >
-      <PromptReferenceChip kind="file" path={path} label={String(node.attrs.label ?? '')} />
+      {openFile ? (
+        <button
+          type="button"
+          aria-label={`File reference ${path}`}
+          className="cursor-pointer align-baseline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+          onClick={() => openFile(path)}
+        >
+          <PromptReferenceChip kind="file" path={path} label={String(node.attrs.label ?? '')} />
+        </button>
+      ) : (
+        <PromptReferenceChip kind="file" path={path} label={String(node.attrs.label ?? '')} />
+      )}
     </NodeViewWrapper>
   )
 }
@@ -811,7 +826,9 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
 
   return (
     <div className="relative min-h-24">
-      <EditorContent editor={editor} />
+      <PromptFileNavigationContext value={props.onOpenFile}>
+        <EditorContent editor={editor} />
+      </PromptFileNavigationContext>
       {!props.value && (
         <div
           aria-hidden="true"

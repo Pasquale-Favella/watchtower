@@ -495,6 +495,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                 )}
               </div>
               <WorkspacePromptInput
+                onOpenFile={panel.openFile}
                 reviewOwnerKey={panelContext.key}
                 value={draft}
                 onChange={writeDraft}

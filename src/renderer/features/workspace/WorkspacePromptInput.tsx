@@ -36,6 +36,7 @@ import { ReviewCommentChips } from './review/ReviewCommentChips.js'
 import { type PromptInputHandle, WorkspacePromptEditor } from './WorkspacePromptEditor.js'
 
 type Props = {
+  readonly onOpenFile?: ((path: string) => void) | undefined
   readonly onOpenModelPicker?: (query?: string) => void
   readonly onPromptCommand?: (name: 'side' | 'btw') => void
   readonly history?: readonly string[]
@@ -976,6 +977,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           </ul>
         )}
         <WorkspacePromptEditor
+          onOpenFile={props.onOpenFile}
           inputRef={inputRef}
           value={props.value}
           skills={promptSkills}

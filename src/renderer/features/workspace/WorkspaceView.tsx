@@ -228,6 +228,7 @@ function TaskConversation({
           {conversation && (
             <div key={conversation.id} className="shrink-0">
               <WorkspaceComposer
+                onOpenFile={panel.openFile}
                 task={task}
                 conversationId={conversation.id}
                 onSideChatCreated={id => panel.addSurface('side-chat', id)}
