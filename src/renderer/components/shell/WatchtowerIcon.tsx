@@ -1,12 +1,13 @@
 import WatchtowerLogo from '@/renderer/assets/images/watchtower-logo.json'
 import { GenIcon, type IconBaseProps, type IconTree } from 'react-icons'
 
-/** The logo art occupies only ~31% × ~53% of its 1024² source canvas (paths
- * span x∈[336,658], y∈[208,748]), so the raw JSON renders as a tiny mark
- * floating in an empty icon box. Crop the viewBox to the artwork — with a
- * small optical pad so the mark never touches the edge — here, once, so every
- * usage renders the logo at full size. */
-const CROPPED_VIEWBOX = '320.1 191.9 354.0 572.0'
+/** The new artwork's viewBox `190 44 960 1008` hugs the mark with a small
+ * optical pad (paths span x∈[210,1128], y∈[69,1021]), so — unlike the old
+ * 1024² source canvas where the art floated in dead space — no cropping is
+ * needed. Pin the viewBox here explicitly, mirroring what's baked into the
+ * icon-tree JSON, so every usage renders the mark at full size and the box
+ * never depends on the raw source framing. */
+const CROPPED_VIEWBOX = '190 44 960 1008'
 
 const iconTree: IconTree = {
   ...WatchtowerLogo,

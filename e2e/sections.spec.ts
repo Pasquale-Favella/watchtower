@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import { dismissOnboarding, expectSingleMainWindow, waitForAnyVisible, withApp } from './app'
+import { switchVertical } from './verticals'
 
 /**
  * Section walk (tracks #133): every sidebar destination renders its view
@@ -51,6 +52,7 @@ test('every section renders without errors', async () => {
   await withApp(async ({ app, window }) => {
     await expect(window).toHaveTitle(/Watchtower/)
     await dismissOnboarding(window)
+    await switchVertical(window, 'Analytics')
 
     for (const nav of SECTIONS) {
       await window.getByRole('button', { name: nav, exact: true }).click()

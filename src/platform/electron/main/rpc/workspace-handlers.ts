@@ -1,0 +1,540 @@
+import { createHash } from 'node:crypto'
+
+import * as Cause from 'effect/Cause'
+import * as DateTime from 'effect/DateTime'
+import * as Effect from 'effect/Effect'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Queue from 'effect/Queue'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
+import * as SubscriptionRef from 'effect/SubscriptionRef'
+
+import { ExecutionServiceError } from '@/core/application/commands/execution-service.js'
+import { WorkspaceCheckouts } from '@/core/application/commands/workspace-checkouts.js'
+import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-project-setup.js'
+import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
+import { AgentDriverError, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
+import { HarnessConnectionResolutionError } from '@/core/ports/harness-connections.js'
+import { WorkspacePullRequests } from '@/core/ports/workspace-pull-requests.js'
+import { mergePromptContextSearch } from '@/infrastructure/agent-harnesses/prompt-catalog.js'
+import type { PromptAttachmentStore } from '@/infrastructure/workspace/prompt-attachments.js'
+import { nativePromptPathSearch } from '@/infrastructure/workspace/prompt-native-search.js'
+import { ConnectionInspectionError } from '@/platform/electron/main/workspace/connection-inspection.js'
+import { browseDirectories } from '@/platform/electron/main/workspace/directory-browse.js'
+import { WorkspaceHost, WorkspaceHostError } from '@/platform/electron/main/workspace/host.js'
+import {
+  createPromptReferenceIndex,
+  type PromptReferenceFiles,
+  searchMentionModels,
+} from '@/platform/electron/main/workspace/prompt-references.js'
+import {
+  WORKSPACE_RPC_PROTOCOL_VERSION,
+  type WorkspaceEventFrame,
+  WorkspaceRpcError,
+  WorkspaceRpcGroup,
+  workspaceStartRunRequestSchema,
+} from '@/shared/rpc/workspace.js'
+import { CheckoutResolverError } from '@/shared/schemas/checkout.js'
+import {
+  agentRunIdSchema,
+  conversationIdSchema,
+  projectIdSchema,
+  taskIdSchema,
+  workspaceCheckoutIdSchema,
+} from '@/shared/schemas/workspace.js'
+import { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
+import * as Store from '@/shared/schemas/workspace-store.js'
+
+const messages = {
+  unavailable: 'Workspace is unavailable.',
+  'not-found': 'Workspace record was not found.',
+  conflict: 'Workspace command conflicts with existing state.',
+  stale: 'Workspace command is stale.',
+  'invalid-request': 'Workspace request is invalid.',
+  failed: 'Workspace operation failed.',
+  'stream-overflow': 'Workspace stream exceeded its limit. Resume from the last received sequence.',
+  'cleanup-unconfirmed': 'Native connection cleanup could not be confirmed.',
+  'unsupported-access-mode': 'The selected access mode is not available for this agent connection.',
+  'checkout-busy':
+    'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
+  'checkout-in-use': 'Another agent is still using this checkout. Stop it or choose a different worktree.',
+} as const
+function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
+  return new WorkspaceRpcError({ code, message: messages[code] })
+}
+function sanitize(error: unknown): WorkspaceRpcError {
+  if (Schema.is(WorkspaceRpcError)(error)) return error
+  if (Schema.is(Store.WorkspaceStoreError)(error)) {
+    switch (error.code) {
+      case 'admission-conflict':
+        return failure('checkout-in-use')
+      case 'not-found':
+        return failure('not-found')
+      case 'database-unavailable':
+        return failure('unavailable')
+      case 'stale-epoch':
+      case 'stale-request':
+        return failure('stale')
+      case 'invalid-data':
+        return failure('invalid-request')
+      default:
+        return failure('conflict')
+    }
+  }
+  if (Schema.is(WorkspaceHostError)(error)) return failure('unavailable')
+  if (Schema.is(ConnectionInspectionError)(error))
+    return failure(error.message === 'Connection cleanup could not be confirmed.' ? 'cleanup-unconfirmed' : 'failed')
+  if (Schema.is(ExecutionServiceError)(error)) {
+    if (error.reason === 'unsupported-access-mode') return failure('unsupported-access-mode')
+    return failure(error.reason === 'invalid-options' ? 'invalid-request' : 'unavailable')
+  }
+  if (Schema.is(HarnessConnectionResolutionError)(error))
+    return failure(error.code === 'not-found' ? 'not-found' : 'invalid-request')
+  if (Schema.is(AgentDriverError)(error))
+    return failure(
+      error.code === 'driver-unavailable' || error.code === 'disconnected' || error.code === 'authentication-required'
+        ? 'unavailable'
+        : 'failed',
+    )
+  if (Schema.is(UnsupportedAgentOperation)(error)) return failure('invalid-request')
+  if (Schema.is(CheckoutResolverError)(error)) {
+    if (error.code === 'filesystem-unavailable' || error.code === 'git-unavailable') return failure('unavailable')
+    if (error.code === 'dirty-checkout' || error.code === 'worktree-conflict') return failure('checkout-busy')
+    return failure('invalid-request')
+  }
+  return failure('failed')
+}
+function safe<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, WorkspaceRpcError, R> {
+  return effect.pipe(
+    Effect.catchCause(cause => {
+      const found = Cause.findError(cause)
+      return Effect.fail(found._tag === 'Success' ? sanitize(found.success) : failure('failed'))
+    }),
+  )
+}
+/** Like `safe`, but keeps the setup step's own fixed-message failure. */
+function setupSafe<A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+): Effect.Effect<A, WorkspaceRpcError | ProjectSetupError, R> {
+  return effect.pipe(
+    Effect.catchCause((cause): Effect.Effect<never, WorkspaceRpcError | ProjectSetupError> => {
+      const found = Cause.findError(cause)
+      if (found._tag === 'Success' && Schema.is(ProjectSetupError)(found.success)) return Effect.fail(found.success)
+      return Effect.fail(found._tag === 'Success' ? sanitize(found.success) : failure('failed'))
+    }),
+  )
+}
+const timestamp = Effect.map(DateTime.now, DateTime.formatIso)
+function entityId(kind: string, commandId: string): string {
+  // JSON escapes lone surrogates, which UTF-8 encoding would collapse into one replacement character.
+  return `${kind}-${createHash('sha256').update(JSON.stringify(commandId)).digest('hex')}`
+}
+function registrationIds(commandId: string) {
+  return {
+    projectId: Schema.decodeUnknownSync(projectIdSchema)(entityId('project', commandId)),
+    checkoutId: Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(entityId('checkout', commandId)),
+  }
+}
+const EVENT_PAGE_LIMIT = 100
+const EVENT_FRAME_CAPACITY = 8
+const MAX_FRAME_BYTES = Store.WORKSPACE_STORE_READ_BYTE_CAPACITY + 1024
+const MAX_PENDING_BYTES = 2 * MAX_FRAME_BYTES
+
+/** Build in the application runtime, with WorkspaceHost and WorkspaceProjects.
+ * Streams own only their bounded reader fiber, never the application's execution scope.
+ */
+export function workspaceHandlers<R = never>(
+  options: {
+    readonly attachments?: PromptAttachmentStore
+    readonly promptReferences?: PromptReferenceFiles
+    readonly chooseProjectDirectory?: () => Effect.Effect<string | null, unknown, R>
+    readonly prepareScratchProject?: (
+      store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
+    ) => Effect.Effect<import('@/shared/schemas/workspace-projects.js').WorkspaceProjectRegistration, unknown, R>
+  } = {},
+) {
+  const attachmentStore = options.attachments
+  return Layer.unwrap(
+    Effect.gen(function* () {
+      const host = yield* WorkspaceHost
+      const projects = yield* WorkspaceProjects
+      const setup = yield* Effect.serviceOption(WorkspaceProjectSetup)
+      const checkouts = yield* Effect.serviceOption(WorkspaceCheckouts)
+      const pullRequests = yield* Effect.serviceOption(WorkspacePullRequests)
+      const store = host.store
+      yield* Effect.addFinalizer(() => Effect.promise(() => nativePromptPathSearch.dispose()))
+      const referenceIndex = createPromptReferenceIndex(store)
+      // Model catalogs load while the app starts, so the first picker opens on known models.
+      if (host.prewarmConnections) yield* host.prewarmConnections
+      const read = <A, E, R>(use: () => Effect.Effect<A, E, R>) =>
+        safe(Effect.andThen(host.ensureOpen, Effect.suspend(use)))
+      const mutation = <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.uninterruptible(read(() => effect))
+      const timedMutation = <A, E, R>(use: (issuedAt: string) => Effect.Effect<A, E, R>) =>
+        mutation(Effect.flatMap(timestamp, use))
+      const setupMutation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        Effect.uninterruptible(setupSafe(Effect.andThen(host.ensureOpen, effect)))
+      const begin = Effect.fnUntraced(function* (request: Schema.Schema.Type<typeof workspaceStartRunRequestSchema>) {
+        return {
+          ...request,
+          issuedAt: yield* timestamp,
+          runId: Schema.decodeUnknownSync(agentRunIdSchema)(entityId('run', request.commandId)),
+          provisionalAgentSessionId: entityId('session', request.commandId),
+        }
+      })
+      const contextRoot = Effect.fnUntraced(function* (request: {
+        readonly projectId: import('@/shared/schemas/workspace.js').ProjectId
+        readonly checkoutId?: import('@/shared/schemas/workspace.js').WorkspaceCheckoutId
+      }) {
+        const detail = yield* read(() => store.getProject(request.projectId))
+        if (!detail || detail.project.archivedAt) return yield* failure('not-found')
+        const checkout = [detail.mainCheckout, ...detail.otherCheckouts].find(
+          item => item.id === (request.checkoutId ?? detail.mainCheckout.id) && !item.archivedAt,
+        )
+        if (!checkout) return yield* failure('not-found')
+        return checkout.path
+      })
+      const searchRoot = Effect.fnUntraced(function* (request: {
+        readonly projectId?: import('@/shared/schemas/workspace.js').ProjectId
+        readonly checkoutId?: import('@/shared/schemas/workspace.js').WorkspaceCheckoutId
+      }) {
+        if (request.projectId) return yield* contextRoot({ ...request, projectId: request.projectId })
+        const prepareScratchProject = options.prepareScratchProject
+        if (!prepareScratchProject) return yield* failure('unavailable')
+        const registration = yield* read(() => prepareScratchProject(store))
+        return registration.mainCheckout.path
+      })
+      const mentionModels = Effect.fnUntraced(function* (query: string) {
+        if (query.replace(/[:/\s-]/g, '').length < 2 || !host.listConnections || !host.observedConnectionInspections)
+          return []
+        const connections = yield* host.listConnections
+        const inspections = yield* host.observedConnectionInspections
+        const catalogs = connections.map(connection =>
+          (
+            inspections.find(inspection => inspection.connectionId === connection.connectionId)?.capabilities.models
+              .items ?? []
+          ).map(model => ({ connection, id: model.id, label: model.label })),
+        )
+        return searchMentionModels(catalogs.flat(), query)
+      })
+
+      return WorkspaceRpcGroup.toLayer({
+        'workspace:importAttachment': request =>
+          attachmentStore
+            ? safe(Effect.tryPromise(() => attachmentStore.import(request)))
+            : Effect.fail(failure('unavailable')),
+        'workspace:previewAttachment': request =>
+          attachmentStore
+            ? safe(Effect.tryPromise(() => attachmentStore.preview(request)))
+            : Effect.fail(failure('unavailable')),
+        'workspace:searchPromptContext': request =>
+          attachmentStore
+            ? safe(
+                Effect.gen(function* () {
+                  if (request.kind === 'pullRequest') {
+                    if (!request.projectId || Option.isNone(pullRequests)) return { items: [], truncated: false }
+                    const root = yield* contextRoot({ ...request, projectId: request.projectId })
+                    const numeric = /^\d+$/.test(request.query)
+                    const result = yield* pullRequests.value.list(root, {
+                      projectId: request.projectId,
+                      ...(request.checkoutId ? { checkoutId: request.checkoutId } : {}),
+                      state: 'all',
+                      ...(!numeric && request.query ? { query: request.query } : {}),
+                    })
+                    const matches = result.items.filter(item => !numeric || String(item.number).includes(request.query))
+                    if (numeric && !matches.some(item => String(item.number) === request.query)) {
+                      const exact = yield* pullRequests.value.detail(root, Number(request.query)).pipe(Effect.option)
+                      if (Option.isSome(exact)) matches.unshift(exact.value)
+                    }
+                    if (numeric)
+                      matches.sort(
+                        (a, b) =>
+                          Number(String(b.number) === request.query) - Number(String(a.number) === request.query),
+                      )
+                    return {
+                      items: matches.slice(0, 12).map(item => ({
+                        kind: 'pullRequest' as const,
+                        path: String(item.number),
+                        label: `#${item.number}`,
+                        description: item.title.slice(0, 512),
+                      })),
+                      truncated: result.truncated || matches.length > 12,
+                    }
+                  }
+                  if (request.kind === 'file') {
+                    const [chats, models] = yield* Effect.all(
+                      [
+                        read(() =>
+                          referenceIndex.search(request.query, request.excludeTaskId, request.excludeConversationId),
+                        ),
+                        mentionModels(request.query),
+                      ],
+                      { concurrency: 'unbounded' },
+                    )
+                    const files = yield* Effect.flatMap(searchRoot(request), root =>
+                      Effect.tryPromise(() => attachmentStore.search(root, 'file', request.query)),
+                    )
+                    return { items: [...chats, ...models, ...files.items], truncated: files.truncated }
+                  }
+                  const root = yield* searchRoot(request)
+                  const local = yield* Effect.tryPromise(() => attachmentStore.search(root, 'command', request.query))
+                  if (!request.connectionId) return local
+                  if (!host.discoverPromptCatalog) return yield* failure('unavailable')
+                  const catalog = yield* host.discoverPromptCatalog(request.connectionId, root)
+                  return mergePromptContextSearch(local, catalog, request.query)
+                }),
+              )
+            : Effect.fail(failure('unavailable')),
+        'workspace:resolvePromptReference': request =>
+          safe(
+            Effect.gen(function* () {
+              const files = options.promptReferences
+              if (!files) return yield* failure('unavailable')
+              if (request.kind === 'conversation') return yield* read(() => files.conversation(store, request.path))
+              if (!request.projectId || Option.isNone(pullRequests) || !/^[1-9]\d*$/.test(request.path))
+                return yield* failure('invalid-request')
+              const root = yield* contextRoot({ ...request, projectId: request.projectId })
+              const detail = yield* pullRequests.value.detail(root, Number(request.path))
+              const content = `# Pull request #${detail.number}: ${detail.title}\n\n${detail.url}\n\nState: ${detail.state}\nBase: ${detail.baseRefName}\nHead: ${detail.headRefName}\n\n${detail.body}`
+              return yield* Effect.tryPromise(() => files.save(`PR-${detail.number}`, content))
+            }),
+          ),
+        'workspace:attachPromptContext': request =>
+          attachmentStore
+            ? safe(
+                Effect.flatMap(searchRoot(request), root =>
+                  Effect.tryPromise(() => attachmentStore.attach(root, request.path, request.kind)),
+                ),
+              )
+            : Effect.fail(failure('unavailable')),
+        'workspace:chooseProjectDirectory': () =>
+          options.chooseProjectDirectory ? safe(options.chooseProjectDirectory()) : Effect.fail(failure('unavailable')),
+        'workspace:browseDirectories': ({ directoryPath }) =>
+          safe(Effect.tryPromise(() => browseDirectories(directoryPath))),
+        'workspace:remoteSourceReadiness': () =>
+          Option.isSome(setup) ? setup.value.readiness : Effect.fail(failure('unavailable')),
+        'workspace:lookupGitHubRepository': ({ repository }) =>
+          Option.isSome(setup)
+            ? setupSafe(setup.value.lookupGitHubRepository(repository))
+            : Effect.fail(failure('unavailable')),
+        'workspace:createProject': request =>
+          Option.isSome(setup)
+            ? setupMutation(setup.value.create({ ...request, ...registrationIds(request.commandId) }))
+            : Effect.fail(failure('unavailable')),
+        'workspace:cloneProject': request =>
+          Option.isSome(setup)
+            ? setupMutation(setup.value.clone({ ...request, ...registrationIds(request.commandId) }))
+            : Effect.fail(failure('unavailable')),
+        'workspace:status': () =>
+          safe(
+            Effect.gen(function* () {
+              const status = yield* SubscriptionRef.get(host.status)
+              return {
+                protocolVersion: WORKSPACE_RPC_PROTOCOL_VERSION,
+                ...status,
+                ownerEpoch: status.ownerEpoch ?? null,
+                highWatermark: yield* SubscriptionRef.get(host.eventHighWatermark),
+              }
+            }),
+          ),
+        'workspace:ensureScratchProject': () =>
+          options.prepareScratchProject
+            ? mutation(options.prepareScratchProject(store))
+            : Effect.fail(failure('unavailable')),
+        'workspace:listConnections': () =>
+          safe(Effect.map(host.listConnections ?? Effect.succeed([]), items => ({ items }))),
+        'workspace:inspectConnection': ({ connectionId, refresh }) =>
+          host.inspectConnection
+            ? safe(host.inspectConnection(connectionId, refresh ? { refresh } : {}))
+            : Effect.fail(failure('unavailable')),
+        'workspace:registerProject': request =>
+          mutation(
+            Effect.suspend(() =>
+              projects.register({
+                commandId: request.commandId,
+                ...registrationIds(request.commandId),
+                name: request.name,
+                path: request.path,
+              }),
+            ),
+          ),
+        'workspace:createTask': request =>
+          mutation(
+            Effect.gen(function* () {
+              const taskId = Schema.decodeUnknownSync(taskIdSchema)(entityId('task', request.commandId))
+              const conversationId = Schema.decodeUnknownSync(conversationIdSchema)(
+                entityId('conversation', request.commandId),
+              )
+              const at = yield* timestamp
+              return yield* store
+                .createTask({
+                  commandId: request.commandId,
+                  task: {
+                    id: taskId,
+                    projectId: request.projectId,
+                    title: request.title,
+                    description: request.description,
+                    createdAt: at,
+                  },
+                  conversation: { id: conversationId, createdAt: at },
+                })
+                .pipe(Effect.tap(() => referenceIndex.invalidate))
+            }),
+          ),
+        'workspace:listProjects': ({ options }) => read(() => store.listProjects(options)),
+        'workspace:listBranches': request =>
+          Option.isSome(checkouts)
+            ? read(() => checkouts.value.branches(request))
+            : Effect.fail(failure('unavailable')),
+        'workspace:switchBranch': request =>
+          Option.isSome(checkouts)
+            ? mutation(Effect.suspend(() => checkouts.value.switchBranch(request)))
+            : Effect.fail(failure('unavailable')),
+        'workspace:createWorktree': request =>
+          Option.isSome(checkouts)
+            ? mutation(
+                Effect.suspend(() =>
+                  checkouts.value.createWorktree({
+                    ...request,
+                    token: createHash('sha256').update(JSON.stringify(request.commandId)).digest('hex').slice(0, 8),
+                    checkoutId: Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(
+                      entityId('checkout', `worktree:${request.commandId}`),
+                    ),
+                  }),
+                ),
+              )
+            : Effect.fail(failure('unavailable')),
+        'workspace:getProject': ({ projectId, options }) => read(() => store.getProject(projectId, options)),
+        'workspace:listTasks': ({ projectId, options }) => read(() => store.listTasks(projectId, options)),
+        'workspace:readTaskDetail': ({ taskId, options }) => read(() => store.readTaskDetail(taskId, options)),
+        'workspace:readTaskSnapshot': ({ taskId, runLimit }) => read(() => store.readTaskSnapshot(taskId, runLimit)),
+        'workspace:listNativeAgentSessions': ({ taskId, options }) =>
+          read(() => store.listNativeAgentSessions(taskId, options)),
+        'workspace:readConversationPage': request =>
+          read(() =>
+            store.readConversationPage(
+              request.conversationId,
+              request.afterSequence,
+              request.limit,
+              request.throughSequence,
+              { direction: request.direction, beforeSequence: request.beforeSequence },
+            ),
+          ),
+        'workspace:listPendingRuntimeRequests': request =>
+          read(() => store.listPendingRuntimeRequests(request.taskId, request.afterSequence, request.limit)),
+        'workspace:readWorkspacePayload': request =>
+          read(() => store.readWorkspacePayload(request.reference, request.afterOffset, request.limit)),
+        'workspace:listQueuedFollowUps': ({ conversationId, options }) =>
+          read(() => store.listQueuedFollowUps(conversationId, options)),
+        'workspace:listRequestResponses': ({ taskId, options }) =>
+          read(() => store.listRequestResponses(taskId, options)),
+        'workspace:listSteerIntents': ({ taskId, options }) => read(() => store.listSteerIntents(taskId, options)),
+        'workspace:startRun': request =>
+          mutation(
+            Effect.gen(function* () {
+              const command = yield* begin(request)
+              return yield* host.withExecution(execution => execution.start(command))
+            }),
+          ),
+        'workspace:interrupt': request =>
+          mutation(
+            Effect.gen(function* () {
+              yield* host.withExecution(execution => execution.interrupt(request.runId))
+              return { ...request, outcome: 'interruptRequested' as const }
+            }),
+          ),
+        'workspace:respond': request =>
+          timedMutation(issuedAt =>
+            host.withExecution((execution, ownerEpoch) => execution.respond({ ...request, ownerEpoch, issuedAt })),
+          ),
+        'workspace:steer': request =>
+          timedMutation(issuedAt =>
+            host.withExecution((execution, ownerEpoch) => execution.steer({ ...request, ownerEpoch, issuedAt })),
+          ),
+        'workspace:enqueueFollowUp': request =>
+          timedMutation(issuedAt =>
+            host.withExecution(execution => execution.enqueueFollowUp({ ...request, issuedAt })),
+          ),
+        'workspace:cancelQueuedFollowUp': request =>
+          mutation(
+            Effect.gen(function* () {
+              yield* host.withExecution(execution =>
+                execution.cancelQueuedFollowUp(request.conversationId, request.targetCommandId),
+              )
+              return {
+                commandId: request.commandId,
+                targetCommandId: request.targetCommandId,
+                outcome: 'removed' as const,
+              }
+            }),
+          ),
+        'workspace:promoteQueuedFollowUp': request =>
+          mutation(
+            Effect.gen(function* () {
+              const command = yield* begin(request)
+              return yield* host.withExecution(execution =>
+                execution.promoteQueuedFollowUp(request.conversationId, command),
+              )
+            }),
+          ),
+        'workspace:events': ({ afterSequence }) =>
+          Stream.unwrap(
+            Effect.gen(function* () {
+              yield* read(() => Effect.void)
+              const queue = yield* Queue.bounded<{ frame: WorkspaceEventFrame; bytes: number }, WorkspaceRpcError>(
+                EVENT_FRAME_CAPACITY,
+              )
+              let pendingBytes = 0
+              let cursor = afterSequence
+              const publish = Effect.fnUntraced(function* (frame: WorkspaceEventFrame) {
+                const bytes = Buffer.byteLength(JSON.stringify(frame), 'utf8')
+                if (
+                  bytes > MAX_FRAME_BYTES ||
+                  pendingBytes + bytes > MAX_PENDING_BYTES ||
+                  !Queue.offerUnsafe(queue, { frame, bytes })
+                )
+                  return yield* failure('stream-overflow')
+                pendingBytes += bytes
+              })
+              const drain = Effect.fnUntraced(function* (_tag: WorkspaceEventFrame['_tag'], throughSequence: number) {
+                do {
+                  const page = yield* safe(store.pageEvents(cursor, EVENT_PAGE_LIMIT, throughSequence))
+                  yield* publish({ protocolVersion: WORKSPACE_RPC_PROTOCOL_VERSION, _tag, throughSequence, page })
+                  const last = page.events.at(-1)?.sequence
+                  if (!page.hasMore) {
+                    cursor = throughSequence
+                    break
+                  }
+                  if (last === undefined || last <= cursor) return yield* failure('failed')
+                  cursor = last
+                } while (cursor < throughSequence)
+              })
+              // Watermarks are wake-ups, not events; coalescing them is lossless because pages use durable cursors.
+              const watermarks = yield* Queue.sliding<number>(1)
+              yield* Effect.forkScoped(
+                Stream.runForEach(SubscriptionRef.changes(host.eventHighWatermark), high =>
+                  Queue.offer(watermarks, high),
+                ),
+              )
+              yield* Effect.forkScoped(
+                Effect.gen(function* () {
+                  const initial = yield* safe(store.pageEvents(afterSequence, 1))
+                  if (afterSequence > initial.highWatermark) return yield* failure('stale')
+                  yield* drain('Snapshot', initial.highWatermark)
+                  yield* Stream.runForEach(Stream.fromQueue(watermarks), high =>
+                    high > cursor ? drain('Events', high) : Effect.void,
+                  )
+                }).pipe(Effect.catchCause(cause => Queue.fail(queue, sanitize(Cause.squash(cause))))),
+              )
+              return Stream.fromEffectRepeat(Queue.take(queue)).pipe(
+                Stream.map(({ frame, bytes }) => {
+                  pendingBytes -= bytes
+                  return frame
+                }),
+              )
+            }),
+          ),
+      })
+    }),
+  )
+}

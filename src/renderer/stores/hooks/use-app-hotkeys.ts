@@ -2,14 +2,13 @@ import { useHotkeys } from '@tanstack/react-hotkeys'
 
 import { navigateToSection } from '@/renderer/app/navigation'
 import { SHORTCUTS } from '@/renderer/app/shortcuts'
-
 import { usePaletteStore } from '@/renderer/stores/hooks/use-palette-store.js'
 
 /** Shortcut registration, relocated out of AppRoot (ADR 0011). Section
  * actions navigate through the module-level app/navigation.ts (ADR 0014);
  * refresh reads from the scan store; commandPalette (ADR 0028) toggles the
- * palette store. Registered at root mount so ⌘R keeps
- * working during the first-hydrate splash. */
+ * palette store. The AnalyticsProvider mounts these only while an Analytics
+ * route is active. */
 export function useAppHotkeys(): void {
   const { refreshScan: refresh, togglePalette } = usePaletteStore()
   useHotkeys(

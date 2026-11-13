@@ -7,9 +7,8 @@ import * as Schema from 'effect/Schema'
  * (the background orb asks the main process to open the app on one).
  */
 
-/** The canonical section order, shared by nav and shortcuts. Mirrors
- * NAV_SECTIONS in app/shortcuts.ts, which stays the registry's own copy
- * (ADR 0001). */
+/** Navigation targets retained for IPC compatibility. Analytics sidebar order
+ * lives in NAV_SECTIONS; the workspace target selects its application vertical. */
 export const SECTIONS = [
   'overview',
   'sessions',
@@ -21,6 +20,7 @@ export const SECTIONS = [
   // Coach & Skills (ADR 0017): one unified surface where every harness run is
   // a free-form coach prompt (coaching or skill authoring, same agent).
   'coachSkills',
+  'workspace',
   'settings',
 ] as const
 
@@ -39,5 +39,6 @@ export const ROUTES = {
   models: '/models',
   compare: '/compare',
   coachSkills: '/coach-skills',
+  workspace: '/workspace',
   settings: '/settings',
 } as const satisfies Record<Section, string> & { sessionDetail: (id: string) => string }

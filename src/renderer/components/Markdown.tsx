@@ -1,42 +1,89 @@
-import type { AnchorHTMLAttributes, MouseEvent } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import 'katex/dist/katex.min.css'
 
-import { useNativeStore } from '@/renderer/shared/hooks/use-native-store'
+import { createCodePlugin } from '@streamdown/code'
+import { createMathPlugin } from '@streamdown/math'
+import { createMermaidPlugin } from '@streamdown/mermaid'
+import { memo } from 'react'
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
+import {
+  type Components,
+  defaultRehypePlugins,
+  defaultRemarkPlugins,
+  Streamdown,
+  type StreamdownProps,
+} from 'streamdown'
 
-/** Harness links open in the default browser through the guarded
- *  `open-external` IPC channel (http/https only, main-process enforced) — the
- *  same pattern the PR rows use. Without this, a bare <a href> would navigate
- *  the Electron window away from the app. */
-function openExternalLink(event: MouseEvent<HTMLAnchorElement>, url: string, open: (url: string) => void): void {
-  event.preventDefault()
-  event.stopPropagation()
-  open(url)
+import { remarkFileLinks } from './markdown/markdown-links'
+import { markdownUrlTransform } from './markdown/markdown-url'
+import { MarkdownCode, MarkdownInlineCode } from './markdown/MarkdownCode'
+import { MarkdownImage, MarkdownLink } from './markdown/MarkdownMedia'
+
+const plugins = {
+  code: createCodePlugin(),
+  math: createMathPlugin({ singleDollarTextMath: true }),
+  mermaid: createMermaidPlugin({ config: { securityLevel: 'strict', startOnLoad: false } }),
+}
+const promptReferencePlugins = {
+  ...plugins,
+  math: createMathPlugin({ singleDollarTextMath: false }),
 }
 
-/** Renders harness markdown to HTML. The surrounding surface applies
- *  shadcn/typeset typography (wrap with `.typeset`); the component itself
- *  carries no classes so the typeset container styles everything inside. */
-export function Markdown({ children }: { children: string }): React.JSX.Element {
-  const { openExternal: open } = useNativeStore()
+const components: Components = {
+  a: MarkdownLink,
+  code: MarkdownCode,
+  inlineCode: MarkdownInlineCode,
+  img: MarkdownImage,
+}
+
+const remarkPlugins = [...Object.values(defaultRemarkPlugins), remarkFileLinks]
+
+const rehypePlugins: NonNullable<StreamdownProps['rehypePlugins']> = [
+  defaultRehypePlugins.raw,
+  [
+    rehypeSanitize,
+    {
+      ...defaultSchema,
+      clobberPrefix: 'markdown-',
+      protocols: {
+        ...defaultSchema.protocols,
+        src: [...(defaultSchema.protocols?.src ?? []), 'data', 'file', ...'abcdefghijklmnopqrstuvwxyz'],
+        href: [...(defaultSchema.protocols?.href ?? []), 'file', ...'abcdefghijklmnopqrstuvwxyz'],
+      },
+      attributes: { ...defaultSchema.attributes, code: [...(defaultSchema.attributes?.code ?? []), 'metastring'] },
+    },
+  ],
+]
+
+export interface MarkdownProps {
+  children: string
+  streaming?: boolean
+  remarkPlugins?: NonNullable<StreamdownProps['remarkPlugins']>
+  components?: Components
+  singleDollarMath?: boolean
+}
+
+export const Markdown = memo(function Markdown({
+  children,
+  streaming = false,
+  remarkPlugins: additionalRemarkPlugins = [],
+  components: additionalComponents,
+  singleDollarMath = true,
+}: MarkdownProps): React.JSX.Element {
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+    <Streamdown
+      className="watchtower-markdown"
+      mode="streaming"
+      isAnimating={streaming}
+      parseIncompleteMarkdown={streaming}
+      plugins={singleDollarMath ? plugins : promptReferencePlugins}
+      rehypePlugins={rehypePlugins}
+      remarkPlugins={[...remarkPlugins, ...additionalRemarkPlugins]}
+      components={{ ...components, ...additionalComponents }}
+      urlTransform={markdownUrlTransform}
       skipHtml
-      components={{
-        // Anchor onClick override type is supplied by react-markdown; keep the
-        // rest of the anchor props (href, title) untouched.
-        a: (props: AnchorHTMLAttributes<HTMLAnchorElement>) => (
-          <a
-            {...props}
-            onClick={event => {
-              if (props.href) openExternalLink(event, props.href, open)
-            }}
-          />
-        ),
-      }}
+      lineNumbers={false}
     >
       {children}
-    </ReactMarkdown>
+    </Streamdown>
   )
-}
+})

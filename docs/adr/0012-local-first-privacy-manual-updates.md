@@ -23,3 +23,18 @@ Conditions (all enforced in code):
 1. **Aggregated / normalized context only — never raw transcripts.** Coach runs send only what the user typed; the harness never receives raw session transcripts. (The former build-skill evidence flow — normalized detection patterns over `coach:run` — was deleted in ADR 0021: the agent grounds itself through the read-only ledger MCP tools instead.)
 2. **No API keys.** Auth is always the host CLI's own stored login; the harness spawn scrubs provider API keys from the child env (`scrubEnv`). The app never asks for or stores keys.
 3. **The prompt leaves the machine only through the user's own harness CLI.** The app adds no network path of its own for agents; everything else keeps its existing behavior (pricing, FX, manual updates).
+
+---
+
+## Addendum (2026-11-02): Project setup — user-initiated, through the user's own `git` and `gh`
+
+The workspace Add project palette can create a folder, initialize it, clone a repository, and publish a new project as a private GitHub repository. Each action follows an explicit Enter or click in that palette; nothing runs on open except a local `gh auth status` readiness check, which reads gh's stored login and sends nothing of the app's.
+
+Conditions (all enforced in code, `src/infrastructure/filesystem/project-provisioner.ts`):
+
+1. **No app-owned network path or credentials.** Cloning uses the user's `git` (Git URLs) or `gh repo clone` (GitHub); lookup and publishing use `gh repo view` and `gh repo create --private`. Authentication is always the tool's own stored login. The app never asks for, reads, or stores tokens, and runs both tools with prompts disabled.
+2. **Only what the user typed leaves the machine.** A clone sends the remote address the user entered; a lookup sends `owner/name`; publishing sends the folder-derived repository name and pushes nothing. Ledger facts, prompts and other paths are never included.
+3. **No tool output crosses the RPC boundary.** Git and gh output can contain credentials or local paths, so failures surface as fixed messages per code (`ProjectSetupError`) and are not logged raw.
+4. **Nothing is overwritten.** A clone destination must be missing or empty; a repeated command recognizes only its own finished clone (matching `origin`), and publishing leaves an existing `origin` untouched. `git init` never runs inside an existing repository.
+
+**Why:** these are the same user-initiated, own-CLI terms as the harness addendum above, applied to project setup. The alternative, an app-owned GitHub API client, would require Watchtower to hold credentials and add a network path of its own.

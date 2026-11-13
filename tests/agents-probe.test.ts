@@ -21,9 +21,10 @@ import {
   type ProbeResult,
   type ProbeSpawn,
 } from '../src/infrastructure/agent-harnesses/probe.js'
+import { probeProcessTree, processIsRunning } from './agents-probe-process-fixture.js'
 
 class FakeChild extends EventEmitter implements ProbeChild {
-  pid = 4321
+  pid: number | undefined
   killed = 0
   stdin = new Writable({ write: (_chunk, _encoding, callback) => callback() })
   stdout = Readable.from([])
@@ -94,6 +95,42 @@ describe('probeHarness', () => {
     expect(result).toMatchObject({ status: 'ready', auth: { status: 'unknown' }, version: '1.2.3' })
     expect(calls).toEqual(['initialize'])
     expect(child.killed).toBe(1)
+  })
+
+  it('awaits asynchronous teardown before returning a successful probe', async () => {
+    let release: (() => void) | undefined
+    let completed = false
+    const result = runProbe(codex, {
+      spawn: spawnWith(new FakeChild()),
+      connectionFactory: () => ({ initialize: async () => initialized }),
+      kill: () =>
+        new Promise<void>(resolve => {
+          release = resolve
+        }),
+    }).then(value => {
+      completed = true
+      return value
+    })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(completed).toBe(false)
+    release?.()
+    await expect(result).resolves.toMatchObject({ status: 'ready' })
+  })
+
+  it('reports unconfirmed teardown and bounds a teardown that never resolves', async () => {
+    const child = new FakeChild()
+    const started = Date.now()
+    const result = await runProbe(codex, {
+      spawn: spawnWith(child),
+      connectionFactory: () => ({ initialize: async () => initialized }),
+      teardownTimeoutMs: 30,
+      kill: () => new Promise<void>(() => {}),
+    })
+    expect(result).toMatchObject({ status: 'error', message: 'Codex process tree termination could not be confirmed.' })
+    expect(Date.now() - started).toBeLessThan(500)
+    expect(child.stdin.destroyed).toBe(true)
+    expect(child.stdout.destroyed).toBe(true)
+    expect(child.stderr.destroyed).toBe(true)
   })
 
   it('does not treat advertised authMethods as a signed-out signal', async () => {
@@ -283,6 +320,44 @@ describe('probeHarness', () => {
     expect(interruptedChild.killed).toBe(1)
   })
 
+  it.each(['success', 'timeout'] as const)('terminates real descendants before probe %s completes', async outcome => {
+    const tree = probeProcessTree()
+    try {
+      const result = runProbe(codex, {
+        spawn: tree.spawn,
+        timeoutMs: 2000,
+        connectionFactory: () => ({
+          initialize: async () => {
+            await tree.ready
+            return outcome === 'success' ? initialized : new Promise<InitializeResponse>(() => {})
+          },
+        }),
+      })
+      const pid = await tree.ready
+      expect(processIsRunning(pid)).toBe(true)
+      const completed = await result
+      expect(completed.status).toBe(outcome === 'success' ? 'ready' : 'error')
+      if (outcome === 'timeout') expect(completed.message).toBe('Codex did not answer the ACP handshake within 2s.')
+      expect(processIsRunning(pid)).toBe(false)
+    } finally {
+      await tree.dispose()
+    }
+  })
+
+  it('spawns with only three pipes, hidden windows and a dedicated POSIX group', async () => {
+    const spawn = vi.fn(spawnWith(new FakeChild()))
+    await runProbe(codex, {
+      spawn,
+      platform: 'linux',
+      connectionFactory: () => ({ initialize: async () => initialized }),
+    })
+    expect(spawn.mock.calls[0]?.[2]).toMatchObject({
+      stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: true,
+    })
+  })
+
   it('gives slow-booting harnesses a longer per-spec deadline', () => {
     expect(probeTimeoutFor('copilot')).toBe(30_000)
     expect(probeTimeoutFor('codex')).toBe(HARNESS_HANDSHAKE_TIMEOUT_MS)
@@ -299,6 +374,7 @@ describe('probeHarness', () => {
       },
     })
     const child = new FakeChild()
+    child.pid = 4321
     await runProbe(codex, {
       platform: 'win32',
       spawn: spawnWith(child),
@@ -306,7 +382,11 @@ describe('probeHarness', () => {
       execFile,
     })
     expect(calls).toHaveLength(1)
-    expect(calls[0]?.slice(0, 3)).toEqual(['taskkill', ['/pid', '4321', '/T', '/F'], { windowsHide: true }])
+    expect(calls[0]?.slice(0, 3)).toEqual([
+      'taskkill',
+      ['/pid', '4321', '/T', '/F'],
+      expect.objectContaining({ windowsHide: true, timeout: 2000 }),
+    ])
     expect(calls[0]?.[3]).toEqual(expect.any(Function))
     expect(child.killed).toBe(0)
   })

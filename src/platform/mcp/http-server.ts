@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
+import type { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
@@ -161,6 +162,16 @@ export function handleLedgerMcpHttpRequest(
   queries: LedgerMcpQueries,
   token: string,
 ): Effect.Effect<void> {
+  return handleMcpHttpRequest(req, res, token, () => createLedgerMcpServer(queries))
+}
+
+/** Shared SDK transport boundary for authenticated local MCP capabilities. */
+export function handleMcpHttpRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  token: string,
+  createServer: () => Server,
+): Effect.Effect<void> {
   let pathname = ''
   const operation = Effect.scoped(
     Effect.gen(function* () {
@@ -193,7 +204,7 @@ export function handleLedgerMcpHttpRequest(
 
       const ownedServer = yield* Effect.acquireRelease(
         Effect.sync(() => {
-          const server = createLedgerMcpServer(queries)
+          const server = createServer()
           let closePromise: Promise<void> | undefined
           return {
             server,

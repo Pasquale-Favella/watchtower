@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { shortcutForAction } from '../src/renderer/app/shortcuts.js'
 import {
   PALETTE_ACTIONS,
-  PALETTE_SECTIONS,
   PALETTE_ROWS,
+  PALETTE_SECTIONS,
   rowFilterValue,
 } from '../src/renderer/components/shell/CommandPalette.js'
 

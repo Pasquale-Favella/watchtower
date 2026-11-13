@@ -157,7 +157,7 @@ function Turn({ turn }: { turn: SessionDetail['turns'][number] }): React.JSX.Ele
 export function SessionView(): React.JSX.Element {
   const { formatUsd } = useCurrencyFormatter()
   const { sessionId } = useParams({ strict: false })
-  const { sourceId } = useSearch({ from: '/dashboard/sessions/$sessionId' })
+  const { sourceId } = useSearch({ from: '/analytics/dashboard/sessions/$sessionId' })
   const request = useMemo(() => (sessionId ? { sessionId, sourceId } : null), [sessionId, sourceId])
   const { data: session, error: queryError, status, openExternal } = useSessionStore(request)
   const error = queryError ?? (status === 'ready' && session === null ? 'Session not found.' : null)
