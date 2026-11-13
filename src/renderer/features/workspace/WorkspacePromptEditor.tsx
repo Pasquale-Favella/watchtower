@@ -14,10 +14,13 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from '@/renderer/components/ui/popover.js'
+import { promptAnnotationLabel } from '@/shared/prompt-annotations.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
 import { commandPromptToken, limitPromptEdit } from './prompt-editor.js'
 import { type PromptInlineToken, type PromptSegment, splitPromptTokens } from './prompt-tokens.js'
+import { PromptAnnotationChip } from './PromptAnnotationChip.js'
+import { PromptAttachmentChip } from './PromptAttachmentChip.js'
 import { PromptReferenceChip, promptReferenceChipClass } from './PromptReferenceChip.js'
 
 export type PromptInputSelection = {
@@ -52,7 +55,6 @@ type Props = {
   readonly autoFocus?: boolean
   readonly maxLength: number
   readonly richText?: boolean
-  readonly onAttachmentClick: (id: string) => void
   readonly onOpenFile?: ((path: string) => void) | undefined
 }
 
@@ -155,6 +157,35 @@ const PromptMention = Node.create({
   },
 })
 
+function PromptAttachmentView({ node, selected, editor, getPos }: NodeViewProps): React.JSX.Element {
+  const attachment = node.attrs.record as PromptAttachment | null
+  function remove(): void {
+    const position = getPos()
+    if (typeof position === 'number')
+      editor
+        .chain()
+        .focus()
+        .deleteRange({ from: position, to: position + node.nodeSize })
+        .run()
+  }
+  let content: React.JSX.Element | string = 'Attachment'
+  if (attachment?.annotation) content = <PromptAnnotationChip attachment={attachment} onRemove={remove} />
+  else if (attachment) content = <PromptAttachmentChip attachment={attachment} onRemove={remove} />
+  return (
+    <NodeViewWrapper
+      as="span"
+      contentEditable={false}
+      spellCheck={false}
+      data-composer-attachment=""
+      data-selected={selected || undefined}
+      data-prompt-attachment={attachment ? JSON.stringify(attachment) : undefined}
+      className="data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 rounded-sm data-[selected=true]:ring-1"
+    >
+      {content}
+    </NodeViewWrapper>
+  )
+}
+
 const PromptAttachment = Node.create({
   name: 'composer-attachment',
   group: 'inline',
@@ -172,7 +203,9 @@ const PromptAttachment = Node.create({
   },
   renderHTML({ node, HTMLAttributes }) {
     const attachment = node.attrs.record as PromptAttachment | null
-    const label = attachment?.name ?? 'Attachment'
+    const label = attachment?.annotation
+      ? promptAnnotationLabel(attachment.annotation)
+      : (attachment?.name ?? 'Attachment')
     return [
       'span',
       mergeAttributes(HTMLAttributes, {
@@ -185,6 +218,9 @@ const PromptAttachment = Node.create({
       }),
       label,
     ]
+  },
+  addNodeView() {
+    return ReactNodeViewRenderer(PromptAttachmentView)
   },
 })
 
@@ -650,13 +686,6 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
           return event.defaultPrevented
         },
         handlePaste: (_view, event) => propsRef.current.onPaste(event),
-        handleClickOn: (_view, _position, node) => {
-          if (node.type.name !== 'composer-attachment') return false
-          const attachment = node.attrs.record as PromptAttachment | null
-          if (!attachment) return false
-          propsRef.current.onAttachmentClick(attachment.id)
-          return true
-        },
         clipboardTextSerializer: slice =>
           slice.content.textBetween(0, slice.content.size, '\n', node => tokenSource(node)),
       },

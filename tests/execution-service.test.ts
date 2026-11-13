@@ -5,6 +5,7 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
@@ -2421,6 +2422,54 @@ describe('ExecutionService', () => {
       expect(events.events.map(event => event.kind)).toContain('driverEvent')
       const snapshot = await run(store.readTaskSnapshot(task.id, 10))
       expect(snapshot.runs[0]).toMatchObject({ status: 'completed', nativeTurnId: 'native-turn' })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('prepares ephemeral session capabilities in the driver scope before opening and cleans them after close', async () => {
+    const order: string[] = []
+    let store!: WorkspaceStore['Service']
+    let openedContext: AgentSessionContext | undefined
+    const session = makeSession({
+      events: () => Stream.fromIterable([{ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const]),
+    })
+    const connection = makeConnection(session, {
+      openSession: context =>
+        Effect.sync(() => {
+          order.push('open')
+          openedContext = context
+          return session
+        }),
+      close: () => Effect.sync(() => void order.push('connection-close')),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(connection), {
+      prepareSession: context =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            order.push('prepare')
+            return {
+              ...context,
+              browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' },
+            }
+          }),
+          () => Effect.sync(() => void order.push('prepared-resource-close')),
+        ),
+    })
+
+    try {
+      store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, commandId: 'prepared-session-command' }))
+      await run(service.stopAll())
+
+      expect(openedContext).toMatchObject({
+        taskId: 'task-1',
+        browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' },
+      })
+      expect(order).toEqual(['prepare', 'open', 'connection-close', 'prepared-resource-close'])
     } finally {
       await runtime.dispose()
     }

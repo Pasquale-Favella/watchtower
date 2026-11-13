@@ -705,6 +705,7 @@ describe('Claude Agent SDK native driver', () => {
           expect(fake.calls[0]?.options.sessionId).toBe('native-session')
           expect(fake.calls[0]?.options.resume).toBeUndefined()
           expect(fake.calls[0]?.options.settingSources).toEqual(['user', 'project', 'local'])
+          expect(fake.calls[0]?.options.mcpServers).toBeUndefined()
           expect(fake.calls[0]?.options.permissionMode).toBe('default')
           expect(fake.calls[0]?.options.hooks?.PreToolUse?.length).toBe(1)
           expect(fake.calls[0]?.options.canUseTool).toBeTypeOf('function')
@@ -811,6 +812,44 @@ describe('Claude Agent SDK native driver', () => {
       ),
     )
     expect(fake.calls[0]?.closed).toBe(true)
+  })
+
+  it('injects the task browser HTTP MCP on fresh and resumed Claude sessions', async () => {
+    const browserContext = {
+      ...context,
+      browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+    }
+    const fresh = fakeSdk()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver.pipe(Effect.provide(makeClaudeAgentDriver({ sdk: fresh.sdk })))
+          const connection = yield* driver.connect({ connectionId: 'claude-browser-fresh' })
+          yield* connection.openSession(browserContext)
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(fakeCall(fresh).options.mcpServers).toMatchObject({
+      'watchtower-browser': {
+        type: 'http',
+        url: 'http://127.0.0.1:43123/mcp',
+        headers: { Authorization: 'Bearer run-token' },
+      },
+    })
+
+    const resumed = fakeSdk()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver.pipe(Effect.provide(makeClaudeAgentDriver({ sdk: resumed.sdk })))
+          const connection = yield* driver.connect({ connectionId: 'claude-browser-resume' })
+          yield* connection.loadSession(browserContext, { nativeSessionId: 'native-existing', generation: 2 })
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(fakeCall(resumed).options.mcpServers).toEqual(fakeCall(fresh).options.mcpServers)
   })
 
   it('holds approvals and structured questions pending until an explicit scoped decision', async () => {

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path'
 import { expect, type Locator, test } from '@playwright/test'
 
 import { dismissOnboarding, launchApp } from './app'
+import { pdfFixture } from './fixtures/attachments'
 import { invokeRpc, invokeRpcStreamFirst } from './rpc-probe'
 
 function observeSubmissionUi(): void {
@@ -180,6 +181,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await newPrompt.fill('/mdl')
     await expect(newChat.getByRole('option', { name: /^\/model\b/ })).toBeVisible()
     await newPrompt.press('Escape')
+    await newPrompt.fill('')
     await newPrompt.fill('/mod')
     await expect(newChat.getByRole('option', { name: /^\/model\b/ })).toBeVisible()
     await newPrompt.press('Enter')
@@ -208,7 +210,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
       mimeType: 'text/plain',
       buffer: Buffer.from('Attachment from the file picker'),
     })
-    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('context.txt')
+    await expect(newPrompt.getByRole('button', { name: /^File attachment, context.txt,/ })).toBeVisible()
     await newPrompt.evaluate(input => {
       const clipboardData = new DataTransfer()
       clipboardData.items.add(
@@ -225,14 +227,15 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
       )
       input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
     })
-    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText('pixel.png')
-    await newChat.getByRole('button', { name: 'pixel.png', exact: true }).click()
+    await expect(newPrompt.getByRole('button', { name: /^Image attachment, pixel.png,/ })).toBeVisible()
+    await newPrompt.getByRole('button', { name: /^Image attachment, pixel.png,/ }).click()
     await expect(window.getByRole('dialog', { name: 'pixel.png', exact: true })).toBeVisible()
     await window
       .getByRole('dialog', { name: 'pixel.png', exact: true })
       .getByRole('button', { name: 'Close', exact: true })
       .click()
-    await newPrompt.fill('Inspect this checkout\n@README.md $review ')
+    await newPrompt.press('Escape')
+    await newPrompt.press('Control+End')
     await newPrompt.press('Shift+Enter')
     await expect(newPrompt.locator('p')).toHaveCount(3)
     await newPrompt.press('Enter')
@@ -290,7 +293,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await prompt.fill('/fixture-')
     await expect(composer.getByRole('option', { name: /^\/fixture-check\b/ })).toBeVisible()
     await prompt.press('Enter')
-    await expectPromptValue(prompt, '/fixture-check ')
+    await expect(prompt.getByRole('button', { name: 'Command fixture-check. Show details', exact: true })).toBeVisible()
     await prompt.fill('Queued work to cancel')
     await prompt.press('Enter')
     const queue = composer.getByRole('list', { name: 'Queued prompts' })
@@ -317,11 +320,38 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(window.getByRole('button', { name: 'Mode: Plan', exact: true })).toBeVisible()
     await window.keyboard.press('Escape')
     await expect(composer.getByRole('combobox', { name: 'Branch', exact: true })).toBeVisible()
-    await composer.locator('input[type=file]').setInputFiles(join(repository, 'notes.txt'))
-    await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('notes.txt')
-    await prompt.fill('Queued work to dispatch')
+    await prompt.fill('Queued work to dispatch ')
+    await composer.locator('input[type=file]').setInputFiles([
+      { name: 'notes.txt', mimeType: 'text/plain', buffer: readFileSync(join(repository, 'notes.txt')) },
+      { name: 'queued.pdf', mimeType: 'application/pdf', buffer: pdfFixture() },
+      {
+        name: 'queued.png',
+        mimeType: 'image/png',
+        buffer: Buffer.from(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=',
+          'base64',
+        ),
+      },
+    ])
+    await expect(composer.getByRole('button', { name: /^File attachment, notes.txt,/ })).toBeVisible()
+    await expect(prompt.locator('[data-prompt-file-chip]')).toHaveCount(3)
+    await expect(composer.locator('[aria-busy="true"]')).toHaveCount(0)
     await prompt.press('Enter')
-    await expect(queue.getByText('Queued work to dispatch', { exact: true })).toBeVisible()
+    await expect(queue.getByText('Queued work to dispatch', { exact: false })).toBeVisible()
+    await expect(queue.locator('[data-prompt-file-chip]')).toHaveCount(3)
+    await expect(queue).not.toContainText('attachment:')
+    await queue.getByRole('button', { name: /^File attachment, notes.txt,/ }).click()
+    const queuedText = window.getByRole('dialog', { name: 'notes.txt', exact: true })
+    await expect(queuedText).toContainText('Original attached notes')
+    await queuedText.getByRole('button', { name: 'Close', exact: true }).click()
+    await queue.getByRole('button', { name: /^File attachment, queued.pdf,/ }).click()
+    const queuedPdf = window.getByRole('dialog', { name: 'queued.pdf', exact: true })
+    await expect(queuedPdf.locator('.textLayer')).toContainText('First page')
+    await queuedPdf.getByRole('button', { name: 'Close', exact: true }).click()
+    await queue.getByRole('button', { name: 'Preview queued.png', exact: true }).click()
+    const queuedImage = window.getByRole('dialog', { name: 'queued.png', exact: true })
+    await expect(queuedImage.getByRole('img', { name: 'queued.png', exact: true })).toBeVisible()
+    await queuedImage.getByRole('button', { name: 'Close', exact: true }).click()
     writeFileSync(join(repository, 'notes.txt'), 'Changed after queueing')
     await prompt.fill('Keep this draft during navigation')
     await prompt.evaluate(input => {
@@ -329,7 +359,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
       dataTransfer.items.add(new File(['Draft context'], 'draft-context.txt', { type: 'text/plain' }))
       input.dispatchEvent(new DragEvent('drop', { dataTransfer, bubbles: true, cancelable: true }))
     })
-    await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('draft-context.txt')
+    await expect(composer.getByRole('button', { name: /^File attachment, draft-context.txt,/ })).toBeVisible()
     await header.getByRole('button', { name: 'Terminal', exact: true }).click()
     await expect(window.locator('[data-terminal-owner="drawer"]')).toBeVisible()
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
@@ -340,9 +370,15 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(newPrompt.locator('[data-composer-mention]')).toContainText('chat-Inspect-this-checkout')
     await newPrompt.fill('Independent second draft')
     await window.getByRole('button', { name: /Inspect this checkout/ }).click()
-    await expectPromptValue(prompt, 'Keep this draft during navigation')
+    await expect(prompt).toContainText('Keep this draft during navigation')
     await window.reload()
-    await expectPromptValue(prompt, 'Keep this draft during navigation')
+    await expect(prompt).toContainText('Keep this draft during navigation')
+    await queue.getByRole('button', { name: /^File attachment, queued.pdf,/ }).click()
+    await expect(queuedPdf.locator('.textLayer')).toContainText('First page')
+    await queuedPdf.getByRole('button', { name: 'Close', exact: true }).click()
+    await queue.getByRole('button', { name: /^File attachment, notes.txt,/ }).click()
+    await expect(queuedText).toContainText('Original attached notes')
+    await queuedText.getByRole('button', { name: 'Close', exact: true }).click()
     const restoredTerminal = window.locator('[data-terminal-owner="drawer"]')
     await expect(restoredTerminal).toBeVisible()
     const restoredInput = restoredTerminal.locator('.xterm-helper-textarea').first()
@@ -368,10 +404,10 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     if (!restoredHistory.ok) throw new Error('Restored terminal unavailable')
     expect((restoredHistory.value as { data: string }).data).not.toContain('[?1;2c')
     await header.getByRole('button', { name: 'Terminal', exact: true }).click()
-    await expect(composer.getByRole('list', { name: 'Attachments', exact: true })).toContainText('draft-context.txt')
+    await expect(composer.getByRole('button', { name: /^File attachment, draft-context.txt,/ })).toBeVisible()
     await composer.getByRole('button', { name: 'Remove draft-context.txt', exact: true }).click()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
-    await expect(queue.getByText('Queued work to dispatch', { exact: true })).toBeVisible()
+    await expect(queue.getByText('Queued work to dispatch', { exact: false })).toBeVisible()
     await requests.getByRole('button', { name: 'Inspect once', exact: true }).click()
     await expect(
       window
@@ -380,13 +416,13 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     ).toBeVisible()
     await expect(queue).toHaveCount(0)
     const messages = window.getByRole('region', { name: 'Messages', exact: true })
-    await expect(messages.getByText('Queued work to dispatch', { exact: true })).toBeVisible()
+    await expect(messages.getByText('Queued work to dispatch', { exact: false })).toBeVisible()
     await expect(messages.getByText('(empty response)', { exact: true })).toHaveCount(0)
     await window.screenshot({ path: test.info().outputPath('workspace-chat-desktop.png'), fullPage: true })
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await composer.getByRole('button', { name: 'Stop Run', exact: true }).click()
     await expect(composer.getByRole('button', { name: 'Stop Run', exact: true })).toHaveCount(0)
-    await expectPromptValue(prompt, 'Keep this draft during navigation')
+    await expect(prompt).toContainText('Keep this draft during navigation')
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     await expectPromptValue(newPrompt, 'Independent second draft')
     await expect(projectPicker).toHaveText('No project')

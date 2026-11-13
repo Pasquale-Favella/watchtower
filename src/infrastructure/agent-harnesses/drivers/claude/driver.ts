@@ -632,6 +632,17 @@ const modeOptions = (
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
     includePartialMessages: true,
+    ...(context.browserMcp
+      ? {
+          mcpServers: {
+            'watchtower-browser': {
+              type: 'http' as const,
+              url: context.browserMcp.url,
+              headers: { Authorization: `Bearer ${context.browserMcp.token}` },
+            },
+          },
+        }
+      : {}),
     ...(native ? { resume: native.nativeSessionId } : { sessionId: nativeSessionId }),
     env: claudeProcessEnvironment(apiKey),
   }

@@ -5,7 +5,10 @@ import {
   Copy,
   ExternalLink,
   Globe,
+  LocateFixed,
   MoreHorizontal,
+  Pause,
+  Play,
   RefreshCw,
   Square,
   X,
@@ -13,6 +16,7 @@ import {
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/renderer/components/ui/dialog'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,13 +54,34 @@ export function WorkspaceBrowserPreview({
 }: WorkspaceBrowserPreviewProps): React.JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const previewCommands = useWorkspacePreviewCommands()
+  const pickOperation = useRef<{ readonly identity: string; cancelled: boolean } | null>(null)
+  const cancelPickCommand = useRef(previewCommands.cancelPick)
   const callbacks = useRef({ onTitleChange, onNewTab, onShortcut })
   const popupSequence = useRef<number | null>(null)
   const shortcutSequence = useRef<number | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
   const [capturing, setCapturing] = useState(false)
+  const [picking, setPicking] = useState(false)
   const [annotation, setAnnotation] = useState<WorkspaceImageContext | null>(null)
-  const capture = useWorkspacePreviewCommands().capture
+  const [customViewportOpen, setCustomViewportOpen] = useState(false)
+  const [customWidth, setCustomWidth] = useState('1280')
+  const [customHeight, setCustomHeight] = useState('800')
+  const identity = JSON.stringify([ownerKey, tabId])
+  useEffect(() => {
+    cancelPickCommand.current = previewCommands.cancelPick
+  })
+  useEffect(
+    () => () => {
+      const operation = pickOperation.current
+      if (operation?.identity !== identity) return
+      operation.cancelled = true
+      pickOperation.current = null
+      void cancelPickCommand.current(ownerKey, tabId).catch(() => undefined)
+    },
+    [identity, ownerKey, tabId],
+  )
+  const capture = previewCommands.capture
   const normalizedInitial = initialUrl ? normalizeWorkspacePreviewUrl(initialUrl) : null
   const preview = useWorkspacePreview(
     normalizedInitial ? { ownerKey, tabId, url: normalizedInitial } : { ownerKey, tabId },
@@ -124,12 +149,89 @@ export function WorkspaceBrowserPreview({
     setLocalError(null)
     try {
       const image = await capture(ownerKey, tabId)
-      setAnnotation({ dataUrl: image.dataUrl, text: `Browser page: ${image.url}` })
+      setAnnotation({
+        dataUrl: image.dataUrl,
+        text: `Browser page: ${image.url}`,
+        browser: { pageUrl: image.url, pageTitle: state?.title ?? '', kind: 'page' },
+      })
     } catch (cause) {
       setLocalError(preview.describeError(cause))
     } finally {
       setCapturing(false)
     }
+  }
+  const configure = (settings: {
+    readonly width?: number
+    readonly height?: number
+    readonly colorScheme?: 'light' | 'dark' | 'system'
+  }) => {
+    setLocalError(null)
+    void previewCommands
+      .configure({ ownerKey, tabId, ...settings })
+      .catch(cause => setLocalError(preview.describeError(cause)))
+  }
+  const pickElement = async (previous?: WorkspaceImageContext) => {
+    const operation = { identity, cancelled: false }
+    pickOperation.current = operation
+    setPicking(true)
+    setAnnotation(null)
+    setLocalError(null)
+    try {
+      const result = await previewCommands.pick(ownerKey, tabId)
+      if (!operation.cancelled && pickOperation.current === operation) {
+        const targets = previous
+          ? [
+              ...(previous.previous ?? []),
+              {
+                dataUrl: previous.dataUrl,
+                text: previous.text,
+                regions: previous.regions,
+                browser: previous.browser,
+                comment: previous.comment,
+              },
+            ]
+          : []
+        setAnnotation({
+          dataUrl: result.image.dataUrl,
+          text: result.text,
+          browser: { pageUrl: result.image.url, pageTitle: state?.title ?? '', kind: 'element' },
+          regions: [{ ...result.element.rect, label: result.element.name || result.element.tag }],
+          previous: targets,
+        })
+      } else if (previous && pickOperation.current === operation) setAnnotation(previous)
+    } catch (cause) {
+      if (!operation.cancelled) setLocalError(preview.describeError(cause))
+      if (previous && pickOperation.current === operation) setAnnotation(previous)
+    } finally {
+      if (pickOperation.current === operation) {
+        pickOperation.current = null
+        setPicking(false)
+      }
+    }
+  }
+  const cancelPick = () => {
+    const operation = pickOperation.current
+    if (!operation) return
+    operation.cancelled = true
+    void previewCommands.cancelPick(ownerKey, tabId).catch(() => undefined)
+  }
+  const applyCustomViewport = (event: FormEvent) => {
+    event.preventDefault()
+    const width = Number(customWidth)
+    const height = Number(customHeight)
+    if (
+      !Number.isInteger(width) ||
+      !Number.isInteger(height) ||
+      width < 1 ||
+      height < 1 ||
+      width > 8192 ||
+      height > 8192
+    ) {
+      setLocalError('Enter viewport dimensions from 1 to 8192 pixels.')
+      return
+    }
+    configure({ width, height })
+    setCustomViewportOpen(false)
   }
 
   return (
@@ -175,6 +277,13 @@ export function WorkspaceBrowserPreview({
             <Camera />
           </BrowserButton>
         )}
+        <BrowserButton
+          label={picking ? 'Selecting an element' : 'Pick element'}
+          disabled={!url || picking || !onAddToChat}
+          onClick={() => void pickElement()}
+        >
+          <LocateFixed />
+        </BrowserButton>
         <DropdownMenu>
           <DropdownMenuTrigger
             render={
@@ -184,6 +293,21 @@ export function WorkspaceBrowserPreview({
             }
           />
           <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => configure({})}>Fit viewport to panel</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => configure({ width: 390, height: 844 })}>
+              Phone (390 × 844)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => configure({ width: 768, height: 1024 })}>
+              Tablet (768 × 1024)
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setCustomViewportOpen(true)}>Custom viewport…</DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => configure({ colorScheme: 'system' })}>
+              Use system appearance
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => configure({ colorScheme: 'light' })}>Light appearance</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => configure({ colorScheme: 'dark' })}>Dark appearance</DropdownMenuItem>
+            <DropdownMenuSeparator />
             <DropdownMenuItem
               disabled={!url}
               onClick={() => {
@@ -210,9 +334,29 @@ export function WorkspaceBrowserPreview({
             <DropdownMenuItem disabled={!state} onClick={() => action('toggle-mute')}>
               {state?.muted ? 'Unmute tab' : 'Mute tab'}
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem disabled={!state || state.agentPaused} onClick={() => action('pause-agent')}>
+              <Pause />
+              Pause agent
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled={!state || !state.agentPaused} onClick={() => action('resume-agent')}>
+              <Play />
+              Resume agent
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </form>
+      {picking && (
+        <div
+          role="status"
+          className="border-border bg-background flex shrink-0 items-center gap-2 border-b px-3 py-2 text-xs"
+        >
+          <span className="min-w-0 flex-1">Select an element in the page.</span>
+          <Button type="button" variant="ghost" size="xs" onClick={cancelPick}>
+            Cancel
+          </Button>
+        </div>
+      )}
       {operationError && (
         <div
           role="alert"
@@ -257,8 +401,47 @@ export function WorkspaceBrowserPreview({
         ) : null}
       </div>
       {annotation && onAddToChat && (
-        <WorkspaceImageAnnotation image={annotation} onClose={() => setAnnotation(null)} onAdd={onAddToChat} />
+        <WorkspaceImageAnnotation
+          image={annotation}
+          onClose={() => setAnnotation(null)}
+          onAdd={onAddToChat}
+          onPickAnother={image => {
+            void pickElement(image)
+          }}
+        />
       )}
+      <Dialog open={customViewportOpen} onOpenChange={setCustomViewportOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Set browser viewport</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={applyCustomViewport} className="flex flex-col gap-3">
+            <label className="flex items-center justify-between gap-3">
+              <span>Width</span>
+              <input
+                type="number"
+                min="1"
+                max="8192"
+                value={customWidth}
+                onChange={event => setCustomWidth(event.target.value)}
+                className="bg-muted w-28 rounded-md border px-2 py-1"
+              />
+            </label>
+            <label className="flex items-center justify-between gap-3">
+              <span>Height</span>
+              <input
+                type="number"
+                min="1"
+                max="8192"
+                value={customHeight}
+                onChange={event => setCustomHeight(event.target.value)}
+                className="bg-muted w-28 rounded-md border px-2 py-1"
+              />
+            </label>
+            <Button type="submit">Apply viewport</Button>
+          </form>
+        </DialogContent>
+      </Dialog>
     </section>
   )
 }

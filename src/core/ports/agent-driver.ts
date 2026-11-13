@@ -8,8 +8,8 @@ import type {
   AgentAccessMode,
   AgentAccount,
   AgentCapabilities,
-  AgentConnectionIdentity,
   AgentConfigOption,
+  AgentConnectionIdentity,
   AgentDriverEvent,
   AgentPromptCatalog,
   AgentReconcileEvent,
@@ -61,6 +61,20 @@ export interface AgentSessionContext {
   readonly configValues?: Readonly<Record<string, string>> | undefined
   /** Absent is treated as the fail-safe default; drivers never widen a missing value. */
   readonly accessMode?: AgentAccessMode | undefined
+  /** Ephemeral task-scoped browser MCP endpoint. Never persisted with session state. */
+  readonly browserMcp?:
+    | {
+        readonly url: string
+        readonly token: string
+        readonly stdio?:
+          | {
+              readonly command: string
+              readonly args: ReadonlyArray<string>
+              readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>
+            }
+          | undefined
+      }
+    | undefined
 }
 
 export interface NativeSessionReference {

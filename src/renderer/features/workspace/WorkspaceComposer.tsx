@@ -49,7 +49,8 @@ import { PermissionsChip } from './model-picker/permissions.js'
 import { canClearCapturedDraft } from './pending-start-state.js'
 import { activeGoalControl, parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
-import { promptWithAttachments, visiblePromptAttachments } from './prompt-editor.js'
+import { promptWithAttachments } from './prompt-editor.js'
+import { PromptMessageContent } from './PromptMessageContent.js'
 import { firstPendingRequest } from './request-drawer-state.js'
 import { promptWithReviewComments, reviewCommentsIncludedInPrompt } from './review/review-comments.js'
 import { useReviewComments } from './review/use-review-comments.js'
@@ -837,7 +838,6 @@ function WorkspaceComposerContent({
                 (!item.nativeSessionId || validatedQueuedSession) &&
                 !promoteFollowUp.pending,
               )
-              const visibleQueuedAttachments = visiblePromptAttachments(item.attachments ?? [])
               return (
                 <li
                   key={item.commandId}
@@ -847,12 +847,7 @@ function WorkspaceComposerContent({
                     <p className="text-muted-foreground text-xs">
                       Queued #{index + 1} · {item.held ? 'Paused' : 'Sends when the agent is available'}
                     </p>
-                    <p className="break-words whitespace-pre-wrap">{item.prompt}</p>
-                    {visibleQueuedAttachments.length ? (
-                      <p className="text-muted-foreground mt-1 text-xs">
-                        {visibleQueuedAttachments.map(attachment => attachment.name).join(' · ')}
-                      </p>
-                    ) : null}
+                    <PromptMessageContent content={item.prompt} attachments={item.attachments} bodyClassName="" />
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <Button

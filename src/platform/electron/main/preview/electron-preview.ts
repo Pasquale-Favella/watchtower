@@ -3,6 +3,7 @@ import { BrowserWindow, session, shell, type WebContents, WebContentsView } from
 import { workspacePreviewMessages, WorkspacePreviewRpcError } from '@/shared/rpc/workspace-preview.js'
 import { normalizeWorkspacePreviewUrl } from '@/shared/schemas/workspace-preview.js'
 
+import { createPreviewAutomation } from './preview-automation.js'
 import { WorkspacePreviewManager, type WorkspacePreviewView, type WorkspacePreviewWindow } from './preview-manager.js'
 
 function createView(): WorkspacePreviewView {
@@ -25,6 +26,7 @@ function createView(): WorkspacePreviewView {
     },
   })
   const contents = view.webContents
+  let automation: ReturnType<typeof createPreviewAutomation> | undefined
   contents.on('will-frame-navigate', event => {
     if (!normalizeWorkspacePreviewUrl(event.url)) event.preventDefault()
   })
@@ -35,8 +37,15 @@ function createView(): WorkspacePreviewView {
   view.setVisible(false)
   return {
     nativeView: view,
-    capture: async () => {
-      const image = await contents.capturePage()
+    automate: (operation, input, signal) => {
+      automation ??= createPreviewAutomation(contents)
+      return automation.execute(operation, input, signal)
+    },
+    resetAutomation: async () => {
+      await automation?.reset()
+    },
+    capture: async bounds => {
+      const image = await contents.capturePage(bounds)
       const size = image.getSize()
       const scale = Math.min(1, 2048 / Math.max(size.width, size.height))
       const scaled =
@@ -175,6 +184,7 @@ function createView(): WorkspacePreviewView {
       }
     },
     destroy: () => {
+      automation?.dispose()
       if (!contents.isDestroyed()) contents.close()
     },
   }

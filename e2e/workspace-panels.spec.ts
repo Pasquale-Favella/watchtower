@@ -123,10 +123,15 @@ test('draft terminals and browser tabs preserve their resources across hiding, t
       .fill('Review the local preview')
     await annotation.getByRole('button', { name: 'Add to chat', exact: true }).click()
     await expect(annotation).toBeHidden()
-    await expect(newChat.getByRole('list', { name: 'Attachments', exact: true })).toContainText(
-      'workspace-screenshot.png',
+    await expect(newChat.locator('[data-prompt-annotation]')).toHaveCount(1)
+    await newChat
+      .getByRole('button', { name: 'Page annotation Review the local preview. Show details', exact: true })
+      .click()
+    await expect(window.getByRole('img', { name: 'Annotated page crop', exact: true })).toBeVisible()
+    await window.keyboard.press('Escape')
+    await expect(newChat.getByRole('textbox', { name: 'Prompt', exact: true })).toContainText(
+      'Review the local preview',
     )
-    await expect(newChat.getByRole('textbox', { name: 'Prompt', exact: true })).toHaveValue(/Review the local preview/)
     await panel.getByRole('button', { name: 'Maximize panel', exact: true }).click()
     await expect(newChat).toBeHidden()
     await expect(header).toBeVisible()
@@ -156,6 +161,34 @@ test('draft terminals and browser tabs preserve their resources across hiding, t
     await window.reload()
     await expect(window.getByRole('complementary', { name: 'Right panel', exact: true })).toBeVisible()
     await expect(window.getByRole('textbox', { name: 'Browser address', exact: true })).toHaveValue(url)
+    await expect(newChat.locator('[data-prompt-annotation]')).toHaveCount(1)
+    await newChat
+      .getByRole('button', { name: 'Page annotation Review the local preview. Show details', exact: true })
+      .click()
+    await expect(window.getByRole('img', { name: 'Annotated page crop', exact: true })).toBeVisible()
+    await window.keyboard.press('Escape')
+    const copied = await newChat.locator('[data-composer-attachment]').evaluate(node => {
+      const record = JSON.parse(node.getAttribute('data-prompt-attachment') ?? '{}') as { id: string }
+      return { html: node.outerHTML, text: `[Review the local preview](attachment:${record.id}) ` }
+    })
+    await newChat.getByRole('button', { name: 'Remove page annotation Review the local preview', exact: true }).click()
+    await expect(newChat.locator('[data-prompt-annotation]')).toHaveCount(0)
+    const savedAttachments = await window.evaluate(() =>
+      localStorage.getItem('watchtower.workspace.prompt-attachments.v1'),
+    )
+    expect(savedAttachments).not.toContain('Review the local preview')
+    await newChat.getByRole('textbox', { name: 'Prompt', exact: true }).evaluate((input, content) => {
+      const clipboardData = new DataTransfer()
+      clipboardData.setData('text/plain', content.text)
+      clipboardData.setData('text/html', content.html)
+      input.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true, cancelable: true }))
+    }, copied)
+    await expect(newChat.locator('[data-prompt-annotation]')).toHaveCount(1)
+    await newChat
+      .getByRole('button', { name: 'Page annotation Review the local preview. Show details', exact: true })
+      .click()
+    await expect(window.getByRole('img', { name: 'Annotated page crop', exact: true })).toBeVisible()
+    await window.keyboard.press('Escape')
     expect(pageErrors).toEqual([])
   } finally {
     await launched?.close()

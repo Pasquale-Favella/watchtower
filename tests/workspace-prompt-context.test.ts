@@ -40,6 +40,34 @@ afterEach(async () => {
 })
 
 describe('workspace prompt context', () => {
+  it('preserves annotation metadata, binds it to the screenshot identity and removes it with its token', async () => {
+    const { store } = await fixture()
+    const input = {
+      name: 'workspace-screenshot.png',
+      mediaType: 'image/png',
+      data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j1ioAAAAASUVORK5CYII=',
+      annotation: {
+        pageUrl: 'http://localhost:3000/',
+        pageTitle: 'Preview',
+        comment: 'Fix spacing',
+        elementCount: 1,
+        regionCount: 0,
+        context: 'Selector: #greet',
+      },
+    }
+    const attachment = await store.import(input)
+    expect(attachment.annotation).toEqual(input.annotation)
+    expect((await store.resolve([attachment]))[0].annotation).toEqual(input.annotation)
+    expect(visiblePromptAttachments([attachment])).toEqual([])
+    const token = attachmentPromptToken(attachment)
+    expect(token).toContain('[Fix spacing](attachment:')
+    expect(promptContextAttachmentIsReferenced(token, attachment)).toBe(true)
+    expect(promptContextAttachmentIsReferenced('', attachment)).toBe(false)
+    const changed = await store.import({ ...input, annotation: { ...input.annotation, comment: 'Other note' } })
+    expect(changed.id).not.toBe(attachment.id)
+    await expect(store.resolve([{ ...attachment, annotation: changed.annotation }])).rejects.toThrow('integrity')
+  })
+
   it('returns nested local skills with bounded descriptions while searching their full metadata', async () => {
     const { root, store } = await fixture()
     const skillDirectory = join(root, '.agents', 'skills', 'group', 'nested', 'review')
@@ -263,7 +291,9 @@ describe('prompt editing', () => {
     expect(attachmentPromptToken(file)).toBe(`[notes.txt](attachment:${file.id}) `)
     expect(promptContextAttachmentIsReferenced(attachmentPromptToken(file), file)).toBe(true)
     expect(promptContextAttachmentIsReferenced('Review it', file)).toBe(false)
-    expect(promptContextAttachmentIsReferenced('Review it', image)).toBe(true)
+    expect(promptContextAttachmentIsReferenced('Review it', image)).toBe(false)
+    expect(promptContextAttachmentIsReferenced(attachmentPromptToken(image), image)).toBe(true)
+    expect(promptContextAttachmentIsReferenced(attachmentPromptToken(image).trim(), image)).toBe(true)
     expect(promptContextAttachmentIsReferenced('review this', command)).toBe(false)
     expect(visiblePromptAttachments([skill, command, file, image, reference])).toEqual([image])
   })

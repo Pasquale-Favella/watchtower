@@ -1,3 +1,4 @@
+import { promptAnnotationLabel } from '@/shared/prompt-annotations.js'
 import { filePromptToken } from '@/shared/prompt-links.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 export { filePromptToken } from '@/shared/prompt-links.js'
@@ -12,7 +13,9 @@ export function promptWithAttachments(value: string, attachments: readonly Promp
 }
 
 export function visiblePromptAttachments(attachments: readonly PromptAttachment[]): readonly PromptAttachment[] {
-  return attachments.filter(attachment => attachment.source === 'file' && attachment.mediaType.startsWith('image/'))
+  return attachments.filter(
+    attachment => attachment.source === 'file' && attachment.mediaType.startsWith('image/') && !attachment.annotation,
+  )
 }
 
 export function commandPromptToken(name: string): string {
@@ -23,8 +26,17 @@ export function commandPromptToken(name: string): string {
 }
 
 export function attachmentPromptToken(attachment: PromptAttachment): string {
-  const label = attachment.name.replaceAll('\\', '\\\\').replaceAll('[', '\\[').replaceAll(']', '\\]')
+  const label = (attachment.annotation ? promptAnnotationLabel(attachment.annotation) : attachment.name)
+    .replaceAll('\\', '\\\\')
+    .replaceAll('[', '\\[')
+    .replaceAll(']', '\\]')
   return `[${label}](attachment:${attachment.id}) `
+}
+
+export function attachmentSize(size: number): string {
+  if (size < 1024) return `${size} B`
+  if (size < 1024 * 1024) return `${Math.round(size / 1024)} KB`
+  return `${(size / 1024 / 1024).toFixed(1)} MB`
 }
 
 function containsPromptToken(value: string, token: string): boolean {
@@ -40,8 +52,9 @@ function containsPromptToken(value: string, token: string): boolean {
 
 export function promptContextAttachmentIsReferenced(value: string, attachment: PromptAttachment): boolean {
   if (attachment.source === 'file') {
-    if (attachment.mediaType.startsWith('image/')) return true
-    return collectPromptInlineTokens(value).some(token => token.type === 'attachment' && token.value === attachment.id)
+    return collectPromptInlineTokens(value, { allowTrailingEnd: true }).some(
+      token => token.type === 'attachment' && token.value === attachment.id,
+    )
   }
   if (attachment.source === 'reference') {
     return (

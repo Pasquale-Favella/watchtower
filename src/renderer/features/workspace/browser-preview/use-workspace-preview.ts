@@ -1,6 +1,7 @@
 import { RegistryContext } from '@effect/atom-react'
 import { type RefObject, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 
+import type { WorkspacePreviewConfigure } from '@/shared/rpc/workspace-preview.js'
 import type {
   WorkspacePreviewAction,
   WorkspacePreviewOpen,
@@ -11,13 +12,16 @@ import type {
 import { useWorkspaceOperation } from '../use-workspace-operation.js'
 import {
   adoptWorkspacePreviewAtom,
+  cancelWorkspacePreviewPickAtom,
   captureWorkspacePreviewAtom,
   closeWorkspacePreviewAtom,
   commandWorkspacePreviewAtom,
+  configureWorkspacePreviewAtom,
   describeWorkspacePreviewError,
   focusWorkspacePreviewAppAtom,
   layoutWorkspacePreviewAtom,
   navigateWorkspacePreviewAtom,
+  pickWorkspacePreviewAtom,
   subscribeWorkspacePreview,
   workspacePreviewSessionAtom,
 } from './preview-atoms.js'
@@ -27,10 +31,16 @@ export function useWorkspacePreviewCommands() {
   const capture = useWorkspaceOperation(captureWorkspacePreviewAtom)
   const close = useWorkspaceOperation(closeWorkspacePreviewAtom)
   const adopt = useWorkspaceOperation(adoptWorkspacePreviewAtom)
+  const configure = useWorkspaceOperation(configureWorkspacePreviewAtom)
+  const pick = useWorkspaceOperation(pickWorkspacePreviewAtom)
+  const cancelPick = useWorkspaceOperation(cancelWorkspacePreviewPickAtom)
   return {
     capture: (ownerKey: string, tabId: string) => capture({ ownerKey, tabId }),
     close: (ownerKey: string, tabId: string) => close({ ownerKey, tabId }),
     adopt: (ownerKey: string, nextOwnerKey: string) => adopt({ ownerKey, nextOwnerKey }),
+    configure: (request: WorkspacePreviewConfigure) => configure(request),
+    pick: (ownerKey: string, tabId: string) => pick({ ownerKey, tabId }),
+    cancelPick: (ownerKey: string, tabId: string) => cancelPick({ ownerKey, tabId }),
   }
 }
 

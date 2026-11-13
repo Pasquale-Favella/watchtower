@@ -66,6 +66,12 @@ const unexpectedCheckoutActionsRpcGroupHandlers = CheckoutActionsRpcGroup.toLaye
 })
 
 const unexpectedWorkspacePreviewRpcGroupHandlers = WorkspacePreviewRpcGroup.toLayer({
+  'preview:bind': unexpected,
+  'preview:tabs': unexpected,
+  'preview:tabEvents': () => Stream.die(new Error('Unexpected resource subscription in a data-query test')),
+  'preview:configure': unexpected,
+  'preview:pick': unexpected,
+  'preview:cancelPick': unexpected,
   'preview:capture': unexpected,
   'preview:focusApp': unexpected,
   'preview:open': unexpected,

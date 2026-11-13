@@ -41,6 +41,7 @@ interface FakeAcpState {
   driver: ReturnType<typeof makeAcpDriver>
   readonly promptCalls: Array<{ readonly cwd: string; readonly prompt: string }>
   readonly newSessionCalls: number[]
+  readonly sessionMcpServers: unknown[][]
   readonly loadedSessionIds: string[]
   readonly closeCalls: number[]
   readonly cancelCalls: number[]
@@ -52,6 +53,7 @@ interface FakeAcpState {
   onPrompt?: () => void
   mode: PromptMode
   allowLoad: boolean
+  httpMcpSupported: boolean
   /** Report OpenCode-style model and thought-level config options. */
   openCodeOptions?: boolean
   /** Report Copilot-style config options, including an empty default persona value. */
@@ -74,6 +76,7 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     driver: undefined as unknown as ReturnType<typeof makeAcpDriver>,
     promptCalls: [],
     newSessionCalls: [],
+    sessionMcpServers: [],
     loadedSessionIds: [],
     closeCalls: [],
     cancelCalls: [],
@@ -82,6 +85,7 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     blockCancelWrite: false,
     mode,
     allowLoad,
+    httpMcpSupported: false,
     configCalls: [],
   }
   let peer: AgentSideConnection | undefined
@@ -131,12 +135,16 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     authenticate: async () => ({}),
     initialize: async () => ({
       protocolVersion: PROTOCOL_VERSION,
-      agentCapabilities: { loadSession: state.allowLoad },
+      agentCapabilities: {
+        loadSession: state.allowLoad,
+        ...(state.httpMcpSupported ? { mcpCapabilities: { http: true } } : {}),
+      },
       agentInfo: { name: 'fixture', version: '1' },
       ...(state.initializeMetadata !== undefined ? { _meta: state.initializeMetadata as never } : {}),
     }),
     newSession: async params => {
       state.newSessionCalls.push(state.newSessionCalls.length + 1)
+      state.sessionMcpServers.push(params.mcpServers)
       if (params.cwd !== 'C:/workspace/project' && params.cwd !== tmpdir()) throw new Error('wrong workspace path')
       const sessionId = `native-${state.newSessionCalls.length}`
       if (state.catalogUpdates) {
@@ -275,6 +283,7 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
     },
     loadSession: async params => {
       state.loadedSessionIds.push(params.sessionId)
+      state.sessionMcpServers.push(params.mcpServers)
       await peer?.sessionUpdate({
         sessionId: params.sessionId,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed history' } },
@@ -1216,6 +1225,7 @@ describe('generic ACP driver', () => {
       ),
     )
     expect(loadable.loadedSessionIds).toEqual(['native-existing'])
+    expect(loadable.sessionMcpServers[0]).toEqual([])
     expect(loadable.newSessionCalls).toHaveLength(0)
     expect(replay).toMatchObject([
       { cursor: 'acp-replay:1', replay: true, event: { kind: 'textDelta', text: 'replayed history' } },
@@ -1237,6 +1247,113 @@ describe('generic ACP driver', () => {
     expect(unsupported._tag).toBe('UnsupportedAgentOperation')
     expect(nonLoadable.loadedSessionIds).toHaveLength(0)
     expect(nonLoadable.newSessionCalls).toHaveLength(0)
+  })
+
+  it('injects the task browser HTTP MCP on fresh and resumed ACP sessions', async () => {
+    const browserContext = {
+      ...context,
+      browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+    }
+    const fresh = makeFakeAcp()
+    fresh.httpMcpSupported = true
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fresh.driver.connect({ connectionId: 'acp-browser-fresh' })
+          yield* connection.openSession(browserContext)
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(fresh.sessionMcpServers[0]).toEqual([
+      {
+        type: 'http',
+        name: 'watchtower-browser',
+        url: 'http://127.0.0.1:43123/mcp',
+        headers: [{ name: 'Authorization', value: 'Bearer run-token' }],
+      },
+    ])
+
+    const resumed = makeFakeAcp('events', true)
+    resumed.httpMcpSupported = true
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* resumed.driver.connect({ connectionId: 'acp-browser-resume' })
+          yield* connection.loadSession(browserContext, { nativeSessionId: 'native-existing', generation: 3 })
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(resumed.sessionMcpServers[0]).toEqual(fresh.sessionMcpServers[0])
+  })
+
+  it('keeps ACP sessions available when HTTP MCP is absent and reports unavailable browser tools', async () => {
+    const fake = makeFakeAcp()
+    const events = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-browser-unsupported' })
+          const session = yield* connection.openSession({
+            ...context,
+            browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+          })
+          const run = runId('run-browser-unsupported')
+          const reading = yield* Effect.forkScoped(Stream.runCollect(session.events(run)))
+          yield* session.submit({
+            runId: run,
+            messages: [{ role: 'user', content: 'Continue without browser tools.' }],
+            attachmentIds: [],
+          })
+          const collected = yield* Fiber.join(reading)
+          yield* connection.close(1000)
+          return Array.from(collected)
+        }),
+      ),
+    )
+    expect(fake.sessionMcpServers[0]).toEqual([])
+    expect(events).toContainEqual({
+      kind: 'nativeNotice',
+      message: 'Embedded browser tools are unavailable because this ACP agent did not advertise HTTP MCP support.',
+    })
+  })
+
+  it('uses the scoped stdio browser proxy when ACP does not advertise HTTP MCP', async () => {
+    const fake = makeFakeAcp()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-browser-stdio' })
+          yield* connection.openSession({
+            ...context,
+            browserMcp: {
+              url: 'http://127.0.0.1:43123/mcp',
+              token: 'run-token',
+              stdio: {
+                command: 'electron.exe',
+                args: ['browser-mcp-proxy.js'],
+                env: [
+                  { name: 'WATCHTOWER_BROWSER_MCP_URL', value: 'http://127.0.0.1:43123/mcp' },
+                  { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: 'run-token' },
+                ],
+              },
+            },
+          })
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(fake.sessionMcpServers[0]).toEqual([
+      {
+        name: 'watchtower-browser',
+        command: 'electron.exe',
+        args: ['browser-mcp-proxy.js'],
+        env: [
+          { name: 'WATCHTOWER_BROWSER_MCP_URL', value: 'http://127.0.0.1:43123/mcp' },
+          { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: 'run-token' },
+        ],
+      },
+    ])
   })
 
   it('closes scoped transports once and uses typed unsupported steering', async () => {

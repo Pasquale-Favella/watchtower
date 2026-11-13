@@ -22,6 +22,7 @@ export default defineConfig({
         entry: {
           index: resolve('src/platform/electron/main/index.ts'),
           'ledger-mcp': resolve('src/platform/mcp/entry.ts'),
+          'browser-mcp-proxy': resolve('src/platform/mcp/browser-proxy-entry.ts'),
           'db-worker': resolve('src/platform/electron/workers/entry.ts'),
           'workspace-worker': resolve('src/platform/electron/workers/workspace/entry.ts'),
           'checkout-worker': resolve('src/platform/electron/workers/checkout/entry.ts')

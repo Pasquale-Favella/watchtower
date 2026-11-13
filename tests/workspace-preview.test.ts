@@ -41,6 +41,8 @@ class FakeView implements WorkspacePreviewView {
   popup: (url: string) => void = () => undefined
   readonly unsubscribed = vi.fn()
   readonly failure = false
+  automate?: WorkspacePreviewView['automate']
+  capture?: WorkspacePreviewView['capture']
 
   async loadURL(url: string): Promise<void> {
     this.loads.push(url)
@@ -237,6 +239,61 @@ describe('workspace browser ownership and layout', () => {
     expect(await manager.command(host, { ...ref, action: 'toggle-mute' })).toMatchObject({ muted: true })
     expect(await manager.command(host, { ...ref, action: 'zoom-in' })).toMatchObject({ zoomFactor: 1.1 })
     expect(firstView(views).actions).toEqual(['toggle-mute', 'zoom-in'])
+  })
+  it('restores the prior agent pause state after an element pick completes', async () => {
+    const { manager, views, host } = harness()
+    manager.open(host, ref)
+    const view = firstView(views)
+    view.automate = async () => ({
+      selector: '#button',
+      tag: 'button',
+      role: 'button',
+      name: 'Run',
+      href: null,
+      componentName: 'RunButton',
+      source: 'src/RunButton.tsx:12',
+      styles: 'display: block',
+      text: 'Run',
+      outerHTML: '<button>Run</button>',
+      rect: { x: 100, y: 80, width: 100, height: 40 },
+      viewport: { width: 800, height: 600 },
+    })
+    view.capture = vi.fn(async () => ({
+      dataUrl: 'data:image/png;base64,AA==',
+      width: 1,
+      height: 1,
+      url: 'https://example.com/',
+    }))
+
+    const picked = await manager.pick(host, ref)
+
+    expect(picked.text).toContain('Selector: #button')
+    expect(picked.text).toContain('Source: src/RunButton.tsx:12')
+    expect(picked.text).toContain('Styles: display: block')
+    expect(view.capture).toHaveBeenCalledWith({ x: 76, y: 56, width: 148, height: 88 })
+    expect(picked.element.rect).toEqual({ x: 24 / 148, y: 24 / 88, width: 100 / 148, height: 40 / 88 })
+    expect(manager.open(host, ref).agentPaused).toBe(false)
+  })
+  it('keeps an explicit pause issued during element picking', async () => {
+    const { manager, views, host } = harness()
+    manager.open(host, ref)
+    let started!: () => void
+    const pickerStarted = new Promise<void>(resolve => {
+      started = resolve
+    })
+    firstView(views).automate = (_operation, _input, signal) => {
+      started()
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true })
+      })
+    }
+
+    const picking = manager.pick(host, ref)
+    await pickerStarted
+    expect(manager.open(host, ref).agentPaused).toBe(true)
+    await manager.command(host, { ...ref, action: 'pause-agent' })
+    await expect(picking).rejects.toThrow('cancelled')
+    expect(manager.open(host, ref).agentPaused).toBe(true)
   })
   it('fits browser bounds to the actual window contents', () => {
     expect(

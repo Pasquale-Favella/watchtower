@@ -1,5 +1,5 @@
 import * as Schema from 'effect/Schema'
-import { Archive, File, FileImage, Folder, LoaderCircle, Paperclip, Slash, X } from 'lucide-react'
+import { Archive, File, Folder, LoaderCircle, Paperclip, Slash } from 'lucide-react'
 import { type ReactNode, type RefObject, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/renderer/components/ui/badge'
@@ -31,6 +31,7 @@ import { backspacePromptCodeFence, continuePromptCodeFence, indentPromptBlock } 
 import { type PromptMenuItem, promptSkillScopeLabel, searchPromptItems, slashPromptItems } from './prompt-search.js'
 import { type PromptStashEntry, readPromptStash, writePromptStash } from './prompt-stash.js'
 import { collectPromptInlineTokens } from './prompt-tokens.js'
+import { PromptAttachmentChip } from './PromptAttachmentChip.js'
 import { PromptMentionResult } from './PromptMentionResult.js'
 import { ReviewCommentChips } from './review/ReviewCommentChips.js'
 import { type PromptInputHandle, WorkspacePromptEditor } from './WorkspacePromptEditor.js'
@@ -139,14 +140,6 @@ function clipboardAttachmentRecords(html: string): PromptAttachment[] {
   return records
 }
 
-function decodeTextPreview(dataUrl: string): string | null {
-  if (!dataUrl.startsWith('data:text/plain') || !dataUrl.includes(';base64,')) return null
-  const encoded = dataUrl.slice(dataUrl.indexOf(',') + 1)
-  const binary = atob(encoded)
-  const bytes = Uint8Array.from(binary, character => character.charCodeAt(0))
-  return new TextDecoder('utf-8').decode(bytes)
-}
-
 export function WorkspacePromptInput(props: Props): React.JSX.Element {
   const ownRef = useRef<PromptInputHandle>(null)
   const inputRef = props.inputRef ?? ownRef
@@ -162,7 +155,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   const dismissedRef = useRef<PromptTrigger | null>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [preview, setPreview] = useState<{ name: string; url: string; mediaType: string } | null>(null)
   const [stashes, setStashes] = useState<readonly PromptStashEntry[]>(() => {
     try {
       return typeof localStorage === 'undefined' ? [] : readPromptStash(localStorage, PROMPT_STASH_STORAGE_KEY)
@@ -187,7 +179,9 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     }
   }, [])
   const hasSkillReference = collectPromptInlineTokens(props.value).some(token => token.type === 'skill')
-  const visibleAttachments = visiblePromptAttachments(props.attachments.items)
+  const visibleAttachments = visiblePromptAttachments(props.attachments.items).filter(
+    item => !promptContextAttachmentIsReferenced(props.value, item),
+  )
   const request = useMemo(() => {
     const shared = {
       ...(props.projectId ? { projectId: props.projectId } : {}),
@@ -394,15 +388,13 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     if (applyingHistory.current) applyingHistory.current = false
     else historyIndex.current = null
     for (const attachment of props.attachments.items) {
-      if (
-        (attachment.source === 'reference' ||
-          attachment.source === 'skill' ||
-          attachment.source === 'command' ||
-          (attachment.source === 'file' && !attachment.mediaType.startsWith('image/'))) &&
-        !promptContextAttachmentIsReferenced(value, attachment)
-      ) {
+      const legacyImage =
+        attachment.source === 'file' &&
+        attachment.mediaType.startsWith('image/') &&
+        !attachment.annotation &&
+        !promptContextAttachmentIsReferenced(props.value, attachment)
+      if (!legacyImage && !promptContextAttachmentIsReferenced(value, attachment))
         props.attachments.remove(attachment.id)
-      }
     }
     props.onChange(value)
     updateTriggerFromInput(value, start, end)
@@ -458,7 +450,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     const clipboard = event.clipboardData
     if (!clipboard) return false
     const files = Array.from(clipboard.files)
-    if (files.length && (!clipboard.getData('text/plain') || files.some(file => file.type.startsWith('image/')))) {
+    if (files.length) {
       void intake(files)
       return true
     }
@@ -529,19 +521,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     }
   }
 
-  async function openAttachmentPreview(attachment: PromptAttachment): Promise<void> {
-    try {
-      const url = await props.attachments.preview(attachment)
-      if (!url) {
-        setError('Preview is not available for this attachment.')
-        return
-      }
-      setPreview({ name: attachment.name, url, mediaType: attachment.mediaType })
-    } catch {
-      setError('Could not load this attachment preview.')
-    }
-  }
-
   async function intake(files: readonly globalThis.File[]): Promise<void> {
     if (!files.length || intakeLock.current) return
     intakeLock.current = true
@@ -561,9 +540,10 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         })
         const currentValue = inputRef.current?.getValue() ?? props.value
         const selection = inputRef.current?.getSelection() ?? { start: currentValue.length, end: currentValue.length }
-        const token = attachmentPromptToken(item)
+        const separator = selection.start > 0 && !/\s/.test(currentValue[selection.start - 1] ?? '') ? ' ' : ''
+        const token = `${separator}${attachmentPromptToken(item)}`
         const nextValue = currentValue.slice(0, selection.start) + token + currentValue.slice(selection.end)
-        if (nextValue.length > props.maxLength && !item.mediaType.startsWith('image/'))
+        if (nextValue.length > props.maxLength)
           throw new Error('The prompt has no room for an attachment chip. Shorten the prompt and attach it again.')
         props.attachments.add(item)
         if (nextValue.length <= props.maxLength) inputRef.current?.setValue(nextValue, selection.start + token.length)
@@ -942,36 +922,8 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         {visibleAttachments.length > 0 && (
           <ul className="flex max-h-32 flex-wrap gap-2 overflow-auto px-3 pt-3" aria-label="Attachments">
             {visibleAttachments.map(item => (
-              <li
-                key={item.id}
-                className="bg-muted flex max-w-full min-w-0 items-center gap-1 rounded-md border py-1 pr-1 pl-2 text-xs"
-              >
-                {item.mediaType.startsWith('image/') ? (
-                  <FileImage className="size-3.5 shrink-0" />
-                ) : (
-                  <File className="size-3.5 shrink-0" />
-                )}
-                {item.mediaType.startsWith('image/') ? (
-                  <button
-                    type="button"
-                    className="max-w-44 truncate px-1 underline-offset-2 hover:underline"
-                    onClick={() => void openAttachmentPreview(item)}
-                  >
-                    {item.name}
-                  </button>
-                ) : (
-                  <span className="max-w-52 truncate px-1" title={item.name}>
-                    {item.name}
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="hover:bg-accent rounded p-1"
-                  aria-label={`Remove ${item.name}`}
-                  onClick={() => props.attachments.remove(item.id)}
-                >
-                  <X className="size-3" />
-                </button>
+              <li key={item.id}>
+                <PromptAttachmentChip attachment={item} onRemove={() => props.attachments.remove(item.id)} />
               </li>
             ))}
           </ul>
@@ -995,10 +947,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           autoFocus={props.autoFocus}
           maxLength={props.maxLength}
           richText
-          onAttachmentClick={id => {
-            const attachment = props.attachments.items.find(item => item.id === id)
-            if (attachment) void openAttachmentPreview(attachment)
-          }}
         />
         <div className="flex flex-wrap items-center gap-1 px-2.5 pb-2.5">
           <input
@@ -1080,29 +1028,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
               </li>
             ))}
           </ul>
-        </DialogContent>
-      </Dialog>
-      <Dialog
-        open={Boolean(preview)}
-        onOpenChange={open => {
-          if (!open) setPreview(null)
-        }}
-      >
-        <DialogContent className="max-w-3xl">
-          <DialogHeader>
-            <DialogTitle>{preview?.name ?? 'Attachment preview'}</DialogTitle>
-          </DialogHeader>
-          {preview?.mediaType.startsWith('image/') && (
-            <img src={preview.url} alt={preview.name} className="max-h-[70vh] w-full object-contain" />
-          )}
-          {preview?.mediaType === 'application/pdf' && (
-            <iframe src={preview.url} title={preview.name} sandbox="" className="h-[70vh] w-full rounded-md" />
-          )}
-          {preview?.mediaType.startsWith('text/') && (
-            <pre className="bg-muted max-h-[70vh] overflow-auto rounded-md p-3 text-xs whitespace-pre-wrap">
-              {decodeTextPreview(preview.url) ?? 'Text preview unavailable.'}
-            </pre>
-          )}
         </DialogContent>
       </Dialog>
     </div>

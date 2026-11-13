@@ -7,6 +7,15 @@ export const PROMPT_ATTACHMENT_MAX_COUNT = 8
 export const WORKSPACE_PROMPT_MAX_LENGTH = 120_000
 export const PROMPT_CONTEXT_SEARCH_MAX_RESULTS = 2048
 const name = Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))
+export const promptAnnotationSchema = Schema.Struct({
+  pageUrl: Schema.String.check(Schema.isMaxLength(8192)),
+  pageTitle: Schema.String.check(Schema.isMaxLength(512)),
+  comment: Schema.String.check(Schema.isMaxLength(16_000)),
+  elementCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 8 })),
+  regionCount: Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 32 })),
+  context: Schema.String.check(Schema.isMaxLength(64_000)),
+})
+export type PromptAnnotation = Schema.Schema.Type<typeof promptAnnotationSchema>
 export const promptAttachmentSchema = Schema.Struct({
   id: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/)),
   name,
@@ -17,6 +26,7 @@ export const promptAttachmentSchema = Schema.Struct({
     Schema.isLessThanOrEqualTo(PROMPT_ATTACHMENT_MAX_BYTES),
   ),
   source: Schema.Literals(['file', 'reference', 'skill', 'command']),
+  annotation: Schema.optional(promptAnnotationSchema),
   /** Captured invocation name for checkout-local aliases and nested commands. */
   token: Schema.optional(Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(512))),
 })
@@ -38,6 +48,7 @@ export interface ResolvedPromptAttachment extends PromptAttachment {
 export const importPromptAttachmentSchema = Schema.Struct({
   name,
   mediaType: Schema.String.check(Schema.isMaxLength(128)),
+  annotation: Schema.optional(promptAnnotationSchema),
   data: Schema.String.check(
     Schema.isMaxLength(Math.ceil(PROMPT_ATTACHMENT_MAX_BYTES / 3) * 4),
     Schema.isPattern(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),

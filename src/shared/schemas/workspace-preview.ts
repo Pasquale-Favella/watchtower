@@ -37,6 +37,25 @@ export const workspacePreviewCaptureSchema = Schema.Struct({
   url: Schema.String.check(Schema.isMaxLength(8192)),
 })
 export type WorkspacePreviewCapture = Schema.Schema.Type<typeof workspacePreviewCaptureSchema>
+const pickedElementRect = Schema.Struct({
+  x: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0, maximum: 1 })),
+  y: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0, maximum: 1 })),
+  width: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0, maximum: 1 })),
+  height: Schema.Number.check(Schema.isFinite(), Schema.isBetween({ minimum: 0, maximum: 1 })),
+})
+export const workspacePreviewPickedElementSchema = Schema.Struct({
+  selector: Schema.String.check(Schema.isMaxLength(2000)),
+  tag: Schema.String.check(Schema.isMaxLength(64)),
+  role: Schema.String.check(Schema.isMaxLength(128)),
+  name: Schema.String.check(Schema.isMaxLength(1000)),
+  href: Schema.NullOr(Schema.String.check(Schema.isMaxLength(8192))),
+  componentName: Schema.NullOr(Schema.String.check(Schema.isMaxLength(256))),
+  source: Schema.NullOr(Schema.String.check(Schema.isMaxLength(1024))),
+  styles: Schema.String.check(Schema.isMaxLength(2000)),
+  text: Schema.String.check(Schema.isMaxLength(1000)),
+  rect: pickedElementRect,
+})
+export type WorkspacePreviewPickedElement = Schema.Schema.Type<typeof workspacePreviewPickedElementSchema>
 export const workspacePreviewAdoptSchema = Schema.Struct({ ownerKey: identifier, nextOwnerKey: identifier })
 export type WorkspacePreviewAdopt = Schema.Schema.Type<typeof workspacePreviewAdoptSchema>
 
@@ -74,6 +93,7 @@ export const workspacePreviewStateSchema = Schema.Struct({
   visible: Schema.Boolean,
   closed: Schema.Boolean,
   muted: Schema.Boolean,
+  agentPaused: Schema.optional(Schema.Boolean),
   zoomFactor: Schema.Number,
   popupUrl: Schema.NullOr(workspacePreviewUrlSchema),
   popupSequence: Schema.Number,
@@ -105,6 +125,8 @@ export const workspacePreviewActionSchema = Schema.Literals([
   'zoom-out',
   'zoom-reset',
   'toggle-mute',
+  'pause-agent',
+  'resume-agent',
 ])
 export type WorkspacePreviewAction = Schema.Schema.Type<typeof workspacePreviewActionSchema>
 export const workspacePreviewCommandSchema = Schema.Struct({

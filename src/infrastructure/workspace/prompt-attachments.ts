@@ -12,6 +12,7 @@ import { invalidatePromptPathInventory } from '@/infrastructure/workspace/prompt
 import {
   PROMPT_ATTACHMENT_MAX_BYTES,
   PROMPT_CONTEXT_SEARCH_MAX_RESULTS,
+  type PromptAnnotation,
   type PromptAttachment,
   promptAttachmentSchema,
   type ResolvedPromptAttachment,
@@ -45,6 +46,21 @@ function identifyContent(bytes: Buffer, declared: string): { mediaType: string; 
   return { mediaType: 'application/octet-stream', content: bytes.toString('base64') }
 }
 
+function annotationIdentity(annotation: PromptAnnotation | undefined): string {
+  return JSON.stringify(
+    annotation
+      ? [
+          annotation.pageUrl,
+          annotation.pageTitle,
+          annotation.comment,
+          annotation.elementCount,
+          annotation.regionCount,
+          annotation.context,
+        ]
+      : null,
+  )
+}
+
 function digest(value: Omit<ResolvedPromptAttachment, 'id'>): string {
   return createHash('sha256')
     .update(
@@ -55,6 +71,7 @@ function digest(value: Omit<ResolvedPromptAttachment, 'id'>): string {
         value.mediaType,
         value.content,
         ...(value.token === undefined ? [] : [value.token]),
+        ...(value.annotation === undefined ? [] : [annotationIdentity(value.annotation)]),
       ]),
     )
     .digest('hex')
@@ -68,9 +85,17 @@ export function createPromptAttachmentStore(directory: string) {
     declared: string,
     source: PromptAttachment['source'],
     token?: string,
+    annotation?: PromptAnnotation,
   ): Promise<PromptAttachment> {
     if (bytes.length > PROMPT_ATTACHMENT_MAX_BYTES) throw new Error('The file exceeds 4 MiB.')
-    const value = { name, size: bytes.length, source, ...(token ? { token } : {}), ...identifyContent(bytes, declared) }
+    const value = {
+      name,
+      size: bytes.length,
+      source,
+      ...(token ? { token } : {}),
+      ...(annotation ? { annotation } : {}),
+      ...identifyContent(bytes, declared),
+    }
     const id = digest(value)
     await mkdir(directory, { recursive: true })
     const file = join(directory, `${id}.json`)
@@ -83,6 +108,7 @@ export function createPromptAttachmentStore(directory: string) {
       size: value.size,
       source,
       ...(value.token ? { token: value.token } : {}),
+      ...(value.annotation ? { annotation: value.annotation } : {}),
       mediaType: value.mediaType,
     }
   }
@@ -94,6 +120,7 @@ export function createPromptAttachmentStore(directory: string) {
     const { id, ...value } = parsed
     if (
       digest(value) !== id ||
+      annotationIdentity(value.annotation) !== annotationIdentity(reference.annotation) ||
       ['name', 'mediaType', 'source', 'size', 'token'].some(
         key => Reflect.get(value, key) !== Reflect.get(reference, key),
       )
@@ -147,8 +174,12 @@ export function createPromptAttachmentStore(directory: string) {
   }
 
   return {
-    import: (input: { readonly name: string; readonly mediaType: string; readonly data: string }) =>
-      save(Buffer.from(input.data, 'base64'), input.name, input.mediaType, 'file'),
+    import: (input: {
+      readonly name: string
+      readonly mediaType: string
+      readonly data: string
+      readonly annotation?: PromptAnnotation
+    }) => save(Buffer.from(input.data, 'base64'), input.name, input.mediaType, 'file', undefined, input.annotation),
     resolve: (references: readonly PromptAttachment[]) => Promise.all(references.map(load)),
     async preview(reference: PromptAttachment): Promise<string | null> {
       const value = await load(reference)

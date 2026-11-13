@@ -9,6 +9,46 @@ import {
 } from '@/renderer/features/workspace/prompt-message-references.js'
 
 describe('sent prompt references', () => {
+  it('resolves annotation and file links only against the message attachments and leaves code alone', () => {
+    const id = 'a'.repeat(64)
+    const missingId = 'b'.repeat(64)
+    const fileId = 'c'.repeat(64)
+    const tree = {
+      type: 'root',
+      children: [
+        { type: 'link', url: `attachment:${id}`, children: [{ type: 'text', value: 'Fix spacing' }] },
+        { type: 'link', url: `attachment:${missingId}`, children: [{ type: 'text', value: 'Missing' }] },
+        { type: 'link', url: `attachment:${fileId}`, children: [{ type: 'text', value: 'file.txt' }] },
+        { type: 'inlineCode', value: `[Fix spacing](attachment:${id})` },
+      ],
+    }
+    remarkPromptMessageReferences({
+      commands: [],
+      attachments: [
+        {
+          id,
+          name: 'workspace-screenshot.png',
+          mediaType: 'image/png',
+          size: 10,
+          source: 'file',
+          annotation: {
+            pageUrl: 'http://localhost/',
+            pageTitle: 'Preview',
+            comment: 'Fix spacing',
+            elementCount: 1,
+            regionCount: 0,
+            context: 'Selector: #greet',
+          },
+        },
+        { id: fileId, name: 'file.txt', mediaType: 'text/plain', size: 1, source: 'file' },
+      ],
+    })(tree)
+    expect(tree.children[0]?.url).toBe(`#watchtower-prompt-annotation-${Buffer.from(id).toString('hex')}`)
+    expect(tree.children[1]?.url).toBe(`attachment:${missingId}`)
+    expect(tree.children[2]?.url).toBe(`#watchtower-prompt-attachment-${Buffer.from(fileId).toString('hex')}`)
+    expect(tree.children[3]?.value).toBe(`[Fix spacing](attachment:${id})`)
+  })
+
   it('renders multiple skill chips alongside currency, code and file links', () => {
     const markup = renderToStaticMarkup(
       createElement(Markdown, {

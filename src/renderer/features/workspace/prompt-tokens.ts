@@ -4,6 +4,7 @@
  * already confirmed editor token can be preserved when that delimiter is removed.
  */
 
+import { promptAnnotationLabel } from '@/shared/prompt-annotations.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
 export type PromptInlineToken =
@@ -218,7 +219,7 @@ export function splitPromptTokens(
         type: 'attachment',
         id: match.value,
         source: match.source,
-        label: attachment.name,
+        label: attachment.annotation ? promptAnnotationLabel(attachment.annotation) : attachment.name,
         mediaType: attachment.mediaType,
         attachment,
       })

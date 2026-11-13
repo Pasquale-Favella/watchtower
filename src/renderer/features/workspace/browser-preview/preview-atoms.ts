@@ -7,7 +7,9 @@ import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
 import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc.js'
+import type { WorkspacePreviewConfigure } from '@/shared/rpc/workspace-preview.js'
 import { WorkspacePreviewRpcError } from '@/shared/rpc/workspace-preview.js'
+import type { TaskId } from '@/shared/schemas/workspace.js'
 import type {
   WorkspacePreviewAdopt,
   WorkspacePreviewCommand,
@@ -59,6 +61,86 @@ export const adoptWorkspacePreviewAtom = () =>
     request => Effect.flatMap(ApplicationClient, client => client('preview:adopt', request)),
     { concurrent: true },
   )
+
+export const configureWorkspacePreviewAtom = () =>
+  runtime.fn<WorkspacePreviewConfigure>()(
+    request => Effect.flatMap(ApplicationClient, client => client('preview:configure', request)),
+    { concurrent: true },
+  )
+
+export const pickWorkspacePreviewAtom = () =>
+  runtime.fn<WorkspacePreviewRef>()(
+    request => Effect.flatMap(ApplicationClient, client => client('preview:pick', request)),
+    { concurrent: true },
+  )
+
+export const cancelWorkspacePreviewPickAtom = () =>
+  runtime.fn<WorkspacePreviewRef>()(
+    request => Effect.flatMap(ApplicationClient, client => client('preview:cancelPick', request)),
+    { concurrent: true },
+  )
+
+export const bindWorkspacePreviewAtom = () =>
+  runtime.fn<{ readonly ownerKey: string; readonly taskId: TaskId }>()(
+    request => Effect.flatMap(ApplicationClient, client => client('preview:bind', request)),
+    { concurrent: true },
+  )
+
+export type WorkspacePreviewTabsEvent = ReadonlyArray<WorkspacePreviewState>
+type TabsListener = (states: WorkspacePreviewTabsEvent) => void
+const tabsListeners = new Map<string, Set<TabsListener>>()
+const tabsSessions = new Map<string, ReturnType<typeof makeTabsSession>>()
+
+function publishTabs(ownerKey: string, states: WorkspacePreviewTabsEvent): void {
+  for (const listener of [...(tabsListeners.get(ownerKey) ?? [])]) listener(states)
+}
+
+export function subscribeWorkspacePreviewTabs(ownerKey: string, listener: TabsListener): () => void {
+  const group = tabsListeners.get(ownerKey) ?? new Set<TabsListener>()
+  group.add(listener)
+  tabsListeners.set(ownerKey, group)
+  return () => {
+    group.delete(listener)
+    if (group.size === 0) tabsListeners.delete(ownerKey)
+  }
+}
+
+function makeTabsSession(ownerKey: string) {
+  return runtime.atom(() =>
+    Effect.gen(function* () {
+      const client = yield* ApplicationClient
+      let attempt = 0
+      while (true) {
+        const outcome = yield* Effect.exit(
+          Effect.gen(function* () {
+            publishTabs(ownerKey, yield* client('preview:tabs', { ownerKey }))
+            yield* Stream.runForEach(client('preview:tabEvents', { ownerKey }), states =>
+              Effect.sync(() => {
+                attempt = 0
+                publishTabs(ownerKey, states)
+              }),
+            )
+          }),
+        )
+        if (Exit.isFailure(outcome)) {
+          if (Cause.hasInterruptsOnly(outcome.cause)) return
+          const error = Option.getOrUndefined(Cause.findErrorOption(outcome.cause))
+          if (Schema.is(WorkspacePreviewRpcError)(error) && error.code === 'invalid-request') return
+        }
+        yield* Effect.sleep(Math.min(5000, 250 * 2 ** attempt++))
+      }
+    }),
+  )
+}
+
+export function workspacePreviewTabsSessionAtom(ownerKey: string) {
+  let session = tabsSessions.get(ownerKey)
+  if (!session) {
+    session = makeTabsSession(ownerKey)
+    tabsSessions.set(ownerKey, session)
+  }
+  return session
+}
 
 export type WorkspacePreviewEvent = WorkspacePreviewState | { readonly _tag: 'failed'; readonly message: string }
 type Listener = (state: WorkspacePreviewEvent) => void

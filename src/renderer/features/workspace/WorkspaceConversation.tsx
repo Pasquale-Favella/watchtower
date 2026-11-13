@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { Markdown, type MarkdownProps } from '@/renderer/components/Markdown'
+import { Markdown } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { Button } from '@/renderer/components/ui/button'
 import {
@@ -43,13 +43,11 @@ import {
   rememberPayload,
   wasPayloadReleased,
 } from './payload-cache.js'
-import { PROMPT_MESSAGE_MARKDOWN_COMPONENTS, remarkPromptMessageReferences } from './prompt-message-references.js'
+import { PromptMessageContent } from './PromptMessageContent.js'
 import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
 import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
-import { ExpandableMessage } from './timeline/ExpandableMessage.js'
-import { MediaBlock, MessageAttachments } from './timeline/MediaBlock.js'
-import { isCollapsibleMessage } from './timeline/message-collapse.js'
+import { MediaBlock } from './timeline/MediaBlock.js'
 import { MessageActions } from './timeline/MessageActions.js'
 import { PlanBlock } from './timeline/PlanBlock.js'
 import { ReasoningBlock } from './timeline/ReasoningBlock.js'
@@ -619,10 +617,6 @@ function UserMessageEntry({
   readonly delivery?: 'sending' | 'reconnecting' | 'sent'
 }): React.JSX.Element {
   const message = entry.message
-  const promptRemarkPlugins = useMemo<NonNullable<MarkdownProps['remarkPlugins']>>(
-    () => [[remarkPromptMessageReferences, { commands: promptCommands, attachments: message.attachments }]],
-    [promptCommands, message.attachments],
-  )
   const reference = messagePayloadReference(message)
   const fullMessage =
     payloadResult?.owner === `message:${message.id}` && reference && payloadResult.key === referenceKey(reference)
@@ -633,26 +627,8 @@ function UserMessageEntry({
     content = fullMessage && 'content' in fullMessage ? fullMessage.content : undefined
   }
   return (
-    <article
-      className="group/message bg-primary/10 relative mb-6 ml-auto max-w-[85%] space-y-1 rounded-lg px-3 py-2"
-      aria-label="User message"
-    >
-      {content !== undefined && (
-        <ExpandableMessage expandable={isCollapsibleMessage(content)}>
-          <div className="typeset break-words">
-            <Markdown
-              remarkPlugins={promptRemarkPlugins}
-              components={PROMPT_MESSAGE_MARKDOWN_COMPONENTS}
-              singleDollarMath={false}
-            >
-              {content}
-            </Markdown>
-          </div>
-        </ExpandableMessage>
-      )}
-      {message.attachments && message.attachments.length > 0 && (
-        <MessageAttachments attachments={message.attachments} />
-      )}
+    <article className="group/message relative mb-6 ml-auto max-w-[85%] space-y-1" aria-label="User message">
+      <PromptMessageContent content={content} attachments={message.attachments} commands={promptCommands} />
       {reference && content === undefined && (
         <PayloadControl
           reference={reference}

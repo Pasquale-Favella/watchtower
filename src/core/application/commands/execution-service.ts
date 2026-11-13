@@ -24,6 +24,7 @@ import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { promptWithAnnotationContext } from '@/shared/prompt-annotations.js'
 import type { AgentAccessMode, AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
   agentConnectionIdentitySchema,
@@ -73,6 +74,10 @@ export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceEr
 
 export interface ExecutionServiceOptions {
   readonly enrichPrompt?: (claim: DispatchClaim) => Effect.Effect<string, AgentDriverError | ExecutionServiceError>
+  /** Acquires ephemeral task-scoped session capabilities in the driver's connection scope. */
+  readonly prepareSession?: (
+    context: AgentSessionContext,
+  ) => Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope>
   readonly resolveAttachments?: (
     references: readonly PromptAttachment[],
   ) => Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError>
@@ -409,7 +414,10 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             state.shuttingDown = true
             return
           }
-          const context = contextFor(state.claim)
+          const baseContext = contextFor(state.claim)
+          const context = input.prepareSession
+            ? yield* input.prepareSession(baseContext).pipe(Effect.provideService(Scope.Scope, connectionScope))
+            : baseContext
           const requestedNativeSessionId = state.claim.nativeSessionId ?? undefined
           const session =
             requestedNativeSessionId !== undefined
@@ -450,7 +458,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.gen(function* () {
               const acceptedValue: unknown = yield* session.submit({
                 runId: state.claim.runId,
-                messages: [{ role: 'user', content: prompt }],
+                messages: [{ role: 'user', content: promptWithAnnotationContext(prompt, resolvedAttachments) }],
                 attachmentIds: [],
                 attachments: resolvedAttachments,
               })
@@ -766,7 +774,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                       return yield* session.steer(
                         command.runId,
                         command.expectedNativeTurnId,
-                        command.message,
+                        promptWithAnnotationContext(command.message, attachments),
                         attachments,
                       )
                     }),

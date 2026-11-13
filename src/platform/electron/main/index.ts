@@ -24,7 +24,7 @@ import {
   WorkspaceSideChats,
   WorkspaceSideChatsLive,
 } from '@/core/application/commands/workspace-side-chats.js'
-import { AgentDriverError } from '@/core/ports/agent-driver.js'
+import { AgentDriverError, type AgentSessionContext } from '@/core/ports/agent-driver.js'
 import type { CheckoutActions } from '@/core/ports/checkout-actions.js'
 import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
 import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
@@ -61,7 +61,11 @@ import {
 import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
 import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
 import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
-import { createElectronWorkspacePreviewManager } from '@/platform/electron/main/preview/electron-preview.js'
+import { acquireBrowserMcp } from '@/platform/electron/main/preview/browser-mcp.js'
+import {
+  createElectronWorkspacePreviewManager,
+  workspacePreviewWindow,
+} from '@/platform/electron/main/preview/electron-preview.js'
 import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
 import { checkoutActionsHandlers } from '@/platform/electron/main/rpc/checkout-actions-handlers.js'
 import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
@@ -172,6 +176,42 @@ const workspaceHostLayer = Layer.effect(
     )
     const context = yield* Layer.buildWithScope(
       WorkspaceHostLive({
+        prepareSession: (context): Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope> => {
+          const manager = workspacePreviewManager
+          if (!manager) return Effect.succeed(context)
+          return acquireBrowserMcp(
+            {
+              manager,
+              context,
+              artifactDirectory: join(app.getPath('userData'), 'workspace', 'browser-recordings'),
+              host: () => {
+                const window = BrowserWindow.getAllWindows().find(
+                  window => rendererRoles.get(window.webContents) === 'app',
+                )
+                if (!window)
+                  throw new AgentDriverError({ code: 'invalid-state', message: 'Open Workspace to use the browser.' })
+                return workspacePreviewWindow(manager, window.webContents)
+              },
+            },
+            request => mainRuntime.runPromise(request),
+          ).pipe(
+            Effect.map(prepared => ({
+              ...prepared,
+              browserMcp: {
+                ...prepared.browserMcp,
+                stdio: {
+                  command: process.execPath,
+                  args: [join(__dirname, 'browser-mcp-proxy.js')],
+                  env: [
+                    { name: 'ELECTRON_RUN_AS_NODE', value: '1' },
+                    { name: 'WATCHTOWER_BROWSER_MCP_URL', value: prepared.browserMcp.url },
+                    { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: prepared.browserMcp.token },
+                  ],
+                },
+              },
+            })),
+          )
+        },
         enrichPrompt: claim =>
           enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
             Effect.provideService(SideChatPersistence, sideChatStorage),

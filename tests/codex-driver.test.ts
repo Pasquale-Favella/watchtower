@@ -688,7 +688,9 @@ describe('Codex native App Server driver', () => {
           const opening = yield* Effect.forkScoped(connection.openSession({ ...context, accessMode }))
           const start = yield* server.read
           expect(start.method).toBe('thread/start')
+          expect(start.params).not.toHaveProperty('config.mcp_servers')
           expect(start.params).toMatchObject(thread)
+          expect(start.params).not.toHaveProperty('config')
           yield* server.send({ id: start.id, result: { thread: { id: 'thread-policy' } } })
           const session = yield* Fiber.join(opening)
           const runId = 'run-policy' as Parameters<typeof session.submit>[0]['runId']
@@ -722,6 +724,70 @@ describe('Codex native App Server driver', () => {
           expect(start.params).toMatchObject({ approvalPolicy: 'untrusted', sandbox: 'read-only' })
           yield* server.send({ id: start.id, result: { thread: { id: 'thread-default-policy' } } })
           yield* Fiber.join(opening)
+          yield* connection.close(100)
+        }),
+      ),
+    )
+  })
+
+  it('injects the task browser MCP through Codex thread configuration on start and resume', async () => {
+    const browserContext = {
+      ...context,
+      browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+    }
+    const freshServer = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(freshServer)
+          const opening = yield* Effect.forkScoped(connection.openSession(browserContext))
+          const start = yield* freshServer.read
+          expect(start.method).toBe('thread/start')
+          expect(start.params).toMatchObject({
+            config: {
+              'mcp_servers.watchtower-browser': {
+                url: 'http://127.0.0.1:43123/mcp',
+                http_headers: { Authorization: 'Bearer run-token' },
+              },
+            },
+          })
+          yield* freshServer.send({ id: start.id, result: { thread: { id: 'thread-browser' } } })
+          yield* Fiber.join(opening)
+          yield* connection.close(100)
+        }),
+      ),
+    )
+
+    const resumedServer = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(resumedServer)
+          const loading = yield* Effect.forkScoped(
+            connection.loadSession(browserContext, {
+              nativeSessionId: 'thread-browser-resume',
+              generation: context.generation,
+            }),
+          )
+          const resume = yield* resumedServer.read
+          expect(resume.method).toBe('thread/resume')
+          expect(resume.params).not.toHaveProperty('config.mcp_servers')
+          expect(resume.params).toMatchObject({
+            config: {
+              'mcp_servers.watchtower-browser': {
+                url: 'http://127.0.0.1:43123/mcp',
+                http_headers: { Authorization: 'Bearer run-token' },
+              },
+            },
+          })
+          yield* resumedServer.send({
+            id: resume.id,
+            result: { cwd: context.workspacePath, thread: { id: 'thread-browser-resume', turns: [] } },
+          })
+          const goalRead = yield* resumedServer.read
+          expect(goalRead.method).toBe('thread/goal/get')
+          yield* resumedServer.send({ id: goalRead.id, result: { goal: null } })
+          yield* Fiber.join(loading)
           yield* connection.close(100)
         }),
       ),

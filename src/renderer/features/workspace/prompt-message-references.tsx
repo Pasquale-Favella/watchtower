@@ -14,7 +14,10 @@ import {
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
 import { commandPromptToken } from './prompt-editor.js'
+import { PromptMessageAttachmentsContext } from './prompt-message-context.js'
 import { basenameOfPath, splitPromptTokens } from './prompt-tokens.js'
+import { PromptAnnotationChip } from './PromptAnnotationChip.js'
+import { PromptAttachmentChip } from './PromptAttachmentChip.js'
 import { PromptReferenceChip, type PromptReferenceKind } from './PromptReferenceChip.js'
 
 interface MarkdownNode {
@@ -25,8 +28,9 @@ interface MarkdownNode {
 }
 
 const TOKEN_LINK_PREFIX = '#watchtower-prompt-'
+type PromptMessageReferenceKind = PromptReferenceKind | 'annotation' | 'attachment'
 
-function tokenUrl(kind: PromptReferenceKind, value: string): string {
+function tokenUrl(kind: PromptMessageReferenceKind, value: string): string {
   const hex = Array.from(new TextEncoder().encode(value), byte => byte.toString(16).padStart(2, '0')).join('')
   return `${TOKEN_LINK_PREFIX}${kind}-${hex}`
 }
@@ -46,12 +50,23 @@ function fileLinkPath(node: MarkdownNode): string | null {
   return path && linkLabel(node) === basenameOfPath(path) ? path : null
 }
 
-function promptTextNodes(node: MarkdownNode, commands: ReadonlySet<string>): void {
+function promptTextNodes(
+  node: MarkdownNode,
+  commands: ReadonlySet<string>,
+  attachments: ReadonlyMap<string, PromptMessageReferenceKind>,
+): void {
   const children = node.children
   if (!children) return
   const rewritten: MarkdownNode[] = []
   for (const child of children) {
     if (child.type === 'link') {
+      const attachmentId = /^attachment:([a-f0-9]{64})$/.exec(child.url ?? '')?.[1]
+      const attachmentKind = attachmentId ? attachments.get(attachmentId) : undefined
+      if (attachmentId && attachmentKind) {
+        child.url = tokenUrl(attachmentKind, attachmentId)
+        rewritten.push(child)
+        continue
+      }
       const path = fileLinkPath(child)
       if (path) child.url = tokenUrl('file', path)
       rewritten.push(child)
@@ -62,7 +77,7 @@ function promptTextNodes(node: MarkdownNode, commands: ReadonlySet<string>): voi
       continue
     }
     if (child.type !== 'text' || child.value === undefined) {
-      promptTextNodes(child, commands)
+      promptTextNodes(child, commands, attachments)
       rewritten.push(child)
       continue
     }
@@ -111,18 +126,23 @@ export function remarkPromptMessageReferences({
     if (attachment.source !== 'command') continue
     commandNames.add((attachment.token?.trim() ?? commandPromptToken(attachment.name).trim()).replace(/^\//, ''))
   }
-  return (tree: MarkdownNode): void => promptTextNodes(tree, commandNames)
+  const attachmentKinds = new Map<string, PromptMessageReferenceKind>(
+    attachments
+      .filter(attachment => attachment.source === 'file')
+      .map(attachment => [attachment.id, attachment.annotation ? 'annotation' : 'attachment']),
+  )
+  return (tree: MarkdownNode): void => promptTextNodes(tree, commandNames, attachmentKinds)
 }
 
-function parseTokenUrl(href: string): { readonly kind: PromptReferenceKind; readonly value: string } | null {
+function parseTokenUrl(href: string): { readonly kind: PromptMessageReferenceKind; readonly value: string } | null {
   if (!href.startsWith(TOKEN_LINK_PREFIX)) return null
-  const match = /^(file|skill|command)-([0-9a-f]*)$/.exec(href.slice(TOKEN_LINK_PREFIX.length))
+  const match = /^(file|skill|command|annotation|attachment)-([0-9a-f]*)$/.exec(href.slice(TOKEN_LINK_PREFIX.length))
   if (!match) return null
   try {
     const hex = match[2] ?? ''
     if (hex.length % 2 !== 0) return null
     const bytes = new Uint8Array(hex.match(/.{2}/g)?.map(byte => Number.parseInt(byte, 16)) ?? [])
-    return { kind: match[1] as PromptReferenceKind, value: new TextDecoder().decode(bytes) }
+    return { kind: match[1] as PromptMessageReferenceKind, value: new TextDecoder().decode(bytes) }
   } catch {
     return null
   }
@@ -137,12 +157,23 @@ function PromptMessageLink({
   void node
   const reference = parseTokenUrl(href)
   const navigation = useContext(MarkdownNavigationContext)
+  const attachments = useContext(PromptMessageAttachmentsContext)
   if (!reference)
     return (
       <MarkdownLink href={href} {...props}>
         {children}
       </MarkdownLink>
     )
+  if (reference.kind === 'annotation') {
+    const attachment = attachments.find(item => item.id === reference.value && item.annotation)
+    return attachment ? <PromptAnnotationChip attachment={attachment} /> : <span>{children}</span>
+  }
+  if (reference.kind === 'attachment') {
+    const attachment = attachments.find(
+      item => item.id === reference.value && item.source === 'file' && !item.annotation,
+    )
+    return attachment ? <PromptAttachmentChip attachment={attachment} /> : <span>{children}</span>
+  }
   const label = reference.kind === 'file' ? basenameOfPath(reference.value) : reference.value
   const chip = <PromptReferenceChip kind={reference.kind} path={reference.value} label={label} />
   if (reference.kind === 'file') {

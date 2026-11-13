@@ -6,11 +6,13 @@ import type { WebContents } from 'electron'
 
 import { workspacePreviewWindow } from '@/platform/electron/main/preview/electron-preview.js'
 import type { WorkspacePreviewManager } from '@/platform/electron/main/preview/preview-manager.js'
+import { WorkspaceHost } from '@/platform/electron/main/workspace/host.js'
 import {
   workspacePreviewMessages,
   WorkspacePreviewRpcError,
   WorkspacePreviewRpcGroup,
 } from '@/shared/rpc/workspace-preview.js'
+import { taskIdSchema } from '@/shared/schemas/workspace.js'
 import type { WorkspacePreviewState } from '@/shared/schemas/workspace-preview.js'
 
 function failure(error: unknown): WorkspacePreviewRpcError {
@@ -22,6 +24,33 @@ function failure(error: unknown): WorkspacePreviewRpcError {
 export function workspacePreviewHandlers(manager: WorkspacePreviewManager, sender: WebContents) {
   const host = () => workspacePreviewWindow(manager, sender)
   return WorkspacePreviewRpcGroup.toLayer({
+    'preview:pick': request => Effect.tryPromise({ try: () => manager.pick(host(), request), catch: failure }),
+    'preview:cancelPick': request => Effect.try({ try: () => manager.cancelPick(host(), request), catch: failure }),
+    'preview:configure': request =>
+      Effect.tryPromise({ try: () => manager.configure(host(), request), catch: failure }),
+    'preview:bind': request =>
+      Effect.gen(function* () {
+        const taskId = yield* Schema.decodeUnknownEffect(taskIdSchema)(request.taskId)
+        const workspace = yield* WorkspaceHost
+        yield* workspace.store.readTaskDetail(taskId, { limit: 1 })
+        yield* Effect.try({ try: () => manager.bind(host(), request.ownerKey, taskId), catch: failure })
+      }).pipe(Effect.mapError(failure)),
+    'preview:tabs': request => Effect.try({ try: () => manager.list(host(), request.ownerKey), catch: failure }),
+    'preview:tabEvents': request =>
+      Stream.callback<readonly WorkspacePreviewState[], WorkspacePreviewRpcError>(
+        queue =>
+          Effect.acquireRelease(
+            Effect.try({
+              try: () =>
+                manager.subscribeTabs(host(), request.ownerKey, tabs => {
+                  Queue.offerUnsafe(queue, tabs)
+                }),
+              catch: failure,
+            }),
+            unsubscribe => Effect.sync(unsubscribe),
+          ),
+        { bufferSize: 1, strategy: 'sliding' },
+      ),
     'preview:capture': request => Effect.tryPromise({ try: () => manager.capture(host(), request), catch: failure }),
     'preview:focusApp': () => Effect.try({ try: () => sender.focus(), catch: failure }),
     'preview:open': request => Effect.try({ try: () => manager.open(host(), request), catch: failure }),

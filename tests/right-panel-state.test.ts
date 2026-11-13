@@ -11,6 +11,7 @@ import {
   moveSurfaceTo,
   openSurface,
   readRightPanelPreferences,
+  reconcileWorkspacePreviewTabs,
   resourceSurface,
   type RightPanelPreference,
   surfaceKind,
@@ -20,6 +21,7 @@ import {
   transferRightPanelPreference,
   writeRightPanelPreferences,
 } from '../src/renderer/features/workspace/right-panel/right-panel-state.js'
+import type { WorkspacePreviewState } from '../src/shared/schemas/workspace-preview.js'
 
 function storage(): Storage {
   const values = new Map<string, string>()
@@ -48,7 +50,56 @@ function opened(): RightPanelPreference {
   }
 }
 
+function previewState(tabId: string, closed = false): WorkspacePreviewState {
+  return {
+    ownerKey: 'task-1',
+    tabId,
+    url: '',
+    title: '',
+    loading: false,
+    canGoBack: false,
+    canGoForward: false,
+    error: null,
+    visible: false,
+    closed,
+    muted: false,
+    zoomFactor: 1,
+    popupUrl: null,
+    popupSequence: 0,
+    shortcut: null,
+    shortcutSequence: 0,
+  }
+}
+
 describe('panel resource tabs', () => {
+  it('keeps persisted browser tabs until a native snapshot owns or closes them', () => {
+    expect(reconcileWorkspacePreviewTabs(['browser:remembered'], [], new Set())).toMatchObject({
+      openTabIds: [],
+      closeSurfaces: [],
+      currentOpenTabIds: new Set(),
+    })
+
+    expect(
+      reconcileWorkspacePreviewTabs(
+        ['browser:remembered', 'browser:managed'],
+        [previewState('agent-tab')],
+        new Set(['managed']),
+      ),
+    ).toMatchObject({
+      openTabIds: ['agent-tab'],
+      closeSurfaces: ['browser:managed'],
+      currentOpenTabIds: new Set(['agent-tab']),
+    })
+  })
+
+  it('removes a tab explicitly marked closed in a native snapshot', () => {
+    expect(reconcileWorkspacePreviewTabs(['browser:closed'], [previewState('closed', true)], new Set())).toMatchObject({
+      openTabIds: [],
+      closeSurfaces: ['browser:closed'],
+      currentOpenTabIds: new Set(),
+    })
+  })
+
   it('round-trips resource names without confusing file paths with tab identities', () => {
     const file = resourceSurface('file', 'src/folder with spaces/über:name.ts')
     expect(surfaceKind(file)).toBe('file')

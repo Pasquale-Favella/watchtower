@@ -3,6 +3,7 @@ import * as Schema from 'effect/Schema'
 
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ProjectId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
+import type { WorkspacePreviewState } from '@/shared/schemas/workspace-preview.js'
 
 export const RIGHT_PANEL_DEFAULT_WIDTH = 540
 export const RIGHT_PANEL_MIN_WIDTH = 360
@@ -216,6 +217,30 @@ export function closeSurfacesToRight(preference: RightPanelPreference, of: Right
 
 export function closeAllSurfaces(preference: RightPanelPreference): RightPanelPreference {
   return { ...preference, surfaces: [], active: null, open: false, maximized: false }
+}
+
+/** Reconciles agent-owned preview tabs without dropping panel tabs before the first native snapshot. */
+export function reconcileWorkspacePreviewTabs(
+  surfaces: ReadonlyArray<RightPanelSurface>,
+  states: ReadonlyArray<WorkspacePreviewState>,
+  previouslyOpenTabIds: ReadonlySet<string>,
+): {
+  readonly openTabIds: ReadonlyArray<string>
+  readonly closeSurfaces: ReadonlyArray<RightPanelSurface>
+  readonly currentOpenTabIds: ReadonlySet<string>
+} {
+  const currentOpenTabIds = new Set(states.filter(state => !state.closed).map(state => state.tabId))
+  const closedTabIds = new Set(states.filter(state => state.closed).map(state => state.tabId))
+  const browserSurfaces = surfaces.filter(surface => surfaceKind(surface) === 'browser')
+  const existingTabIds = new Set(browserSurfaces.map(surfaceResource))
+  return {
+    openTabIds: [...currentOpenTabIds].filter(tabId => !existingTabIds.has(tabId)),
+    closeSurfaces: browserSurfaces.filter(surface => {
+      const tabId = surfaceResource(surface)
+      return closedTabIds.has(tabId) || (previouslyOpenTabIds.has(tabId) && !currentOpenTabIds.has(tabId))
+    }),
+    currentOpenTabIds,
+  }
 }
 
 /** Moves a tab one place left (-1) or right (+1) in the strip. Moving past either end does nothing. */

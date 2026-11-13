@@ -54,6 +54,7 @@ import type {
   AgentSessionIdentity,
   AgentToolMetadata,
 } from '@/shared/schemas/execution.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 import { DEFAULT_AGENT_ACCESS_MODE, MAX_AGENT_CATALOG_CHOICES } from '@/shared/schemas/execution.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
@@ -69,6 +70,29 @@ const MAX_TOOL_TEXT = 64 * 1024
 const MAX_TOOL_ITEMS = 64
 const MAX_IMAGE_DATA = 512 * 1024
 const REPLAY_CURSOR_PREFIX = 'acp-replay:'
+
+function sessionMcpServers(context: AgentSessionContext, httpMcpSupported: boolean): AcpMcpServer[] {
+  if (!context.browserMcp) return []
+  if (!httpMcpSupported && context.browserMcp.stdio) {
+    return [
+      {
+        name: 'watchtower-browser',
+        command: context.browserMcp.stdio.command,
+        args: [...context.browserMcp.stdio.args],
+        env: context.browserMcp.stdio.env.map(({ name, value }) => ({ name, value })),
+      },
+    ]
+  }
+  if (!httpMcpSupported) return []
+  return [
+    {
+      type: 'http',
+      name: 'watchtower-browser',
+      url: context.browserMcp.url,
+      headers: [{ name: 'Authorization', value: `Bearer ${context.browserMcp.token}` }],
+    },
+  ]
+}
 
 const defaultScrubbedEnvironment = Object.freeze([
   'ANTHROPIC_API_KEY',
@@ -167,6 +191,7 @@ interface AcpSessionState {
   readonly context: AgentSessionContext
   readonly nativeSessionId: string
   readonly identity: AgentSessionIdentity
+  readonly browserMcpUnavailable: boolean
   readonly queues: Map<AgentRunId, RunChannel>
   readonly completedRuns: Array<AgentRunId>
   readonly permissions: Map<string, PendingRequest>
@@ -200,6 +225,7 @@ interface AcpConnectionState {
   readonly connection: ClientSideConnection
   readonly transport: JsonRpcTransport
   readonly loadSessionSupported: boolean
+  readonly browserMcpHttpSupported: boolean
   readonly initializeModels?: AcpSessionModelState | undefined
   readonly initializeModes?: AcpSessionModeState | undefined
   session?: AcpSessionState | undefined
@@ -1442,12 +1468,14 @@ function makeSessionState(
   context: AgentSessionContext,
   nativeSessionId: string,
   loadSessionSupported: boolean,
+  browserMcpUnavailable: boolean,
   replaying: boolean,
 ): AcpSessionState {
   return {
     context,
     nativeSessionId,
     identity: { nativeSessionId, generation: context.generation },
+    browserMcpUnavailable,
     queues: new Map(),
     completedRuns: [],
     permissions: new Map(),
@@ -1548,7 +1576,17 @@ function sessionInterface(
             channel = yield* emptyEventChannel(runId)
             state.queues.set(runId, channel)
           }
-          return makeRunChannelStream(channel)
+          const runEvents = makeRunChannelStream(channel)
+          return state.browserMcpUnavailable
+            ? Stream.concat(
+                Stream.make({
+                  kind: 'nativeNotice' as const,
+                  message:
+                    'Embedded browser tools are unavailable because this ACP agent did not advertise HTTP MCP support.',
+                }),
+                runEvents,
+              )
+            : runEvents
         }),
       )
     },
@@ -1818,6 +1856,7 @@ function createConnection(
       })
     }
     const loadSessionSupported = initialized.agentCapabilities?.loadSession === true
+    const browserMcpHttpSupported = initialized.agentCapabilities?.mcpCapabilities?.http === true
     const initializeStates = initializeCatalog(initialized._meta)
     const connectionState: AcpConnectionState = {
       identity: {
@@ -1829,6 +1868,7 @@ function createConnection(
       connection: client,
       transport,
       loadSessionSupported,
+      browserMcpHttpSupported,
       initializeModels: initializeStates.models ?? undefined,
       initializeModes: initializeStates.modes ?? undefined,
       closed: false,
@@ -1918,7 +1958,13 @@ function createConnection(
           })
         }
         let state = native
-          ? makeSessionState(context, native.nativeSessionId, connectionState.loadSessionSupported, true)
+          ? makeSessionState(
+              context,
+              native.nativeSessionId,
+              connectionState.loadSessionSupported,
+              Boolean(context.browserMcp && !connectionState.browserMcpHttpSupported && !context.browserMcp.stdio),
+              true,
+            )
           : undefined
         if (state) {
           state.poison = error => poisonConnection(state as AcpSessionState, error)
@@ -1936,11 +1982,14 @@ function createConnection(
               const loaded = await client.loadSession({
                 sessionId: native.nativeSessionId as never,
                 cwd: context.workspacePath,
-                mcpServers: [],
+                mcpServers: sessionMcpServers(context, connectionState.browserMcpHttpSupported),
               })
               return { ...loaded, sessionId: native.nativeSessionId }
             }
-            return client.newSession({ cwd: context.workspacePath, mcpServers: [] })
+            return client.newSession({
+              cwd: context.workspacePath,
+              mcpServers: sessionMcpServers(context, connectionState.browserMcpHttpSupported),
+            })
           },
           catch: error => toDriverError(error),
         }).pipe(
@@ -1969,7 +2018,13 @@ function createConnection(
             message: 'ACP loaded a different native session identity.',
           })
         }
-        state ??= makeSessionState(context, response.sessionId, connectionState.loadSessionSupported, false)
+        state ??= makeSessionState(
+          context,
+          response.sessionId,
+          connectionState.loadSessionSupported,
+          Boolean(context.browserMcp && !connectionState.browserMcpHttpSupported && !context.browserMcp.stdio),
+          false,
+        )
         state.liveCapabilities = {
           ...state.liveCapabilities,
           promptContent: { images: initialized.agentCapabilities?.promptCapabilities?.image === true, files: true },

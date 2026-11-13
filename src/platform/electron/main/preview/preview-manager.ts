@@ -1,15 +1,20 @@
+import * as Schema from 'effect/Schema'
+
 import { workspacePreviewMessages, WorkspacePreviewRpcError } from '@/shared/rpc/workspace-preview.js'
+import type { WorkspaceBrowserInput, WorkspaceBrowserOperation } from '@/shared/schemas/workspace-browser.js'
 import {
   normalizeWorkspacePreviewUrl,
   type WorkspacePreviewBounds,
+  type WorkspacePreviewCapture,
   type WorkspacePreviewCommand,
   type WorkspacePreviewLayout,
   type WorkspacePreviewNavigate,
   type WorkspacePreviewOpen,
+  type WorkspacePreviewPickedElement,
+  workspacePreviewPickedElementSchema,
   type WorkspacePreviewRef,
   type WorkspacePreviewShortcut,
   type WorkspacePreviewState,
-  type WorkspacePreviewCapture,
 } from '@/shared/schemas/workspace-preview.js'
 
 export interface WorkspacePreviewView {
@@ -29,7 +34,11 @@ export interface WorkspacePreviewView {
     shortcut: (action: WorkspacePreviewShortcut) => void,
   ) => () => void
   readonly destroy: () => void
-  readonly capture?: (() => Promise<WorkspacePreviewCapture>) | undefined
+  readonly capture?: ((bounds?: WorkspacePreviewBounds) => Promise<WorkspacePreviewCapture>) | undefined
+  readonly resetAutomation?: (() => Promise<void>) | undefined
+  readonly automate?:
+    | ((operation: WorkspaceBrowserOperation, input: WorkspaceBrowserInput, signal?: AbortSignal) => Promise<unknown>)
+    | undefined
 }
 
 export interface WorkspacePreviewWindow {
@@ -50,6 +59,11 @@ interface BrowserTab {
   unsubscribe: () => void
   state: WorkspacePreviewState
   loadGeneration: number
+  controlGeneration: number
+  agentOwner: string | null
+  readonly operations: Set<AbortController>
+  pickController?: AbortController
+  resetAfterPick?: boolean
 }
 
 const MAX_BROWSER_TABS = 24
@@ -79,6 +93,8 @@ export function fitWorkspacePreviewBounds(
 /** Owns browser pages independently of the renderer's selected chat and mounted panels. */
 export class WorkspacePreviewManager {
   private readonly tabs = new Map<string, BrowserTab>()
+  private readonly bindings = new Map<string, { host: WorkspacePreviewWindow; ownerKey: string }>()
+  private readonly tabListeners = new Map<string, Set<(tabs: readonly WorkspacePreviewState[]) => void>>()
 
   constructor(private readonly adapter: WorkspacePreviewAdapter) {}
 
@@ -94,10 +110,14 @@ export class WorkspacePreviewManager {
       listeners: new Set(),
       unsubscribe: () => undefined,
       loadGeneration: 0,
+      controlGeneration: 0,
+      agentOwner: null,
+      operations: new Set(),
       state: {
         ...request,
         ...view.snapshot(),
         error: null,
+        agentPaused: false,
         visible: false,
         closed: false,
         popupUrl: null,
@@ -137,6 +157,7 @@ export class WorkspacePreviewManager {
     host.attach(view)
     view.setVisible(false)
     if (request.url) this.load(tab, request.url)
+    this.publish(tab)
     return tab.state
   }
 
@@ -150,6 +171,15 @@ export class WorkspacePreviewManager {
 
   async command(host: WorkspacePreviewWindow, request: WorkspacePreviewCommand): Promise<WorkspacePreviewState> {
     const tab = this.require(host, request)
+    if (request.action === 'pause-agent' || request.action === 'resume-agent') {
+      tab.controlGeneration += 1
+      tab.state = { ...tab.state, agentPaused: request.action === 'pause-agent' }
+      for (const controller of tab.operations) controller.abort()
+      this.publish(tab)
+      return tab.state
+    }
+    if (['back', 'forward', 'reload', 'stop'].includes(request.action))
+      for (const controller of tab.operations) controller.abort()
     if (request.action === 'reload') tab.state = { ...tab.state, error: null }
     await tab.view.command(request.action)
     tab.state = { ...tab.state, ...tab.view.snapshot() }
@@ -161,6 +191,107 @@ export class WorkspacePreviewManager {
     const tab = this.require(host, request)
     if (!tab.view.capture) throw failure('unavailable')
     return tab.view.capture()
+  }
+
+  async pick(
+    host: WorkspacePreviewWindow,
+    request: WorkspacePreviewRef,
+  ): Promise<{ image: WorkspacePreviewCapture; text: string; element: WorkspacePreviewPickedElement }> {
+    const tab = this.require(host, request)
+    if (!tab.view.automate || tab.pickController) throw failure('unavailable')
+    const wasPaused = tab.state.agentPaused
+    const controlGeneration = tab.controlGeneration
+    tab.state = { ...tab.state, agentPaused: true }
+    for (const controller of tab.operations) controller.abort()
+    const controller = new AbortController()
+    tab.pickController = controller
+    tab.operations.add(controller)
+    const timer = setTimeout(() => controller.abort(), 60_000)
+    this.publish(tab)
+    try {
+      const result = await tab.view.automate('pick', {}, controller.signal)
+      const selected = Schema.decodeUnknownSync(
+        Schema.Struct({
+          ...workspacePreviewPickedElementSchema.fields,
+          outerHTML: Schema.String,
+          rect: Schema.Struct({ x: Schema.Finite, y: Schema.Finite, width: Schema.Finite, height: Schema.Finite }),
+          viewport: Schema.Struct({ width: Schema.Finite, height: Schema.Finite }),
+        }),
+      )(result)
+      if (controller.signal.aborted || tab.state.closed) throw failure('unavailable')
+      if (!tab.view.capture) throw failure('unavailable')
+      const rect = selected.rect
+      const viewport = selected.viewport
+      if (rect.width <= 0 || rect.height <= 0 || viewport.width <= 0 || viewport.height <= 0)
+        throw failure('invalid-request')
+      const x = Math.max(0, Math.floor(rect.x - 24))
+      const y = Math.max(0, Math.floor(rect.y - 24))
+      const right = Math.min(viewport.width, Math.ceil(rect.x + rect.width + 24))
+      const bottom = Math.min(viewport.height, Math.ceil(rect.y + rect.height + 24))
+      if (right <= x || bottom <= y) throw failure('invalid-request')
+      const crop = { x, y, width: right - x, height: bottom - y }
+      const image = await tab.view.capture(crop)
+      const normalizedX = Math.max(0, (rect.x - x) / crop.width)
+      const normalizedY = Math.max(0, (rect.y - y) / crop.height)
+      const element: WorkspacePreviewPickedElement = {
+        ...selected,
+        rect: {
+          x: normalizedX,
+          y: normalizedY,
+          width: Math.max(0, (Math.min(viewport.width, rect.x + rect.width) - Math.max(0, rect.x)) / crop.width),
+          height: Math.max(0, (Math.min(viewport.height, rect.y + rect.height) - Math.max(0, rect.y)) / crop.height),
+        },
+      }
+      return {
+        image,
+        element,
+        text: `Browser element on ${image.url}\nSelector: ${element.selector}\nElement: ${element.role} (${element.tag})\nName: ${element.name}${element.href ? `\nLink: ${element.href}` : ''}${element.componentName ? `\nComponent: ${element.componentName}` : ''}${element.source ? `\nSource: ${element.source}` : ''}\nStyles: ${element.styles}\nText: ${element.text}\nHTML:\n${selected.outerHTML}`.slice(
+          0,
+          16_000,
+        ),
+      }
+    } finally {
+      clearTimeout(timer)
+      tab.operations.delete(controller)
+      delete tab.pickController
+      if (!tab.state.closed && tab.controlGeneration === controlGeneration) {
+        tab.state = { ...tab.state, agentPaused: wasPaused }
+        this.publish(tab)
+      }
+      if (tab.resetAfterPick) {
+        delete tab.resetAfterPick
+        try {
+          await tab.view.resetAutomation?.()
+        } catch {
+          // Cleanup failure must not replace the picker result or cancellation.
+        }
+      }
+    }
+  }
+
+  cancelPick(host: WorkspacePreviewWindow, request: WorkspacePreviewRef): void {
+    this.require(host, request).pickController?.abort()
+  }
+
+  async configure(
+    host: WorkspacePreviewWindow,
+    request: WorkspacePreviewRef & {
+      readonly width?: number
+      readonly height?: number
+      readonly colorScheme?: 'light' | 'dark' | 'system'
+    },
+  ): Promise<void> {
+    const tab = this.require(host, request)
+    if (!tab.view.automate) throw failure('unavailable')
+    for (const controller of tab.operations) controller.abort()
+    if (request.colorScheme !== undefined) {
+      await tab.view.automate('setColorScheme', { colorScheme: request.colorScheme })
+    } else {
+      await tab.view.automate('resize', {
+        ...(request.width === undefined ? {} : { width: request.width }),
+        ...(request.height === undefined ? {} : { height: request.height }),
+      })
+    }
   }
 
   layout(host: WorkspacePreviewWindow, request: WorkspacePreviewLayout): void {
@@ -192,6 +323,7 @@ export class WorkspacePreviewManager {
     const tab = this.tabs.get(key(host, ref))
     if (!tab) return
     this.tabs.delete(key(host, ref))
+    for (const controller of tab.operations) controller.abort()
     tab.state = { ...tab.state, visible: false, closed: true, loading: false }
     this.publish(tab)
     tab.listeners.clear()
@@ -212,6 +344,131 @@ export class WorkspacePreviewManager {
       this.tabs.set(key(host, tab.state), tab)
       this.publish(tab)
     }
+    for (const [taskId, binding] of this.bindings) {
+      if (binding.host.id === host.id && binding.ownerKey === ownerKey)
+        this.bindings.set(taskId, { host, ownerKey: nextOwnerKey })
+    }
+    this.publishTabs(host, ownerKey)
+  }
+
+  bind(host: WorkspacePreviewWindow, ownerKey: string, taskId: string): void {
+    for (const [otherTask, binding] of this.bindings) {
+      if (otherTask !== taskId && binding.host.id === host.id && binding.ownerKey === ownerKey)
+        throw failure('invalid-request')
+    }
+    const previous = this.bindings.get(taskId)
+    if (previous && (previous.host.id !== host.id || previous.ownerKey !== ownerKey)) {
+      if (previous.host.id !== host.id) throw failure('invalid-request')
+      this.adoptOwner(host, previous.ownerKey, ownerKey)
+    }
+    this.bindings.set(taskId, { host, ownerKey })
+    this.publishTabs(host, ownerKey)
+  }
+
+  taskBinding(taskId: string): { host: WorkspacePreviewWindow; ownerKey: string } | undefined {
+    return this.bindings.get(taskId)
+  }
+
+  list(host: WorkspacePreviewWindow, ownerKey: string): readonly WorkspacePreviewState[] {
+    return [...this.tabs.values()]
+      .filter(tab => tab.host.id === host.id && tab.state.ownerKey === ownerKey)
+      .map(tab => tab.state)
+  }
+
+  agentTabs(taskId: string, sessionId: string): readonly WorkspacePreviewState[] {
+    const binding = this.bindings.get(taskId)
+    if (!binding) throw failure('unavailable')
+    return this.list(binding.host, binding.ownerKey).filter(state => {
+      const tab = this.require(binding.host, state)
+      return !state.agentPaused && (!tab.agentOwner || tab.agentOwner === sessionId)
+    })
+  }
+
+  subscribeTabs(
+    host: WorkspacePreviewWindow,
+    ownerKey: string,
+    listener: (tabs: readonly WorkspacePreviewState[]) => void,
+  ): () => void {
+    const id = JSON.stringify([host.id, ownerKey])
+    const listeners = this.tabListeners.get(id) ?? new Set()
+    this.tabListeners.set(id, listeners)
+    listeners.add(listener)
+    listener(this.list(host, ownerKey))
+    return () => {
+      listeners.delete(listener)
+      if (!listeners.size) this.tabListeners.delete(id)
+    }
+  }
+
+  /** The endpoint supplies Task/Session authority; tool arguments can only select tabs within it. */
+  agentTab(
+    taskId: string,
+    sessionId: string,
+    tabId?: string,
+    mutate = false,
+  ): { host: WorkspacePreviewWindow; ref: WorkspacePreviewRef } {
+    const binding = this.bindings.get(taskId)
+    if (!binding) throw failure('unavailable')
+    const tabs = this.list(binding.host, binding.ownerKey)
+    const candidates = tabs.filter(state => {
+      const tab = this.require(binding.host, state)
+      return !tab.agentOwner || tab.agentOwner === sessionId
+    })
+    const state = tabId ? tabs.find(tab => tab.tabId === tabId) : candidates.length === 1 ? candidates[0] : undefined
+    if (!state) throw failure(tabId ? 'not-found' : 'ambiguous-tab')
+    const tab = this.require(binding.host, state)
+    if (state.agentPaused) throw failure('agent-paused')
+    if (mutate) {
+      if (tab.agentOwner && tab.agentOwner !== sessionId) throw failure('agent-owned')
+      tab.agentOwner = sessionId
+    }
+    return { host: binding.host, ref: { ownerKey: binding.ownerKey, tabId: state.tabId } }
+  }
+
+  async automate(
+    taskId: string,
+    sessionId: string,
+    operation: WorkspaceBrowserOperation,
+    input: WorkspaceBrowserInput,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const target = this.agentTab(taskId, sessionId, input.tabId, operation !== 'snapshot')
+    const tab = this.require(target.host, target.ref)
+    if (!tab.view.automate) throw failure('unavailable')
+    const controller = new AbortController()
+    const abort = () => controller.abort()
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted) controller.abort()
+    tab.operations.add(controller)
+    try {
+      return await tab.view.automate(operation, input, controller.signal)
+    } finally {
+      signal?.removeEventListener('abort', abort)
+      tab.operations.delete(controller)
+    }
+  }
+
+  async releaseAgent(taskId: string, sessionId: string): Promise<void> {
+    const binding = this.bindings.get(taskId)
+    if (!binding) return
+    const owned = this.list(binding.host, binding.ownerKey).filter(state => {
+      const tab = this.tabs.get(key(binding.host, state))
+      return tab?.agentOwner === sessionId
+    })
+    await Promise.allSettled(
+      owned.map(async state => {
+        const tab = this.tabs.get(key(binding.host, state))
+        if (!tab) return
+        for (const controller of tab.operations) {
+          if (controller !== tab.pickController) controller.abort()
+        }
+        if (tab.pickController) {
+          tab.resetAfterPick = true
+          return
+        }
+        await tab.view.resetAutomation?.()
+      }),
+    )
   }
 
   hideWindow(windowId: number, except?: BrowserTab): void {
@@ -225,6 +482,7 @@ export class WorkspacePreviewManager {
 
   closeWindow(windowId: number): void {
     for (const tab of [...this.tabs.values()]) if (tab.host.id === windowId) this.close(tab.host, tab.state)
+    for (const [taskId, binding] of this.bindings) if (binding.host.id === windowId) this.bindings.delete(taskId)
   }
 
   dispose(): void {
@@ -239,9 +497,16 @@ export class WorkspacePreviewManager {
 
   private publish(tab: BrowserTab): void {
     for (const listener of [...tab.listeners]) listener(tab.state)
+    this.publishTabs(tab.host, tab.state.ownerKey)
+  }
+
+  private publishTabs(host: WorkspacePreviewWindow, ownerKey: string): void {
+    for (const listener of this.tabListeners.get(JSON.stringify([host.id, ownerKey])) ?? [])
+      listener(this.list(host, ownerKey))
   }
 
   private load(tab: BrowserTab, url: string): void {
+    for (const controller of tab.operations) controller.abort()
     const generation = ++tab.loadGeneration
     tab.state = { ...tab.state, url, loading: true, error: null }
     this.publish(tab)

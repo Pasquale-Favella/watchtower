@@ -28,7 +28,7 @@ import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChat
 import { NEW_CHAT_DRAFT_MAX_LENGTH, newChatTaskTitle } from './new-chat-state.js'
 import { parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
-import { filePromptToken, promptWithAttachments } from './prompt-editor.js'
+import { attachmentPromptToken, filePromptToken, promptWithAttachments } from './prompt-editor.js'
 import {
   promptWithReviewComments,
   type ReviewComment,
@@ -266,6 +266,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
           previousDrawer.open,
         )
       transferDraftPanelContext(creation.terminalTarget, creation.panelKey, receipt.taskId)
+      await resources.bindTask(receipt.taskId).catch(() => undefined)
       if (!checkoutId) {
         const retained = draftRef.current
         copyDraftToConversation(receipt.conversationId, retained)
@@ -426,9 +427,10 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       name: 'workspace-screenshot.png',
       mediaType: 'image/png',
       data: image.dataUrl.slice(separator + 1),
+      ...(image.annotation ? { annotation: image.annotation } : {}),
     })
     attachments.add(item)
-    appendToDraft(image.text)
+    appendToDraft(image.annotation ? attachmentPromptToken(item) : `${image.text}\n\n${attachmentPromptToken(item)}`)
   }
 
   return (

@@ -11,6 +11,7 @@ import {
   useWorkspaceTaskSnapshot,
 } from './hooks.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
+import { attachmentPromptToken } from './prompt-editor.js'
 import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
@@ -76,7 +77,7 @@ function TaskConversation({
   const terminal = useTerminalDrawer(terminalTarget)
   const panel = useRightPanel(taskId)
   const ownerKey = useTaskPanelResourceKey(taskId)
-  const resources = useWorkspacePanelResources(ownerKey, panel)
+  const resources = useWorkspacePanelResources(ownerKey, panel, taskId)
   const appendDraft = useDraftAppend()
   const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
   const nativeSessions = useWorkspaceNativeAgentSessions({ taskId, options: { limit: 50 } })
@@ -315,9 +316,13 @@ function TaskRightPanel({
                 name: 'workspace-screenshot.png',
                 mediaType: 'image/png',
                 data: image.dataUrl.slice(image.dataUrl.indexOf(',') + 1),
+                ...(image.annotation ? { annotation: image.annotation } : {}),
               })
               attachments.add(item)
-              appendDraft(conversationId, image.text)
+              appendDraft(
+                conversationId,
+                image.annotation ? attachmentPromptToken(item) : `${image.text}\n\n${attachmentPromptToken(item)}`,
+              )
             }
           : undefined
       }

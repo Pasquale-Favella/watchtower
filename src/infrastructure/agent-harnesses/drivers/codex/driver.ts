@@ -582,12 +582,14 @@ function openSession(
               excludeTurns: false,
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
+              ...(context.browserMcp ? { config: codexBrowserMcpConfig(context.browserMcp) } : {}),
             }
           : {
               cwd: context.workspacePath,
               ...(context.modelId ? { model: context.modelId } : {}),
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
+              ...(context.browserMcp ? { config: codexBrowserMcpConfig(context.browserMcp) } : {}),
             },
       )
       .pipe(Effect.mapError(toDriverFailure))
@@ -684,6 +686,21 @@ function openSession(
     }
     return session
   })
+}
+
+function codexBrowserMcpConfig(browserMcp: NonNullable<AgentSessionContext['browserMcp']>): {
+  readonly 'mcp_servers.watchtower-browser': {
+    readonly url: string
+    readonly http_headers: Readonly<Record<string, string>>
+  }
+} {
+  return {
+    // Override this server rather than replacing the user's MCP server table.
+    'mcp_servers.watchtower-browser': {
+      url: browserMcp.url,
+      http_headers: { Authorization: `Bearer ${browserMcp.token}` },
+    },
+  }
 }
 
 function readNativeGoal(client: JsonRpcClient, threadId: string) {
