@@ -8,13 +8,13 @@ import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { WorkspaceConnection, WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
 
 import { useRememberedAgentChoices } from './agent-preferences.js'
-import { useWorkspaceConnectionCatalog } from './connection-hooks.js'
 import {
   configOptionsForModel,
   configValueForOption,
   configValuesForOptions,
-  needsNativeChoiceControl,
+  isModelSpecificConfigOption,
 } from './config-values.js'
+import { useWorkspaceConnectionCatalog } from './connection-hooks.js'
 import type { AccessModeOption } from './model-picker/access-mode.js'
 import {
   catalogView,
@@ -25,8 +25,6 @@ import {
   type ModelChoice,
 } from './model-picker/catalog.js'
 import { composerControlClass } from './model-picker/composer-control.js'
-import { ConfigOptionsColumn } from './model-picker/config-options-column.js'
-import { EffortColumn } from './model-picker/effort-column.js'
 import { ModelPickerPanel } from './model-picker/model-picker-panel.js'
 import { PermissionsFooter } from './model-picker/permissions.js'
 import { normalizationFor, resolveAgentChoice } from './model-picker/selection.js'
@@ -152,13 +150,14 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
     if (normalizeMode !== undefined) onModeChange(normalizeMode)
   }, [normalizing, normalizationKey, normalizeModel, normalizeMode, onModelChange, onModeChange])
 
-  function commit(targetConnectionId: string, modelId: string) {
-    remembered.remember(targetConnectionId, { modelId, modeId: '' })
+  function commit(targetConnectionId: string, modelId: string, modeId: string) {
+    remembered.remember(targetConnectionId, { modelId, modeId })
     if (props.onAgentChange) {
-      props.onAgentChange({ connectionId: targetConnectionId, modelId, modeId: '' })
+      props.onAgentChange({ connectionId: targetConnectionId, modelId, modeId })
     } else {
       if (targetConnectionId !== connectionId) props.onConnectionChange(targetConnectionId)
       onModelChange(modelId)
+      if (modeId !== '') onModeChange(modeId)
     }
     // A model pick leaves the picker open on the new model's effort levels.
     requestAnimationFrame(() => {
@@ -179,41 +178,41 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
     props.onConfigValueChange?.(id, value)
   }
 
+  function changePreviewMode(targetConnectionId: string, modeId: string): void {
+    if (targetConnectionId === connectionId) {
+      chooseEffort(modeId)
+      return
+    }
+    remembered.remember(targetConnectionId, { modeId })
+  }
+
+  function changePreviewConfigValue(targetConnectionId: string, id: string, value: string): void {
+    if (targetConnectionId === connectionId) {
+      chooseConfigValue(id, value)
+      return
+    }
+    const rememberedConfigValues = remembered.choiceFor(targetConnectionId)?.configValues ?? {}
+    remembered.remember(targetConnectionId, { configValues: { ...rememberedConfigValues, [id]: value } })
+  }
+
   const listed = view.kind === 'listed' || view.kind === 'session' ? view.models : []
   const modelName = resolved.modelId
     ? (listed.find(model => model.id === resolved.modelId)?.label ?? resolved.modelId)
     : 'Default model'
   const effortTitle = effortTitleFor(effortOptions)
-  const fallbackEffort =
-    effortOptions?.length && needsNativeChoiceControl(effortTitle, configOptions)
-      ? {
-          title: effortTitle,
-          modelLabel: modelName,
-          options: effortOptions,
-          value: resolved.modeId,
-          onPick: chooseEffort,
-        }
-      : undefined
   const effortLabel = resolved.modeId
     ? (effortOptions?.find(option => option.id === resolved.modeId)?.label ?? resolved.modeId)
     : null
-  const configSummary = configOptions
-    .map(option => {
-      const value = configValueForOption(option, configValues)
-      const label = option.options.find(choice => choice.id === value)?.label ?? value
-      return `${option.label}: ${label}`
-    })
-    .join(' · ')
-  const choiceSummary = [
-    fallbackEffort ? effortLabel : null,
-    configOptions.length > 0 ? configSummary : fallbackEffort ? null : effortLabel,
-  ]
+  const effortConfig = configOptions.find(option => isModelSpecificConfigOption(option.id, configOptions))
+  const effortValue = effortConfig ? configValueForOption(effortConfig, configValues) : null
+  let triggerEffort = effortTitle === 'Effort' ? effortLabel : null
+  if (effortConfig) {
+    triggerEffort = effortConfig.options.find(option => option.id === effortValue)?.label ?? effortValue
+  }
   let triggerLabel = modelName
   if (props.connections.length === 0) triggerLabel = 'No agent detected'
   else if (!selectedConnection) triggerLabel = 'Choose an agent'
-  const triggerTitle = selectedConnection
-    ? [selectedConnection.label, modelName, ...choiceSummary].filter(Boolean).join(' · ')
-    : triggerLabel
+  const triggerTitle = selectedConnection ? [modelName, triggerEffort].filter(Boolean).join(' · ') : triggerLabel
 
   return (
     <Popover
@@ -230,24 +229,14 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
       <PopoverTrigger
         aria-label="Agent and model"
         title={triggerTitle}
-        disabled={props.connections.length === 0}
         className={composerControlClass('max-w-64 min-w-0 shrink justify-start')}
       >
         {selectedConnection && <HarnessIcon kind={selectedConnection.harnessKind} className="size-4 shrink-0" />}
         <span className="min-w-0 truncate">{triggerLabel}</span>
-        {configOptions.length > 0 ? (
-          <>
-            {fallbackEffort && effortLabel && (
-              <span className="text-muted-foreground max-w-20 shrink-0 truncate font-normal">{effortLabel}</span>
-            )}
-            {configSummary && (
-              <span className="text-muted-foreground max-w-40 shrink-0 truncate font-normal">{configSummary}</span>
-            )}
-          </>
-        ) : effortLabel ? (
-          <span className="text-muted-foreground max-w-24 shrink-0 truncate font-normal">{effortLabel}</span>
-        ) : null}
-        {activeCatalog.pending && (
+        {selectedConnection && triggerEffort && (
+          <span className="text-muted-foreground max-w-24 shrink-0 truncate font-normal">{triggerEffort}</span>
+        )}
+        {selectedConnection && activeCatalog.pending && (
           <LoaderCircle aria-hidden className={cn('text-muted-foreground size-3 shrink-0 animate-spin')} />
         )}
       </PopoverTrigger>
@@ -256,7 +245,11 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
         side="top"
         align="start"
         sideOffset={8}
-        initialFocus={searchRef}
+        initialFocus={() =>
+          searchRef.current ??
+          popupRef.current?.querySelector<HTMLButtonElement>('[data-rail-item]') ??
+          popupRef.current
+        }
         className="w-[556px] max-w-[calc(100vw-2rem)] gap-0 overflow-hidden p-0"
         aria-label="Choose agent and model"
       >
@@ -270,28 +263,11 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
           lockedConnectionId={props.lockedConnectionId}
           rememberedFor={remembered.choiceFor}
           onCommit={commit}
+          configValues={props.configValues ?? {}}
+          onModeChange={changePreviewMode}
+          onConfigValueChange={changePreviewConfigValue}
           onClose={() => setOpen(false)}
           searchRef={searchRef}
-          effortColumn={
-            configOptions.length > 0 ? (
-              <ConfigOptionsColumn
-                options={configOptions}
-                values={props.configValues ?? {}}
-                effort={fallbackEffort}
-                onPick={chooseConfigValue}
-                onLeave={() => searchRef.current?.focus()}
-              />
-            ) : (
-              <EffortColumn
-                title={effortTitle}
-                modelLabel={modelName}
-                options={effortOptions}
-                value={resolved.modeId}
-                onPick={chooseEffort}
-                onLeave={() => searchRef.current?.focus()}
-              />
-            )
-          }
           footer={props.access ? <PermissionsFooter {...props.access} /> : undefined}
         />
       </PopoverContent>

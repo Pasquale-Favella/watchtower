@@ -24,6 +24,7 @@ const configuration = [
     type: 'select',
     currentValue: 'general',
     options: [
+      { value: '', name: 'Default' },
       { value: 'general', name: 'General' },
       { value: 'reviewer', name: 'Reviewer' },
     ],

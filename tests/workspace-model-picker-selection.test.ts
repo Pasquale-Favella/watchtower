@@ -7,7 +7,11 @@ import {
   knownModels,
   type ModelChoice,
 } from '@/renderer/features/workspace/model-picker/catalog.js'
-import { normalizationFor, resolveAgentChoice } from '@/renderer/features/workspace/model-picker/selection.js'
+import {
+  modeForModelCommit,
+  normalizationFor,
+  resolveAgentChoice,
+} from '@/renderer/features/workspace/model-picker/selection.js'
 import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
 
 const models: readonly ModelChoice[] = [
@@ -186,6 +190,44 @@ describe('effortFor', () => {
   it('is unknown for an unknown model or an unknown catalog', () => {
     expect(effortFor({ models, connectionEffort: null, modelId: 'retired' })).toBeNull()
     expect(effortFor({ models: null, connectionEffort: null, modelId: 'fast' })).toBeNull()
+  })
+})
+
+describe('modeForModelCommit', () => {
+  it('keeps the previewed mode when the selected model offers it', () => {
+    expect(
+      modeForModelCommit({
+        previewIsActive: false,
+        modelId: 'fast',
+        modeId: 'high',
+        models,
+        connectionEffort: null,
+      }),
+    ).toBe('high')
+  })
+
+  it('clears the previewed mode when the selected model does not offer it', () => {
+    expect(
+      modeForModelCommit({
+        previewIsActive: false,
+        modelId: 'plain',
+        modeId: 'high',
+        models,
+        connectionEffort: null,
+      }),
+    ).toBe('')
+  })
+
+  it('resets the mode when changing the active connection model', () => {
+    expect(
+      modeForModelCommit({
+        previewIsActive: true,
+        modelId: 'fast',
+        modeId: 'high',
+        models,
+        connectionEffort: null,
+      }),
+    ).toBe('')
   })
 })
 

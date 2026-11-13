@@ -36,6 +36,23 @@ export function resolveAgentChoice(input: AgentChoiceInput): ResolvedAgentChoice
   return { choice: AGENT_DEFAULT, source: 'default' }
 }
 
+/** Keeps an inactive preview's effort when the chosen model offers it, while active model changes reset effort. */
+export function modeForModelCommit(input: {
+  readonly previewIsActive: boolean
+  readonly modelId: string
+  readonly modeId: string
+  readonly models: readonly ModelChoice[] | null
+  readonly connectionEffort: readonly EffortChoice[] | null
+}): string {
+  if (input.previewIsActive) return ''
+  return resolveAgentChoice({
+    conversation: { modelId: input.modelId, modeId: input.modeId },
+    remembered: undefined,
+    models: input.models,
+    connectionEffort: input.connectionEffort,
+  }).choice.modeId
+}
+
 function validated(
   input: AgentChoiceInput,
   source: 'conversation' | 'remembered',

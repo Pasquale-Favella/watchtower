@@ -124,7 +124,7 @@ export const agentConfigOptionSchema = Schema.Struct({
   description: optionalText,
   category: optionalText,
   currentValue: Schema.String,
-  options: Schema.Array(Schema.Struct({ id: text, label: Schema.String, description: optionalText })),
+  options: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String, description: optionalText })),
 })
 export type AgentConfigOption = Schema.Schema.Type<typeof agentConfigOptionSchema>
 export const agentConfigValuesSchema = Schema.Record(text, Schema.String)

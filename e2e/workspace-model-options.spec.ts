@@ -40,17 +40,18 @@ test('scratch chat keeps native model, effort, mode, and permission choices exac
     await newChat.getByRole('button', { name: 'Agent and model', exact: true }).click()
     const picker = window.getByRole('dialog', { name: 'Choose agent and model', exact: true })
     await expect(picker).toBeVisible()
+    await expect(picker.getByText("Let's set up your agent", { exact: true })).toBeVisible()
+    await expect(picker.getByText('Loading models\u2026', { exact: true })).toHaveCount(0)
+    await window.screenshot({ path: test.info().outputPath('workspace-agent-setup.png'), fullPage: true })
     await picker
       .getByRole('group', { name: 'Agents', exact: true })
       .getByRole('button', { name: 'Gemini CLI', exact: true })
       .click()
-    await picker.getByRole('option', { name: 'Fixture model', exact: true }).click()
-
-    await picker
-      .getByRole('radiogroup', { name: 'Effort', exact: true })
-      .getByRole('radio', { name: 'High', exact: true })
-      .click()
-
+    await expect(picker.getByRole('radiogroup', { name: 'Effort', exact: true })).toBeVisible()
+    const previewWidths = await picker.locator('[data-effort-column]').evaluate(column => ({
+      picker: column.closest('[role="dialog"]')?.getBoundingClientRect().width,
+      options: column.getBoundingClientRect().width,
+    }))
     const agentOption = picker.getByRole('button', { name: 'Agent: General', exact: true })
     await agentOption.press('ArrowRight')
     const agentMenu = window.getByRole('menu')
@@ -60,12 +61,35 @@ test('scratch chat keeps native model, effort, mode, and permission choices exac
     await expect(agentOption).toBeFocused()
     await agentOption.press('ArrowRight')
     await window.getByRole('menuitemradio', { name: 'Reviewer', exact: true }).click()
+    await expect(picker.getByRole('button', { name: 'Agent: Reviewer', exact: true })).toBeVisible()
+    await picker.getByRole('button', { name: 'Agent: Reviewer', exact: true }).press('ArrowRight')
+    await window.getByRole('menuitemradio', { name: 'Default', exact: true }).click()
+    await expect(picker.getByRole('button', { name: 'Agent: Default', exact: true })).toBeVisible()
+    await picker.getByRole('button', { name: 'Agent: Default', exact: true }).press('ArrowRight')
+    await window.getByRole('menuitemradio', { name: 'Reviewer', exact: true }).click()
+    await expect(picker.getByRole('button', { name: 'Agent: Reviewer', exact: true })).toBeVisible()
+    await expect(newChat.getByRole('button', { name: 'Agent and model', exact: true })).toHaveText('Choose an agent')
+    await picker.getByRole('option', { name: 'Fixture model', exact: true }).click()
+    await expect(picker.getByRole('button', { name: 'Agent: Reviewer', exact: true })).toBeVisible()
+    const committedWidths = await picker.locator('[data-effort-column]').evaluate(column => ({
+      picker: column.closest('[role="dialog"]')?.getBoundingClientRect().width,
+      options: column.getBoundingClientRect().width,
+    }))
+    expect(committedWidths).toEqual(previewWidths)
+
+    await picker
+      .getByRole('radiogroup', { name: 'Effort', exact: true })
+      .getByRole('radio', { name: 'High', exact: true })
+      .click()
 
     await picker.getByRole('button', { name: 'Mode: Code', exact: true }).click()
     await window.getByRole('menuitemradio', { name: 'Plan', exact: true }).click()
     await window.screenshot({ path: test.info().outputPath('workspace-model-options.png'), fullPage: true })
     await window.keyboard.press('Escape')
     await expect(picker).toHaveCount(0)
+    const trigger = newChat.getByRole('button', { name: 'Agent and model', exact: true })
+    await expect(trigger).toHaveText('Fixture modelHigh')
+    await expect(trigger).toHaveAttribute('title', 'Fixture model \u00b7 High')
 
     await prompt.fill('Check this scratch workspace')
     await prompt.press('Enter')

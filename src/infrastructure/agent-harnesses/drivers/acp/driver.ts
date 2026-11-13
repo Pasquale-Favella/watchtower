@@ -531,7 +531,9 @@ function configOptionCatalog(options: ReadonlyArray<SessionConfigOption>) {
       const seen = new Set<string>()
       const choices = optionValues(option)
         .flatMap(item => {
-          if (!isRepresentableChoice(item.value) || seen.has(item.value)) return []
+          // ACP can use the empty value for a selectable default persona, as Copilot does.
+          const hasCatalogValue = isRepresentableChoice(item.value) || item.value === ''
+          if (!hasCatalogValue || seen.has(item.value)) return []
           seen.add(item.value)
           return [
             {

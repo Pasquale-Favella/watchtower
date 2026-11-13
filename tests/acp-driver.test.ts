@@ -279,7 +279,23 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
         sessionId: params.sessionId,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed history' } },
       })
-      return {}
+      return state.copilotOptions
+        ? {
+            configOptions: [
+              {
+                type: 'select' as const,
+                id: 'agent',
+                name: 'Agent',
+                category: '_agent',
+                currentValue: 'munaciello',
+                options: [
+                  { name: 'Copilot', value: '', description: 'Default Copilot agent' },
+                  { name: 'munaciello', value: 'munaciello' },
+                ],
+              },
+            ],
+          }
+        : {}
     },
     prompt: async params => {
       state.promptCalls.push({ cwd: 'C:/workspace/project', prompt: JSON.stringify(params.prompt) })
@@ -1419,7 +1435,10 @@ describe('generic ACP driver', () => {
     const agent = options.find(option => option.id === 'agent')
     expect(agent).toMatchObject({
       currentValue: '',
-      options: [{ id: 'munaciello', label: 'munaciello' }],
+      options: [
+        { id: '', label: 'Copilot', description: 'Default Copilot agent' },
+        { id: 'munaciello', label: 'munaciello' },
+      ],
     })
     expect(options.find(option => option.id === 'allow_all')).toMatchObject({
       label: 'Allow All',
@@ -1428,6 +1447,36 @@ describe('generic ACP driver', () => {
     })
     // The inspection RPC encodes this catalog, so an unrepresentable choice would fail the whole read.
     expect(() => Schema.decodeUnknownSync(Schema.Array(agentConfigOptionSchema))(options)).not.toThrow()
+  })
+
+  it('reselects the Copilot default persona on a loaded session', async () => {
+    const fake = makeFakeAcp('events', true)
+    fake.copilotOptions = true
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fake.driver.connect({ connectionId: 'acp-copilot-reset' })
+          const session = yield* connection.loadSession(
+            { ...context, configValues: { agent: '' } },
+            { nativeSessionId: 'native-copilot', generation: 3 },
+          )
+          const capabilities = session.capabilities
+          yield* connection.close(1000)
+          return capabilities
+        }),
+      ),
+    )
+
+    expect(fake.loadedSessionIds).toEqual(['native-copilot'])
+    expect(fake.newSessionCalls).toHaveLength(0)
+    expect(fake.configCalls).toEqual([{ configId: 'agent', value: '' }])
+    expect(result.configOptions?.find(option => option.id === 'agent')).toMatchObject({
+      currentValue: '',
+      options: [
+        { id: '', label: 'Copilot' },
+        { id: 'munaciello', label: 'munaciello' },
+      ],
+    })
   })
 
   it('discovers reasoning efforts per model when the agent publishes them only for the session model', async () => {
