@@ -3,9 +3,20 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 
-import { expect, test } from '@playwright/test'
+import { expect, type Locator, test } from '@playwright/test'
 
 import { dismissOnboarding, launchApp } from './app'
+
+async function expectPromptValue(prompt: Locator, expected: string | RegExp): Promise<void> {
+  const value = () =>
+    prompt.evaluate(element =>
+      Array.from(element.children)
+        .map(paragraph => paragraph.textContent ?? '')
+        .join('\n'),
+    )
+  if (typeof expected === 'string') await expect.poll(value).toBe(expected)
+  else await expect.poll(value).toMatch(expected)
+}
 
 function removeTestDirectory(directory: string): void {
   const absolute = resolve(directory)
@@ -77,7 +88,7 @@ test('side chats use the parent snapshot, run independently and bring replies ba
     await panel.getByRole('button', { name: 'Side chat', exact: true }).click()
     const side = panel.getByRole('region', { name: 'Side chat', exact: true })
     await expect(side).toBeVisible()
-    await expect(parentPrompt).toHaveValue('Keep the parent draft')
+    await expectPromptValue(parentPrompt, 'Keep the parent draft')
     await side.getByRole('button', { name: 'Checkout: Current checkout', exact: true }).click()
     await window.getByRole('menuitemradio', { name: /^New worktree/ }).click()
     await window.keyboard.press('Escape')
@@ -95,7 +106,7 @@ test('side chats use the parent snapshot, run independently and bring replies ba
     await sideRequests.getByRole('button', { name: 'Skip inspection', exact: true }).click()
     await expect(side.getByRole('button', { name: 'Bring back', exact: true })).toBeEnabled()
     await side.getByRole('button', { name: 'Bring back', exact: true }).click()
-    await expect(parentPrompt).toHaveValue(/Keep the parent draft[\s\S]*Checkout inspection finished\./)
+    await expectPromptValue(parentPrompt, /Keep the parent draft[\s\S]*Checkout inspection finished\./)
     await expect(parentRequests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await side.getByRole('button', { name: 'Close side chat', exact: true }).click()
     await expect(side).toBeHidden()
@@ -104,7 +115,7 @@ test('side chats use the parent snapshot, run independently and bring replies ba
     await expect(window.getByRole('menuitem', { name: 'Side chat', exact: true })).toHaveCount(2)
     await window.getByRole('menuitem', { name: 'Side chat', exact: true }).last().click()
     await expect(side).toBeVisible()
-    await expect(sidePrompt).toHaveValue('')
+    await expectPromptValue(sidePrompt, '')
     await parentRequests.getByRole('button', { name: 'Inspect once', exact: true }).click()
     await expect(
       main

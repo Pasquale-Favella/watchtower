@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { Popover } from '@/renderer/components/ui/popover'
 import type { DraftTerminalTarget, TerminalTarget } from '@/shared/schemas/terminal.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
+import { currentConversationRuns } from './composer-state.js'
 import {
   useWorkspaceNativeAgentSessions,
   useWorkspaceProject,
@@ -16,17 +18,19 @@ import { type RightPanelControls, useRightPanel } from './right-panel/use-right-
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
-import { useDraftAppend, useDraftReference } from './use-workspace-draft.js'
+import { CONVERSATION_DETAILS_LANE_INSET, useConversationDetailsLayout } from './use-conversation-details-layout.js'
+import { useConversationDetailsVisibility } from './use-conversation-details-visibility.js'
+import { useDraftAppend, useDraftReference, useWorkspaceCheckoutPreference } from './use-workspace-draft.js'
 import { useWorkspaceNavigation } from './use-workspace-navigation.js'
 import { useTaskPanelResourceKey } from './use-workspace-panel-context.js'
 import { useWorkspacePanelResources } from './use-workspace-panel-resources.js'
 import { WorkspaceChatHeader } from './WorkspaceChatHeader.js'
 import { WorkspaceComposer } from './WorkspaceComposer.js'
 import { WorkspaceConversation } from './WorkspaceConversation.js'
+import { WorkspaceConversationDetails } from './WorkspaceConversationDetails.js'
 import { WorkspaceNewChat } from './WorkspaceNewChat.js'
 import { WorkspacePanelHost } from './WorkspacePanelHost.js'
 import { WorkspaceProjectDialog } from './WorkspaceProjectDialog.js'
-import { WorkspaceRunDetails } from './WorkspaceRunDetails.js'
 
 export function WorkspaceView() {
   const { navigation, selectProject, selectTask, selectConversation } = useWorkspaceNavigation()
@@ -71,7 +75,7 @@ function TaskConversation({
   onSelectConversation: (conversationId: ConversationId | null) => void
 }) {
   const [afterConversationId, setAfterConversationId] = useState<string | undefined>()
-  const [detailsOpen, setDetailsOpen] = useState(false)
+  const { measureContainer, mode: detailsMode } = useConversationDetailsLayout()
   const retainedTerminalTarget = useRetainedTaskTerminalTarget(taskId)
   const terminalTarget = useMemo<TerminalTarget>(() => ({ kind: 'task', taskId }), [taskId])
   const terminal = useTerminalDrawer(terminalTarget)
@@ -91,6 +95,12 @@ function TaskConversation({
   })
   const conversations = detail.data?.conversations ?? []
   const conversation = conversations.find(item => item.id === selectedConversationId) ?? conversations[0]
+  const preferredCheckoutId = useWorkspaceCheckoutPreference(conversation?.id ?? null)
+  const {
+    open: detailsOpen,
+    setOpen: setDetailsOpen,
+    toggle: toggleDetails,
+  } = useConversationDetailsVisibility(conversation?.id ?? selectedConversationId ?? taskId, detailsMode)
   const promptCommands = useMemo(
     () =>
       nativeSessions.data?.items
@@ -121,13 +131,14 @@ function TaskConversation({
       panelOpen={panel.open}
       onTogglePanel={detail.data ? panel.toggle : undefined}
       detailsOpen={detailsOpen}
-      onToggleDetails={() => setDetailsOpen(open => !open)}
+      detailsMode={detailsMode}
+      onToggleDetails={detail.data ? toggleDetails : undefined}
     />
   )
 
   if (detail.error) {
     return (
-      <>
+      <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
         {header}
         <div className="m-4 space-y-2" role="alert">
           <p>Could not load this Task. Choose another Task from the navigator.</p>
@@ -135,24 +146,33 @@ function TaskConversation({
             Back to Tasks
           </Button>
         </div>
-      </>
+      </Popover>
     )
   }
   if (!detail.data)
     return (
-      <>
+      <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
         {header}
         <p role="status" className="p-4">
           Loading Task…
         </p>
-      </>
+      </Popover>
     )
 
   const nextConversationId = detail.data.nextAfterConversationId
   const task = detail.data.task
   const hasSeveral = detail.data.totalConversations > 1
-  const runContext = snapshot.data?.runContexts?.find(context => context.conversationId === conversation?.id)
-  const checkoutId = runContext?.checkoutId
+  const latestRun = conversation
+    ? currentConversationRuns(snapshot.data?.runs ?? [], snapshot.data?.runContexts ?? [], conversation.id).sort(
+        (left, right) => right.submittedAt.localeCompare(left.submittedAt),
+      )[0]
+    : undefined
+  const runContext = snapshot.data?.runContexts?.find(context => context.runId === latestRun?.id)
+  const availableCheckouts = project.data ? [project.data.mainCheckout, ...project.data.otherCheckouts] : []
+  const checkout =
+    availableCheckouts.find(item => item.id === (runContext?.checkoutId ?? preferredCheckoutId)) ??
+    (!runContext ? project.data?.mainCheckout : undefined)
+  const checkoutId = runContext?.checkoutId ?? checkout?.id
   const addToChat = conversation
     ? (excerpt: {
         readonly label: string
@@ -168,80 +188,101 @@ function TaskConversation({
     : undefined
 
   return (
-    <>
+    <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
       {header}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
-          role="region"
-          aria-label="Main conversation"
-          className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${panel.maximized ? 'min-[980px]:hidden' : ''}`}
+          ref={measureContainer}
+          className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${panel.maximized ? 'min-[980px]:hidden' : ''}`}
         >
-          <WorkspaceRunDetails
-            open={detailsOpen}
-            onOpenChange={setDetailsOpen}
-            task={task}
-            conversationId={conversation?.id ?? null}
+          <div
+            role="region"
+            aria-label="Main conversation"
+            className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+            style={
+              detailsOpen && detailsMode === 'inline' ? { paddingRight: CONVERSATION_DETAILS_LANE_INSET } : undefined
+            }
           >
-            {hasSeveral && (
-              <label className="flex items-center gap-2 text-xs">
-                Conversation
-                <select
-                  className="bg-background max-w-56 rounded-md border px-2 py-1"
-                  value={conversation?.id ?? ''}
-                  onChange={event => onSelectConversation(event.target.value as ConversationId)}
-                >
-                  {conversations.map((item, index) => (
-                    <option key={item.id} value={item.id}>
-                      {item.title ?? `Conversation ${index + 1}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {nextConversationId && (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  onSelectConversation(null)
-                  setAfterConversationId(nextConversationId)
-                }}
-              >
-                More conversations
-              </Button>
-            )}
-          </WorkspaceRunDetails>
-          <div className="min-h-0 flex-1 overflow-hidden [&>section]:h-full">
-            {conversation ? (
-              <WorkspaceConversation
-                conversationId={conversation.id}
-                sessionIdsByRunId={sessionIdsByRunId}
-                promptCommands={promptCommands}
-                workspacePath={runContext?.workspacePath}
-                onOpenFile={panel.openFile}
-                scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
-              />
-            ) : (
-              <div className="p-5 text-sm">No conversation activity yet.</div>
-            )}
-          </div>
-          {conversation && (
-            <div key={conversation.id} className="shrink-0">
-              <WorkspaceComposer
-                onOpenFile={panel.openFile}
-                task={task}
-                conversationId={conversation.id}
-                onSideChatCreated={id => panel.addSurface('side-chat', id)}
-              />
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden [&>section]:h-full">
+              {conversation ? (
+                <WorkspaceConversation
+                  conversationId={conversation.id}
+                  sessionIdsByRunId={sessionIdsByRunId}
+                  promptCommands={promptCommands}
+                  workspacePath={runContext?.workspacePath ?? checkout?.path}
+                  onOpenFile={panel.openFile}
+                  scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
+                />
+              ) : (
+                <div className="p-5 text-sm">No conversation activity yet.</div>
+              )}
             </div>
-          )}
-          <WorkspaceTerminalDrawer
-            target={terminalTarget}
-            open={terminal.open}
-            onOpenLink={url => resources.openBrowser(url)}
-            onAddToChat={addToChat}
-          />
+            {conversation && (
+              <div key={conversation.id} className="shrink-0">
+                <WorkspaceComposer
+                  onOpenFile={panel.openFile}
+                  task={task}
+                  conversationId={conversation.id}
+                  onSideChatCreated={id => panel.addSurface('side-chat', id)}
+                />
+              </div>
+            )}
+            <WorkspaceTerminalDrawer
+              target={terminalTarget}
+              open={terminal.open}
+              onOpenLink={url => resources.openBrowser(url)}
+              onAddToChat={addToChat}
+            />
+            <WorkspaceConversationDetails
+              open={detailsOpen}
+              onOpenChange={setDetailsOpen}
+              mode={detailsMode}
+              taskId={task.id}
+              conversationId={conversation?.id ?? null}
+              projectId={task.projectId}
+              checkoutId={checkoutId}
+              workspacePath={runContext?.workspacePath ?? checkout?.path}
+              isScratch={project.data?.project.isScratch}
+              onOpenFiles={() => panel.openSurface('files')}
+              onOpenDiff={() => panel.openSurface('diff')}
+              onOpenPullRequests={() => panel.openSurface('pull-requests')}
+              onOpenSideChat={id => panel.addSurface('side-chat', id)}
+            >
+              {hasSeveral || nextConversationId ? (
+                <div className="space-y-2">
+                  {hasSeveral && (
+                    <label className="flex min-w-0 flex-col gap-2 text-xs">
+                      Conversation
+                      <select
+                        className="bg-background w-full min-w-0 rounded-md border px-2 py-1"
+                        value={conversation?.id ?? ''}
+                        onChange={event => onSelectConversation(event.target.value as ConversationId)}
+                      >
+                        {conversations.map((item, index) => (
+                          <option key={item.id} value={item.id}>
+                            {item.title ?? `Conversation ${index + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {nextConversationId && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        onSelectConversation(null)
+                        setAfterConversationId(nextConversationId)
+                      }}
+                    >
+                      More conversations
+                    </Button>
+                  )}
+                </div>
+              ) : null}
+            </WorkspaceConversationDetails>
+          </div>
         </div>
         <TaskRightPanel
           projectId={task.projectId}
@@ -266,7 +307,7 @@ function TaskConversation({
           }}
         />
       </div>
-    </>
+    </Popover>
   )
 }
 

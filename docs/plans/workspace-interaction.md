@@ -56,10 +56,27 @@ area. The existing Workspace route bypasses the Analytics dashboard layout.
   fails. If Task creation commits before Run dispatch fails, keep the Task and
   show the failure there; do not silently create duplicates on retry.
 - One top header shows Project and chat title, including New chat. Its actions
-  toggle the terminal, right panel and Agent run details. The new-chat welcome
+  toggle the terminal, right panel and Conversation details. The new-chat welcome
   keeps its central Project picker, No project choice and existing draft.
-  Checkout controls stay beside the composer; detailed execution state opens
-  from the header.
+  Checkout controls stay beside the composer and in the Conversation details
+  action card opened from the header.
+- Conversation details is a compact action card beside the chat when the
+  container leaves at least 640px for the conversation. It opens by default
+  there and remembers visibility per Conversation. Narrow containers use a
+  header-anchored popup that closes on Escape or an outside click. Popup
+  visibility never carries across a change of layout or Conversation. Its menu
+  and right-click menu remember which supported rows to show and can reset them.
+- Details uses the current Workspace Checkout for file browsing, branch
+  selection, working-tree changes and pull requests. Draft checkout choices
+  share the composer's state. Branch selection stays disabled during an active
+  Agent Run. Checkout and branch pickers use full-width rows in the card, with
+  the selected value, icon and trailing chevron. The Diff row opens the Diff tab
+  and shows additions and deletions from the current checkout's uncommitted
+  changes. A new worktree draft has no Diff row until its checkout exists.
+  Side chats belong to the selected Conversation. Task and Agent Run metadata
+  do not appear in the card or its customization menu. Show only supported controls
+  and measured usage; do not infer account quotas or context-window capacity
+  from an Agent Goal's token budget.
 - On smaller windows, open navigation and inspector as dismissible panels while
   retaining the conversation and input area. Resize panes within minimum sizes.
 

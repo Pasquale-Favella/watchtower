@@ -1,11 +1,13 @@
-import { Folder, Info, PanelRight, SquareTerminal } from 'lucide-react'
+import { Folder, PanelRight, SquareMenu, SquareTerminal } from 'lucide-react'
 import type { ReactNode } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { PopoverTrigger } from '@/renderer/components/ui/popover'
 import { SidebarTrigger } from '@/renderer/components/ui/sidebar'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 
 import { submitModifier } from './platform-labels.js'
+import type { ConversationDetailsMode } from './use-conversation-details-layout.js'
 
 interface Props {
   readonly project: ReactNode
@@ -15,7 +17,8 @@ interface Props {
   readonly panelOpen?: boolean
   readonly onTogglePanel?: (() => void) | undefined
   readonly detailsOpen: boolean
-  readonly onToggleDetails: () => void
+  readonly detailsMode: ConversationDetailsMode
+  readonly onToggleDetails: (() => void) | undefined
 }
 
 export function WorkspaceChatHeader(props: Props): React.JSX.Element {
@@ -34,6 +37,15 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         <HeaderToggle
+          label="Conversation details"
+          pressed={props.detailsOpen}
+          onClick={props.onToggleDetails}
+          popoverTrigger={props.detailsMode === 'popover'}
+          controls="conversation-details-panel"
+        >
+          <SquareMenu />
+        </HeaderToggle>
+        <HeaderToggle
           label="Terminal"
           hint={props.onToggleTerminal ? `${submitModifier}+J` : 'Available after the first message'}
           pressed={props.terminalOpen ?? false}
@@ -49,9 +61,6 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
         >
           <PanelRight />
         </HeaderToggle>
-        <HeaderToggle label="Agent run details" pressed={props.detailsOpen} onClick={props.onToggleDetails}>
-          <Info />
-        </HeaderToggle>
       </div>
     </header>
   )
@@ -62,29 +71,39 @@ function HeaderToggle({
   hint,
   pressed,
   onClick,
+  popoverTrigger = false,
+  controls,
   children,
 }: {
   readonly label: string
   readonly hint?: string
   readonly pressed: boolean
   readonly onClick: (() => void) | undefined
+  readonly popoverTrigger?: boolean
+  readonly controls?: string
   readonly children: ReactNode
 }): React.JSX.Element {
+  const button = (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon-sm"
+      aria-label={label}
+      aria-pressed={pressed}
+      aria-expanded={controls ? pressed : undefined}
+      aria-controls={controls}
+      disabled={!onClick}
+      onClick={popoverTrigger ? undefined : onClick}
+      className={pressed ? 'bg-primary/10 text-primary' : 'text-muted-foreground'}
+    >
+      {children}
+    </Button>
+  )
+
   return (
     <Tooltip>
       <TooltipTrigger render={<span className="inline-flex" />}>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          aria-label={label}
-          aria-pressed={pressed}
-          disabled={!onClick}
-          onClick={onClick}
-          className={pressed ? 'bg-primary/10 text-primary' : 'text-muted-foreground'}
-        >
-          {children}
-        </Button>
+        {popoverTrigger ? <PopoverTrigger render={button} /> : button}
       </TooltipTrigger>
       <TooltipContent>
         {label}

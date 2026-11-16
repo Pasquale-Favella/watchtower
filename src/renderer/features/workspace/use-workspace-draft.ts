@@ -53,6 +53,14 @@ export function useWorkspaceDraft(conversationId: ConversationId) {
   }
 }
 
+/** Reads the composer's checkout choice before a Conversation has an Agent Run. */
+export function useWorkspaceCheckoutPreference(conversationId: ConversationId | null): string | null {
+  const registry = useContext(RegistryContext)
+  const preferences = useAtomValue(workspaceComposerPreferencesAtom)
+  useEffect(() => hydrateWorkspaceDrafts(registry, browserStorage()), [registry])
+  return conversationId ? (preferences[conversationId]?.checkoutId ?? null) : null
+}
+
 /** Appends a Markdown file reference to a Conversation's draft, for actions outside the composer. */
 export function useDraftReference() {
   const drafts = useAtomValue(workspaceDraftsAtom)
