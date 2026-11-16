@@ -1,7 +1,10 @@
+import * as Schema from 'effect/Schema'
+
 import type { ConversationDetailsMode } from './use-conversation-details-layout.js'
 
 const STORAGE_KEY = 'watchtower.workspace.conversation-details-visibility.v1'
 export const CONVERSATION_DETAILS_VISIBILITY_LIMIT = 200
+const preferencesRecordSchema = Schema.Record(Schema.String, Schema.Unknown)
 
 export interface ConversationDetailsVisibilityStorage {
   readonly getItem: (key: string) => string | null
@@ -24,11 +27,15 @@ export function readConversationDetailsPreferences(
   try {
     const raw = storage?.getItem(STORAGE_KEY)
     if (!raw || raw.length > 100_000) return {}
-    const value: unknown = JSON.parse(raw)
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return {}
+    const value = Schema.decodeUnknownOption(preferencesRecordSchema)(JSON.parse(raw))
+    if (value._tag === 'None') return {}
     return Object.fromEntries(
-      Object.entries(value)
-        .filter(([key, open]) => key.length > 0 && typeof open === 'boolean')
+      Object.entries(value.value)
+        .filter(([key]) => key.length > 0)
+        .flatMap(([key, open]) => {
+          const decoded = Schema.decodeUnknownOption(Schema.Boolean)(open)
+          return decoded._tag === 'Some' ? [[key, decoded.value]] : []
+        })
         .slice(-CONVERSATION_DETAILS_VISIBILITY_LIMIT),
     )
   } catch {

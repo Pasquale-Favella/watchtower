@@ -1,12 +1,16 @@
-import { useCallback, useState } from 'react'
+import { RegistryContext, useAtomSet, useAtomValue } from '@effect/atom-react'
+import { useCallback, useContext, useState } from 'react'
 
 import {
   browserConversationDetailsStorage,
   initialConversationDetailsOpen,
-  readConversationDetailsPreferences,
-  rememberConversationDetailsOpen,
   transitionConversationDetailsState,
 } from './conversation-details-visibility.js'
+import {
+  conversationDetailsVisibilityAtom,
+  hydrateConversationDetailsVisibility,
+  updateConversationDetailsVisibilityAtom,
+} from './conversation-details-visibility-atoms.js'
 import type { ConversationDetailsMode } from './use-conversation-details-layout.js'
 
 interface PanelState {
@@ -20,9 +24,10 @@ export function useConversationDetailsVisibility(
   key: string,
   mode: ConversationDetailsMode,
 ): { readonly open: boolean; readonly setOpen: (open: boolean) => void; readonly toggle: () => void } {
-  const [preferences, setPreferences] = useState(() =>
-    readConversationDetailsPreferences(browserConversationDetailsStorage()),
-  )
+  const registry = useContext(RegistryContext)
+  hydrateConversationDetailsVisibility(registry, browserConversationDetailsStorage())
+  const preferences = useAtomValue(conversationDetailsVisibilityAtom)
+  const updatePreference = useAtomSet(updateConversationDetailsVisibilityAtom)
   const [panel, setPanel] = useState<PanelState>(() => ({
     key,
     mode,
@@ -30,16 +35,16 @@ export function useConversationDetailsVisibility(
   }))
   const currentPanel = transitionConversationDetailsState(key, mode, panel, preferences)
   if (currentPanel !== panel) setPanel(currentPanel)
-  const open = currentPanel.open
+  const open = mode === 'inline' ? initialConversationDetailsOpen(key, mode, preferences) : currentPanel.open
 
   const setOpen = useCallback(
     (nextOpen: boolean) => {
       setPanel({ key, mode, open: nextOpen })
       if (mode === 'inline') {
-        setPreferences(rememberConversationDetailsOpen(browserConversationDetailsStorage(), preferences, key, nextOpen))
+        updatePreference({ conversationId: key, open: nextOpen })
       }
     },
-    [key, mode, preferences],
+    [key, mode, updatePreference],
   )
   const toggle = useCallback(() => setOpen(!open), [open, setOpen])
 
