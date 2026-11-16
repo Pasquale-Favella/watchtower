@@ -8,6 +8,7 @@ import {
   navigateToSession,
   navigateToVertical,
   routeFor,
+  routeForVertical,
   sectionForPath,
   setRouter,
 } from '../src/renderer/app/navigation.js'
@@ -49,6 +50,11 @@ describe('navigation (ADR 0014)', () => {
     expect(routeFor('compare')).toBe('/compare')
     expect(routeFor('coachSkills')).toBe('/coach-skills')
     expect(routeFor('settings')).toBe('/settings')
+  })
+
+  it('maps the saved vertical to its startup route', () => {
+    expect(routeForVertical('workspace')).toBe('/workspace')
+    expect(routeForVertical('analytics')).toBe('/')
   })
 
   it('builds the session-detail path from an id', () => {

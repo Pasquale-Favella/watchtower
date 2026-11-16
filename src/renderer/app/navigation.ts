@@ -2,6 +2,11 @@ import { ROUTES, type Section, SECTIONS } from '@/shared/schemas/navigation.js'
 
 export type AppVertical = 'analytics' | 'workspace'
 
+/** The startup route for a saved app vertical. */
+export function routeForVertical(vertical: AppVertical): string {
+  return vertical === 'workspace' ? ROUTES.workspace : ROUTES.overview
+}
+
 // The renderer's navigation entry point (ADR 0014). Sections and routes
 // themselves are declared once in shared/schemas/navigation.ts.
 
