@@ -6,14 +6,17 @@ import { SidebarToggleShortcut } from '@/renderer/components/shell/SidebarToggle
 import { Splash } from '@/renderer/components/shell/splash/Splash'
 import { SidebarInset, SidebarProvider } from '@/renderer/components/ui/sidebar'
 import { TooltipProvider } from '@/renderer/components/ui/tooltip'
+import { SettingsDialog } from '@/renderer/features/settings/SettingsView'
 import { useAppBootstrap } from '@/renderer/stores/hooks/use-app-bootstrap'
 import { useSyncAppVerticalFromRoute } from '@/renderer/stores/hooks/use-app-vertical-store'
+import { useSettingsHotkey } from '@/renderer/stores/hooks/use-settings-hotkey'
 import { useShellStore } from '@/renderer/stores/hooks/use-shell-store'
 
 /** Owns window bootstrap and renders Splash until ledger hydration completes. */
 export function AppRoot() {
   useAppBootstrap()
   useSyncAppVerticalFromRoute()
+  useSettingsHotkey()
 
   const { hydrated, onboarded } = useShellStore()
 
@@ -31,6 +34,7 @@ export function AppRoot() {
   return (
     <>
       <TooltipProvider delay={0}>
+        <SettingsDialog />
         <SidebarProvider className="h-screen">
           <SidebarToggleShortcut />
           <AppSidebar />

@@ -12,6 +12,7 @@ import {
 
 export function useAppVerticalStore(): {
   readonly vertical: AppVertical
+  readonly lastAnalyticsDestination: { readonly to: string; readonly sourceId?: number }
   readonly switchVertical: (vertical: AppVertical) => void
 } {
   const vertical = useAtomValue(appVerticalAtom)
@@ -19,6 +20,7 @@ export function useAppVerticalStore(): {
 
   return {
     vertical,
+    lastAnalyticsDestination,
     switchVertical: next => navigateToVertical(next, lastAnalyticsDestination),
   }
 }

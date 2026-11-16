@@ -29,6 +29,7 @@ export function sectionForPath(pathname: string): Section {
 type Navigate = (to: string, sourceId?: number) => void
 
 let navigate: Navigate | null = null
+let openSettings: (() => void) | null = null
 
 /** Injected by app/router.tsx at startup so this module stays pure TS — it
  * never imports the router, keeping it unit-testable in a headless vitest
@@ -37,8 +38,18 @@ export function setRouter(navigateImpl: Navigate): void {
   navigate = navigateImpl
 }
 
+/** Injected by the hydrated app shell so Settings opens as a dialog. */
+export function setSettingsOpener(open: () => void): void {
+  openSettings = open
+}
+
 /** Navigate to a section's route. A no-op until the router is wired. */
 export function navigateToSection(section: Section): void {
+  if (section === 'settings') {
+    if (openSettings) openSettings()
+    else if (navigate) navigate(routeFor(section))
+    return
+  }
   if (navigate) navigate(routeFor(section))
 }
 

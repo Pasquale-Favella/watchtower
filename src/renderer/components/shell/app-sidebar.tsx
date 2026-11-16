@@ -1,5 +1,5 @@
 import { useRouterState } from '@tanstack/react-router'
-import { ChartNoAxesCombined, Check, ChevronsUpDown, PanelsTopLeft } from 'lucide-react'
+import { ChartNoAxesCombined, Check, ChevronsUpDown, PanelsTopLeft, Settings } from 'lucide-react'
 import type { ComponentProps } from 'react'
 
 import { type AppVertical, navigateToSection, sectionForPath } from '@/renderer/app/navigation'
@@ -28,6 +28,7 @@ import {
   SidebarRail,
   useSidebar,
 } from '@/renderer/components/ui/sidebar'
+import { useSettingsDialogStore } from '@/renderer/features/settings/use-settings-dialog-store'
 import { WorkspaceSidebar } from '@/renderer/features/workspace/WorkspaceSidebar'
 import { PERIOD_LABELS } from '@/renderer/shared/lib/settings-constants'
 import { providerOptionsFromDetected } from '@/renderer/shared/lib/shell'
@@ -94,7 +95,7 @@ function AnalyticsNavigation() {
     <SidebarGroup>
       <SidebarGroupContent>
         <SidebarMenu>
-          {NAV_SECTIONS.map(section => (
+          {NAV_SECTIONS.filter(section => section !== 'settings').map(section => (
             <SidebarMenuItem key={section}>
               <SidebarMenuButton
                 isActive={section === active}
@@ -133,6 +134,8 @@ function AnalyticsScopeCaption() {
 
 export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
   const { vertical } = useAppVerticalStore()
+  const { showSettings } = useSettingsDialogStore()
+  const { isMobile, setOpenMobile } = useSidebar()
 
   return (
     <Sidebar collapsible="icon" {...props}>
@@ -140,11 +143,27 @@ export function AppSidebar(props: ComponentProps<typeof Sidebar>) {
         <VerticalSwitcher />
       </SidebarHeader>
       <SidebarContent>{vertical === 'workspace' ? <WorkspaceSidebar /> : <AnalyticsNavigation />}</SidebarContent>
-      {vertical === 'analytics' && (
-        <SidebarFooter>
-          <AnalyticsScopeCaption />
-        </SidebarFooter>
-      )}
+      <SidebarFooter>
+        {vertical === 'analytics' && <AnalyticsScopeCaption />}
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              aria-label="Settings"
+              tooltip="Settings"
+              onClick={() => {
+                showSettings()
+                if (isMobile) setOpenMobile(false)
+              }}
+            >
+              <Settings />
+              <span>Settings</span>
+              <span className="text-muted-foreground ml-auto font-mono text-[10px] font-normal tracking-normal group-data-[collapsible=icon]:hidden">
+                {displayShortcutForAction('settings')}
+              </span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
       <SidebarRail />
     </Sidebar>
   )

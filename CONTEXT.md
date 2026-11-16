@@ -42,7 +42,7 @@ _Avoid_: filter settings, date range
 
 **Section**:
 An Analytics screen: overview, sessions, pull requests, spend, optimize,
-models, compare, coach & skills, settings. The Analytics sidebar and its shortcuts
+models, compare, coach & skills. The Analytics sidebar and its shortcuts
 navigate between them.
 _Avoid_: page, tab
 

@@ -1,9 +1,10 @@
 import { createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import * as Schema from 'effect/Schema'
+import { useEffect } from 'react'
 
 import { AnalyticsProvider } from '@/renderer/app/AnalyticsProvider'
 import { AppRoot } from '@/renderer/app/AppRoot'
-import { setRouter } from '@/renderer/app/navigation'
+import { navigateToVertical, setRouter } from '@/renderer/app/navigation'
 import { DashboardLayout } from '@/renderer/components/shell/dashboard-layout'
 import { CoachSkillsView } from '@/renderer/features/coach-skills/CoachSkillsView'
 import { CompareView } from '@/renderer/features/compare/CompareView'
@@ -13,9 +14,10 @@ import { OverviewView } from '@/renderer/features/overview/OverviewView'
 import { PullRequestsView } from '@/renderer/features/pull-requests/PullRequestsView'
 import { SessionsView } from '@/renderer/features/sessions/SessionsView'
 import { SessionView } from '@/renderer/features/sessions/SessionView'
-import { SettingsView } from '@/renderer/features/settings/SettingsView'
+import { useSettingsDialogStore } from '@/renderer/features/settings/use-settings-dialog-store'
 import { SpendView } from '@/renderer/features/spend/SpendView'
 import { WorkspaceView } from '@/renderer/features/workspace/WorkspaceView'
+import { useAppVerticalStore } from '@/renderer/stores/hooks/use-app-vertical-store'
 import { sessionDetailSearchSchema } from '@/shared/schemas/views.js'
 
 // Code-based route tree on memory history (ADR 0014): created once at module
@@ -56,7 +58,25 @@ const coachSkillsRoute = createRoute({
   component: CoachSkillsView,
 })
 
-const settingsRoute = createRoute({ getParentRoute: () => analyticsRoute, path: '/settings', component: SettingsView })
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  component: LegacySettingsRoute,
+})
+
+/** Old links to /settings now open the dialog and return to the previous vertical. */
+// eslint-disable-next-line react-refresh/only-export-components -- this route-only component is not exported.
+function LegacySettingsRoute(): null {
+  const { showSettings } = useSettingsDialogStore()
+  const { vertical, lastAnalyticsDestination } = useAppVerticalStore()
+
+  useEffect(() => {
+    showSettings()
+    navigateToVertical(vertical, lastAnalyticsDestination)
+  }, [lastAnalyticsDestination, showSettings, vertical])
+
+  return null
+}
 
 const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspaceView })
 
@@ -73,8 +93,8 @@ const routeTree = rootRoute.addChildren([
       compareRoute,
       coachSkillsRoute,
     ]),
-    settingsRoute,
   ]),
+  settingsRoute,
   workspaceRoute,
 ])
 

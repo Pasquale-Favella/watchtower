@@ -57,6 +57,7 @@ export function hydrateAppVertical(registry: AtomRegistry.AtomRegistry, storage:
 export const syncAppVerticalFromRouteAtom = Atom.writable(
   get => get(appVerticalAtom),
   (context, route: ResolvedAppRoute) => {
+    if (route.pathname === ROUTES.settings) return
     const vertical: AppVertical = route.pathname === ROUTES.workspace ? 'workspace' : 'analytics'
     if (context.get(appVerticalAtom) !== vertical) context.set(appVerticalAtom, vertical)
     writeStoredAppVertical(context.get(appVerticalStorageAtom), vertical)

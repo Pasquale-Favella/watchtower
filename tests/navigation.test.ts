@@ -11,7 +11,9 @@ import {
   routeForVertical,
   sectionForPath,
   setRouter,
+  setSettingsOpener,
 } from '../src/renderer/app/navigation.js'
+import { NAV_SECTIONS } from '../src/renderer/app/shortcuts.js'
 import {
   appVerticalAtom,
   lastAnalyticsDestinationAtom,
@@ -78,6 +80,21 @@ describe('navigation (ADR 0014)', () => {
     })
     navigateToSection('models')
     expect(calls).toEqual(['/models'])
+  })
+
+  it('opens Settings through the injected dialog opener without navigating', () => {
+    const calls: string[] = []
+    let opened = 0
+    setRouter(to => calls.push(to))
+    setSettingsOpener(() => {
+      opened += 1
+    })
+
+    navigateToSection('settings')
+
+    expect(opened).toBe(1)
+    expect(calls).toEqual([])
+    expect(NAV_SECTIONS).toContain('settings')
   })
 
   it('navigateToSession drives the configured router to the detail path', () => {

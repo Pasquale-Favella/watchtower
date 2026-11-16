@@ -7,20 +7,20 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import type { RpcQuerySlot } from '../src/renderer/stores/atoms/rpc-query.js'
+import { QueryErrorNotice } from '../src/renderer/components/QueryErrorNotice.js'
+import { TooltipProvider } from '../src/renderer/components/ui/tooltip.js'
 import { overviewQuery } from '../src/renderer/features/overview/atoms.js'
 import { OverviewView } from '../src/renderer/features/overview/OverviewView.js'
+import { AnalyticsPane } from '../src/renderer/features/settings/analytics-pane.js'
 import {
   PROVIDERS_REQUEST,
   providersQuery,
   SETTINGS_INFO_REQUEST,
   settingsInfoQuery,
 } from '../src/renderer/features/settings/capability-atoms.js'
-import { GeneralPane } from '../src/renderer/features/settings/general-pane.js'
 import { PrivacyPane } from '../src/renderer/features/settings/privacy-pane.js'
 import { ProvidersPane } from '../src/renderer/features/settings/providers-pane.js'
-import { QueryErrorNotice } from '../src/renderer/components/QueryErrorNotice.js'
-import { TooltipProvider } from '../src/renderer/components/ui/tooltip.js'
+import type { RpcQuerySlot } from '../src/renderer/stores/atoms/rpc-query.js'
 import type { SettingsInfo } from '../src/shared/schemas/ipc.js'
 import type { OverviewPayload } from '../src/shared/schemas/overview.js'
 import type { AnalyticalViews } from '../src/shared/schemas/views.js'
@@ -176,7 +176,7 @@ describe('QueryErrorNotice', () => {
     expect(markup).not.toContain('role="alert"')
   })
 
-  it('keeps General settings and retained Claude config visible with a refresh error', () => {
+  it('keeps Analytics settings and retained Claude config visible with a refresh error', () => {
     const settings: SettingsInfo = {
       dataDir: '/data/watchtower',
       dbSize: 10,
@@ -189,10 +189,10 @@ describe('QueryErrorNotice', () => {
       settingsInfoQuery,
       SETTINGS_INFO_REQUEST,
       settings,
-      createElement(GeneralPane),
+      createElement(AnalyticsPane),
     )
 
-    expect(markup).toContain('Theme')
+    expect(markup).toContain('Currency')
     expect(markup).toContain('Active config')
     expect(markup).toContain('Refresh failed: Application connection unavailable. Reconnecting.')
     expect(markup).toContain('role="status"')
