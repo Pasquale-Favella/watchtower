@@ -1,4 +1,3 @@
-import type { FileTreeBatchOperation } from '@pierre/trees'
 import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from '@pierre/trees/react'
 import { ChevronsDownUp, ChevronsUpDown, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -11,6 +10,7 @@ import { usePromptContextSearch } from '../prompt-context-hooks.js'
 import { filePromptToken } from '../prompt-editor.js'
 import { useCodeTheme } from '../review/use-code-theme.js'
 import { reconcileExpandedDirectories } from './directory-tree-loading.js'
+import { applicableFileTreeUpdates, buildFileTreePaths, buildFileTreePathUpdates } from './file-tree-paths.js'
 import { InspectionNotice } from './inspection-ui.js'
 import { useDirectoryTree } from './use-directory-tree.js'
 
@@ -42,7 +42,7 @@ export function FileExplorer({ root = '', ...props }: FileExplorerProps): React.
   const traversing = useRef(false)
   const dragging = useRef(false)
   const callbacks = useRef(props)
-  const knownPaths = useRef<ReadonlySet<string> | null>(null)
+  const knownPaths = useRef<readonly string[] | null>(null)
   const expandedPaths = useRef(new Set<string>())
   const revealedSelection = useRef<string | null>(null)
   useEffect(() => {
@@ -73,7 +73,7 @@ export function FileExplorer({ root = '', ...props }: FileExplorerProps): React.
     return ignored
   }, [directory.listings])
   const entries = useMemo(() => {
-    const paths = new Set<string>()
+    const paths: string[] = []
     const pending = [root]
     const visited = new Set<string>()
     while (pending.length > 0) {
@@ -82,11 +82,11 @@ export function FileExplorer({ root = '', ...props }: FileExplorerProps): React.
       visited.add(path)
       const listing = directory.listings.get(path)
       if (!listing) continue
-      for (const entry of listing.entries) paths.add(entry.path + (entry.kind === 'directory' ? '/' : ''))
+      for (const entry of listing.entries) paths.push(entry.path + (entry.kind === 'directory' ? '/' : ''))
       for (const entry of listing.entries) if (entry.kind === 'directory') pending.push(entry.path)
     }
-    if (query.trim()) for (const entry of search.data?.items ?? []) if (entry.kind === 'file') paths.add(entry.path)
-    return [...paths].filter(path => root === '' || path.startsWith(`${root}/`))
+    if (query.trim()) for (const entry of search.data?.items ?? []) if (entry.kind === 'file') paths.push(entry.path)
+    return buildFileTreePaths(paths, root)
   }, [directory.listings, query, root, search.data])
   const { model } = useFileTree({
     paths: [],
@@ -132,19 +132,17 @@ export function FileExplorer({ root = '', ...props }: FileExplorerProps): React.
 
   useEffect(() => {
     const previous = knownPaths.current
-    const next = new Set(entries)
-    knownPaths.current = next
+    knownPaths.current = entries
     syncing.current = true
     try {
       if (!previous) {
         model.resetPaths(entries)
         return
       }
-      const updates: FileTreeBatchOperation[] = [...previous]
-        .filter(path => !next.has(path))
-        .sort((left, right) => right.length - left.length)
-        .map(path => ({ type: 'remove', path, recursive: true }))
-      for (const path of next) if (!previous.has(path)) updates.push({ type: 'add', path })
+      const updates = applicableFileTreeUpdates(
+        buildFileTreePathUpdates(previous, entries),
+        path => model.getItem(path) !== null,
+      )
       if (updates.length > 0) model.batch(updates)
     } finally {
       syncing.current = false

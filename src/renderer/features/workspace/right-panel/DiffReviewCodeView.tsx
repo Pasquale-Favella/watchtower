@@ -29,6 +29,7 @@ import { REVIEW_CODE_CSS, reviewVersion, useCodeTheme } from '../review/use-code
 import { useReviewComments } from '../review/use-review-comments.js'
 import type { CodeSearchOptions } from './code-processing-protocol.js'
 import { CodeWorkerBoundary } from './CodeWorkerBoundary.js'
+import { canExpandUnchanged } from './diff-review-model.js'
 import type { DiffPatchState } from './diff-review-queries.js'
 import { diffFileKey } from './diff-tree.js'
 import { ChangeStats } from './inspection-ui.js'
@@ -125,6 +126,8 @@ function DiffReviewContent({ viewerRef, ...props }: Props): React.JSX.Element {
   )
   const search = useCodeSearch(processing.client, searchFiles, searchOptions, searchOpen)
   const match = search.matches[matchIndex % Math.max(1, search.matches.length)]
+  const expandUnchanged =
+    searchOpen && canExpandUnchanged(props.files.map(file => processing.metadata.get(diffFileKey(file))))
   useEffect(() => {
     if (!props.searchRequest) return
     requestAnimationFrame(() => searchInput.current?.focus())
@@ -396,7 +399,7 @@ function DiffReviewContent({ viewerRef, ...props }: Props): React.JSX.Element {
                 layout: { paddingTop: 0, paddingBottom: 0, gap: 0 },
                 onGutterUtilityClick: (range, context) => beginComment(range, context.item.id),
                 onLineSelectionEnd: (range, context) => beginComment(range, context.item.id),
-                expandUnchanged: searchOpen,
+                expandUnchanged,
               }}
               renderHeaderPrefix={item => {
                 const file = byKey.get(item.id)

@@ -8,6 +8,7 @@ import type { CheckoutScope, DiffFile } from '@/shared/schemas/checkout-inspecti
 import { useCheckoutNavigation } from '../checkout-navigation/use-checkout-navigation.js'
 import { useCodeTheme } from '../review/use-code-theme.js'
 import { diffTreePresentation } from './diff-review-tree.js'
+import { applicableFileTreeUpdates, buildFileTreePathUpdates } from './file-tree-paths.js'
 
 interface Props {
   readonly scope: CheckoutScope
@@ -39,6 +40,7 @@ export function DiffFileTree(props: Props): React.JSX.Element {
     callbacks.current = props
   }, [props])
   const presentationRef = useRef(presentation)
+  const knownPaths = useRef<readonly string[] | null>(null)
   useEffect(() => {
     presentationRef.current = presentation
   }, [presentation])
@@ -58,18 +60,22 @@ export function DiffFileTree(props: Props): React.JSX.Element {
     composition: { contextMenu: { enabled: true } },
   })
   useEffect(() => {
-    const collapsed = presentation.directories.filter(path => {
-      const item = model.getItem(path)
-      return item !== null && 'isExpanded' in item && !item.isExpanded()
-    })
+    const previous = knownPaths.current
+    knownPaths.current = presentation.paths
     syncing.current = true
-    model.resetPaths(presentation.paths)
-    for (const path of collapsed) {
-      const item = model.getItem(path)
-      if (item !== null && 'collapse' in item) item.collapse()
+    try {
+      if (previous === null) model.resetPaths(presentation.paths)
+      else {
+        const updates = applicableFileTreeUpdates(
+          buildFileTreePathUpdates(previous, presentation.paths),
+          path => model.getItem(path) !== null,
+        )
+        if (updates.length > 0) model.batch(updates)
+      }
+      model.setGitStatus(props.files.map(file => ({ path: presentation.modelPath(file.path), status: file.status })))
+    } finally {
+      syncing.current = false
     }
-    model.setGitStatus(props.files.map(file => ({ path: presentation.modelPath(file.path), status: file.status })))
-    syncing.current = false
   }, [model, presentation, props.files])
   useEffect(() => {
     if (!props.selectedPath) return

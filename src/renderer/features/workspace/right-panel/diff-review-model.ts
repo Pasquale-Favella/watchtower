@@ -2,6 +2,19 @@ import { type FileDiffMetadata, processFile } from '@pierre/diffs'
 
 import type { DiffFile, FilePatch } from '@/shared/schemas/checkout-inspection.js'
 
+/**
+ * Expanding unchanged regions renders the full files, which a partial patch does not carry. Pierre
+ * refuses that render without `loadDiffFiles`, so expansion is only safe for complete diffs.
+ */
+export function canExpandUnchanged(metadata: Iterable<FileDiffMetadata | undefined>): boolean {
+  let complete = false
+  for (const value of metadata) {
+    if (value?.isPartial !== false) return false
+    complete = true
+  }
+  return complete
+}
+
 export function reviewDiffMetadata(file: DiffFile, patch: FilePatch | undefined, cacheKey: string): FileDiffMetadata {
   if (patch && !patch.binary && patch.patch.trim()) {
     const complete = patch.oldContent !== undefined && patch.newContent !== undefined && !patch.truncated

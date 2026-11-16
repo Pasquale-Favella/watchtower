@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 
 import { diffBranchChoices } from '../src/renderer/features/workspace/right-panel/diff-branch-choices.js'
-import { reviewDiffMetadata } from '../src/renderer/features/workspace/right-panel/diff-review-model.js'
+import {
+  canExpandUnchanged,
+  reviewDiffMetadata,
+} from '../src/renderer/features/workspace/right-panel/diff-review-model.js'
 import {
   collapsedDiffFileKeys,
   DEFAULT_DIFF_PREFERENCES,
@@ -54,6 +57,25 @@ describe('diff review files', () => {
     expect(metadata.additionLines.join('')).toBe(newContent)
     expect(metadata.hunks).toHaveLength(1)
     expect(metadata.hunks[0]).toMatchObject({ additionStart: 3, deletionStart: 3 })
+  })
+
+  it('expands unchanged regions only when every rendered file has complete contents', () => {
+    const complete = reviewDiffMetadata(
+      file('example.ts'),
+      {
+        patch: 'diff --git a/example.ts b/example.ts\n--- a/example.ts\n+++ b/example.ts\n@@ -1 +1 @@\n-old\n+new\n',
+        oldContent: 'old\n',
+        newContent: 'new\n',
+        truncated: false,
+        binary: false,
+      },
+      'complete',
+    )
+    const partial = reviewDiffMetadata(file('large.ts'), undefined, 'pending')
+    expect(canExpandUnchanged([])).toBe(false)
+    expect(canExpandUnchanged([undefined])).toBe(false)
+    expect(canExpandUnchanged([complete])).toBe(true)
+    expect(canExpandUnchanged([complete, partial])).toBe(false)
   })
 
   it('keeps a truncated patch partial even when content fields are supplied', () => {
