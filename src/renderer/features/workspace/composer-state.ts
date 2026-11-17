@@ -31,6 +31,29 @@ export function isStopPrimary(input: {
   return input.busy && input.canStop && !input.hasContent
 }
 
+/** The picker stays closed until its queue read and pending submissions are known. */
+export function canOpenAgentPicker(input: {
+  readonly queueExhaustive: boolean
+  readonly pendingStart: boolean
+  readonly submissionPending: boolean
+  readonly handoffPendingRun: boolean
+}): boolean {
+  return input.queueExhaustive && !input.pendingStart && !input.submissionPending && !input.handoffPendingRun
+}
+
+/** Changing connections starts a new native session, so do not switch during a Run or queued delivery. */
+export function canSwitchAgentConnection(input: {
+  readonly busy: boolean
+  readonly queueExhaustive: boolean
+  readonly queuedCount: number
+  readonly pendingStart: boolean
+  readonly submissionPending: boolean
+}): boolean {
+  return (
+    !input.busy && input.queueExhaustive && input.queuedCount === 0 && !input.pendingStart && !input.submissionPending
+  )
+}
+
 export type ComposerAwaiting = 'approval' | 'question' | null
 
 /** Placeholder that points at what the agent is waiting for, or how a follow-up will be delivered. */
@@ -119,6 +142,16 @@ export function boundConversationSession(
     return detectedConnectionIds.has(session.connectionId) ? session : null
   }
   return null
+}
+
+/** A different Harness Connection needs a new native session in the same Conversation. */
+export function connectionHandoffTarget(
+  continuation: WorkspaceNativeAgentSession | null,
+  selectedConnectionId: string,
+): WorkspaceNativeAgentSession | null {
+  return continuation && selectedConnectionId && continuation.connectionId !== selectedConnectionId
+    ? continuation
+    : null
 }
 export interface ResumeSelection {
   readonly taskId: TaskId

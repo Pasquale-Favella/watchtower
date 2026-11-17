@@ -5,10 +5,13 @@ import { Button } from '@/renderer/components/ui/button'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
-import { useSwitchBranch, useWorkspaceBranches, useWorkspaceProject } from './hooks.js'
+import { useSwitchBranch, useWorkspaceBranches, useWorkspaceProject, useWorkspaceTaskSnapshot } from './hooks.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
 import { useCreateSideChat, useSideChats } from './side-chat/hooks.js'
+import { sideChatStatus, sideChatStatusLabel } from './side-chat/status.js'
+import { WorkspaceQueryScopeContext } from './side-chat/scope-context.js'
+import { useSideChatQueryScope } from './side-chat/use-side-chat-query-scope.js'
 import type { ConversationDetailsItems } from './use-conversation-details-items.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
 
@@ -116,16 +119,12 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
             <p className="text-muted-foreground px-1 text-xs">No side chats</p>
           )}
           {sideChatItems.map(item => (
-            <button
+            <SideChatRelationshipRow
               key={item.id}
-              type="button"
+              item={item}
               disabled={!props.onOpenSideChat}
-              className="hover:bg-muted block w-full truncate rounded px-1 py-1 text-left text-xs disabled:cursor-default disabled:opacity-70"
-              title={item.title}
-              onClick={() => props.onOpenSideChat?.(item.id)}
-            >
-              {item.title}
-            </button>
+              onOpen={() => props.onOpenSideChat?.(item.id)}
+            />
           ))}
           {sideChatOwner && (
             <button
@@ -162,6 +161,61 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
         </p>
       )}
     </div>
+  )
+}
+
+function SideChatRelationshipRow({
+  item,
+  disabled,
+  onOpen,
+}: {
+  readonly item: ReturnType<typeof useSideChats>['items'][number]
+  readonly disabled: boolean
+  readonly onOpen: () => void
+}): React.JSX.Element {
+  const scope = useSideChatQueryScope()
+  return (
+    <WorkspaceQueryScopeContext value={scope}>
+      <SideChatRelationshipStatus item={item} disabled={disabled} onOpen={onOpen} />
+    </WorkspaceQueryScopeContext>
+  )
+}
+
+function SideChatRelationshipStatus({
+  item,
+  disabled,
+  onOpen,
+}: {
+  readonly item: ReturnType<typeof useSideChats>['items'][number]
+  readonly disabled: boolean
+  readonly onOpen: () => void
+}): React.JSX.Element {
+  const snapshot = useWorkspaceTaskSnapshot({ taskId: item.taskId, runLimit: 100 })
+  const latestRuns = snapshot.data?.runs ?? []
+  const status = snapshot.error
+    ? 'Status unavailable'
+    : snapshot.data
+      ? sideChatStatusLabel(sideChatStatus(latestRuns))
+      : 'Checking status…'
+  const statusClass =
+    status === 'Running' || status === 'Waiting' || status === 'Stopping' || status === 'Queued'
+      ? 'text-primary'
+      : status === 'Failed' || status === 'Needs attention' || status === 'Recovering'
+        ? 'text-destructive'
+        : 'text-muted-foreground'
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      className="hover:bg-muted flex w-full min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-xs disabled:cursor-default disabled:opacity-70"
+      title={`${item.title} · ${status}`}
+      onClick={onOpen}
+    >
+      <span className="min-w-0 flex-1 truncate">{item.title}</span>
+      <span className={`shrink-0 text-[10px] ${statusClass}`} role="status">
+        {status}
+      </span>
+    </button>
   )
 }
 

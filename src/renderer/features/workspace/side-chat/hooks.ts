@@ -108,6 +108,6 @@ export function useSideChatPreferences(
   useEffect(() => {
     if (initialized.current || side.preferences) return
     initialized.current = true
-    side.setPreferences({ ...parent.preferences, checkoutId, accessMode: 'approval-required' })
+    side.setPreferences({ ...parent.preferences, checkoutId })
   }, [checkoutId, parent.preferences, side])
 }

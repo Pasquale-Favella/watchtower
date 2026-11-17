@@ -37,6 +37,7 @@ export interface WorkspaceAgentPickerControl {
 }
 
 type Props = {
+  readonly disabled?: boolean | undefined
   readonly controlRef?: Ref<WorkspaceAgentPickerControl>
   readonly connections: readonly WorkspaceConnection[]
   readonly connectionId: string
@@ -152,6 +153,7 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
   }, [normalizing, normalizationKey, normalizeModel, normalizeMode, onModelChange, onModeChange])
 
   function commit(targetConnectionId: string, modelId: string, modeId: string) {
+    if (props.lockedConnectionId && targetConnectionId !== props.lockedConnectionId) return
     remembered.remember(targetConnectionId, { modelId, modeId })
     if (props.onAgentChange) {
       props.onAgentChange({ connectionId: targetConnectionId, modelId, modeId })
@@ -228,6 +230,7 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
       <PopoverTrigger
         aria-label="Agent and model"
         title={triggerTitle}
+        disabled={props.disabled}
         className={composerControlClass('max-w-64 min-w-0 shrink justify-start')}
       >
         {selectedConnection && <HarnessIcon kind={selectedConnection.harnessKind} className="size-4 shrink-0" />}

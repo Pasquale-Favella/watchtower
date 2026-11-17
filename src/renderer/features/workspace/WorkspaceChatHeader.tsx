@@ -19,6 +19,7 @@ interface Props {
   readonly detailsOpen: boolean
   readonly detailsMode: ConversationDetailsMode
   readonly onToggleDetails: (() => void) | undefined
+  readonly relatedSideChatCount?: number | undefined
 }
 
 export function WorkspaceChatHeader(props: Props): React.JSX.Element {
@@ -38,6 +39,12 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
       <div className="flex shrink-0 items-center gap-0.5">
         <HeaderToggle
           label="Conversation details"
+          count={props.relatedSideChatCount}
+          countLabel={
+            props.relatedSideChatCount
+              ? `${props.relatedSideChatCount} side chat${props.relatedSideChatCount === 1 ? '' : 's'}`
+              : undefined
+          }
           pressed={props.detailsOpen}
           onClick={props.onToggleDetails}
           popoverTrigger={props.detailsMode === 'popover'}
@@ -73,6 +80,8 @@ function HeaderToggle({
   onClick,
   popoverTrigger = false,
   controls,
+  count,
+  countLabel,
   children,
 }: {
   readonly label: string
@@ -81,6 +90,8 @@ function HeaderToggle({
   readonly onClick: (() => void) | undefined
   readonly popoverTrigger?: boolean
   readonly controls?: string
+  readonly count?: number | undefined
+  readonly countLabel?: string | undefined
   readonly children: ReactNode
 }): React.JSX.Element {
   const button = (
@@ -94,9 +105,14 @@ function HeaderToggle({
       aria-controls={controls}
       disabled={!onClick}
       onClick={popoverTrigger ? undefined : onClick}
-      className={pressed ? 'bg-primary/10 text-primary' : 'text-muted-foreground'}
+      className={`${pressed ? 'bg-primary/10 text-primary' : 'text-muted-foreground'} relative`}
     >
       {children}
+      {count !== undefined && count > 0 && (
+        <span className="bg-primary text-primary-foreground absolute -top-0.5 -right-0.5 min-w-4 rounded-full px-1 text-[9px] leading-4">
+          {count > 99 ? '99+' : count}
+        </span>
+      )}
     </Button>
   )
 
@@ -107,7 +123,7 @@ function HeaderToggle({
       </TooltipTrigger>
       <TooltipContent>
         {label}
-        {hint && <span className="text-muted-foreground ml-2">{hint}</span>}
+        {(countLabel || hint) && <span className="text-muted-foreground ml-2">{countLabel ?? hint}</span>}
       </TooltipContent>
     </Tooltip>
   )

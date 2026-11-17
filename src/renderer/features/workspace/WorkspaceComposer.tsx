@@ -10,8 +10,11 @@ import { useWorkspaceAgentPreferences } from './agent-preferences.js'
 import type { CheckoutMode } from './checkout-strip-state.js'
 import {
   boundConversationSession,
+  canOpenAgentPicker,
+  canSwitchAgentConnection,
   type ComposerAwaiting,
   composerPlaceholder,
+  connectionHandoffTarget,
   currentConversationRuns,
   isRunActive,
   isStopPrimary,
@@ -88,6 +91,30 @@ const snapshotRequest = (taskId: Task['id']): WorkspaceRequest<'workspace:readTa
   taskId,
   runLimit: 100,
 })
+
+function pendingAgentHandoffMessage(currentAgent: string, nextAgent: string, model: string): string {
+  return `Current agent: ${currentAgent}. Next agent: ${nextAgent} · ${model}. The next message starts a new session and receives a bounded handoff.`
+}
+
+function agentSelectionStatus(input: {
+  readonly busy: boolean
+  readonly hasQueuedFollowUps: boolean
+  readonly queueExhaustive: boolean
+  readonly queueError: string | null
+  readonly currentAgent: string
+  readonly nextModel: string
+}): string | null {
+  if (input.busy)
+    return `The active Run stays with ${input.currentAgent}. The next prompt uses ${input.nextModel}; queued prompts keep their saved agent and session.`
+  if (input.hasQueuedFollowUps)
+    return 'Finish or cancel queued follow-ups before switching agents. Each queued prompt keeps its saved agent and session.'
+  if (!input.queueExhaustive) {
+    return input.queueError
+      ? 'The follow-up queue could not be confirmed, so agent changes are disabled.'
+      : 'Checking the full follow-up queue before agent changes are available.'
+  }
+  return null
+}
 
 type WorkspaceComposerProps = {
   readonly onOpenFile?: ((path: string) => void) | undefined
@@ -209,7 +236,8 @@ function WorkspaceComposerContent({
     preferredCheckout?.id ?? '',
     detectedConnectionIds,
   )
-  const freshSessionRequested = preferences?.resumeNativeContext === false
+  const handoffTarget = connectionHandoffTarget(continuation, preferredConnectionId)
+  const freshSessionRequested = preferences?.resumeNativeContext === false || handoffTarget !== null
   const freshSessionNotice = freshSessionRequested
   useEffect(() => {
     const previousSessionId = preferences?.resumeSessionId
@@ -342,6 +370,9 @@ function WorkspaceComposerContent({
   const capabilities = inspected?.capabilities
   const access = resolveAccessMode(preferences?.accessMode ?? defaultAccessMode, inspected?.accessModes)
   const changeAccessMode = (mode: AgentAccessMode) => setPreferences({ accessMode: mode })
+  const selectedModelLabel = modelId
+    ? (inspected?.capabilities.models.items.find(model => model.id === modelId)?.label ?? modelId)
+    : 'Default model'
   const submitSupport = resumeMode ? capabilities?.loadSession : capabilities?.openSession
   const submitAvailable = Boolean(
     selectedConnection &&
@@ -355,6 +386,53 @@ function WorkspaceComposerContent({
   )
   const busy = activeRun !== null
   const pendingStart = pendingStarts.store.records[conversationId] ?? null
+  const hasQueuedFollowUps = (followUps.data?.items.length ?? 0) > 0
+  const canSwitchConnection = canSwitchAgentConnection({
+    busy,
+    queueExhaustive,
+    queuedCount: followUps.data?.items.length ?? 0,
+    pendingStart: Boolean(pendingStart),
+    submissionPending: Boolean(intent),
+  })
+  const agentPickerDisabled = !canOpenAgentPicker({
+    queueExhaustive,
+    pendingStart: Boolean(pendingStart),
+    submissionPending: Boolean(intent),
+    handoffPendingRun: busy && handoffTarget !== null,
+  })
+  let lockedConnectionId: string | undefined
+  if (busy) lockedConnectionId = activeRunContext?.connectionId ?? selectedSession?.connectionId ?? connectionId
+  else if (hasQueuedFollowUps) lockedConnectionId = connectionId || followUps.data?.items[0]?.connectionId
+  const agentStatus =
+    busy || hasQueuedFollowUps || (agentPickerDisabled && !pendingStart && !intent)
+      ? agentSelectionStatus({
+          busy,
+          hasQueuedFollowUps,
+          queueExhaustive,
+          queueError: followUps.error,
+          currentAgent:
+            connections.data?.items.find(item => item.connectionId === activeRunContext?.connectionId)?.label ??
+            selectedConnection?.label ??
+            'the current agent',
+          nextModel: `${selectedConnection?.label ?? 'the selected agent'} · ${selectedModelLabel}`,
+        })
+      : null
+  let freshSessionMessage = ''
+  if (handoffTarget) {
+    const currentAgent =
+      connections.data?.items.find(item => item.connectionId === handoffTarget.connectionId)?.label ??
+      'the current agent'
+    freshSessionMessage = pendingAgentHandoffMessage(
+      currentAgent,
+      selectedConnection?.label ?? connectionId,
+      selectedModelLabel,
+    )
+  } else if (busy) {
+    freshSessionMessage =
+      'After this Run ends, the next message starts a fresh agent session. Earlier messages remain in this Conversation.'
+  } else {
+    freshSessionMessage = 'The next message starts a fresh agent session. Earlier messages remain in this Conversation.'
+  }
   const blocked = !contextComplete || Boolean(pendingStart) || Boolean(pendingStarts.store.error)
   const actionStateReady =
     snapshot.data !== null &&
@@ -425,6 +503,13 @@ function WorkspaceComposerContent({
     const promptCommand = parseWorkspacePromptCommand(draft, observedSession?.capabilities?.commands ?? [])
     const goalControl = activeGoalControl(promptCommand)
     if (promptCommand?.kind === 'model') {
+      if (agentPickerDisabled) {
+        if (busy && handoffTarget) setError('Wait until the active Run ends before switching connections.')
+        else if (pendingStart || intent) setError('Wait until the pending message is confirmed before changing agents.')
+        else if (followUps.error) setError('The follow-up queue could not be confirmed before changing agents.')
+        else setError('Wait until the complete follow-up queue is available before changing agents.')
+        return
+      }
       draftRef.current = ''
       setDraft('')
       agentPickerRef.current?.open(promptCommand.query)
@@ -432,6 +517,10 @@ function WorkspaceComposerContent({
     }
     if (promptCommand?.kind === 'clear') {
       if (blocked || pendingStart || pendingStarts.store.error || intent) return
+      if (!queueExhaustive) {
+        setError('Wait until the complete follow-up queue is available before starting a fresh agent session.')
+        return
+      }
       if (followUps.data?.items.length) {
         setError('Send or remove queued messages before starting a fresh agent session.')
         return
@@ -916,22 +1005,38 @@ function WorkspaceComposerContent({
             className="mb-2 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
             role="status"
           >
-            <span>
-              {busy
-                ? 'After this Run ends, the next message starts a fresh agent session. Earlier messages remain in this Conversation.'
-                : 'The next message starts a fresh agent session. Earlier messages remain in this Conversation.'}
-            </span>
+            <span>{freshSessionMessage}</span>
             <Button
               type="button"
               size="sm"
               variant="outline"
               onClick={() => {
+                if (handoffTarget) {
+                  setSelectedConnectionId(handoffTarget.connectionId)
+                  setModelId('')
+                  setModeId('')
+                  setPreferences({
+                    checkoutId,
+                    connectionId: handoffTarget.connectionId,
+                    modelId: '',
+                    modeId: '',
+                    configValues: {},
+                    resumeNativeContext: true,
+                    resumeSessionId: '',
+                  })
+                  return
+                }
                 setPreferences({ resumeNativeContext: true, resumeSessionId: '' })
               }}
             >
-              Keep current session
+              {handoffTarget ? 'Keep current agent' : 'Keep current session'}
             </Button>
           </div>
+        )}
+        {agentStatus && (
+          <p className="text-muted-foreground mb-2 text-xs" role="status">
+            {agentStatus}
+          </p>
         )}
         {latestGoal && (
           <section className="mb-2 rounded-md border px-3 py-2 text-xs" aria-label="Agent goal">
@@ -1038,15 +1143,26 @@ function WorkspaceComposerContent({
                 modelId={modelId}
                 modeId={modeId}
                 configValues={configValues}
+                disabled={agentPickerDisabled}
                 inspection={inspected}
                 pending={inspect.pending}
-                {...(continuation ? { lockedConnectionId: continuation.connectionId } : {})}
+                {...(lockedConnectionId ? { lockedConnectionId } : {})}
                 access={{ ...access, onChange: changeAccessMode }}
                 onConnectionChange={id => {
+                  if (!canSwitchConnection || (lockedConnectionId && id !== lockedConnectionId)) return
                   setSelectedConnectionId(id)
                   setModelId('')
                   setModeId('')
-                  setPreferences({ checkoutId, connectionId: id, modelId: '', modeId: '', configValues: {} })
+                  setPreferences({
+                    checkoutId,
+                    connectionId: id,
+                    modelId: '',
+                    modeId: '',
+                    configValues: {},
+                    ...(continuation && id !== continuation.connectionId
+                      ? { resumeNativeContext: false, resumeSessionId: continuation.nativeSessionId }
+                      : { resumeNativeContext: true, resumeSessionId: '' }),
+                  })
                 }}
                 onModelChange={id => {
                   setModelId(id)

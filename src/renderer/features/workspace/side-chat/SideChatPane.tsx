@@ -58,6 +58,10 @@ function SideChatContent({
     () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
     [snapshot.data?.runs],
   )
+  const runContextsByRunId = useMemo(
+    () => new Map(snapshot.data?.runContexts?.map(context => [context.runId, context] as const) ?? []),
+    [snapshot.data?.runContexts],
+  )
   const sideBusy = snapshot.data?.runs.some(isRunActive) ?? false
   const completed = snapshot.data?.runs.some(run => run.status === 'completed') ?? false
   const back = useBringBackSideChat(binding.parentConversationId)
@@ -154,6 +158,7 @@ function SideChatContent({
         <WorkspaceConversation
           conversationId={binding.conversationId}
           sessionIdsByRunId={sessionIdsByRunId}
+          runContextsByRunId={runContextsByRunId}
           promptCommands={promptCommands}
           workspacePath={runContext?.workspacePath}
           onOpenFile={openChatFile}

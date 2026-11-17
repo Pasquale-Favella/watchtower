@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  canOpenAgentPicker,
+  canSwitchAgentConnection,
+  connectionHandoffTarget,
   currentConversationRuns,
   isRunActive,
   latestConversationSession,
@@ -36,6 +39,55 @@ const run = (id: string, status: AgentRun['status']): AgentRun => ({
 })
 
 describe('workspace composer state', () => {
+  it('keeps the picker closed until the queue and pending submissions are confirmed', () => {
+    const available = {
+      queueExhaustive: true,
+      pendingStart: false,
+      submissionPending: false,
+      handoffPendingRun: false,
+    }
+    expect(canOpenAgentPicker(available)).toBe(true)
+    expect(canOpenAgentPicker({ ...available, queueExhaustive: false })).toBe(false)
+    expect(canOpenAgentPicker({ ...available, handoffPendingRun: true })).toBe(false)
+    expect(canOpenAgentPicker({ ...available, pendingStart: true })).toBe(false)
+    expect(canOpenAgentPicker({ ...available, submissionPending: true })).toBe(false)
+  })
+
+  it('allows same-connection model choices during a Run but blocks connection changes until safe', () => {
+    const available = {
+      busy: false,
+      queueExhaustive: true,
+      queuedCount: 0,
+      pendingStart: false,
+      submissionPending: false,
+    }
+    expect(canSwitchAgentConnection(available)).toBe(true)
+    expect(canSwitchAgentConnection({ ...available, busy: true })).toBe(false)
+    expect(canSwitchAgentConnection({ ...available, queueExhaustive: false })).toBe(false)
+    expect(canSwitchAgentConnection({ ...available, queuedCount: 1 })).toBe(false)
+    expect(canSwitchAgentConnection({ ...available, pendingStart: true })).toBe(false)
+    expect(canSwitchAgentConnection({ ...available, submissionPending: true })).toBe(false)
+  })
+
+  it('requires a fresh session only when the selected connection differs from the current Conversation session', () => {
+    const session: WorkspaceNativeAgentSession = {
+      id: 'session-handoff' as WorkspaceNativeAgentSession['id'],
+      taskId,
+      conversationId,
+      checkoutId,
+      connectionId: 'connection-a',
+      driverId: 'driver-a',
+      nativeSessionId: 'native-a',
+      generation: 2,
+      status: 'active',
+    }
+
+    expect(connectionHandoffTarget(session, 'connection-a')).toBeNull()
+    expect(connectionHandoffTarget(session, 'connection-b')).toBe(session)
+    expect(connectionHandoffTarget(null, 'connection-b')).toBeNull()
+    expect(connectionHandoffTarget(session, '')).toBeNull()
+  })
+
   it('continues the most recent matching native context and leaves stale or different contexts unselected', () => {
     const session: WorkspaceNativeAgentSession = {
       id: 'session-z' as WorkspaceNativeAgentSession['id'],
