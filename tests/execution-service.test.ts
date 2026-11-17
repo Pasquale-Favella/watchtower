@@ -169,6 +169,102 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
 }
 
 describe('ExecutionService', () => {
+  it('hands prior Conversation context to a fresh connection without duplicating or rewriting the current user message', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    await setup(store, runStore)
+    const submitted: string[] = []
+    const runtime = makeRuntime(
+      () => {
+        const submittedSignal = Effect.runSync(Deferred.make<undefined>())
+        const nativeSessionId = `native-${submitted.length + 1}`
+        const session = makeSession({
+          identity: { nativeSessionId, generation: 1 },
+          events: () =>
+            Stream.fromEffect(Deferred.await(submittedSignal)).pipe(
+              Stream.flatMap(() =>
+                Stream.fromIterable([
+                  { kind: 'turnStarted' as const, nativeTurnId: 'native-turn' },
+                  { kind: 'textDelta' as const, text: 'Earlier assistant answer.' },
+                  { kind: 'turnCompleted' as const, nativeTurnId: 'native-turn' },
+                ]),
+              ),
+            ),
+          submit: input =>
+            Effect.as(Deferred.succeed(submittedSignal, undefined), {
+              nativeSessionId,
+              nativeTurnId: 'native-turn',
+              generation: 1,
+            }).pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  submitted.push(input.messages[0]?.content ?? '')
+                }),
+              ),
+            ),
+        })
+        return Effect.succeed(
+          makeConnection(session, {
+            identity: {
+              id: `connection-${submitted.length + 1}`,
+              driverId: 'test-driver',
+              authentication: 'authenticated',
+            },
+          }),
+        )
+      },
+      {},
+      store,
+    )
+    try {
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, prompt: 'First question' }))
+      await expect
+        .poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs.find(run => run.id === command.runId))
+        .toMatchObject({ status: 'completed' })
+
+      await run(
+        service.start({
+          ...command,
+          commandId: 'switch-connection',
+          runId: 'switch-connection-run' as never,
+          provisionalAgentSessionId: 'switch-connection-session',
+          connectionId: 'connection-2',
+          modelId: 'model-2',
+          prompt: 'Second question',
+        }),
+      )
+      await expect
+        .poll(async () =>
+          (await run(store.readTaskSnapshot(task.id, 10))).runs.find(run => run.id === 'switch-connection-run'),
+        )
+        .toMatchObject({ status: 'completed' })
+
+      expect(submitted[0]).toBe('First question')
+      expect(submitted[1]).toContain('Earlier assistant answer.')
+      expect(submitted[1]).toContain('User: First question')
+      expect(submitted[1].match(/Second question/g)).toHaveLength(1)
+      const page = await run(store.readConversationPage(conversation.id, 0, 100))
+      expect(page.items.find(item => item.event.runId === 'switch-connection-run')?.userMessage?.content).toBe(
+        'Second question',
+      )
+      expect(page.items.find(item => item.event.kind === 'contextHandoff')?.event.data).toMatchObject({
+        sourceRunId: command.runId,
+        sourceConnectionId: 'connection-1',
+        targetConnectionId: 'connection-2',
+        targetModelId: 'model-2',
+        truncated: false,
+      })
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.runContexts?.find(context => context.runId === 'switch-connection-run')?.modelId).toBe('model-2')
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
   it('keeps the user prompt in storage while seeding only the first native side-chat turn with parent context', async () => {
     const sideTask = { ...task, id: 'side-task:execution-test' as never }
     const record: SideChatRecord = {

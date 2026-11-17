@@ -23,6 +23,7 @@ import type {
   ProjectRegistrationReceipt,
   PromotedFollowUp,
   QueuedFollowUpPage,
+  RecordConversationHandoffCommand,
   RecordDriverEventCommand,
   RecordRequestResponseCommand,
   RecordSteerCommand,
@@ -93,6 +94,10 @@ export class WorkspaceStore extends Context.Service<
     readonly recordDriverEvent: (
       runId: AgentRunId,
       command: RecordDriverEventCommand,
+    ) => Effect.Effect<WorkspaceExecutionEvent, WorkspaceStoreError>
+    readonly recordConversationHandoff: (
+      runId: AgentRunId,
+      command: RecordConversationHandoffCommand,
     ) => Effect.Effect<WorkspaceExecutionEvent, WorkspaceStoreError>
     readonly failDispatch: (
       runId: AgentRunId,

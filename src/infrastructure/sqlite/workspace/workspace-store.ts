@@ -53,6 +53,7 @@ import {
   promotedFollowUpSchema,
   queuedFollowUpHeadSchema,
   queuedFollowUpSchema,
+  recordConversationHandoffCommandSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
@@ -1430,6 +1431,38 @@ const makeService = Effect.gen(function* () {
               occurredAt: command.occurredAt,
               data,
             }).pipe(Effect.mapError(() => safeError('invalid-data', 'Committed driver event failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const recordConversationHandoff = (
+    runId: Parameters<WorkspaceStore['Service']['recordConversationHandoff']>[0],
+    command: Parameters<WorkspaceStore['Service']['recordConversationHandoff']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(recordConversationHandoffCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Conversation handoff metadata is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { row, run } = yield* loadOwnedDispatch(runId, decoded.ownerEpoch)
+            if (row.state !== 'claimed' || run.sessionId != null)
+              return yield* Effect.fail(safeError('invalid-transition', 'Context handoff must precede session startup'))
+            const prior = yield* sql`
+              SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload
+              FROM workspace_execution_event WHERE run_id = ${runId} AND kind = 'contextHandoff'
+              ORDER BY sequence LIMIT 1
+            `
+            if (prior[0]) return yield* decodeStoredEvent(prior[0] as Record<string, unknown>)
+            const sequence = yield* appendEvent(run, 'contextHandoff', decoded.occurredAt, decoded.handoff)
+            const rows = yield* sql`
+              SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload
+              FROM workspace_execution_event WHERE sequence = ${sequence}
+            `
+            if (!rows[0]) return yield* Effect.fail(safeError('invalid-data', 'Committed handoff event is missing'))
+            return yield* decodeStoredEvent(rows[0] as Record<string, unknown>)
           }),
         )
       }),
@@ -3097,7 +3130,7 @@ const makeService = Effect.gen(function* () {
             const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
             const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
             const runRows = yield* sql`
-              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, json_extract(c.payload, '$.path') AS workspace_path
+              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, json_extract(c.payload, '$.path') AS workspace_path
               FROM workspace_agent_run r
               LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
               LEFT JOIN workspace_checkout c ON c.id = i.checkout_id
@@ -3126,6 +3159,7 @@ const makeService = Effect.gen(function* () {
                       checkoutId: row.checkout_id,
                       driverId: row.driver_id,
                       connectionId: row.connection_id,
+                      ...(row.model_id != null ? { modelId: row.model_id } : {}),
                       ...(row.workspace_path != null ? { workspacePath: row.workspace_path } : {}),
                     }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Run context failed validation')))
                   : undefined
@@ -3243,6 +3277,7 @@ const makeService = Effect.gen(function* () {
     bindNativeSession,
     acknowledgeDispatch,
     recordDriverEvent,
+    recordConversationHandoff,
     failDispatch,
     requestInterrupt,
     recordRequestResponse,

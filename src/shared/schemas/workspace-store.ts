@@ -514,6 +514,7 @@ export const workspaceExecutionEventSchema = Schema.Struct({
     'runRecoveryRequired',
     'runFailed',
     'runInterruptRequested',
+    'contextHandoff',
     'driverEvent',
     'requestResponseRecorded',
     'requestResponseSettled',
@@ -699,9 +700,26 @@ export const workspaceRunContextSchema = Schema.Struct({
   checkoutId: workspaceCheckoutIdSchema,
   driverId: text,
   connectionId: text,
+  modelId: Schema.optional(Schema.NullOr(Schema.String)),
   workspacePath: Schema.optional(text),
 })
 export type WorkspaceRunContext = Schema.Schema.Type<typeof workspaceRunContextSchema>
+export const conversationHandoffDataSchema = Schema.Struct({
+  sourceRunId: agentRunIdSchema,
+  sourceConnectionId: text,
+  sourceModelId: Schema.optional(Schema.NullOr(Schema.String)),
+  targetConnectionId: text,
+  targetModelId: Schema.optional(Schema.NullOr(Schema.String)),
+  highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  truncated: Schema.Boolean,
+})
+export type ConversationHandoffData = Schema.Schema.Type<typeof conversationHandoffDataSchema>
+export const recordConversationHandoffCommandSchema = Schema.Struct({
+  ownerEpoch: workerEpochSchema,
+  occurredAt: timestamp,
+  handoff: conversationHandoffDataSchema,
+})
+export type RecordConversationHandoffCommand = Schema.Schema.Type<typeof recordConversationHandoffCommandSchema>
 export const workspaceRunCoverageSchema = Schema.Struct({
   total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   returned: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),

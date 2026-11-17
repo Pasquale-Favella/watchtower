@@ -65,6 +65,49 @@ const withWorkspaceStore = <A, E, R>(
   )
 
 describe('workspace worker RPC server', () => {
+  it('round-trips durable context handoff metadata and run model selections', async () => {
+    const result = await Effect.runPromise(
+      withWorkspaceStore((store, sqlScope) =>
+        Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(WorkspaceWorkerRpcGroup)
+          const modelRun = { ...command, modelId: 'model-new' }
+          yield* client['workspace-worker:registerProject']({ commandId: 'register', project, mainCheckout: checkout })
+          yield* client['workspace-worker:createTask']({
+            commandId: 'create',
+            task,
+            conversation,
+          })
+          yield* client['workspace-worker:beginRun'](modelRun)
+          yield* client['workspace-worker:claimDispatch']({
+            runId: modelRun.runId,
+            ownerEpoch: 7,
+            claimedAt: modelRun.issuedAt,
+          })
+          const handoff = yield* client['workspace-worker:recordConversationHandoff']({
+            runId: modelRun.runId,
+            command: {
+              ownerEpoch: 7,
+              occurredAt: modelRun.issuedAt,
+              handoff: {
+                sourceRunId: 'prior-run' as never,
+                sourceConnectionId: 'connection-old',
+                sourceModelId: 'model-old',
+                targetConnectionId: 'connection-1',
+                targetModelId: 'model-new',
+                highWatermark: 42,
+                truncated: true,
+              },
+            },
+          })
+          const snapshot = yield* client['workspace-worker:readTaskSnapshot']({ taskId: task.id, runLimit: 10 })
+          return { handoff, snapshot }
+        }).pipe(Effect.provide(workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) }))),
+      ),
+    )
+    expect(result.handoff).toMatchObject({ kind: 'contextHandoff', data: { highWatermark: 42, truncated: true } })
+    expect(result.snapshot.runContexts).toMatchObject([{ modelId: 'model-new' }])
+  })
+
   it('rejects a worker without the prompt attachment protocol', () => {
     expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 7 })).toThrow()
     expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 8 })).toThrow()

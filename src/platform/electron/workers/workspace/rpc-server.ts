@@ -213,6 +213,13 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.recordDriverEvent(runId, command),
         true,
       ),
+    'workspace-worker:recordConversationHandoff': ({ runId, command }) =>
+      execute(
+        'workspace-worker:recordConversationHandoff',
+        { runId, command },
+        () => options.store.recordConversationHandoff(runId, command),
+        true,
+      ),
     'workspace-worker:failDispatch': ({ runId, command }) =>
       execute(
         'workspace-worker:failDispatch',

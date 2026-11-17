@@ -94,6 +94,16 @@ An ordered discussion associated with a Task. A Task may have multiple
 Conversations, including forks.
 _Avoid_: session
 
+**Side chat**:
+An independently addressable Task and Conversation linked to a parent
+Conversation at a fixed point in its history.
+_Avoid_: reply branch
+
+**Context handoff**:
+Prior Conversation context supplied when the next Run changes Harness
+Connection and starts a new Agent Session in that same Conversation.
+_Avoid_: session resume
+
 **Harness**:
 A coding-agent tool the app drives through a supported integration. A Harness
 may expose multiple models and interaction modes; its integration protocol is
@@ -125,6 +135,11 @@ _Avoid_: Agent Session
 One attempt to submit work through an Agent Session. A retry is a new Run;
 finishing a Run does not establish Task delivery.
 _Avoid_: session, conversation
+
+**Delegated agent**:
+A child agent started by a Harness during a Run. Its native identity and
+progress belong to that Harness; it does not become a Watchtower Task.
+_Avoid_: side chat
 
 **Work Artifact**:
 An output of managed work, such as a patch, report or handoff package. It is

@@ -26,6 +26,7 @@ import type {
   RenameTaskCommand,
   SetTaskArchivedCommand,
   DispatchFailureCommand,
+  RecordConversationHandoffCommand,
   RecordDriverEventCommand,
   WorkspaceEventPage,
   WorkspaceSnapshot,
@@ -353,6 +354,12 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           const payload = { runId, command }
           return invoke('workspace-worker:recordDriverEvent', payload, () =>
             rawClient['workspace-worker:recordDriverEvent'](payload),
+          )
+        },
+        recordConversationHandoff: (runId, command: RecordConversationHandoffCommand) => {
+          const payload = { runId, command }
+          return invoke('workspace-worker:recordConversationHandoff', payload, () =>
+            rawClient['workspace-worker:recordConversationHandoff'](payload),
           )
         },
         failDispatch: (runId, command: DispatchFailureCommand) => {

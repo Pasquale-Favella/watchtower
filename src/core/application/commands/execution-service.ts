@@ -13,6 +13,7 @@ import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 
 import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
+import { captureConversationContext } from '@/core/application/execution/conversation-context.js'
 import type {
   AgentDriverError,
   AgentDriverSession,
@@ -360,7 +361,77 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.tapError(error => Effect.sync(() => backgroundFailures.push(Cause.fail(error)))),
           )
           const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
-          const prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim) : state.claim.prompt
+          let prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim) : state.claim.prompt
+          if (!state.claim.nativeSessionId) {
+            const snapshot = yield* store.readTaskSnapshot(state.claim.taskId, 500).pipe(
+              Effect.mapError(
+                error =>
+                  new ExecutionServiceError({
+                    reason: 'background-failure',
+                    message: 'Conversation context handoff could not be prepared.',
+                    cause: error,
+                  }),
+              ),
+            )
+            const contexts = new Map((snapshot.runContexts ?? []).map(context => [context.runId, context]))
+            const sourceRun = snapshot.runs
+              .filter(run => run.id !== state.claim.runId)
+              .filter(run => run.sessionId != null)
+              .filter(run => contexts.get(run.id)?.conversationId === state.claim.conversationId)
+              .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]
+            const sourceContext = sourceRun ? contexts.get(sourceRun.id) : undefined
+            if (sourceRun && sourceContext && sourceContext.connectionId !== state.claim.connectionId) {
+              const handoff = yield* captureConversationContext(
+                store,
+                state.claim.conversationId,
+                state.claim.runId,
+              ).pipe(
+                Effect.mapError(
+                  error =>
+                    new ExecutionServiceError({
+                      reason: 'background-failure',
+                      message: 'Conversation context handoff could not be prepared.',
+                      cause: error,
+                    }),
+                ),
+              )
+              if (handoff.context.trim()) {
+                yield* store
+                  .recordConversationHandoff(state.claim.runId, {
+                    ownerEpoch: state.claim.ownerEpoch,
+                    occurredAt: yield* timestamp,
+                    handoff: {
+                      sourceRunId: sourceRun.id,
+                      sourceConnectionId: sourceContext.connectionId,
+                      ...(sourceContext.modelId !== undefined ? { sourceModelId: sourceContext.modelId } : {}),
+                      targetConnectionId: state.claim.connectionId,
+                      ...(state.claim.modelId !== undefined ? { targetModelId: state.claim.modelId } : {}),
+                      highWatermark: handoff.highWatermark,
+                      truncated: handoff.truncated,
+                    },
+                  })
+                  .pipe(
+                    Effect.mapError(
+                      error =>
+                        new ExecutionServiceError({
+                          reason: 'background-failure',
+                          message: 'Conversation context handoff could not be recorded.',
+                          cause: error,
+                        }),
+                    ),
+                  )
+                prompt = [
+                  'Conversation context handoff from earlier messages. Continue the discussion using this snapshot as context.',
+                  handoff.context,
+                  handoff.truncated ? '[Earlier conversation context was truncated.]' : '',
+                  '---',
+                  `Current request: ${prompt}`,
+                ]
+                  .filter(Boolean)
+                  .join('\n\n')
+              }
+            }
+          }
           const driver = yield* drivers.resolve(state.claim.driverId)
           if (driver.driverId !== state.claim.driverId) {
             return yield* new ExecutionServiceError({

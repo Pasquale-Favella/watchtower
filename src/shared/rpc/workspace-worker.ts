@@ -19,6 +19,7 @@ import {
   queuedFollowUpPageSchema,
   queuedFollowUpHeadPageSchema,
   recordDriverEventCommandSchema,
+  recordConversationHandoffCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
   renameTaskCommandSchema,
@@ -54,7 +55,7 @@ import {
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 15
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 16
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -127,6 +128,11 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   }),
   Rpc.make('workspace-worker:recordDriverEvent', {
     payload: Schema.Struct({ runId: agentRunIdSchema, command: recordDriverEventCommandSchema }),
+    success: workspaceExecutionEventSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:recordConversationHandoff', {
+    payload: Schema.Struct({ runId: agentRunIdSchema, command: recordConversationHandoffCommandSchema }),
     success: workspaceExecutionEventSchema,
     error,
   }),

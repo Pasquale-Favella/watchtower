@@ -503,6 +503,7 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:bindNativeSession',
         'workspace-worker:acknowledgeDispatch',
         'workspace-worker:acquireOwnerEpoch',
+        'workspace-worker:recordConversationHandoff',
         'workspace-worker:recordDriverEvent',
         'workspace-worker:failDispatch',
         'workspace-worker:requestInterrupt',
