@@ -1,6 +1,11 @@
 import { createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
 import * as Schema from 'effect/Schema'
+import { useEffect } from 'react'
 
+import { AnalyticsProvider } from '@/renderer/app/AnalyticsProvider'
+import { AppRoot } from '@/renderer/app/AppRoot'
+import { navigateToVertical, setRouter } from '@/renderer/app/navigation'
+import { DashboardLayout } from '@/renderer/components/shell/dashboard-layout'
 import { CoachSkillsView } from '@/renderer/features/coach-skills/CoachSkillsView'
 import { CompareView } from '@/renderer/features/compare/CompareView'
 import { ModelsView } from '@/renderer/features/models/ModelsView'
@@ -9,24 +14,26 @@ import { OverviewView } from '@/renderer/features/overview/OverviewView'
 import { PullRequestsView } from '@/renderer/features/pull-requests/PullRequestsView'
 import { SessionsView } from '@/renderer/features/sessions/SessionsView'
 import { SessionView } from '@/renderer/features/sessions/SessionView'
-import { SettingsView } from '@/renderer/features/settings/SettingsView'
+import { useSettingsDialogStore } from '@/renderer/features/settings/use-settings-dialog-store'
 import { SpendView } from '@/renderer/features/spend/SpendView'
-
+import { WorkspaceView } from '@/renderer/features/workspace/WorkspaceView'
+import { useAppVerticalStore } from '@/renderer/stores/hooks/use-app-vertical-store'
 import { sessionDetailSearchSchema } from '@/shared/schemas/views.js'
-import { AppRoot } from '@/renderer/app/AppRoot'
-import { DashboardLayout } from '@/renderer/components/shell/dashboard-layout'
-import { setRouter } from '@/renderer/app/navigation'
 
 // Code-based route tree on memory history (ADR 0014): created once at module
 // scope so StrictMode's double-render shares one router. The root route is
-// the app frame (bootstrap + sidebar chrome). The dashboard is the only
-// pathless layout route (created by `id`, not `path`) — it renders an
-// <Outlet/> and consumes no URL segment; only the overview index keeps
-// `path: '/'`. The router is pure-navigation — no loaders, the ADR 0011
-// stores keep driving every view.
+// the shared app frame. Analytics owns its provider and dashboard layouts;
+// Workspace uses the shared sidebar without Analytics controls. Layout routes
+// use `id` and consume no URL segment. The router handles navigation without
+// loaders; feature stores keep driving every view.
 const rootRoute = createRootRoute({ component: AppRoot })
 
-const dashboardRoute = createRoute({ getParentRoute: () => rootRoute, id: 'dashboard', component: DashboardLayout })
+const analyticsRoute = createRoute({ getParentRoute: () => rootRoute, id: 'analytics', component: AnalyticsProvider })
+const dashboardRoute = createRoute({
+  getParentRoute: () => analyticsRoute,
+  id: 'dashboard',
+  component: DashboardLayout,
+})
 
 const overviewRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/', component: OverviewView })
 const sessionsRoute = createRoute({ getParentRoute: () => dashboardRoute, path: '/sessions', component: SessionsView })
@@ -51,26 +58,49 @@ const coachSkillsRoute = createRoute({
   component: CoachSkillsView,
 })
 
-const settingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/settings', component: SettingsView })
+const settingsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/settings',
+  component: LegacySettingsRoute,
+})
+
+/** Old links to /settings now open the dialog and return to the previous vertical. */
+// eslint-disable-next-line react-refresh/only-export-components -- this route-only component is not exported.
+function LegacySettingsRoute(): null {
+  const { showSettings } = useSettingsDialogStore()
+  const { vertical, lastAnalyticsDestination } = useAppVerticalStore()
+
+  useEffect(() => {
+    showSettings()
+    navigateToVertical(vertical, lastAnalyticsDestination)
+  }, [lastAnalyticsDestination, showSettings, vertical])
+
+  return null
+}
+
+const workspaceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/workspace', component: WorkspaceView })
 
 const routeTree = rootRoute.addChildren([
-  dashboardRoute.addChildren([
-    overviewRoute,
-    sessionsRoute,
-    sessionDetailRoute,
-    pullRequestsRoute,
-    spendRoute,
-    optimizeRoute,
-    modelsRoute,
-    compareRoute,
-    coachSkillsRoute,
+  analyticsRoute.addChildren([
+    dashboardRoute.addChildren([
+      overviewRoute,
+      sessionsRoute,
+      sessionDetailRoute,
+      pullRequestsRoute,
+      spendRoute,
+      optimizeRoute,
+      modelsRoute,
+      compareRoute,
+      coachSkillsRoute,
+    ]),
   ]),
   settingsRoute,
+  workspaceRoute,
 ])
 
 export const router = createRouter({
   routeTree,
-  history: createMemoryHistory({ initialEntries: ['/'] }),
+  history: createMemoryHistory({ initialEntries: ['/workspace'] }),
 })
 
 // Navigation goes through app/navigation.ts (module-level, works during the

@@ -1,5 +1,12 @@
 import { ROUTES, type Section, SECTIONS } from '@/shared/schemas/navigation.js'
 
+export type AppVertical = 'analytics' | 'workspace'
+
+/** The startup route for a saved app vertical. */
+export function routeForVertical(vertical: AppVertical): string {
+  return vertical === 'workspace' ? ROUTES.workspace : ROUTES.overview
+}
+
 // The renderer's navigation entry point (ADR 0014). Sections and routes
 // themselves are declared once in shared/schemas/navigation.ts.
 
@@ -22,6 +29,7 @@ export function sectionForPath(pathname: string): Section {
 type Navigate = (to: string, sourceId?: number) => void
 
 let navigate: Navigate | null = null
+let openSettings: (() => void) | null = null
 
 /** Injected by app/router.tsx at startup so this module stays pure TS — it
  * never imports the router, keeping it unit-testable in a headless vitest
@@ -30,14 +38,36 @@ export function setRouter(navigateImpl: Navigate): void {
   navigate = navigateImpl
 }
 
+/** Injected by the hydrated app shell so Settings opens as a dialog. */
+export function setSettingsOpener(open: () => void): void {
+  openSettings = open
+}
+
 /** Navigate to a section's route. A no-op until the router is wired. */
 export function navigateToSection(section: Section): void {
+  if (section === 'settings') {
+    if (openSettings) openSettings()
+    else if (navigate) navigate(routeFor(section))
+    return
+  }
   if (navigate) navigate(routeFor(section))
 }
 
 /** Navigate to a session detail route. */
 export function navigateToSession(id: string, sourceId?: number | null): void {
   if (!navigate) return
-  if (sourceId == null) navigate(ROUTES.sessionDetail(id))
-  else navigate(ROUTES.sessionDetail(id), sourceId)
+  navigate(ROUTES.sessionDetail(id), sourceId ?? undefined)
+}
+
+/** Switch the shell's app vertical, restoring the last Analytics route when returning. */
+export function navigateToVertical(
+  vertical: AppVertical,
+  destination: { readonly to: string; readonly sourceId?: number } = { to: ROUTES.overview },
+): void {
+  if (!navigate) return
+  if (vertical === 'workspace') {
+    navigate(ROUTES.workspace)
+    return
+  }
+  navigate(destination.to, destination.sourceId)
 }

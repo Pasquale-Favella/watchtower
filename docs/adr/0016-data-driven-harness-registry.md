@@ -2,6 +2,8 @@
 
 Status: accepted (revised — SDK pivot: TanStack AI SDK → AI SDK v6 + ACP provider)
 
+The workspace contract in [ADR 0039](0039-agent-workspace-domain-and-execution.md) permits native session protocols alongside ACP. The registry and Coach implementation documented below remain until their explicit migration; supported transports and controls must be established by driver conformance rather than the Harness name.
+
 ## Context
 
 Ticket 20 introduced the HarnessRuntime seam and a Harness registry parallel to the Provider registry (ADR 0006). The initial registry drove three coding-agent CLIs (claude, opencode, codex) from a hardcoded `HarnessKind` union with inline `SPECS` / `MODELS` / `SCRUB_ENV` / `PREFERENCE` tables, on the TanStack AI SDK (`@tanstack/ai` + per-harness adapter packages). The parse side already reads 38 harnesses as data sources; the user's bar was to drive every technically drivable one on the run side — the majority of the 38.

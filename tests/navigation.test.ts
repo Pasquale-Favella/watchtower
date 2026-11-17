@@ -1,14 +1,24 @@
 import { createMemoryHistory, createRootRoute, createRoute, createRouter } from '@tanstack/react-router'
+import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Schema from 'effect/Schema'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
   navigateToSection,
   navigateToSession,
+  navigateToVertical,
   routeFor,
+  routeForVertical,
   sectionForPath,
   setRouter,
+  setSettingsOpener,
 } from '../src/renderer/app/navigation.js'
+import { NAV_SECTIONS } from '../src/renderer/app/shortcuts.js'
+import {
+  appVerticalAtom,
+  lastAnalyticsDestinationAtom,
+  syncAppVerticalFromRouteAtom,
+} from '../src/renderer/stores/atoms/app-vertical.js'
 import { ROUTES, SECTIONS } from '../src/shared/schemas/navigation.js'
 import { sessionDetailSearchSchema } from '../src/shared/schemas/views.js'
 
@@ -17,7 +27,7 @@ beforeEach(() => {
 })
 
 describe('navigation (ADR 0014)', () => {
-  it('keeps SECTIONS in canonical sidebar order (overview first, settings last)', () => {
+  it('retains the navigation targets used by IPC callers', () => {
     expect(SECTIONS).toEqual([
       'overview',
       'sessions',
@@ -27,6 +37,7 @@ describe('navigation (ADR 0014)', () => {
       'models',
       'compare',
       'coachSkills',
+      'workspace',
       'settings',
     ])
   })
@@ -41,6 +52,11 @@ describe('navigation (ADR 0014)', () => {
     expect(routeFor('compare')).toBe('/compare')
     expect(routeFor('coachSkills')).toBe('/coach-skills')
     expect(routeFor('settings')).toBe('/settings')
+  })
+
+  it('maps the saved vertical to its startup route', () => {
+    expect(routeForVertical('workspace')).toBe('/workspace')
+    expect(routeForVertical('analytics')).toBe('/')
   })
 
   it('builds the session-detail path from an id', () => {
@@ -66,6 +82,21 @@ describe('navigation (ADR 0014)', () => {
     expect(calls).toEqual(['/models'])
   })
 
+  it('opens Settings through the injected dialog opener without navigating', () => {
+    const calls: string[] = []
+    let opened = 0
+    setRouter(to => calls.push(to))
+    setSettingsOpener(() => {
+      opened += 1
+    })
+
+    navigateToSection('settings')
+
+    expect(opened).toBe(1)
+    expect(calls).toEqual([])
+    expect(NAV_SECTIONS).toContain('settings')
+  })
+
   it('navigateToSession drives the configured router to the detail path', () => {
     const calls: string[] = []
     setRouter(to => {
@@ -73,6 +104,48 @@ describe('navigation (ADR 0014)', () => {
     })
     navigateToSession('abc')
     expect(calls).toEqual(['/sessions/abc'])
+  })
+
+  it('remembers the resolved Analytics route and source search across vertical switches', async () => {
+    const registry = AtomRegistry.make()
+    const root = createRootRoute()
+    const sessionDetail = createRoute({
+      getParentRoute: () => root,
+      path: '/sessions/$sessionId',
+      validateSearch: Schema.decodeUnknownSync(sessionDetailSearchSchema),
+    })
+    const workspace = createRoute({ getParentRoute: () => root, path: '/workspace' })
+    const router = createRouter({
+      routeTree: root.addChildren([sessionDetail, workspace]),
+      history: createMemoryHistory({ initialEntries: ['/sessions/session-1?sourceId=2'] }),
+    })
+    await router.load()
+
+    const syncFromResolvedRoute = () => {
+      const { pathname, search } = router.state.location
+      const sourceId = typeof search.sourceId === 'number' ? search.sourceId : undefined
+      registry.set(syncAppVerticalFromRouteAtom, { pathname, ...(sourceId === undefined ? {} : { sourceId }) })
+    }
+    syncFromResolvedRoute()
+    expect(registry.get(lastAnalyticsDestinationAtom)).toEqual({ to: '/sessions/session-1', sourceId: 2 })
+
+    let navigation = Promise.resolve()
+    setRouter((to, sourceId) => {
+      navigation = router.navigate({ to, search: sourceId === undefined ? {} : { sourceId } })
+    })
+    navigateToVertical('workspace', registry.get(lastAnalyticsDestinationAtom))
+    await navigation
+    syncFromResolvedRoute()
+    expect(router.state.location.pathname).toBe('/workspace')
+    expect(registry.get(appVerticalAtom)).toBe('workspace')
+
+    navigateToVertical('analytics', registry.get(lastAnalyticsDestinationAtom))
+    await navigation
+    syncFromResolvedRoute()
+    expect(router.state.location.pathname).toBe('/sessions/session-1')
+    expect(router.state.location.search).toEqual({ sourceId: 2 })
+    expect(registry.get(lastAnalyticsDestinationAtom)).toEqual({ to: '/sessions/session-1', sourceId: 2 })
+    registry.dispose()
   })
 
   it('retains source search through TanStack navigation while legacy routes stay source-free', async () => {

@@ -1,22 +1,22 @@
 import { Outlet } from '@tanstack/react-router'
 
-import { SidebarInset, SidebarProvider } from '@/renderer/components/ui/sidebar'
-import { TooltipProvider } from '@/renderer/components/ui/tooltip'
-
 import { AppSidebar } from '@/renderer/components/shell/app-sidebar'
-import { CommandPalette } from '@/renderer/components/shell/CommandPalette'
 import { Onboarding } from '@/renderer/components/shell/Onboarding'
-import { ScanIndicator } from '@/renderer/components/shell/ScanIndicator'
 import { SidebarToggleShortcut } from '@/renderer/components/shell/SidebarToggleShortcut'
 import { Splash } from '@/renderer/components/shell/splash/Splash'
+import { SidebarInset, SidebarProvider } from '@/renderer/components/ui/sidebar'
+import { TooltipProvider } from '@/renderer/components/ui/tooltip'
+import { SettingsDialog } from '@/renderer/features/settings/SettingsView'
 import { useAppBootstrap } from '@/renderer/stores/hooks/use-app-bootstrap'
-import { useAppHotkeys } from '@/renderer/stores/hooks/use-app-hotkeys'
+import { useSyncAppVerticalFromRoute } from '@/renderer/stores/hooks/use-app-vertical-store'
+import { useSettingsHotkey } from '@/renderer/stores/hooks/use-settings-hotkey'
 import { useShellStore } from '@/renderer/stores/hooks/use-shell-store'
 
 /** Owns window bootstrap and renders Splash until ledger hydration completes. */
 export function AppRoot() {
   useAppBootstrap()
-  useAppHotkeys()
+  useSyncAppVerticalFromRoute()
+  useSettingsHotkey()
 
   const { hydrated, onboarded } = useShellStore()
 
@@ -34,13 +34,12 @@ export function AppRoot() {
   return (
     <>
       <TooltipProvider delay={0}>
+        <SettingsDialog />
         <SidebarProvider className="h-screen">
           <SidebarToggleShortcut />
-          <CommandPalette />
           <AppSidebar />
           <SidebarInset className="min-h-0">
             <ApplicationConnectionNotice />
-            <ScanIndicator />
             <Outlet />
           </SidebarInset>
         </SidebarProvider>

@@ -35,12 +35,17 @@ const EFFECT_COMPOSITION_ROOTS = [
   'src/platform/electron/main/main-runtime.ts',
   'src/infrastructure/runtime/engine-runtime.ts',
   'src/infrastructure/agent-harnesses/runtime.ts',
+  'src/infrastructure/agent-harnesses/drivers/claude/driver.ts',
+  'src/infrastructure/agent-harnesses/drivers/acp/driver.ts',
   'src/platform/mcp/sidecar.ts',
   'src/platform/mcp/pool.ts',
   'src/infrastructure/agent-harnesses/auth-probe.ts',
   'src/infrastructure/agent-harnesses/process-tree.ts',
   'src/platform/electron/workers/context.ts',
   'src/platform/electron/workers/client.ts',
+  'src/renderer/features/workspace/right-panel/code-processing.worker.ts',
+  'src/renderer/features/workspace/right-panel/csv-preview.worker.ts',
+  'src/renderer/features/workspace/right-panel/file-previews/preview.worker.ts',
 ]
 const processBoundaryZones = [
   {

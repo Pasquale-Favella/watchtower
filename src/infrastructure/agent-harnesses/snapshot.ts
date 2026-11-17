@@ -7,12 +7,6 @@ import * as FiberHandle from 'effect/FiberHandle'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
 
-import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
-import {
-  OperationalLog,
-  type OperationalLogCounter,
-  PROBE_OUTCOME_COUNTER,
-} from '@/infrastructure/logging/operational-log.js'
 import { CommandRunner } from '@/core/ports/process.js'
 import type { HarnessInfo } from '@/infrastructure/agent-harnesses/detect.js'
 import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
@@ -21,6 +15,12 @@ import {
   type ProbeResult,
   type ProbeStatus,
 } from '@/infrastructure/agent-harnesses/probe.js'
+import {
+  OperationalLog,
+  type OperationalLogCounter,
+  PROBE_OUTCOME_COUNTER,
+} from '@/infrastructure/logging/operational-log.js'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
 
 export interface HarnessInstance {
   instanceId: string
@@ -216,6 +216,13 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
         return yield* Deferred.await(deferred)
       })
 
+    const shutdown = Effect.gen(function* () {
+      stopped = true
+      yield* FiberHandle.clear(detectionHandle)
+      yield* FiberHandle.clear(probeHandle)
+    })
+    yield* Effect.addFinalizer(() => shutdown)
+
     return HarnessSnapshot.of({
       current: () => Effect.sync(rows),
       list: () => requestDetection(false),
@@ -236,12 +243,7 @@ function makeHarnessSnapshot(options: HarnessSnapshotOptions) {
           yield* publish()
         }),
       start: () => requestDetection(false).pipe(Effect.asVoid),
-      shutdown: () =>
-        Effect.gen(function* () {
-          stopped = true
-          yield* FiberHandle.clear(detectionHandle)
-          yield* FiberHandle.clear(probeHandle)
-        }),
+      shutdown: () => shutdown,
     })
   })
 }
