@@ -38,6 +38,39 @@ export function toolCategoryFor(tool: ToolBlock): ToolCategory {
   return tool.category ? metadataCategories[tool.category] : toolCategory(tool.name)
 }
 
+export function delegateChildStatusLabel(status: string): string {
+  const normalized = status.trim().toLowerCase()
+  if (/fail|error/.test(normalized)) return 'Failed'
+  if (/complete|done|success/.test(normalized)) return 'Completed'
+  if (/cancel|stop|interrupt/.test(normalized)) return 'Stopped'
+  if (/wait/.test(normalized)) return 'Waiting'
+  if (/pending|queue/.test(normalized)) return 'Queued'
+  if (/run|work|start|active|in.?progress/.test(normalized)) return 'Running'
+  return status.trim() || 'Status unavailable'
+}
+
+export function delegateDisplayStatus(tool: ToolBlock): ToolBlock['status'] {
+  const children = tool.delegate?.children ?? []
+  if (children.length === 0) return tool.status
+  const labels = children.map(child => delegateChildStatusLabel(child.status))
+  if (labels.some(label => label === 'Running' || label === 'Waiting' || label === 'Queued')) return 'running'
+  if (labels.some(label => label === 'Failed')) return 'failed'
+  if (labels.every(label => label === 'Completed' || label === 'Stopped')) return 'completed'
+  return tool.status
+}
+
+export function delegateChildrenSummary(tool: ToolBlock): string | null {
+  const children = tool.delegate?.children ?? []
+  if (children.length === 0) return null
+  const counts = new Map<string, number>()
+  for (const child of children) {
+    const label = delegateChildStatusLabel(child.status).toLowerCase()
+    counts.set(label, (counts.get(label) ?? 0) + 1)
+  }
+  const statuses = [...counts].map(([label, count]) => `${count} ${label}`).join(' · ')
+  return `${children.length} ${children.length === 1 ? 'agent' : 'agents'} · ${statuses}`
+}
+
 const pathKeys = ['file_path', 'filePath', 'notebook_path', 'path'] as const
 
 /** The file a tool call names, when its JSON input says so. */

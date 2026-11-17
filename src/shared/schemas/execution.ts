@@ -177,6 +177,20 @@ export const agentToolMetadataSchema = Schema.Struct({
   command: Schema.optional(Schema.String),
   cwd: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
+  delegate: Schema.optional(
+    Schema.Struct({
+      action: Schema.optional(Schema.String),
+      model: Schema.optional(Schema.String),
+      reasoningEffort: Schema.optional(Schema.String),
+      children: Schema.Array(
+        Schema.Struct({
+          id: text,
+          status: Schema.String,
+          message: Schema.optional(Schema.String),
+        }),
+      ),
+    }),
+  ),
   exitCode: Schema.optional(Schema.Number.check(Schema.isInt())),
   durationMs: Schema.optional(nonNegative),
   paths: Schema.optional(Schema.Array(Schema.String)),

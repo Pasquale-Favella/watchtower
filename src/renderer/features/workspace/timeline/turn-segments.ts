@@ -1,7 +1,7 @@
 import type { ConversationAssistantTurn, ConversationRun, ConversationTurnBlock } from '../conversation-view.js'
 import { elapsedBetween, formatRunDuration } from './duration.js'
 import { planCopyText } from './plan-text.js'
-import { summarizeToolCalls, type ToolBlock, type WorkSummary } from './work-log.js'
+import { summarizeToolCalls, toolCategoryFor, type ToolBlock, type WorkSummary } from './work-log.js'
 
 export interface WorkGroup {
   readonly key: string
@@ -15,6 +15,7 @@ type NonToolBlock = Exclude<ConversationTurnBlock, { kind: 'tool' }>
 export type TurnSegment =
   | { readonly kind: 'block'; readonly key: string; readonly block: NonToolBlock }
   | ({ readonly kind: 'work' } & WorkGroup)
+  | { readonly kind: 'delegate'; readonly key: string; readonly tool: ToolBlock }
   | {
       readonly kind: 'fold'
       readonly key: string
@@ -27,6 +28,7 @@ export type TurnSegment =
 type RawSegment =
   | { readonly kind: 'block'; readonly block: NonToolBlock }
   | { readonly kind: 'tools'; readonly tools: ToolBlock[]; readonly failed: boolean }
+  | { readonly kind: 'delegate'; readonly tool: ToolBlock }
 
 /**
  * Consecutive tool calls form one group. A failed call stands alone so its error stays visible,
@@ -37,6 +39,10 @@ function rawSegments(blocks: readonly ConversationTurnBlock[]): RawSegment[] {
   for (const block of blocks) {
     if (block.kind !== 'tool') {
       segments.push({ kind: 'block', block })
+      continue
+    }
+    if (toolCategoryFor(block) === 'subagent') {
+      segments.push({ kind: 'delegate', tool: block })
       continue
     }
     const failed = block.status === 'failed'
@@ -67,9 +73,16 @@ function workSegment(tools: readonly ToolBlock[]): TurnSegment {
   return { kind: 'work', ...groupFor(tools) }
 }
 
+function delegateSegment(tool: ToolBlock): TurnSegment {
+  return { kind: 'delegate', key: `delegate:${tool.sequence}:${tool.toolCallId}`, tool }
+}
+
 /** Tool calls that did not fail: the routine activity a settled Run folds into one row. */
 function routineTools(blocks: readonly ConversationTurnBlock[]): ToolBlock[] {
-  return blocks.filter((block): block is ToolBlock => block.kind === 'tool' && block.status !== 'failed')
+  return blocks.filter(
+    (block): block is ToolBlock =>
+      block.kind === 'tool' && block.status !== 'failed' && toolCategoryFor(block) !== 'subagent',
+  )
 }
 
 /**
@@ -95,7 +108,11 @@ export function buildTurnSegments(
   const foldLabel = foldLabelFor(turn.run, turn.blocks)
   if (foldLabel === null || preserveWorkLayout) {
     return raw.map((segment): TurnSegment =>
-      segment.kind === 'block' ? blockSegment(segment.block) : workSegment(segment.tools),
+      segment.kind === 'block'
+        ? blockSegment(segment.block)
+        : segment.kind === 'delegate'
+          ? delegateSegment(segment.tool)
+          : workSegment(segment.tools),
     )
   }
 
@@ -107,6 +124,8 @@ export function buildTurnSegments(
   for (const segment of raw) {
     if (segment.kind === 'block') {
       segments.push(blockSegment(segment.block))
+    } else if (segment.kind === 'delegate') {
+      segments.push(delegateSegment(segment.tool))
     } else if (segment.failed) {
       segments.push(workSegment(segment.tools))
     } else {

@@ -110,6 +110,57 @@ describe('conversation durable view projection', () => {
     ).toEqual(['user', 'newSession', 'user'])
   })
 
+  it('shows prepared context handoffs and suppresses the duplicate generic session notice', () => {
+    const sourceRunId = 'run-1' as WorkspaceExecutionEvent['runId']
+    const targetRunId = 'run-2' as WorkspaceExecutionEvent['runId']
+    const entries = projectConversationView(
+      [
+        {
+          ...item(1),
+          event: { ...event(1), kind: 'runQueued' as const, runId: sourceRunId },
+        },
+        {
+          ...item(2),
+          event: {
+            ...event(2),
+            kind: 'contextHandoff' as const,
+            runId: targetRunId,
+            data: {
+              sourceRunId,
+              sourceConnectionId: 'codex-local',
+              sourceModelId: 'gpt-fast',
+              targetConnectionId: 'claude-local',
+              targetModelId: 'claude-sonnet',
+              highWatermark: 17,
+              truncated: true,
+            },
+          },
+        },
+        {
+          ...item(3),
+          event: { ...event(3), kind: 'runQueued' as const, runId: targetRunId },
+        },
+      ],
+      new Map(),
+      new Map([
+        [sourceRunId, 'session-1'],
+        [targetRunId, 'session-2'],
+      ]),
+    ).entries
+    const notices = entries.filter(
+      (entry): entry is Extract<typeof entry, { kind: 'status' }> => entry.kind === 'status',
+    )
+    expect(notices.map(entry => entry.notice)).toEqual([undefined, 'contextHandoff', undefined])
+    expect(notices[1]?.handoff).toMatchObject({
+      sourceConnectionId: 'codex-local',
+      targetConnectionId: 'claude-local',
+      sourceModelId: 'gpt-fast',
+      targetModelId: 'claude-sonnet',
+      highWatermark: 17,
+      truncated: true,
+    })
+  })
+
   it('decodes only valid driver events and ignores summarized payload bodies', () => {
     expect(decodeConversationEvent(event(1, { event: { kind: 'textDelta', text: 'full text' } }))).toEqual({
       kind: 'textDelta',

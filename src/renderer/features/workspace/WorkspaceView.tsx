@@ -12,6 +12,7 @@ import {
   useWorkspaceTask,
   useWorkspaceTaskSnapshot,
 } from './hooks.js'
+import { useSideChats } from './side-chat/hooks.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { attachmentPromptToken } from './prompt-editor.js'
 import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
@@ -84,10 +85,15 @@ function TaskConversation({
   const resources = useWorkspacePanelResources(ownerKey, panel, taskId)
   const appendDraft = useDraftAppend()
   const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
+  const sideChats = useSideChats(taskId)
   const nativeSessions = useWorkspaceNativeAgentSessions({ taskId, options: { limit: 50 } })
   const sessionIdsByRunId = useMemo(
     () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
     [snapshot.data?.runs],
+  )
+  const runContextsByRunId = useMemo(
+    () => new Map(snapshot.data?.runContexts?.map(context => [context.runId, context] as const) ?? []),
+    [snapshot.data?.runContexts],
   )
   const detail = useWorkspaceTask({
     taskId,
@@ -133,6 +139,9 @@ function TaskConversation({
       detailsOpen={detailsOpen}
       detailsMode={detailsMode}
       onToggleDetails={detail.data ? toggleDetails : undefined}
+      relatedSideChatCount={
+        sideChats.items.filter(item => !conversation || item.parentConversationId === conversation.id).length
+      }
     />
   )
 
@@ -208,6 +217,7 @@ function TaskConversation({
                 <WorkspaceConversation
                   conversationId={conversation.id}
                   sessionIdsByRunId={sessionIdsByRunId}
+                  runContextsByRunId={runContextsByRunId}
                   promptCommands={promptCommands}
                   workspacePath={runContext?.workspacePath ?? checkout?.path}
                   onOpenFile={panel.openFile}

@@ -12,7 +12,14 @@ import {
   isEmptySettledTurn,
   turnCopyText,
 } from '../src/renderer/features/workspace/timeline/turn-segments.js'
-import { summarizeToolCalls, toolCategory, toolPath } from '../src/renderer/features/workspace/timeline/work-log.js'
+import {
+  delegateChildStatusLabel,
+  delegateChildrenSummary,
+  delegateDisplayStatus,
+  summarizeToolCalls,
+  toolCategory,
+  toolPath,
+} from '../src/renderer/features/workspace/timeline/work-log.js'
 
 type Tool = Extract<ConversationTurnBlock, { kind: 'tool' }>
 
@@ -145,6 +152,56 @@ describe('work log grouping', () => {
       ]),
     )
     expect(segments.filter(segment => segment.kind === 'work')).toHaveLength(2)
+  })
+
+  it('keeps delegated work as its own row and reports child state when call status is sparse', () => {
+    const delegated = {
+      ...tool(2, 'collabAgentToolCall', 'unknown'),
+      category: 'subagent',
+      description: 'Inspect the test failures',
+      delegate: {
+        action: 'spawnAgent',
+        model: 'fast-model',
+        reasoningEffort: 'medium',
+        children: [
+          { id: 'agent-1', status: 'in_progress', message: 'Reading test output' },
+          { id: 'agent-2', status: 'completed', message: 'Found a regression' },
+        ],
+      },
+    } satisfies Tool
+    const segments = buildTurnSegments(turn('completed', [tool(1, 'Bash'), delegated, tool(3, 'Read')]))
+    expect(segments.map(segment => segment.kind)).toEqual(['fold', 'delegate'])
+    expect(segments[1]).toMatchObject({
+      kind: 'delegate',
+      tool: { delegate: { children: [{ id: 'agent-1' }, { id: 'agent-2' }] } },
+    })
+    expect(delegateDisplayStatus(delegated)).toBe('running')
+    expect(delegateChildrenSummary(delegated)).toBe('2 agents · 1 running · 1 completed')
+    expect(delegateChildStatusLabel('completed')).toBe('Completed')
+    expect(delegateChildStatusLabel('failed')).toBe('Failed')
+  })
+
+  it('keeps completed and failed delegates visible outside the ordinary work fold', () => {
+    const completed = { ...tool(1, 'Task', 'completed'), category: 'subagent' } satisfies Tool
+    const failed = { ...tool(2, 'delegate_task', 'failed'), category: 'subagent' } satisfies Tool
+    const segments = buildTurnSegments(turn('completed', [tool(0, 'Read'), completed, failed]))
+    expect(segments.map(segment => segment.kind)).toEqual(['fold', 'delegate', 'delegate'])
+    expect(delegateDisplayStatus(completed)).toBe('completed')
+    expect(delegateDisplayStatus(failed)).toBe('failed')
+  })
+
+  it('uses native child statuses over an early completed call status', () => {
+    const toolWithLiveChild = {
+      ...tool(1, 'collabAgentToolCall', 'completed'),
+      delegate: {
+        children: [
+          { id: 'agent-1', status: 'running' },
+          { id: 'agent-2', status: 'failed' },
+        ],
+      },
+    } satisfies Tool
+    expect(delegateDisplayStatus(toolWithLiveChild)).toBe('running')
+    expect(delegateChildrenSummary(toolWithLiveChild)).toBe('2 agents · 1 running · 1 failed')
   })
 })
 

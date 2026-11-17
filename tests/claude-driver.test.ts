@@ -814,6 +814,93 @@ describe('Claude Agent SDK native driver', () => {
     expect(fake.calls[0]?.closed).toBe(true)
   })
 
+  it('reports native delegated task progress against its tool call', async () => {
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+    const received = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          const session = yield* connection.openSession(context)
+          const runId = turn.runId
+          const submitted = yield* Effect.forkDetach(session.submit(turn))
+          const input = yield* Effect.promise(() => promptIterator(fakeCall(fake)).next())
+          const messageUuid = inputUuid(input.value)
+          fakeCall(fake).push({
+            type: 'stream_event',
+            uuid: '00000000-0000-4000-8000-000000000051',
+            session_id: 'native-session',
+            parent_tool_use_id: null,
+            user_message_uuid: messageUuid,
+            event: {
+              type: 'content_block_start',
+              index: 0,
+              content_block: {
+                type: 'tool_use',
+                id: 'agent-tool',
+                name: 'Agent',
+                input: { description: 'Review code' },
+              },
+            },
+          } satisfies SDKMessage)
+          yield* Fiber.join(submitted)
+          const collecting = yield* Effect.forkDetach(Stream.runCollect(session.events(runId)))
+          fakeCall(fake).push({
+            type: 'system',
+            subtype: 'task_started',
+            task_id: 'task-child',
+            tool_use_id: 'agent-tool',
+            description: 'Review code',
+            subagent_type: 'reviewer',
+            task_type: 'local_agent',
+            uuid: '00000000-0000-4000-8000-000000000052',
+            session_id: 'native-session',
+          } satisfies SDKMessage)
+          fakeCall(fake).push({
+            type: 'system',
+            subtype: 'task_progress',
+            task_id: 'task-child',
+            tool_use_id: 'agent-tool',
+            description: 'Reading files',
+            summary: 'Checking tests',
+            usage: { total_tokens: 10, tool_uses: 2, duration_ms: 1000 },
+            uuid: '00000000-0000-4000-8000-000000000053',
+            session_id: 'native-session',
+          } satisfies SDKMessage)
+          fakeCall(fake).push({
+            type: 'system',
+            subtype: 'task_notification',
+            task_id: 'task-child',
+            tool_use_id: 'agent-tool',
+            status: 'completed',
+            summary: 'Review complete',
+            output_file: 'result.txt',
+            uuid: '00000000-0000-4000-8000-000000000054',
+            session_id: 'native-session',
+          } satisfies SDKMessage)
+          fakeCall(fake).push(resultMessage('native-session', '00000000-0000-4000-8000-000000000055'))
+          const events = [...(yield* Fiber.join(collecting))]
+          yield* connection.close(1000)
+          return events
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+    expect(received.filter(event => event.kind === 'toolUpdated' && event.toolCallId === 'agent-tool')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          delegate: { action: 'Agent', children: [{ id: 'task-child', status: 'running', message: 'Checking tests' }] },
+        }),
+        expect.objectContaining({
+          delegate: {
+            action: 'Agent',
+            children: [{ id: 'task-child', status: 'completed', message: 'Review complete' }],
+          },
+        }),
+      ]),
+    )
+  })
+
   it('injects the task browser HTTP MCP on fresh and resumed Claude sessions', async () => {
     const browserContext = {
       ...context,

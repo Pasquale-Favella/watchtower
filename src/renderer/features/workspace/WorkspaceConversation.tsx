@@ -8,6 +8,7 @@ import {
   useWorkspaceEvents,
   useWorkspacePayload,
 } from '@/renderer/features/workspace/hooks.js'
+import { useWorkspaceConnections } from '@/renderer/features/workspace/connection-hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
@@ -15,6 +16,7 @@ import type {
   WorkspaceConversationPageItem,
   WorkspaceExecutionEvent,
   WorkspacePayloadReference,
+  WorkspaceRunContext,
 } from '@/shared/schemas/workspace-store.js'
 
 import {
@@ -46,6 +48,7 @@ import {
 import { PromptMessageContent } from './PromptMessageContent.js'
 import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
+import { DelegateRow } from './timeline/DelegateRow.js'
 import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
 import { MediaBlock } from './timeline/MediaBlock.js'
 import { MessageActions } from './timeline/MessageActions.js'
@@ -101,6 +104,7 @@ export function WorkspaceConversation({
   onOpenFile,
   scope,
   sessionIdsByRunId,
+  runContextsByRunId,
   promptCommands,
 }: {
   readonly conversationId: ConversationId
@@ -108,6 +112,7 @@ export function WorkspaceConversation({
   readonly onOpenFile?: ((path: string) => void) | undefined
   readonly scope?: CheckoutScope | undefined
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null> | undefined
+  readonly runContextsByRunId?: ReadonlyMap<string, WorkspaceRunContext> | undefined
   readonly promptCommands?: readonly string[] | undefined
 }): React.JSX.Element {
   const loadImage = useMarkdownImageLoader(scope ?? null)
@@ -121,6 +126,7 @@ export function WorkspaceConversation({
         key={conversationId}
         conversationId={conversationId}
         sessionIdsByRunId={sessionIdsByRunId}
+        runContextsByRunId={runContextsByRunId}
         promptCommands={promptCommands}
       />
     </MarkdownNavigationContext>
@@ -130,13 +136,21 @@ export function WorkspaceConversation({
 function WorkspaceConversationView({
   conversationId,
   sessionIdsByRunId = new Map(),
+  runContextsByRunId = new Map(),
   promptCommands = [],
 }: {
   readonly conversationId: ConversationId
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null>
+  readonly runContextsByRunId?: ReadonlyMap<string, WorkspaceRunContext>
   readonly promptCommands?: readonly string[]
 }): React.JSX.Element {
   const { projection, stream } = useWorkspaceEvents()
+  const connections = useWorkspaceConnections()
+  const connectionLabels = useMemo(
+    () =>
+      new Map(connections.data?.items.map(connection => [connection.connectionId, connection.label] as const) ?? []),
+    [connections.data?.items],
+  )
   const { submissions, messageKeys, reconcile } = usePendingStart()
   const submission = submissions[conversationId] ?? null
   const [transcript, setTranscript] = useState<Transcript>({ conversationId, items: [] })
@@ -363,7 +377,7 @@ function WorkspaceConversationView({
     for (const { value: result } of payloadResults.entries.values()) {
       if (result.value && 'data' in result.value) hydratedEvents.set(result.value.sequence, result.value)
     }
-    const { entries, activity } = projectConversationView(items, hydratedEvents, sessionIdsByRunId)
+    const { entries, activity } = projectConversationView(items, hydratedEvents, sessionIdsByRunId, runContextsByRunId)
     const timeline = buildTimelineRows(
       entries.filter(
         entry =>
@@ -389,7 +403,7 @@ function WorkspaceConversationView({
       timeline.push({ kind: 'user', id: entry.id, entry, delivery: submission.state })
     }
     return timeline
-  }, [items, payloadResults, submission, messageKeys, preservedWorkTurns, sessionIdsByRunId])
+  }, [items, payloadResults, submission, messageKeys, preservedWorkTurns, sessionIdsByRunId, runContextsByRunId])
   useEffect(() => {
     if (activeRequest || conversation.error) return
     if (!restoredAnchor.current) {
@@ -543,7 +557,8 @@ function WorkspaceConversationView({
               )
             }
             if (row.kind === 'activity') return <ActivityRow activity={row.activity} />
-            if (row.kind === 'status') return <ConversationStatusEntry entry={row.entry} />
+            if (row.kind === 'status')
+              return <ConversationStatusEntry entry={row.entry} connectionLabels={connectionLabels} />
             if (row.kind === 'turnEnd') return <AssistantTurnEnd entry={row.turn} />
             const segment = row.segment
             let content: React.ReactNode
@@ -556,6 +571,7 @@ function WorkspaceConversationView({
                   onDisclosureChange={onDisclosureChange}
                 />
               )
+            else if (segment.kind === 'delegate') content = <DelegateRow tool={segment.tool} />
             else if (segment.kind === 'fold') {
               content = (
                 <TurnFoldRow
@@ -746,13 +762,49 @@ function TurnBlock({
   }
 }
 
-function ConversationStatusEntry({ entry }: { readonly entry: ConversationStatusNotice }): React.JSX.Element {
-  if (entry.notice === 'newSession')
+function ConversationStatusEntry({
+  entry,
+  connectionLabels,
+}: {
+  readonly entry: ConversationStatusNotice
+  readonly connectionLabels: ReadonlyMap<string, string>
+}): React.JSX.Element {
+  if (entry.notice === 'contextHandoff' && entry.handoff) {
+    const handoff = entry.handoff
+    const source = connectionLabels.get(handoff.sourceConnectionId) ?? handoff.sourceConnectionId
+    const target = connectionLabels.get(handoff.targetConnectionId) ?? handoff.targetConnectionId
+    const sourceModel = handoff.sourceModelId?.trim()
+    const targetModel = handoff.targetModelId?.trim()
+    const endpoint = (connection: string, model: string | undefined) =>
+      model ? `${connection} · ${model}` : connection
     return (
-      <article className="text-muted-foreground py-2 text-center text-xs" aria-label="New session">
-        New session
+      <article className="text-muted-foreground py-2 text-center text-xs" aria-label="Context handoff prepared">
+        <p>Context handoff prepared for the next agent attempt</p>
+        <p className="mt-0.5 break-words">
+          {endpoint(source, sourceModel)} → {endpoint(target, targetModel)}
+        </p>
+        <p className="mt-0.5">
+          Includes conversation through event {handoff.highWatermark}
+          {handoff.truncated ? ' · context shortened' : ''}
+        </p>
       </article>
     )
+  }
+  if (entry.notice === 'newSession') {
+    const from = entry.fromConnectionId ? connectionLabels.get(entry.fromConnectionId) : undefined
+    const to = entry.toConnectionId ? connectionLabels.get(entry.toConnectionId) : undefined
+    const label =
+      from && to && from !== to
+        ? `Agent connection changed: ${from} → ${to}. A fresh agent session started.`
+        : to
+          ? `Fresh agent session started with ${to}.`
+          : 'Fresh agent session started.'
+    return (
+      <article className="text-muted-foreground py-2 text-center text-xs" aria-label="Agent session changed">
+        {label}
+      </article>
+    )
+  }
   const attention = ['runFailed', 'runUncertain', 'runRecoveryRequired'].includes(entry.event.kind)
   return (
     <article

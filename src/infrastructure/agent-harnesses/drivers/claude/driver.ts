@@ -232,6 +232,8 @@ const toolInputDetailsSchema = Schema.Struct({
   command: Schema.optional(Schema.String),
   cwd: Schema.optional(Schema.String),
   description: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.NullOr(Schema.String)),
+  subagent_type: Schema.optional(Schema.NullOr(Schema.String)),
   file_path: Schema.optional(Schema.String),
   path: Schema.optional(Schema.String),
   pattern: Schema.optional(Schema.String),
@@ -338,8 +340,16 @@ function toolMetadata(name: string, input: unknown): AgentToolMetadata {
   const path = details?.file_path ?? details?.path
   if (path) add({ paths: [boundedText(path, 1024)] })
   if (details?.url) add({ url: boundedText(details.url, 2048) })
-  const description = details?.description ?? details?.pattern ?? details?.query
+  const description = details?.description ?? details?.subagent_type ?? details?.pattern ?? details?.query
   if (description) add({ description: boundedText(description, 2048) })
+  if (result.category === 'subagent')
+    add({
+      delegate: {
+        action: name,
+        ...(details?.model ? { model: boundedText(details.model, 128) } : {}),
+        children: [],
+      },
+    })
   return result
 }
 
@@ -683,6 +693,11 @@ const makeSession = (
     const pending = new Map<string, PendingRequest>()
     const messagesByUuid = new Map<string, AgentRunId>()
     const activeTools = new Map<string, AgentRunId>()
+    const delegateChildrenByTool = new Map<string, Map<string, { id: string; status: string; message?: string }>>()
+    const delegateTasks = new Map<
+      string,
+      { runId: AgentRunId; toolCallId: string; children: Map<string, { id: string; status: string; message?: string }> }
+    >()
     const streamedTools = new Map<number, { readonly id: string; bytes: number; truncated: boolean }>()
     let streamMessageId: string | undefined
     const closed = { value: false }
@@ -983,6 +998,60 @@ const makeSession = (
           return yield* makeError('protocol-error', 'Claude Agent SDK emitted an event for a different native session.')
         }
 
+        if (message.type === 'system' && message.subtype === 'task_started') {
+          if (
+            message.ambient ||
+            message.skip_transcript ||
+            (message.task_type !== 'local_agent' && !message.subagent_type)
+          )
+            return
+          const runId = message.tool_use_id ? activeTools.get(message.tool_use_id) : currentRunId.value
+          if (!runId) return
+          const toolCallId = message.tool_use_id ?? `delegate:${message.task_id}`
+          const children =
+            delegateChildrenByTool.get(toolCallId) ??
+            new Map<string, { id: string; status: string; message?: string }>()
+          delegateChildrenByTool.set(toolCallId, children)
+          children.set(message.task_id, {
+            id: message.task_id,
+            status: 'running',
+            message: boundedText(message.description, 1024),
+          })
+          delegateTasks.set(message.task_id, { runId, toolCallId, children })
+          yield* emit(runId, {
+            kind: 'toolUpdated',
+            toolCallId,
+            name: 'Delegated agent',
+            category: 'subagent',
+            delegate: { action: 'Agent', children: [...children.values()] },
+          })
+          return
+        }
+        if (
+          message.type === 'system' &&
+          (message.subtype === 'task_progress' || message.subtype === 'task_notification')
+        ) {
+          const task = delegateTasks.get(message.task_id)
+          if (!task) return
+          const status = message.subtype === 'task_progress' ? 'running' : message.status
+          const detail =
+            message.subtype === 'task_progress' ? (message.summary ?? message.description) : message.summary
+          task.children.set(message.task_id, {
+            id: message.task_id,
+            status,
+            ...(detail ? { message: boundedText(detail, 1024) } : {}),
+          })
+          yield* emit(task.runId, {
+            kind: 'toolUpdated',
+            toolCallId: task.toolCallId,
+            name: 'Delegated agent',
+            category: 'subagent',
+            delegate: { action: 'Agent', children: [...task.children.values()] },
+          })
+          if (message.subtype === 'task_notification') delegateTasks.delete(message.task_id)
+          return
+        }
+
         const echoedUuid =
           'user_message_uuid' in message && typeof message.user_message_uuid === 'string'
             ? message.user_message_uuid
@@ -1147,6 +1216,8 @@ const makeSession = (
           const runId = currentRunId.value
           if (!runId) return
           streamedTools.clear()
+          delegateTasks.clear()
+          delegateChildrenByTool.clear()
           streamMessageId = undefined
           const usage = message.usage
           yield* emit(runId, {

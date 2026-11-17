@@ -11,8 +11,11 @@ import {
   agentToolMetadataSchema,
 } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
+import type { WorkspaceRunContext } from '@/shared/schemas/workspace-store.js'
 import {
   workspaceConversationMessageSchema,
+  conversationHandoffDataSchema,
+  type ConversationHandoffData,
   type WorkspaceConversationPageItem,
   type WorkspaceExecutionEvent,
   workspaceExecutionEventSchema,
@@ -126,7 +129,10 @@ export interface ConversationAssistantTurn {
 
 export interface ConversationStatusNotice {
   readonly kind: 'status'
-  readonly notice?: 'newSession'
+  readonly notice?: 'newSession' | 'contextHandoff'
+  readonly handoff?: ConversationHandoffData | undefined
+  readonly fromConnectionId?: string | undefined
+  readonly toConnectionId?: string | undefined
   readonly id: string
   readonly sequence: number
   readonly event: WorkspaceExecutionEvent
@@ -347,6 +353,7 @@ export function projectConversationView(
   items: readonly WorkspaceConversationPageItem[],
   hydratedEvents: ReadonlyMap<number, WorkspaceExecutionEvent> = new Map(),
   sessionIdsByRunId: ReadonlyMap<string, string | null> = new Map(),
+  runContextsByRunId: ReadonlyMap<string, WorkspaceRunContext> = new Map(),
 ): ConversationProjection {
   const ordered = [...items].sort((a, b) => a.event.sequence - b.event.sequence)
   const entries: Array<ConversationUserMessage | ConversationStatusNotice | MutableAssistantTurn> = []
@@ -357,21 +364,52 @@ export function projectConversationView(
   const runs = new Map<string, MutableRun>()
   const lastTurn = { current: null as MutableAssistantTurn | null }
   let previousNativeSessionId: string | null = null
+  let previousConnectionId: string | undefined
+  const handoffTargetRunIds = new Set<string>(
+    ordered.flatMap(({ event }) => {
+      if (event.kind !== 'contextHandoff') return []
+      const decoded = Schema.decodeUnknownOption(conversationHandoffDataSchema)(event.data)
+      return Option.isSome(decoded) ? [event.runId] : []
+    }),
+  )
 
   for (const item of ordered) {
     const { event } = item
+    if (event.kind === 'contextHandoff') {
+      const decoded = Schema.decodeUnknownOption(conversationHandoffDataSchema)(event.data)
+      if (Option.isSome(decoded)) {
+        entries.push({
+          kind: 'status',
+          notice: 'contextHandoff',
+          handoff: decoded.value,
+          id: `context-handoff:${event.sequence}`,
+          sequence: event.sequence,
+          event,
+        })
+      }
+      continue
+    }
     if (event.kind === 'runQueued') {
       const sessionId = sessionIdsByRunId.get(event.runId)
-      if (sessionId && previousNativeSessionId && sessionId !== previousNativeSessionId) {
+      const context = runContextsByRunId.get(event.runId)
+      if (
+        sessionId &&
+        previousNativeSessionId &&
+        sessionId !== previousNativeSessionId &&
+        !handoffTargetRunIds.has(event.runId)
+      ) {
         entries.push({
           kind: 'status',
           notice: 'newSession',
+          ...(previousConnectionId ? { fromConnectionId: previousConnectionId } : {}),
+          ...(context?.connectionId ? { toConnectionId: context.connectionId } : {}),
           id: `new-session:${event.sequence}`,
           sequence: event.sequence,
           event,
         })
       }
       if (sessionId) previousNativeSessionId = sessionId
+      if (context?.connectionId) previousConnectionId = context.connectionId
     }
     if (item.userMessage && !users.has(item.userMessage.id)) {
       const user: ConversationUserMessage = {

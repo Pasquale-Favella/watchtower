@@ -1318,6 +1318,126 @@ describe('Codex native App Server driver', () => {
     })
   })
 
+  it('retains delegated agent identity and status in tool events', async () => {
+    const server = fakeServer()
+    const event = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const start = yield* server.read
+          yield* server.send({ id: start.id, result: { thread: { id: 'thread-delegate' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-delegate' as Parameters<typeof session.submit>[0]['runId']
+          const iterable = yield* Stream.toAsyncIterableEffect(session.events(runId))
+          const iterator = iterable[Symbol.asyncIterator]()
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: 'Delegate work' }], attachmentIds: [] }),
+          )
+          const turnStart = yield* server.read
+          yield* server.send({ id: turnStart.id, result: { turn: { id: 'native-delegate', status: 'inProgress' } } })
+          yield* Fiber.join(submitting)
+          yield* server.send({
+            method: 'item/started',
+            params: {
+              threadId: 'thread-delegate',
+              turnId: 'native-delegate',
+              item: {
+                id: 'delegate-call',
+                type: 'collabAgentToolCall',
+                tool: 'spawnAgent',
+                model: 'model-a',
+                reasoningEffort: 'high',
+                prompt: 'Inspect the parser',
+                receiverThreadIds: ['child-1'],
+                agentsStates: { 'child-1': { status: 'running', message: 'Reading files' } },
+              },
+            },
+          })
+          const next = yield* Effect.tryPromise({
+            try: () => iterator.next(),
+            catch: () => new Error('delegate event stream failed'),
+          })
+          yield* connection.close(100)
+          return next.value
+        }),
+      ),
+    )
+
+    expect(event).toMatchObject({
+      kind: 'toolStarted',
+      category: 'subagent',
+      description: 'Inspect the parser',
+      delegate: {
+        action: 'spawnAgent',
+        model: 'model-a',
+        reasoningEffort: 'high',
+        children: [{ id: 'child-1', status: 'running', message: 'Reading files' }],
+      },
+    })
+  })
+
+  it('tracks native delegated agent activity under one child identity', async () => {
+    const server = fakeServer()
+    const events = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const start = yield* server.read
+          yield* server.send({ id: start.id, result: { thread: { id: 'thread-child' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-child' as Parameters<typeof session.submit>[0]['runId']
+          const iterable = yield* Stream.toAsyncIterableEffect(session.events(runId))
+          const iterator = iterable[Symbol.asyncIterator]()
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: 'Delegate' }], attachmentIds: [] }),
+          )
+          const turnStart = yield* server.read
+          yield* server.send({ id: turnStart.id, result: { turn: { id: 'native-child', status: 'inProgress' } } })
+          yield* Fiber.join(submitting)
+          const base = { threadId: 'thread-child', turnId: 'native-child' }
+          for (const [method, kind] of [
+            ['item/started', 'started'],
+            ['item/started', 'interacted'],
+            ['item/completed', 'completed'],
+          ] as const) {
+            yield* server.send({
+              method,
+              params: {
+                ...base,
+                item: {
+                  id: `activity-${kind}`,
+                  type: 'subAgentActivity',
+                  agentThreadId: 'child-thread-1',
+                  agentPath: '/root/reviewer',
+                  kind,
+                },
+              },
+            })
+          }
+          const received = []
+          for (let index = 0; index < 3; index += 1) {
+            const next = yield* Effect.tryPromise({
+              try: () => iterator.next(),
+              catch: () => new Error('event stream failed'),
+            })
+            received.push(next.value)
+          }
+          yield* connection.close(100)
+          return received
+        }),
+      ),
+    )
+    expect(events.map(event => event?.kind)).toEqual(['toolStarted', 'toolUpdated', 'toolCompleted'])
+    expect(events.map(event => (event && 'toolCallId' in event ? event.toolCallId : null))).toEqual([
+      'delegate:child-thread-1',
+      'delegate:child-thread-1',
+      'delegate:child-thread-1',
+    ])
+    expect(events[2]).toMatchObject({ delegate: { children: [{ id: 'child-thread-1', status: 'completed' }] } })
+  })
+
   it('marks a turn delivery uncertain when the peer disconnects after receiving the mutation', async () => {
     const server = fakeServer()
     const result = await Effect.runPromise(

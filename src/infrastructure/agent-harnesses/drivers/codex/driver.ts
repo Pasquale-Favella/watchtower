@@ -216,6 +216,19 @@ const ItemNotification = Schema.Struct({
     exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
     durationMs: Schema.optional(Schema.NullOr(Schema.Number)),
     arguments: Schema.optional(Schema.Unknown),
+    agentsStates: Schema.optional(
+      Schema.Record(
+        Schema.String,
+        Schema.Struct({ status: Schema.String, message: Schema.optional(Schema.NullOr(Schema.String)) }),
+      ),
+    ),
+    model: Schema.optional(Schema.NullOr(Schema.String)),
+    prompt: Schema.optional(Schema.NullOr(Schema.String)),
+    reasoningEffort: Schema.optional(Schema.NullOr(Schema.String)),
+    receiverThreadIds: Schema.optional(Schema.Array(Schema.String)),
+    agentThreadId: Schema.optional(Schema.String),
+    agentPath: Schema.optional(Schema.String),
+    kind: Schema.optional(Schema.String),
     query: Schema.optional(Schema.String),
     url: Schema.optional(Schema.String),
     tool: Schema.optional(Schema.String),
@@ -1811,6 +1824,26 @@ function notificationEvent(method: string, params: unknown, turnId: string | und
   if (method === 'item/commandExecution/outputDelta' && delta?.itemId)
     return { kind: 'toolUpdated', toolCallId: delta.itemId, output: delta.delta, append: true }
   const item = decode(ItemNotification, params)
+  const agentThreadId = item?.item.agentThreadId
+  if (item?.item.type === 'subAgentActivity' && agentThreadId) {
+    const activity = item.item
+    const toolCallId = `delegate:${agentThreadId}`
+    const child = {
+      id: agentThreadId,
+      status: activity.kind === 'completed' ? 'completed' : activity.kind === 'interrupted' ? 'interrupted' : 'running',
+    }
+    const details = {
+      category: 'subagent' as const,
+      description: activity.agentPath ?? 'Delegated agent',
+      delegate: { action: 'delegate', children: [child] },
+    }
+    if (method === 'item/started' && activity.kind === 'started')
+      return { kind: 'toolStarted', toolCallId, name: 'Delegated agent', ...details }
+    if (method === 'item/completed' && (activity.kind === 'completed' || activity.kind === 'interrupted'))
+      return { kind: 'toolCompleted', toolCallId, name: 'Delegated agent', ...details }
+    if (method === 'item/started' && activity.kind === 'interacted')
+      return { kind: 'toolUpdated', toolCallId, name: 'Delegated agent', ...details }
+  }
   if (method === 'item/completed' && item?.item.type) {
     const completed = item.item
     if (completed.type === 'imageView' || completed.type === 'imageGeneration') {
@@ -1916,6 +1949,21 @@ function codexToolDetails(
     if (kind !== 'add' && kind !== 'delete' && kind !== 'update') return []
     return [{ path: change.path, kind, ...(change.diff ? { diff: boundedNativeText(change.diff, 1500) } : {}) }]
   })
+  const delegate =
+    item.type === 'collabAgentToolCall'
+      ? {
+          ...(item.tool ? { action: item.tool } : {}),
+          ...(item.model ? { model: item.model } : {}),
+          ...(item.reasoningEffort ? { reasoningEffort: item.reasoningEffort } : {}),
+          children: (item.receiverThreadIds ?? Object.keys(item.agentsStates ?? {})).slice(0, 32).map(id => ({
+            id,
+            status: item.agentsStates?.[id]?.status ?? 'pending',
+            ...(item.agentsStates?.[id]?.message
+              ? { message: boundedNativeText(item.agentsStates[id].message, 1024) }
+              : {}),
+          })),
+        }
+      : undefined
   return {
     ...(category ? { category } : {}),
     ...(command ? { command: boundedNativeText(command) } : {}),
@@ -1924,6 +1972,8 @@ function codexToolDetails(
     ...(item.exitCode !== undefined && item.exitCode !== null ? { exitCode: item.exitCode } : {}),
     ...(item.durationMs !== undefined && item.durationMs !== null ? { durationMs: item.durationMs } : {}),
     ...(item.query ? { description: item.query } : {}),
+    ...(item.prompt ? { description: boundedNativeText(item.prompt, 2048) } : {}),
+    ...(delegate ? { delegate } : {}),
     ...(item.url ? { url: item.url } : {}),
     ...(changes?.length ? { changes, paths: changes.map(change => change.path) } : {}),
   }
