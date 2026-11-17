@@ -4,6 +4,7 @@ import {
   currentConversationRuns,
   isRunActive,
   latestConversationSession,
+  latestUnresolvedRun,
   shouldSubmitComposerKey,
   validateResumeSelection,
 } from '@/renderer/features/workspace/composer-state.js'
@@ -76,6 +77,21 @@ describe('workspace composer state', () => {
     expect(isRunActive(run('run-queued', 'queued'))).toBe(true)
     expect(isRunActive(run('run-complete', 'completed'))).toBe(false)
     expect(isRunActive(run('run-uncertain', 'uncertain'))).toBe(false)
+  })
+
+  it('keeps old terminal uncertainty in history without treating it as the latest unresolved attempt', () => {
+    const uncertain = { ...run('run-old', 'uncertain'), submittedAt: '2026-11-02T00:00:00Z' }
+    const completed = { ...run('run-new', 'completed'), submittedAt: '2026-11-02T00:01:00Z' }
+    expect(latestUnresolvedRun([uncertain, completed])).toBeNull()
+    expect(latestUnresolvedRun([completed, uncertain])).toBeNull()
+    expect(latestUnresolvedRun([uncertain])).toBe(uncertain)
+    const sameTimeCompleted = {
+      ...completed,
+      submittedAt: uncertain.submittedAt,
+      id: 'run-z-completed' as AgentRun['id'],
+    }
+    const sameTimeUncertain = { ...uncertain, id: 'run-a-uncertain' as AgentRun['id'] }
+    expect(latestUnresolvedRun([sameTimeUncertain, sameTimeCompleted])).toBeNull()
   })
 
   it('uses persisted Run contexts to select only the current Conversation', () => {

@@ -179,6 +179,10 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       execute('workspace-worker:registerCheckout', command, () => options.store.registerCheckout(command), true),
     'workspace-worker:createTask': command =>
       execute('workspace-worker:createTask', command, () => options.store.createTask(command), true),
+    'workspace-worker:renameTask': command =>
+      execute('workspace-worker:renameTask', command, () => options.store.renameTask(command), true),
+    'workspace-worker:setTaskArchived': command =>
+      execute('workspace-worker:setTaskArchived', command, () => options.store.setTaskArchived(command), true),
     'workspace-worker:beginRun': command =>
       execute('workspace-worker:beginRun', command, () => options.store.beginRun(command), true),
     'workspace-worker:claimDispatch': ({ runId, ownerEpoch, claimedAt }) =>

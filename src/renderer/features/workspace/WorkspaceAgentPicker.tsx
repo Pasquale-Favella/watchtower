@@ -23,6 +23,7 @@ import {
   effortTitleFor,
   knownModels,
   type ModelChoice,
+  modelDisplayName,
 } from './model-picker/catalog.js'
 import { composerControlClass } from './model-picker/composer-control.js'
 import { ModelPickerPanel } from './model-picker/model-picker-panel.js'
@@ -196,9 +197,7 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
   }
 
   const listed = view.kind === 'listed' || view.kind === 'session' ? view.models : []
-  const modelName = resolved.modelId
-    ? (listed.find(model => model.id === resolved.modelId)?.label ?? resolved.modelId)
-    : 'Default model'
+  const modelName = modelDisplayName(resolved.modelId, listed)
   const effortTitle = effortTitleFor(effortOptions)
   const effortLabel = resolved.modeId
     ? (effortOptions?.find(option => option.id === resolved.modeId)?.label ?? resolved.modeId)

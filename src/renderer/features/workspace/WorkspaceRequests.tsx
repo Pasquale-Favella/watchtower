@@ -1,5 +1,5 @@
 import { ChevronDown, CircleAlert, MessageCircleQuestion, ShieldQuestion, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import {
@@ -50,6 +50,19 @@ type ResponseRecord = ResponseItem | SnapshotResponseItem
 const requestKey = (request: Pick<PendingRequest['request'], 'requestId' | 'runId' | 'generation'>) =>
   `${request.runId}:${request.generation}:${request.requestId}`
 
+function approvalScopeLabel(scope: NonNullable<AgentRequest['options']>[number]['scope']): string {
+  switch (scope) {
+    case 'once':
+      return 'One request only'
+    case 'session':
+      return 'For this session'
+    case 'project':
+      return 'For this project'
+    default:
+      return 'Scope set by agent'
+  }
+}
+
 /**
  * Approval and question controls for one Task and Conversation, docked on top of the composer.
  * One request is answerable at a time: the oldest current one. Later requests wait their turn.
@@ -80,6 +93,7 @@ function WorkspaceRequestsView({
   const responseQuery = useWorkspaceRequestResponses(responseRequest)
   const respond = useRespondToRuntimeRequest()
   const [localDelivery, setLocalDelivery] = useState<Record<string, ResponseDeliveryState>>({})
+  const responding = useRef(new Set<string>())
 
   const snapshot = snapshotQuery.data
   const runContexts = snapshot?.runContexts ?? []
@@ -116,6 +130,8 @@ function WorkspaceRequestsView({
 
   const sendResponse = async (item: PendingRequest, decision: AgentRequestDecision) => {
     const key = requestKey(item.request)
+    if (responding.current.has(key)) return
+    responding.current.add(key)
     setLocalDelivery(current => ({ ...current, [key]: 'pending' }))
     try {
       await respond.execute({
@@ -128,6 +144,8 @@ function WorkspaceRequestsView({
       setLocalDelivery(current => ({ ...current, [key]: 'pending' }))
     } catch {
       setLocalDelivery(current => ({ ...current, [key]: 'uncertain' }))
+    } finally {
+      responding.current.delete(key)
     }
   }
 
@@ -268,7 +286,7 @@ function RequestPanel({
   const request = item.request
   const disabled = delivery !== null
   return (
-    <article aria-label={request.kind === 'approval' ? 'Approval request' : 'Question'} className="space-y-2">
+    <article aria-label={request.kind === 'approval' ? 'Approval request' : 'Question'} className="space-y-3">
       {request.kind === 'approval' ? (
         <ApprovalPanel
           request={request}
@@ -287,7 +305,9 @@ function RequestPanel({
         />
       )}
       <details className="text-muted-foreground text-[10px]">
-        <summary className="cursor-pointer">Request details</summary>
+        <summary className="focus-visible:ring-ring w-fit cursor-pointer rounded-sm focus-visible:ring-2 focus-visible:outline-none">
+          Request identity
+        </summary>
         <p className="mt-1 break-all">
           Run {item.runId} · generation {request.generation}
         </p>
@@ -341,6 +361,7 @@ function ApprovalPanel({
 }): React.JSX.Element {
   const actions = approvalActions(request)
   const hasActions = actions.approve !== null || actions.decline !== null || actions.more.length > 0
+  const expandablePrompt = request.prompt.length > 180 || request.prompt.includes('\n')
   return (
     <>
       <PanelHeader
@@ -349,8 +370,20 @@ function ApprovalPanel({
         waitingCount={waitingCount}
         delivery={delivery}
       />
+      <div>
+        <p className={cn('text-sm break-words whitespace-pre-wrap', expandablePrompt && 'line-clamp-3')}>
+          {request.prompt}
+        </p>
+        {expandablePrompt && (
+          <details className="mt-1 text-xs">
+            <summary className="focus-visible:ring-ring w-fit cursor-pointer rounded-sm focus-visible:ring-2 focus-visible:outline-none">
+              Read full request
+            </summary>
+            <p className="mt-2 max-h-40 overflow-y-auto break-words whitespace-pre-wrap">{request.prompt}</p>
+          </details>
+        )}
+      </div>
       <RequestToolDetails request={request} />
-      <p className="max-h-32 overflow-y-auto font-mono text-xs break-words whitespace-pre-wrap">{request.prompt}</p>
       {hasActions ? (
         <div className="flex flex-wrap items-center justify-end gap-2" aria-label="Approval options">
           {actions.unavailable.length > 0 && (
@@ -382,10 +415,17 @@ function ApprovalPanel({
                 {actions.more.map(action => (
                   <DropdownMenuItem
                     key={action.option.id}
+                    aria-label={action.option.label}
+                    aria-description={approvalScopeLabel(action.option.scope)}
                     disabled={disabled}
                     onClick={() => onRespond(action.decision)}
                   >
-                    {action.option.label}
+                    <span className="flex w-full flex-col gap-0.5">
+                      <span>{action.option.label}</span>
+                      <span className="text-muted-foreground text-[10px]">
+                        {approvalScopeLabel(action.option.scope)}
+                      </span>
+                    </span>
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuContent>
@@ -404,6 +444,8 @@ function ApprovalPanel({
           )}
           {actions.approve && (
             <Button
+              aria-label={actions.approve.option.label}
+              aria-description={approvalScopeLabel(actions.approve.option.scope)}
               type="button"
               size="sm"
               disabled={disabled}

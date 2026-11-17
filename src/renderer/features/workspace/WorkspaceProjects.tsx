@@ -1,13 +1,38 @@
-import { ChevronDown, ChevronRight, Folder, FolderPlus, MessageCircle, Plus, Search, SquarePen, X } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { differenceInMinutes } from 'date-fns'
+import {
+  Archive,
+  ArchiveRestore,
+  ChevronDown,
+  ChevronRight,
+  Folder,
+  FolderPlus,
+  MessageCircle,
+  Pencil,
+  Plus,
+  Search,
+  SquarePen,
+  X,
+} from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
 import { Button } from '@/renderer/components/ui/button'
 import { Input } from '@/renderer/components/ui/input'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { HarnessIcon } from '@/renderer/features/coach-skills/harness-icon.js'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectReadPage, WorkspaceTaskReadPage } from '@/shared/schemas/workspace-store.js'
 
-import { useWorkspaceProject, useWorkspaceProjects, useWorkspaceSidebarTasks, type WorkspaceRequest } from './hooks.js'
+import { useWorkspaceConnectionCatalog, useWorkspaceConnections } from './connection-hooks.js'
+import {
+  useRenameTask,
+  useSetTaskArchived,
+  useWorkspaceProject,
+  useWorkspaceProjects,
+  useWorkspaceSidebarTasks,
+  type WorkspaceRequest,
+} from './hooks.js'
+import { catalogView, modelDisplayName } from './model-picker/catalog.js'
 import { appendUniquePage } from './project-ui.js'
 import { useWorkspaceProjectDialog } from './use-project-dialog.js'
 
@@ -15,7 +40,30 @@ const PAGE_SIZE = 30
 const NO_PROJECT_GROUP = 'no-project'
 const FIRST_PROJECT_PAGE: WorkspaceRequest<'workspace:listProjects'> = { options: { limit: PAGE_SIZE } }
 type SidebarTaskPage = WorkspaceTaskReadPage
-type LoadedTaskGroup = { readonly items: SidebarTaskPage['items']; readonly nextAfterId: TaskId | null }
+type LoadedTaskGroup = {
+  readonly items: SidebarTaskPage['items']
+  readonly nextAfterId: TaskId | null
+  readonly pages: Readonly<Record<string, SidebarTaskPage>>
+}
+const FIRST_TASK_PAGE_KEY = '\u0000first'
+
+function taskPageKey(afterId: string | null): string {
+  return afterId ?? FIRST_TASK_PAGE_KEY
+}
+
+function nextUnloadedTaskCursor(pages: Readonly<Record<string, SidebarTaskPage>>): TaskId | null {
+  let cursor: TaskId | null = null
+  const visited = new Set<string>()
+  while (true) {
+    const key = taskPageKey(cursor)
+    if (visited.has(key)) return cursor
+    visited.add(key)
+    const page = pages[key]
+    if (!page?.nextAfterId) return null
+    cursor = page.nextAfterId
+    if (pages[taskPageKey(cursor)] === undefined) return cursor
+  }
+}
 
 export interface WorkspaceProjectsProps {
   selectedProjectId: ProjectId | null
@@ -46,6 +94,97 @@ function taskStatusClass(status: WorkspaceTaskReadPage['items'][number]['status'
   }
 }
 
+type SidebarTask = SidebarTaskPage['items'][number]
+type TaskSectionId = 'attention' | 'working' | 'open' | 'inProgress' | 'blocked' | 'inReview' | 'completed' | 'archived'
+
+const TASK_SECTIONS: ReadonlyArray<{ readonly id: TaskSectionId; readonly label: string }> = [
+  { id: 'attention', label: 'Needs attention' },
+  { id: 'working', label: 'Working' },
+  { id: 'open', label: 'Ready' },
+  { id: 'inProgress', label: 'In progress' },
+  { id: 'blocked', label: 'Blocked' },
+  { id: 'inReview', label: 'In review' },
+  { id: 'completed', label: 'Completed' },
+  { id: 'archived', label: 'Archived' },
+]
+
+function taskSection(task: SidebarTask): TaskSectionId {
+  if (
+    task.runtime?.pendingRequestKind ||
+    task.runtime?.runStatus === 'awaitingInput' ||
+    task.runtime?.runStatus === 'uncertain' ||
+    task.runtime?.runStatus === 'recoveryRequired'
+  )
+    return 'attention'
+  if (
+    task.runtime?.runStatus === 'queued' ||
+    task.runtime?.runStatus === 'starting' ||
+    task.runtime?.runStatus === 'running' ||
+    task.runtime?.runStatus === 'interruptRequested'
+  )
+    return 'working'
+  return task.status
+}
+
+function taskSectionIsCollapsedByDefault(sectionId: TaskSectionId): boolean {
+  return sectionId === 'completed' || sectionId === 'archived'
+}
+
+function taskSignalLabel(task: SidebarTask): string | null {
+  if (task.runtime?.pendingRequestKind === 'approval') return 'Approval needed'
+  if (task.runtime?.pendingRequestKind === 'question') return 'Answer needed'
+  switch (task.runtime?.runStatus) {
+    case 'uncertain':
+      return 'Delivery is uncertain'
+    case 'recoveryRequired':
+      return 'Recovery needed'
+    case 'queued':
+      return 'Queued'
+    case 'starting':
+      return 'Starting'
+    case 'running':
+      return 'Running'
+    case 'awaitingInput':
+      return 'Waiting for input'
+    case 'interruptRequested':
+      return 'Stopping'
+    default:
+      return null
+  }
+}
+
+function taskLifecycleLabel(status: SidebarTask['status']): string {
+  switch (status) {
+    case 'open':
+      return 'Ready'
+    case 'inProgress':
+      return 'In progress'
+    case 'blocked':
+      return 'Blocked'
+    case 'inReview':
+      return 'In review'
+    case 'completed':
+      return 'Completed'
+    case 'archived':
+      return 'Archived'
+  }
+}
+
+function formatTaskUpdatedAt(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function compactElapsedTime(value: string, nowMs: number): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return ''
+  const minutes = Math.max(0, differenceInMinutes(nowMs, date))
+  if (minutes < 1) return 'now'
+  if (minutes < 60) return `${minutes}m`
+  if (minutes < 1440) return `${Math.floor(minutes / 60)}h`
+  return `${Math.floor(minutes / 1440)}d`
+}
+
 export function WorkspaceProjects({
   selectedProjectId,
   selectedTaskId,
@@ -60,7 +199,13 @@ export function WorkspaceProjects({
   const [expandedGroupIds, setExpandedGroupIds] = useState<ReadonlySet<string>>(() => new Set())
   const [loadedTasks, setLoadedTasks] = useState<Readonly<Record<string, LoadedTaskGroup>>>({})
   const [search, setSearch] = useState('')
+  const [initializedDefaultProject, setInitializedDefaultProject] = useState(false)
   const projectDialog = useWorkspaceProjectDialog()
+  const connectionsQuery = useWorkspaceConnections()
+  const connectionsById = useMemo(
+    () => new Map((connectionsQuery.data?.items ?? []).map(connection => [connection.connectionId, connection])),
+    [connectionsQuery.data?.items],
+  )
   const projectPage = projectsQuery.data
 
   useEffect(() => {
@@ -71,7 +216,16 @@ export function WorkspaceProjects({
 
   useEffect(() => {
     const restored = selectedProjectQuery.data?.project
-    if (restored) setProjects(previous => appendUniquePage(previous, [restored]))
+    if (restored)
+      setProjects(previous => {
+        const existing = previous.find(project => project.id === restored.id)
+        return appendUniquePage(previous, [
+          {
+            ...restored,
+            runtime: existing?.runtime ?? { attentionCount: 0, workingCount: 0 },
+          },
+        ])
+      })
     if (selectedProjectId && selectedProjectQuery.error) onSelectProject(null)
   }, [onSelectProject, selectedProjectId, selectedProjectQuery.data, selectedProjectQuery.error])
 
@@ -79,14 +233,24 @@ export function WorkspaceProjects({
   const regularProjects = useMemo(() => projects.filter(project => !isScratchProject(project)), [projects])
   const searchTerm = search.trim().toLocaleLowerCase()
   const searching = searchTerm.length > 0
+  const selectedGroupId =
+    selectedProjectId &&
+    (scratchProjects.some(project => project.id === selectedProjectId) ? NO_PROJECT_GROUP : selectedProjectId)
 
   useEffect(() => {
-    if (!selectedProjectId) return
-    const groupId = scratchProjects.some(project => project.id === selectedProjectId)
-      ? NO_PROJECT_GROUP
-      : selectedProjectId
-    setExpandedGroupIds(current => (current.has(groupId) ? current : new Set([...current, groupId])))
-  }, [scratchProjects, selectedProjectId])
+    if (!selectedGroupId) return
+    setExpandedGroupIds(current => (current.has(selectedGroupId) ? current : new Set([...current, selectedGroupId])))
+  }, [selectedGroupId])
+
+  useEffect(() => {
+    if (initializedDefaultProject || selectedProjectId || regularProjects.length === 0) return
+    const initialProject =
+      regularProjects.find(project => (project.runtime?.attentionCount ?? 0) > 0) ??
+      regularProjects.find(project => (project.runtime?.workingCount ?? 0) > 0) ??
+      regularProjects[0]
+    setExpandedGroupIds(current => (current.size > 0 ? current : new Set([initialProject.id])))
+    setInitializedDefaultProject(true)
+  }, [initializedDefaultProject, regularProjects, selectedProjectId])
 
   const newChat = (projectId: ProjectId | null) => {
     const target = projectId && scratchProjects.some(project => project.id === projectId) ? null : projectId
@@ -122,19 +286,17 @@ export function WorkspaceProjects({
     (projectId: ProjectId, request: WorkspaceRequest<'workspace:listTasks'>, page: SidebarTaskPage) => {
       setLoadedTasks(current => {
         const existing = current[projectId]
-        const nextAfterId =
-          request.options?.afterId !== undefined
-            ? page.nextAfterId
-            : existing
-              ? existing.nextAfterId === null && page.total > existing.items.length
-                ? page.nextAfterId
-                : existing.nextAfterId
-              : page.nextAfterId
+        const pages = { ...existing?.pages, [taskPageKey(request.options?.afterId ?? null)]: page }
+        const items = Object.values(pages).reduce<SidebarTaskPage['items']>(
+          (loaded, pageValue) => appendUniquePage(loaded, pageValue.items),
+          [],
+        )
         return {
           ...current,
           [projectId]: {
-            items: appendUniquePage(existing?.items ?? [], page.items),
-            nextAfterId,
+            items,
+            nextAfterId: nextUnloadedTaskCursor(pages),
+            pages,
           },
         }
       })
@@ -261,6 +423,7 @@ export function WorkspaceProjects({
                 onNewChat={() => newChat(project.id)}
                 onSelectTask={(taskId, projectId) => selectTask(taskId, projectId)}
                 onTasksPage={rememberTasksPage}
+                connectionsById={connectionsById}
               />
             ))}
 
@@ -294,6 +457,7 @@ export function WorkspaceProjects({
                         loadedTaskGroup={loadedTasks[project.id]}
                         selectedTaskId={selectedTaskId}
                         accessibleLabel="No project chats"
+                        connectionsById={connectionsById}
                         onSelectTask={selectTask}
                         onTasksPage={rememberTasksPage}
                       />
@@ -343,6 +507,7 @@ function ProjectFolder({
   onNewChat,
   onSelectTask,
   onTasksPage,
+  connectionsById,
 }: {
   readonly project: WorkspaceProjectReadPage['items'][number]
   readonly expanded: boolean
@@ -359,7 +524,16 @@ function ProjectFolder({
     request: WorkspaceRequest<'workspace:listTasks'>,
     page: SidebarTaskPage,
   ) => void
+  readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
 }) {
+  const attentionCount = project.runtime?.attentionCount ?? 0
+  const workingCount = project.runtime?.workingCount ?? 0
+  const runtimeSummary = [
+    attentionCount > 0 ? `${attentionCount} ${attentionCount === 1 ? 'Task needs' : 'Tasks need'} attention` : null,
+    workingCount > 0 ? `${workingCount} ${workingCount === 1 ? 'Task' : 'Tasks'} working` : null,
+  ]
+    .filter((value): value is string => value !== null)
+    .join(' · ')
   return (
     <li className={visible ? 'list-none' : 'hidden'}>
       <div className="group/project hover:bg-sidebar-accent relative flex h-8 items-center rounded-md">
@@ -384,6 +558,35 @@ function ProjectFolder({
         >
           <Plus className="size-3.5" />
         </Button>
+        {runtimeSummary && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  role="img"
+                  aria-label={runtimeSummary}
+                  className="text-sidebar-muted-foreground flex shrink-0 items-center gap-1 px-1 text-[10px] tabular-nums"
+                />
+              }
+            >
+              {attentionCount > 0 && (
+                <span className="inline-flex items-center gap-1" aria-hidden="true">
+                  <span className="size-1.5 rounded-full bg-amber-500" />
+                  {attentionCount}
+                </span>
+              )}
+              {workingCount > 0 && (
+                <span className="inline-flex items-center gap-1" aria-hidden="true">
+                  <span className="size-1.5 rounded-full bg-blue-500" />
+                  {workingCount}
+                </span>
+              )}
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8} className="max-w-64 flex-col items-start gap-0.5">
+              <span>{runtimeSummary}</span>
+            </TooltipContent>
+          </Tooltip>
+        )}
         <button
           type="button"
           aria-label={`${expanded ? 'Collapse' : 'Expand'} ${project.name}`}
@@ -406,6 +609,7 @@ function ProjectFolder({
             accessibleLabel={`Chats in ${project.name}`}
             onSelectTask={onSelectTask}
             onTasksPage={onTasksPage}
+            connectionsById={connectionsById}
           />
         </div>
       )}
@@ -422,6 +626,7 @@ function SidebarTaskGroup({
   accessibleLabel,
   onSelectTask,
   onTasksPage,
+  connectionsById,
 }: {
   readonly projectId: ProjectId
   readonly searchTerm: string
@@ -435,13 +640,25 @@ function SidebarTaskGroup({
     request: WorkspaceRequest<'workspace:listTasks'>,
     page: SidebarTaskPage,
   ) => void
+  readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
 }) {
   const [request, setRequest] = useState<WorkspaceRequest<'workspace:listTasks'>>({
     projectId,
-    options: { limit: PAGE_SIZE },
+    options: { limit: PAGE_SIZE, includeArchived: true },
   })
+  const [collapsedSections, setCollapsedSections] = useState<ReadonlySet<TaskSectionId>>(
+    () =>
+      new Set(TASK_SECTIONS.filter(section => taskSectionIsCollapsedByDefault(section.id)).map(section => section.id)),
+  )
+  const [pageCursors, setPageCursors] = useState<ReadonlyArray<TaskId | null>>([null])
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const query = useWorkspaceSidebarTasks(projectId, request)
   const page = query.data
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 60_000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   useEffect(() => {
     if (query.status !== 'ready' || !page) return
@@ -453,17 +670,73 @@ function SidebarTaskGroup({
 
   const loadMore = () => {
     const nextAfterId = loadedTaskGroup?.nextAfterId ?? page?.nextAfterId
-    if (nextAfterId) setRequest({ projectId, options: { afterId: nextAfterId, limit: PAGE_SIZE } })
+    if (nextAfterId) {
+      setPageCursors(current => (current.includes(nextAfterId) ? current : [...current, nextAfterId]))
+      setRequest({ projectId, options: { afterId: nextAfterId, limit: PAGE_SIZE, includeArchived: true } })
+    }
   }
 
+  const activeCursor = request.options?.afterId ?? null
+
   const tasks = loadedTaskGroup?.items ?? []
+  const projectLabel = accessibleLabel.startsWith('Chats in ')
+    ? accessibleLabel.slice('Chats in '.length)
+    : 'No project'
   const visibleTasks =
     searchTerm && !projectMatchesSearch
       ? tasks.filter(task => task.title.toLocaleLowerCase().includes(searchTerm))
       : tasks
+  const visibleTasksBySection = TASK_SECTIONS.map(section => ({
+    ...section,
+    tasks: visibleTasks.filter(task => taskSection(task) === section.id),
+  })).filter(section => section.tasks.length > 0)
+
+  const toggleSection = (sectionId: TaskSectionId) => {
+    setCollapsedSections(current => {
+      const next = new Set(current)
+      if (next.has(sectionId)) next.delete(sectionId)
+      else next.add(sectionId)
+      return next
+    })
+  }
+
+  const renderTask = (task: SidebarTask) => {
+    const selected = selectedTaskId === task.id
+    const signal = taskSignalLabel(task)
+    const section = taskSection(task)
+    const sectionLabel = TASK_SECTIONS.find(item => item.id === section)?.label ?? taskLifecycleLabel(task.status)
+    const tooltipState =
+      section === 'attention' || section === 'working'
+        ? `${sectionLabel} · ${signal ?? 'Active'}`
+        : `Task lifecycle · ${taskLifecycleLabel(task.status)}`
+    return (
+      <SidebarTaskRow
+        key={task.id}
+        task={task}
+        projectId={projectId}
+        projectLabel={projectLabel}
+        selected={selected}
+        tooltipState={tooltipState}
+        nowMs={nowMs}
+        section={section}
+        connectionsById={connectionsById}
+        onSelectTask={onSelectTask}
+      />
+    )
+  }
 
   return (
     <>
+      {pageCursors
+        .filter(afterId => afterId !== activeCursor)
+        .map(afterId => (
+          <SidebarTaskPageRefresh
+            key={afterId ?? 'first'}
+            projectId={projectId}
+            afterId={afterId}
+            onTasksPage={onTasksPage}
+          />
+        ))}
       {query.error && <QueryErrorNotice error={query.error} hasData={tasks.length > 0} />}
       {query.status === 'loading' && tasks.length === 0 ? (
         <p role="status" className="text-sidebar-muted-foreground px-2 py-2 text-xs">
@@ -474,22 +747,30 @@ function SidebarTaskGroup({
           {searchTerm ? 'No loaded chats match Search' : 'No chats yet'}
         </p>
       ) : (
-        <ul aria-label={accessibleLabel} className="space-y-0.5">
-          {visibleTasks.map(task => (
-            <li key={task.id} className="list-none">
-              <button
-                type="button"
-                onClick={() => onSelectTask(task.id, projectId)}
-                aria-current={selectedTaskId === task.id ? 'page' : undefined}
-                className={`focus-visible:ring-ring flex min-h-8 w-full items-center gap-2 rounded-md px-2.5 py-1 text-left text-xs outline-none focus-visible:ring-2 ${selectedTaskId === task.id ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'}`}
-              >
-                <span className={`size-1.5 shrink-0 rounded-full ${taskStatusClass(task.status)}`} aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate">{task.title}</span>
-                <span className="sr-only">{task.status}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+        <div aria-label={accessibleLabel} className="space-y-1">
+          {visibleTasksBySection.map(section => {
+            const collapsed = !searchTerm && collapsedSections.has(section.id)
+            const selectedTask = section.tasks.find(task => task.id === selectedTaskId)
+            const displayedTasks = collapsed ? (selectedTask ? [selectedTask] : []) : section.tasks
+            return (
+              <section key={section.id} aria-label={`${section.label}, ${section.tasks.length} loaded`}>
+                <button
+                  type="button"
+                  aria-expanded={!collapsed}
+                  aria-label={`${collapsed ? 'Expand' : 'Collapse'} ${section.label}, ${section.tasks.length} loaded`}
+                  onClick={() => toggleSection(section.id)}
+                  disabled={searchTerm.length > 0}
+                  className="text-sidebar-muted-foreground hover:text-sidebar-foreground focus-visible:ring-ring flex h-7 w-full items-center gap-1.5 rounded px-1 text-left text-[10px] font-semibold tracking-wide uppercase outline-none focus-visible:ring-2"
+                >
+                  {collapsed ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+                  <span className="min-w-0 flex-1 truncate">{section.label}</span>
+                  <span className="tabular-nums">{section.tasks.length}</span>
+                </button>
+                {displayedTasks.length > 0 && <ul className="space-y-0.5">{displayedTasks.map(renderTask)}</ul>}
+              </section>
+            )
+          })}
+        </div>
       )}
       {loadedTaskGroup?.nextAfterId && (
         <Button
@@ -504,4 +785,264 @@ function SidebarTaskGroup({
       )}
     </>
   )
+}
+
+function SidebarTaskRow({
+  task,
+  projectId,
+  projectLabel,
+  selected,
+  tooltipState,
+  nowMs,
+  section,
+  connectionsById,
+  onSelectTask,
+}: {
+  readonly task: SidebarTask
+  readonly projectId: ProjectId
+  readonly projectLabel: string
+  readonly selected: boolean
+  readonly tooltipState: string
+  readonly nowMs: number
+  readonly section: TaskSectionId
+  readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
+  readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
+}) {
+  const renameTask = useRenameTask()
+  const setTaskArchived = useSetTaskArchived()
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(task.title)
+  const [error, setError] = useState<string | null>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const committing = useRef(false)
+  const settled = useRef(false)
+  const latestRun = task.runtime.latestRun
+  const catalog = useWorkspaceConnectionCatalog(latestRun?.connectionId ?? '')
+  const modelView = catalogView({ inspection: catalog.inspection, failed: catalog.failed })
+  const modelName = latestRun?.modelId
+    ? modelDisplayName(
+        latestRun.modelId,
+        modelView.kind === 'listed' || modelView.kind === 'session' ? modelView.models : [],
+      )
+    : null
+  const activityAt =
+    latestRun?.activityAt && Date.parse(latestRun.activityAt) > Date.parse(task.updatedAt)
+      ? latestRun.activityAt
+      : task.updatedAt
+  const activityTime = formatTaskUpdatedAt(activityAt)
+  const elapsedTime = compactElapsedTime(activityAt, nowMs)
+  const connection = latestRun?.connectionId ? connectionsById.get(latestRun.connectionId) : undefined
+  const harnessKind = latestRun?.driverId ?? 'unknown'
+  const cannotArchive = Boolean(
+    task.runtime.pendingRequestKind ||
+    ['queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired'].includes(
+      task.runtime.runStatus ?? '',
+    ),
+  )
+  const statusColor =
+    section === 'attention' ? 'bg-amber-500' : section === 'working' ? 'bg-blue-500' : taskStatusClass(task.status)
+
+  useEffect(() => {
+    if (!editing) return
+    inputRef.current?.focus()
+    inputRef.current?.select()
+  }, [editing])
+
+  const cancelRename = () => {
+    settled.current = true
+    setDraft(task.title)
+    setEditing(false)
+  }
+  const commitRename = async () => {
+    if (settled.current || committing.current) return
+    const title = draft.trim()
+    if (!title || title === task.title) {
+      cancelRename()
+      return
+    }
+    committing.current = true
+    settled.current = true
+    try {
+      await renameTask.execute({ taskId: task.id, title })
+      setError(null)
+      setEditing(false)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not rename chat.')
+      committing.current = false
+      settled.current = false
+      inputRef.current?.focus()
+    }
+  }
+  const toggleArchived = async () => {
+    if (cannotArchive || setTaskArchived.pending) return
+    try {
+      await setTaskArchived.execute({ taskId: task.id, archived: task.status !== 'archived' })
+      setError(null)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update chat archive status.')
+    }
+  }
+
+  return (
+    <li className="group/task relative list-none rounded-md">
+      <div className="relative flex min-h-9 items-center">
+        {editing ? (
+          <Input
+            ref={inputRef}
+            aria-label={`Rename chat ${task.title}`}
+            value={draft}
+            aria-invalid={error ? true : undefined}
+            aria-describedby={error ? `${task.id}-rename-error` : undefined}
+            onChange={event => setDraft(event.target.value)}
+            onBlur={() => void commitRename()}
+            onKeyDown={event => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                void commitRename()
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                cancelRename()
+              }
+            }}
+            className="h-7 flex-1 rounded-md px-2.5 text-xs"
+          />
+        ) : (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  onClick={() => onSelectTask(task.id, projectId)}
+                  aria-current={selected ? 'page' : undefined}
+                  aria-label={`${task.title}, ${tooltipState}, last activity ${activityTime}`}
+                  className={`focus-visible:ring-ring flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-16 pl-2.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2 ${selected ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'}`}
+                />
+              }
+            >
+              <span className={`size-1.5 shrink-0 rounded-full ${statusColor}`} aria-hidden="true" />
+              {latestRun && <HarnessIcon kind={connection?.harnessKind ?? harnessKind} className="size-3.5 shrink-0" />}
+              <span className="min-w-0 flex-1 truncate">{task.title}</span>
+            </TooltipTrigger>
+            <TooltipContent side="right" sideOffset={8} className="max-w-64 flex-col items-start gap-0.5">
+              <span className="max-w-full truncate font-medium">{task.title}</span>
+              <span className="text-background/75">{projectLabel}</span>
+              {latestRun && (
+                <span className="text-background/75 flex items-center gap-1.5">
+                  <HarnessIcon kind={connection?.harnessKind ?? harnessKind} className="size-3.5 shrink-0" />
+                  {connection?.label ?? harnessKind}
+                </span>
+              )}
+              {modelName && <span className="text-background/75">Model: {modelName}</span>}
+              {latestRun?.branch && <span className="text-background/75">Branch: {latestRun.branch}</span>}
+              <span className="text-background/75">
+                {tooltipState} · Activity {activityTime}
+              </span>
+            </TooltipContent>
+          </Tooltip>
+        )}
+        {!editing && elapsedTime && (
+          <span
+            aria-hidden="true"
+            className="text-sidebar-muted-foreground pointer-events-none absolute right-2 text-[10px] tabular-nums transition-opacity group-hover/task:opacity-0 group-has-[:focus-visible]/task:opacity-0 pointer-coarse:opacity-0"
+          >
+            {elapsedTime}
+          </span>
+        )}
+        {!editing && (
+          <div className="pointer-events-none absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/task:pointer-events-auto group-hover/task:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`Rename chat ${task.title}`}
+                    onClick={() => {
+                      committing.current = false
+                      settled.current = false
+                      setDraft(task.title)
+                      setError(null)
+                      setEditing(true)
+                    }}
+                    className="size-7"
+                  />
+                }
+              >
+                <Pencil className="size-3.5" />
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                Rename {task.title}
+              </TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    size="icon-xs"
+                    variant="ghost"
+                    aria-label={`${task.status === 'archived' ? 'Unarchive' : 'Archive'} chat ${task.title}`}
+                    aria-disabled={cannotArchive || setTaskArchived.pending}
+                    onClick={() => void toggleArchived()}
+                    className="size-7"
+                  />
+                }
+              >
+                {task.status === 'archived' ? (
+                  <ArchiveRestore className="size-3.5" />
+                ) : (
+                  <Archive className="size-3.5" />
+                )}
+              </TooltipTrigger>
+              <TooltipContent side="top" sideOffset={8}>
+                {cannotArchive
+                  ? 'Stop or resolve the active chat run before archiving.'
+                  : `${task.status === 'archived' ? 'Unarchive' : 'Archive'} chat`}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+        )}
+      </div>
+      {error && (
+        <p id={`${task.id}-rename-error`} role="status" className="text-destructive px-2.5 pb-1 text-[10px]">
+          {error}
+        </p>
+      )}
+    </li>
+  )
+}
+
+function SidebarTaskPageRefresh({
+  projectId,
+  afterId,
+  onTasksPage,
+}: {
+  readonly projectId: ProjectId
+  readonly afterId: TaskId | null
+  readonly onTasksPage: (
+    projectId: ProjectId,
+    request: WorkspaceRequest<'workspace:listTasks'>,
+    page: SidebarTaskPage,
+  ) => void
+}) {
+  const request = useMemo<WorkspaceRequest<'workspace:listTasks'>>(
+    () => ({
+      projectId,
+      options: { ...(afterId ? { afterId } : {}), limit: PAGE_SIZE, includeArchived: true },
+    }),
+    [afterId, projectId],
+  )
+  const query = useWorkspaceSidebarTasks(projectId, request)
+  const page = query.data
+
+  useEffect(() => {
+    if (query.status !== 'ready' || !page) return
+    onTasksPage(projectId, request, {
+      ...page,
+      items: page.items.filter(task => task.projectId === projectId),
+    })
+  }, [onTasksPage, page, projectId, query.status, request])
+
+  return null
 }

@@ -38,6 +38,8 @@ describe('workspace request widgets', () => {
     expect(markup).toContain('Referenced files')
     expect(markup).toContain('src/main.ts')
     expect(markup).toContain('call-123')
+    expect(markup).toContain('Command and file details')
+    expect(markup).toContain('<details')
   })
 
   it('omits the details card when the request has no tool metadata', () => {

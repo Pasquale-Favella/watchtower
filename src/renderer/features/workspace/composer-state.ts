@@ -68,6 +68,15 @@ export function currentConversationRuns(
   return runs.filter(run => contextByRun.get(run.id)?.conversationId === conversationId)
 }
 
+/** Only the newest attempt can make the current composer state uncertain. Older terminal
+ * uncertainty remains in history, but must not shadow a newer completed attempt. */
+export function latestUnresolvedRun(runs: readonly AgentRun[]): AgentRun | null {
+  const latest = [...runs].sort(
+    (left, right) => right.submittedAt.localeCompare(left.submittedAt) || right.id.localeCompare(left.id),
+  )[0]
+  return latest && (latest.status === 'uncertain' || latest.status === 'recoveryRequired') ? latest : null
+}
+
 export function latestConversationSession(
   runs: readonly AgentRun[],
   sessions: readonly WorkspaceNativeAgentSession[],

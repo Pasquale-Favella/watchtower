@@ -17,9 +17,11 @@ import {
   makeCreateWorktreeAtom,
   promoteQueuedFollowUpAtom,
   registerProjectAtom,
+  renameTaskAtom,
   respondAtom,
   retainWorkspaceQuery,
   retainWorkspaceSidebarQuery,
+  setTaskArchivedAtom,
   startRunAtom,
   steerAtom,
   switchBranchAtom,
@@ -91,7 +93,7 @@ export function useWorkspaceSidebarTasks(
 ) {
   useWorkspaceLifetime()
   const registry = useContext(RegistryContext)
-  const slot = workspaceTasksForSidebar(projectId)
+  const slot = workspaceTasksForSidebar(projectId, request?.options?.afterId ?? null)
   const selected = useAtomValue(slot.requestAtom)
   const result = useAtomValue(slot.resultAtom)
   const select = useAtomSet(slot.requestAtom)
@@ -170,6 +172,8 @@ export const useRegisterProject = () => useWorkspaceCommand(registerProjectAtom)
 export const useCreateProject = () => useWorkspaceCommand(createProjectAtom)
 export const useCloneProject = () => useWorkspaceCommand(cloneProjectAtom)
 export const useCreateTask = () => useWorkspaceCommand(createTaskAtom)
+export const useRenameTask = () => useWorkspaceCommand(renameTaskAtom)
+export const useSetTaskArchived = () => useWorkspaceCommand(setTaskArchivedAtom)
 export const useStartRun = () => useWorkspaceCommand(startRunAtom)
 export const useInterruptRun = () => useWorkspaceCommand(interruptAtom)
 export const useRespondToRuntimeRequest = () => useWorkspaceCommand(respondAtom)

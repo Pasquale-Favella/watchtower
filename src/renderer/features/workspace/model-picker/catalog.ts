@@ -16,6 +16,10 @@ export interface ModelChoice {
   readonly modes?: readonly EffortChoice[] | undefined
 }
 
+export function modelDisplayName(modelId: string | null, models: readonly ModelChoice[]): string {
+  return modelId ? (models.find(model => model.id === modelId)?.label ?? modelId) : 'Default model'
+}
+
 /** What the picker can list for one connection. `session` lists only models observed in a native session. */
 export type CatalogView =
   | { readonly kind: 'loading' }

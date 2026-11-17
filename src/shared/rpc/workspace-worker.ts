@@ -21,18 +21,22 @@ import {
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
+  renameTaskCommandSchema,
   registerCheckoutCommandSchema,
   registerProjectCommandSchema,
   requestResponsePageSchema,
   settleDeliveryCommandSchema,
+  setTaskArchivedCommandSchema,
   steerIntentPageSchema,
   taskCreationReceiptSchema,
+  taskMutationReceiptSchema,
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   workspaceCheckoutPageOptionsSchema,
   workspaceConversationPageRequestSchema,
   workspaceConversationPageSchema,
   workspaceEntityPageOptionsSchema,
+  workspaceTaskPageOptionsSchema,
   workspaceEventPageOptionsSchema,
   workspaceEventPageSchema,
   workspaceExecutionEventSchema,
@@ -50,7 +54,7 @@ import {
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 14
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 15
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -89,6 +93,16 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:createTask', {
     payload: createTaskCommandSchema,
     success: taskCreationReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:renameTask', {
+    payload: renameTaskCommandSchema,
+    success: taskMutationReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:setTaskArchived', {
+    payload: setTaskArchivedCommandSchema,
+    success: taskMutationReceiptSchema,
     error,
   }),
   Rpc.make('workspace-worker:beginRun', {
@@ -180,7 +194,7 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
     error,
   }),
   Rpc.make('workspace-worker:listTasks', {
-    payload: Schema.Struct({ projectId: projectIdSchema, options: Schema.optional(workspaceEntityPageOptionsSchema) }),
+    payload: Schema.Struct({ projectId: projectIdSchema, options: Schema.optional(workspaceTaskPageOptionsSchema) }),
     success: workspaceTaskReadPageSchema,
     error,
   }),

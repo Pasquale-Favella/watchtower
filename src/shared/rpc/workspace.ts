@@ -217,6 +217,20 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     }),
     error,
   }),
+  Rpc.make('workspace:renameTask', {
+    payload: Schema.Struct({
+      commandId,
+      taskId: taskIdSchema,
+      title: Store.renameTaskCommandSchema.fields.title,
+    }),
+    success: Store.taskMutationReceiptSchema,
+    error,
+  }),
+  Rpc.make('workspace:setTaskArchived', {
+    payload: Schema.Struct({ commandId, taskId: taskIdSchema, archived: Schema.Boolean }),
+    success: Store.taskMutationReceiptSchema,
+    error,
+  }),
   Rpc.make('workspace:listBranches', {
     payload: Schema.Struct({ projectId: projectIdSchema, checkoutId: Schema.optional(workspaceCheckoutIdSchema) }),
     success: Checkout.checkoutBranchesSchema,
@@ -259,7 +273,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
   Rpc.make('workspace:listTasks', {
     payload: Schema.Struct({
       projectId: projectIdSchema,
-      options: Schema.optional(Store.workspaceEntityPageOptionsSchema),
+      options: Schema.optional(Store.workspaceTaskPageOptionsSchema),
     }),
     success: Store.workspaceTaskReadPageSchema,
     error,

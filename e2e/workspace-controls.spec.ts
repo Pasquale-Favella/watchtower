@@ -264,7 +264,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await newPrompt.press('Space')
     await newPrompt.pressSequentially('@wpi')
     await expect(fileMenu.getByRole('option', { name: 'WorkspacePromptInput.tsx', exact: true })).toBeVisible()
-    await newPrompt.press('Enter')
+    await fileMenu.getByRole('option', { name: 'WorkspacePromptInput.tsx', exact: true }).click()
     await expect(newPrompt.locator('[data-composer-mention]').last()).toHaveAttribute(
       'path',
       'WorkspacePromptInput.tsx',
@@ -412,7 +412,12 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await expect(requests.getByText('Inspect checkout status', { exact: true }).first()).toBeVisible()
     await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toBeEnabled()
     await expect(requests.getByRole('button', { name: 'Skip inspection', exact: true })).toBeEnabled()
+    await expect(requests.getByRole('button', { name: 'Inspect once', exact: true })).toHaveAttribute(
+      'aria-description',
+      'One request only',
+    )
     await expect(requests.getByText('git status --short', { exact: true })).toBeVisible()
+    await window.screenshot({ path: test.info().outputPath('approval-request.png') })
     await requests.getByRole('button', { name: 'More options', exact: true }).click()
     await expect(window.getByRole('menuitem', { name: 'Always inspect', exact: true })).toBeEnabled()
     await window.keyboard.press('Escape')
@@ -495,7 +500,7 @@ test('composer drives an isolated protocol peer, restores drafts and approval st
     await newPrompt.press('Tab')
     await expect(newPrompt.locator('[data-composer-mention]')).toContainText('chat-Inspect-this-checkout')
     await newPrompt.fill('Independent second draft')
-    await window.getByRole('button', { name: /Inspect this checkout/ }).click()
+    await window.getByRole('button', { name: /^Inspect this checkout,/ }).click()
     await expect(prompt).toContainText('Keep this draft during navigation')
     await window.setViewportSize({ width: 1900, height: 900 })
     await window.reload()

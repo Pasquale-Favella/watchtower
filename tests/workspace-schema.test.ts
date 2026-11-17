@@ -496,6 +496,8 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:registerProject',
         'workspace-worker:registerCheckout',
         'workspace-worker:createTask',
+        'workspace-worker:renameTask',
+        'workspace-worker:setTaskArchived',
         'workspace-worker:beginRun',
         'workspace-worker:claimDispatch',
         'workspace-worker:bindNativeSession',

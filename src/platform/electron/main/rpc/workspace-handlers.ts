@@ -381,6 +381,9 @@ export function workspaceHandlers<R = never>(
                 .pipe(Effect.tap(() => referenceIndex.invalidate))
             }),
           ),
+        'workspace:renameTask': request => timedMutation(updatedAt => store.renameTask({ ...request, updatedAt })),
+        'workspace:setTaskArchived': request =>
+          timedMutation(updatedAt => store.setTaskArchived({ ...request, updatedAt })),
         'workspace:listProjects': ({ options }) => read(() => store.listProjects(options)),
         'workspace:listBranches': request =>
           Option.isSome(checkouts)

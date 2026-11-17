@@ -5,6 +5,7 @@ import {
   connectionStatus,
   effortFor,
   knownModels,
+  modelDisplayName,
   type ModelChoice,
 } from '@/renderer/features/workspace/model-picker/catalog.js'
 import {
@@ -25,6 +26,12 @@ const models: readonly ModelChoice[] = [
   },
   { id: 'plain', label: 'Plain' },
 ]
+
+it('uses the catalog label for a selected model and falls back to its ID', () => {
+  expect(modelDisplayName('fast', models)).toBe('Fast')
+  expect(modelDisplayName('unknown', models)).toBe('unknown')
+  expect(modelDisplayName(null, models)).toBe('Default model')
+})
 
 const capability = { support: 'supported' as const, restrictions: [], evidence: [] }
 

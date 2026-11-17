@@ -9,12 +9,12 @@ import * as SqlClient from 'effect/sql/SqlClient'
 
 import { completeAgentGoalTurn, startAgentGoalTurn, transitionAgentRun } from '@/core/domain/execution/lifecycle.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
-import { searchPromptConversations } from '@/infrastructure/sqlite/workspace/prompt-conversation-search.js'
 import {
   executeSqliteScript,
   runSqliteMigrations,
   UnsupportedLedgerSchemaVersion,
 } from '@/infrastructure/sqlite/sqlite-migrations.js'
+import { searchPromptConversations } from '@/infrastructure/sqlite/workspace/prompt-conversation-search.js'
 import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
 import {
   agentAccessModeSchema,
@@ -27,7 +27,6 @@ import {
 import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
 import {
   agentSessionIdSchema,
-  type Project,
   projectIdSchema,
   projectSchema,
   type Task,
@@ -52,8 +51,8 @@ import {
   ownerEpochAcquisitionSchema,
   projectRegistrationReceiptSchema,
   promotedFollowUpSchema,
-  queuedFollowUpSchema,
   queuedFollowUpHeadSchema,
+  queuedFollowUpSchema,
   recordDriverEventCommandSchema,
   recordRequestResponseCommandSchema,
   recordSteerCommandSchema,
@@ -61,13 +60,18 @@ import {
   registerCheckoutCommandSchema,
   type RegisterProjectCommand,
   registerProjectCommandSchema,
+  type RenameTaskCommand,
+  renameTaskCommandSchema,
   requestResponseHistoryItemSchema,
   requestResponseIntentSchema,
+  type SetTaskArchivedCommand,
+  setTaskArchivedCommandSchema,
   type SettleDeliveryCommand,
   settleDeliveryCommandSchema,
   steerHistoryItemSchema,
   steerIntentSchema,
   taskCreationReceiptSchema,
+  taskMutationReceiptSchema,
   workerEpochSchema,
   WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
   WORKSPACE_STORE_READ_BYTE_CAPACITY,
@@ -92,6 +96,7 @@ import {
   workspacePendingRuntimeRequestPageSchema,
   workspacePendingRuntimeRequestSchema,
   workspaceProjectDetailSchema,
+  type WorkspaceProjectListItem,
   workspaceProjectReadPageSchema,
   type WorkspaceReadPageOptions,
   workspaceReadPageOptionsSchema,
@@ -99,6 +104,8 @@ import {
   workspaceRunContextSchema,
   WorkspaceStoreError,
   workspaceTaskDetailSchema,
+  workspaceTaskLatestRunSchema,
+  workspaceTaskPageOptionsSchema,
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
@@ -276,6 +283,14 @@ const migrations = [
       ALTER TABLE workspace_dispatch_intent ADD COLUMN config_values TEXT NOT NULL DEFAULT '{}';
     `),
   },
+  {
+    version: 13,
+    name: 'index_agent_runs_by_task_runtime',
+    up: executeSqliteScript(`
+      CREATE INDEX IF NOT EXISTS workspace_agent_run_by_task_runtime
+        ON workspace_agent_run(task_id, status, submitted_at DESC, id DESC);
+    `),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
@@ -317,6 +332,8 @@ const receiptServerFields = {
   registerProject: [],
   registerCheckout: [],
   createTask: [],
+  renameTask: ['updatedAt'],
+  setTaskArchived: ['updatedAt'],
   beginRun: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
   promoteFollowUp: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
   enqueueFollowUp: ['issuedAt'],
@@ -560,6 +577,98 @@ const makeService = Effect.gen(function* () {
               replayed: false,
             }
             yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('createTask', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const renameTask: WorkspaceStore['Service']['renameTask'] = (command: RenameTaskCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(renameTaskCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Task rename data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (
+                !matchesReceipt(String(prior[0].fingerprint), 'renameTask', {
+                  taskId: command.taskId,
+                  title: command.title,
+                })
+              )
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return { ...(yield* decodeJson(taskMutationReceiptSchema)(String(prior[0].payload))), replayed: true }
+            }
+            const rows = yield* sql`SELECT payload FROM workspace_task WHERE id = ${command.taskId}`
+            if (!rows[0]) return yield* safeError('not-found', 'Task was not found')
+            const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+            const updatedTask = yield* Schema.decodeUnknownEffect(taskSchema)({
+              ...task,
+              title: command.title,
+              updatedAt: command.updatedAt,
+            })
+            yield* sql`UPDATE workspace_task SET payload = ${encode(updatedTask)} WHERE id = ${command.taskId}`
+            const result = {
+              commandId: command.commandId,
+              taskId: command.taskId,
+              updatedAt: command.updatedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${key}, ${receiptFingerprint('renameTask', { taskId: command.taskId, title: command.title })}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const setTaskArchived: WorkspaceStore['Service']['setTaskArchived'] = (command: SetTaskArchivedCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(setTaskArchivedCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Task archive data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const fingerprintCommand = { taskId: command.taskId, archived: command.archived }
+            const { key, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'setTaskArchived', fingerprintCommand))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return { ...(yield* decodeJson(taskMutationReceiptSchema)(String(prior[0].payload))), replayed: true }
+            }
+            const rows = yield* sql`SELECT archived, payload FROM workspace_task WHERE id = ${command.taskId}`
+            if (!rows[0]) return yield* safeError('not-found', 'Task was not found')
+            const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+            if (command.archived && Number(rows[0].archived) === 0) {
+              const activeRuns = yield* sql`
+                SELECT id FROM workspace_agent_run
+                WHERE task_id = ${command.taskId}
+                  AND status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                LIMIT 1
+              `
+              if (activeRuns.length > 0)
+                return yield* safeError(
+                  'invalid-transition',
+                  'A Task with an active or unresolved Run cannot be archived',
+                )
+            }
+            const updatedTask = yield* Schema.decodeUnknownEffect(taskSchema)({
+              ...task,
+              status: command.archived ? 'archived' : 'open',
+              archivedAt: command.archived ? command.updatedAt : null,
+              updatedAt: command.updatedAt,
+            })
+            yield* sql`UPDATE workspace_task SET archived = ${command.archived ? 1 : 0}, payload = ${encode(updatedTask)} WHERE id = ${command.taskId}`
+            const result = {
+              commandId: command.commandId,
+              taskId: command.taskId,
+              updatedAt: command.updatedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${key}, ${receiptFingerprint('setTaskArchived', fingerprintCommand)}, ${encode(result)})`
             return result
           }),
         )
@@ -2266,7 +2375,62 @@ const makeService = Effect.gen(function* () {
           Effect.gen(function* () {
             const counts = yield* sql`SELECT COUNT(*) AS total FROM workspace_project`
             const total = Number(counts[0]?.total ?? 0)
-            const items: Array<Project> = []
+            const taskRuntimeRows = yield* sql`
+              WITH ranked_runs AS (
+                SELECT r.id, r.task_id, r.status,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY r.task_id
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired')
+                        AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC
+                  ) AS runtime_rank
+                FROM workspace_agent_run r
+                LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                WHERE r.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                  AND (r.status NOT IN ('uncertain', 'recoveryRequired') OR (
+                    COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')
+                  ))
+              ), task_runtime AS (
+                SELECT t.project_id, r.status,
+                  CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM workspace_driver_request_state s
+                    JOIN workspace_agent_run pending_run ON pending_run.id = s.run_id
+                    WHERE s.state = 'pending'
+                      AND pending_run.task_id = t.id
+                      AND pending_run.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM workspace_dispatch_intent pending_intent
+                        WHERE pending_intent.run_id = pending_run.id AND pending_intent.state IN ('settled', 'failed')
+                      )
+                      AND EXISTS (
+                        SELECT 1
+                        FROM workspace_execution_event e
+                        WHERE e.run_id = s.run_id
+                          AND e.kind = 'driverEvent'
+                          AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.kind') = 'requestPending'
+                          AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.request.requestId') = s.request_id
+                      )
+                  ) THEN 1 ELSE 0 END AS has_pending_request
+                FROM workspace_task t
+                LEFT JOIN ranked_runs r ON r.task_id = t.id AND r.runtime_rank = 1
+                WHERE t.archived = 0
+              )
+              SELECT project_id,
+                SUM(CASE WHEN status IN ('uncertain', 'recoveryRequired', 'awaitingInput') OR has_pending_request = 1 THEN 1 ELSE 0 END) AS attention_count,
+                SUM(CASE WHEN status IN ('queued', 'starting', 'running', 'interruptRequested') AND has_pending_request = 0 THEN 1 ELSE 0 END) AS working_count
+              FROM task_runtime
+              GROUP BY project_id
+            `
+            const runtimeByProject = new Map(
+              taskRuntimeRows.map(row => [
+                String(row.project_id),
+                { attentionCount: Number(row.attention_count ?? 0), workingCount: Number(row.working_count ?? 0) },
+              ]),
+            )
+            const items: Array<WorkspaceProjectListItem> = []
             let cursor = afterId
             let hasMore = false
             for (let index = 0; index < limit; index += 1) {
@@ -2281,7 +2445,11 @@ const makeService = Effect.gen(function* () {
               )
               if (project.id !== row.id)
                 return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
-              if (!(yield* appendEntityPageItem(items, project, total, 'Project'))) {
+              const item = {
+                ...project,
+                runtime: runtimeByProject.get(project.id) ?? { attentionCount: 0, workingCount: 0 },
+              }
+              if (!(yield* appendEntityPageItem(items, item, total, 'Project'))) {
                 hasMore = true
                 break
               }
@@ -2398,7 +2566,17 @@ const makeService = Effect.gen(function* () {
   const listTasks: WorkspaceStore['Service']['listTasks'] = (projectId, options) =>
     guard(
       Effect.gen(function* () {
-        const { afterId, limit } = yield* decodeEntityPageOptions(options)
+        const { afterId, limit, includeArchived } = yield* Schema.decodeUnknownEffect(workspaceTaskPageOptionsSchema)(
+          options ?? {},
+        ).pipe(
+          Effect.map(value => ({
+            afterId: value.afterId ?? '',
+            limit: value.limit ?? 20,
+            includeArchived: value.includeArchived ?? false,
+          })),
+          Effect.mapError(() => safeError('invalid-data', 'Workspace task cursor or limit is invalid')),
+        )
+        const includeArchivedFlag = includeArchived ? 1 : 0
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${projectId}`
@@ -2407,17 +2585,99 @@ const makeService = Effect.gen(function* () {
             if (project.id !== projectId)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
             const counts =
-              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND archived = 0`
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0)`
             const total = Number(counts[0]?.total ?? 0)
             const items: Array<Task> = []
             let cursor = afterId
             let hasMore = false
             for (let index = 0; index < limit; index += 1) {
-              const rows =
-                yield* sql`SELECT id, payload FROM workspace_task WHERE project_id = ${projectId} AND archived = 0 AND id > ${cursor} ORDER BY id LIMIT 1`
+              const rows = yield* sql`
+                SELECT t.id, t.payload,
+                  (
+                    SELECT r.status
+                    FROM workspace_agent_run r
+                    LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                    WHERE r.task_id = t.id
+                      AND r.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                      AND (r.status NOT IN ('uncertain', 'recoveryRequired') OR (
+                        COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')
+                      ))
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC
+                    LIMIT 1
+                  ) AS runtime_run_status,
+                  (
+                    SELECT json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.request.kind')
+                    FROM workspace_driver_request_state s
+                    JOIN workspace_execution_event e
+                      ON e.run_id = s.run_id
+                      AND e.kind = 'driverEvent'
+                      AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.kind') = 'requestPending'
+                      AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.request.requestId') = s.request_id
+                    JOIN workspace_agent_run r ON r.id = s.run_id
+                    LEFT JOIN workspace_dispatch_intent i2 ON i2.run_id = r.id
+                    WHERE r.task_id = t.id
+                      AND s.state = 'pending'
+                      AND r.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                      AND (r.status NOT IN ('uncertain', 'recoveryRequired') OR (
+                        COALESCE(i2.state, 'pending') NOT IN ('settled', 'failed')
+                      ))
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC, e.sequence DESC
+                    LIMIT 1
+                  ) AS runtime_pending_request_kind,
+                  (
+                    SELECT json_object(
+                      'runId', r.id,
+                      'driverId', COALESCE(i.driver_id, s.driver_id),
+                      'connectionId', COALESCE(i.connection_id, s.connection_id),
+                      'modelId', i.model_id,
+                      'branch', CASE WHEN json_valid(c.payload) THEN json_extract(c.payload, '$.branch') ELSE NULL END,
+                      'activityAt', COALESCE((SELECT MAX(e.occurred_at) FROM workspace_execution_event e WHERE e.run_id = r.id), r.submitted_at)
+                    )
+                    FROM workspace_agent_run r
+                    LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                    LEFT JOIN workspace_agent_session s ON s.id = r.session_id
+                    LEFT JOIN workspace_checkout c ON c.id = r.checkout_id
+                    WHERE r.task_id = t.id
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                      WHEN r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested') THEN 0
+                      ELSE 1
+                    END, CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC
+                    LIMIT 1
+                  ) AS latest_run_metadata
+                FROM workspace_task t
+                WHERE t.project_id = ${projectId}
+                  AND (${includeArchivedFlag} = 1 OR t.archived = 0)
+                  AND t.id > ${cursor}
+                ORDER BY t.id
+                LIMIT 1
+              `
               const row = rows[0]
               if (!row) break
-              const task = summarize(yield* decodeJson(taskSchema)(String(row.payload)), 'task', String(row.id))
+              const decodedTask = summarize(yield* decodeJson(taskSchema)(String(row.payload)), 'task', String(row.id))
+              const task = {
+                ...decodedTask,
+                runtime: {
+                  runStatus: row.runtime_run_status == null ? null : String(row.runtime_run_status),
+                  pendingRequestKind:
+                    row.runtime_pending_request_kind === 'approval' || row.runtime_pending_request_kind === 'question'
+                      ? row.runtime_pending_request_kind
+                      : null,
+                  latestRun:
+                    row.latest_run_metadata == null
+                      ? null
+                      : yield* decodeJson(workspaceTaskLatestRunSchema)(String(row.latest_run_metadata)),
+                },
+              }
               if (task.id !== row.id || task.projectId !== projectId)
                 return yield* Effect.fail(safeError('invalid-data', 'Stored Task membership failed validation'))
               if (!(yield* appendEntityPageItem(items, task, total, 'Task'))) {
@@ -2428,7 +2688,7 @@ const makeService = Effect.gen(function* () {
             }
             if (!hasMore) {
               const more =
-                yield* sql`SELECT 1 AS found FROM workspace_task WHERE project_id = ${projectId} AND archived = 0 AND id > ${cursor} LIMIT 1`
+                yield* sql`SELECT 1 AS found FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0) AND id > ${cursor} LIMIT 1`
               hasMore = more.length > 0
             }
             return yield* Schema.decodeUnknownEffect(workspaceTaskReadPageSchema)({
@@ -2809,7 +3069,7 @@ const makeService = Effect.gen(function* () {
               LEFT JOIN workspace_checkout c ON c.id = i.checkout_id
               WHERE r.task_id = ${taskId}
               ORDER BY CASE
-                WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
+                WHEN r.status IN ('uncertain', 'recoveryRequired') AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
                 WHEN r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested') THEN 1
                 ELSE 2
               END, r.submitted_at DESC, r.id DESC
@@ -2942,6 +3202,8 @@ const makeService = Effect.gen(function* () {
     registerProject,
     registerCheckout,
     createTask,
+    renameTask,
+    setTaskArchived,
     beginRun,
     claimDispatch,
     bindNativeSession,

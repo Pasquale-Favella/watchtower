@@ -21,10 +21,24 @@ export function RequestToolDetails({ request }: { readonly request: AgentRequest
   )
   if (!hasMetadata) return null
 
+  const preview = tool?.command ?? tool?.description ?? tool?.paths?.[0] ?? tool?.url
+  const previewLabel = tool?.command ? 'Command' : tool?.paths?.length ? 'Files' : tool?.url ? 'URL' : 'Details'
+  const hasPrimaryActionDetails = Boolean(tool?.command || tool?.changes?.length)
+
   return (
-    <div className="space-y-2 rounded border px-3 py-2 text-xs">
-      <div className="max-h-32 space-y-2 overflow-y-auto">
-        {tool?.description && <p className="break-words whitespace-pre-wrap">{tool.description}</p>}
+    <details open={hasPrimaryActionDetails} className="group/tool-details border-t pt-3 text-xs">
+      <summary className="focus-visible:ring-ring flex cursor-pointer items-center gap-2 rounded-sm focus-visible:ring-2 focus-visible:outline-none">
+        <span className="shrink-0 font-medium">Command and file details</span>
+        {preview && (
+          <span className="text-muted-foreground min-w-0 truncate font-mono group-open/tool-details:hidden">
+            {previewLabel}: {preview}
+          </span>
+        )}
+      </summary>
+      <div className="mt-2 max-h-40 space-y-2 overflow-y-auto">
+        {tool?.description && tool.description !== request.prompt && (
+          <p className="break-words whitespace-pre-wrap">{tool.description}</p>
+        )}
         {tool?.command && (
           <div>
             <p className="text-muted-foreground mb-1">Command</p>
@@ -85,6 +99,6 @@ export function RequestToolDetails({ request }: { readonly request: AgentRequest
           </dl>
         </details>
       )}
-    </div>
+    </details>
   )
 }

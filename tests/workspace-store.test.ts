@@ -2629,6 +2629,127 @@ describe('WorkspaceStore', () => {
     })
   })
 
+  it('does not keep settled uncertain Runs in Task and project attention', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const uncertainCommand = {
+        ...command,
+        commandId: 'cmd-old-uncertain',
+        runId: 'run-old-uncertain' as never,
+        provisionalAgentSessionId: 'session-old-uncertain',
+      }
+      await acceptRun(store, run, uncertainCommand, 7)
+      await run(
+        store.failDispatch(uncertainCommand.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:04Z',
+          outcome: 'uncertain',
+          reason: 'event-stream-ended',
+        }),
+      )
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [{ runtime: { attentionCount: 1, workingCount: 0 } }],
+      })
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [{ runtime: { runStatus: 'uncertain' } }],
+      })
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.runs[0]).toMatchObject({ id: uncertainCommand.runId, status: 'uncertain' })
+      await run(store.releaseDispatchAfterCleanup(uncertainCommand.runId, 7))
+
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [{ runtime: { attentionCount: 0, workingCount: 0 } }],
+      })
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [{ runtime: { runStatus: null } }],
+      })
+
+      const newerCommand = {
+        ...command,
+        commandId: 'cmd-new-completed',
+        runId: 'run-new-completed' as never,
+        provisionalAgentSessionId: 'session-new-completed',
+        issuedAt: '2026-10-29T10:01:00Z',
+      }
+      await acceptRun(store, run, newerCommand, 8)
+      await run(
+        store.recordDriverEvent(newerCommand.runId, {
+          ownerEpoch: 8,
+          generation: 1,
+          eventId: 'new-completed',
+          occurredAt: '2026-10-29T10:01:03Z',
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn-1' },
+        }),
+      )
+
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [{ runtime: { runStatus: null, pendingRequestKind: null, latestRun: { runId: newerCommand.runId } } }],
+      })
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [{ runtime: { attentionCount: 0, workingCount: 0 } }],
+      })
+    })
+  })
+
+  it('keeps an unsettled uncertain Run visible when a newer Run completed on another checkout', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const otherCheckout = {
+        id: 'co-other' as never,
+        projectId: project.id,
+        kind: 'worktree' as const,
+        path: 'C:/repo/worktree',
+        branch: 'watchtower/worktree',
+        createdAt: '2026-10-29T10:00:00Z',
+      }
+      await run(store.registerCheckout({ commandId: 'register-other-checkout', checkout: otherCheckout }))
+
+      const uncertainCommand = {
+        ...command,
+        commandId: 'cmd-unsettled-old',
+        runId: 'run-unsettled-old' as never,
+        provisionalAgentSessionId: 'session-unsettled-old',
+      }
+      await acceptRun(store, run, uncertainCommand, 7)
+      await run(
+        store.failDispatch(uncertainCommand.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:04Z',
+          outcome: 'uncertain',
+          reason: 'event-stream-ended',
+        }),
+      )
+
+      const newerCommand = {
+        ...command,
+        commandId: 'cmd-new-other-checkout',
+        runId: 'run-new-other-checkout' as never,
+        checkoutId: otherCheckout.id,
+        provisionalAgentSessionId: 'session-new-other-checkout',
+        issuedAt: '2026-10-29T10:01:00Z',
+      }
+      await acceptRun(store, run, newerCommand, 8, 'native-session-other-checkout')
+      await run(
+        store.recordDriverEvent(newerCommand.runId, {
+          ownerEpoch: 8,
+          generation: 1,
+          eventId: 'new-other-checkout-completed',
+          occurredAt: '2026-10-29T10:01:03Z',
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn-1' },
+        }),
+      )
+
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [{ runtime: { attentionCount: 1, workingCount: 0 } }],
+      })
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [{ runtime: { runStatus: 'uncertain' } }],
+      })
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(snapshot.runs[0]).toMatchObject({ id: uncertainCommand.runId, status: 'uncertain' })
+    })
+  })
+
   it('settles an initially pending launch failure idempotently and releases its checkout', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
@@ -2672,7 +2793,11 @@ describe('WorkspaceStore', () => {
         }),
       )
       const page = await run(store.listProjects({ limit: 1 }))
-      expect(page).toMatchObject({ total: 2, nextAfterId: 'p-1', items: [{ repositoryIdentity: 'repo:one' }] })
+      expect(page).toMatchObject({
+        total: 2,
+        nextAfterId: 'p-1',
+        items: [{ repositoryIdentity: 'repo:one', runtime: { attentionCount: 0, workingCount: 0 } }],
+      })
       await expect(run(store.listProjects({ afterId: page.nextAfterId ?? undefined }))).resolves.toMatchObject({
         items: [{ id: 'p-2' }],
       })
@@ -2693,6 +2818,207 @@ describe('WorkspaceStore', () => {
       })
       await expect(run(store.listTasks('missing-project' as never))).rejects.toMatchObject({ code: 'not-found' })
     })
+  })
+
+  it('includes compact live Run and pending request state in Task pages', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(
+        store.registerProject({
+          project: { ...project, id: 'p-working' as never, repositoryIdentity: 'repo:working' },
+          mainCheckout: { ...checkout, id: 'co-working' as never, path: 'C:/working', branch: 'feature/sidebar' },
+        }),
+      )
+      await run(
+        store.createTask({
+          task: { ...task, id: 't-working' as never, projectId: 'p-working' as never, title: 'Working' },
+          conversation: { ...conversation, id: 'c-working' as never, title: 'Working' },
+        }),
+      )
+      const workingRun = {
+        ...command,
+        commandId: 'cmd-sidebar-working',
+        runId: 'run-sidebar-working' as never,
+        taskId: 't-working' as never,
+        conversationId: 'c-working' as never,
+        checkoutId: 'co-working' as never,
+        provisionalAgentSessionId: 'session-sidebar-working',
+        modelId: 'model-sidebar',
+      }
+      await acceptRun(store, run, workingRun, 7, 'native-working')
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'sidebar-approval',
+          occurredAt: '2026-10-29T10:00:04Z',
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'sidebar-request',
+              runId: command.runId,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Allow this action?',
+              options: [],
+              questions: [],
+            },
+          },
+        }),
+      )
+
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [
+          {
+            id: task.id,
+            runtime: {
+              runStatus: 'awaitingInput',
+              pendingRequestKind: 'approval',
+              latestRun: {
+                runId: command.runId,
+                driverId: command.driverId,
+                connectionId: command.connectionId,
+                modelId: null,
+                branch: null,
+                activityAt: '2026-10-29T10:00:04Z',
+              },
+            },
+          },
+        ],
+      })
+      await expect(run(store.listTasks('p-working' as never))).resolves.toMatchObject({
+        items: [
+          {
+            id: 't-working',
+            runtime: {
+              latestRun: {
+                runId: workingRun.runId,
+                driverId: workingRun.driverId,
+                connectionId: workingRun.connectionId,
+                modelId: 'model-sidebar',
+                branch: 'feature/sidebar',
+              },
+            },
+          },
+        ],
+      })
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [
+          { id: project.id, runtime: { attentionCount: 1, workingCount: 0 } },
+          { id: 'p-working', runtime: { attentionCount: 0, workingCount: 1 } },
+        ],
+      })
+
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'sidebar-approval-resolved',
+          occurredAt: '2026-10-29T10:00:05Z',
+          event: { kind: 'requestResolved', requestId: 'sidebar-request', decision: { kind: 'approve' } },
+        }),
+      )
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'sidebar-run-completed',
+          occurredAt: '2026-10-29T10:00:06Z',
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn-1' },
+        }),
+      )
+
+      await expect(run(store.listTasks(project.id))).resolves.toMatchObject({
+        items: [
+          {
+            id: task.id,
+            runtime: {
+              runStatus: null,
+              pendingRequestKind: null,
+              latestRun: {
+                runId: command.runId,
+                driverId: command.driverId,
+                connectionId: command.connectionId,
+                modelId: null,
+                branch: null,
+                activityAt: '2026-10-29T10:00:06Z',
+              },
+            },
+          },
+        ],
+      })
+      await expect(run(store.listTasks('p-working' as never))).resolves.toMatchObject({
+        items: [{ id: 't-working', runtime: { runStatus: 'running', pendingRequestKind: null } }],
+      })
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [
+          { id: project.id, runtime: { attentionCount: 0, workingCount: 0 } },
+          { id: 'p-working', runtime: { attentionCount: 0, workingCount: 1 } },
+        ],
+      })
+
+      await run(
+        store.recordDriverEvent(workingRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'sidebar-working-run-completed',
+          occurredAt: '2026-10-29T10:00:07Z',
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn-1' },
+        }),
+      )
+      await expect(run(store.listProjects())).resolves.toMatchObject({
+        items: [
+          { id: project.id, runtime: { attentionCount: 0, workingCount: 0 } },
+          { id: 'p-working', runtime: { attentionCount: 0, workingCount: 0 } },
+        ],
+      })
+    })
+  })
+
+  it('includes archived Tasks only when requested and keeps page totals and cursors consistent', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-workspace-archived-tasks-'))
+    const filename = join(directory, 'workspace.sqlite')
+    const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      await run(
+        store.createTask({
+          task: { ...task, id: 't-2' as never },
+          conversation: { ...conversation, id: 'c-2' as never },
+        }),
+      )
+      await writer.runPromise(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient
+          yield* sql`UPDATE workspace_task SET archived = 1 WHERE id = 't-2'`
+        }),
+      )
+
+      await expect(run(store.listTasks(project.id, { limit: 1 }))).resolves.toMatchObject({
+        total: 1,
+        items: [{ id: 't-1' }],
+        nextAfterId: null,
+      })
+      const firstArchivedPage = await run(store.listTasks(project.id, { limit: 1, includeArchived: true }))
+      expect(firstArchivedPage).toMatchObject({ total: 2, items: [{ id: 't-1' }], nextAfterId: 't-1' })
+      await expect(
+        run(
+          store.listTasks(project.id, {
+            limit: 1,
+            afterId: firstArchivedPage.nextAfterId ?? undefined,
+            includeArchived: true,
+          }),
+        ),
+      ).resolves.toMatchObject({ total: 2, items: [{ id: 't-2' }], nextAfterId: null })
+    } finally {
+      await writer.dispose()
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('keeps event pages within the byte budget and continues through a stable high watermark', async () => {

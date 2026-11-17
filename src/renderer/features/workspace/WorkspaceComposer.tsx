@@ -15,6 +15,7 @@ import {
   currentConversationRuns,
   isRunActive,
   isStopPrimary,
+  latestUnresolvedRun,
   resolveComposerDispatch,
   shouldSubmitComposerKey,
   validateResumeSelection,
@@ -334,7 +335,7 @@ function WorkspaceComposerContent({
   const activeRunContext = activeRun ? (runContexts.find(context => context.runId === activeRun.id) ?? null) : null
   // Stop and steer read the running agent's shared inspection, which is warm from startup.
   const runConnection = useWorkspaceConnectionCatalog(activeRunContext?.connectionId ?? '').inspection
-  const unresolvedRun = runs.find(run => run.status === 'uncertain' || run.status === 'recoveryRequired') ?? null
+  const unresolvedRun = latestUnresolvedRun(runs)
   const queueExhaustive = Boolean(
     followUps.data && !followUps.data.truncated && followUps.data.nextAfterPosition === null,
   )
@@ -450,7 +451,6 @@ function WorkspaceComposerContent({
       if (
         !actionStateReady ||
         blocked ||
-        unresolvedRun ||
         pendingStart ||
         pendingStarts.store.error ||
         intent ||
@@ -798,12 +798,13 @@ function WorkspaceComposerContent({
           </div>
         )}
         {unresolvedRun && (
-          <div
-            className="mb-3 flex items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm"
-            role="status"
-          >
-            <span>A previous message ended without a confirmed outcome.</span>
-          </div>
+          <details className="mb-2 rounded-md border px-3 py-2 text-sm">
+            <summary className="cursor-pointer">Previous attempt needs review</summary>
+            <p className="text-muted-foreground mt-2">
+              Watchtower could not confirm how this attempt finished. It will not resend the message automatically.
+              Review its Run in conversation history before deciding what to send next.
+            </p>
+          </details>
         )}
         {followUps.data?.items.length ? (
           <ol className="mb-3 max-h-36 space-y-2 overflow-auto" aria-label="Queued prompts">
@@ -908,11 +909,6 @@ function WorkspaceComposerContent({
         {actionStateReady && !contextComplete && (
           <p className="mb-2 text-sm text-amber-700" role="alert">
             Run snapshot is incomplete; sending and Stop are disabled.
-          </p>
-        )}
-        {unresolvedRun && (
-          <p className="mb-2 text-sm text-amber-700" role="alert">
-            Message delivery is unresolved. More work is blocked until its status is confirmed.
           </p>
         )}
         {freshSessionNotice && (

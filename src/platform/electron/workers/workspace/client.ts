@@ -23,6 +23,8 @@ import {
 import type {
   BeginRunCommand,
   CreateTaskCommand,
+  RenameTaskCommand,
+  SetTaskArchivedCommand,
   DispatchFailureCommand,
   RecordDriverEventCommand,
   WorkspaceEventPage,
@@ -321,6 +323,12 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           ),
         createTask: (command: CreateTaskCommand) =>
           invoke('workspace-worker:createTask', command, () => rawClient['workspace-worker:createTask'](command)),
+        renameTask: (command: RenameTaskCommand) =>
+          invoke('workspace-worker:renameTask', command, () => rawClient['workspace-worker:renameTask'](command)),
+        setTaskArchived: (command: SetTaskArchivedCommand) =>
+          invoke('workspace-worker:setTaskArchived', command, () =>
+            rawClient['workspace-worker:setTaskArchived'](command),
+          ),
         beginRun: (command: BeginRunCommand) =>
           invoke('workspace-worker:beginRun', command, () => rawClient['workspace-worker:beginRun'](command)),
         claimDispatch: (runId, ownerEpoch, claimedAt) => {

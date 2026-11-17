@@ -12,8 +12,8 @@ import {
 } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
-  agentSessionSchema,
   agentSessionIdSchema,
+  agentSessionSchema,
   conversationIdSchema,
   projectIdSchema,
   projectSchema,
@@ -65,6 +65,30 @@ export const taskCreationReceiptSchema = Schema.Struct({
   replayed: Schema.Boolean,
 })
 export type TaskCreationReceipt = Schema.Schema.Type<typeof taskCreationReceiptSchema>
+
+export const renameTaskCommandSchema = Schema.Struct({
+  commandId: text,
+  taskId: taskIdSchema,
+  title: text,
+  updatedAt: timestamp,
+})
+export type RenameTaskCommand = Schema.Schema.Type<typeof renameTaskCommandSchema>
+
+export const setTaskArchivedCommandSchema = Schema.Struct({
+  commandId: text,
+  taskId: taskIdSchema,
+  archived: Schema.Boolean,
+  updatedAt: timestamp,
+})
+export type SetTaskArchivedCommand = Schema.Schema.Type<typeof setTaskArchivedCommandSchema>
+
+export const taskMutationReceiptSchema = Schema.Struct({
+  commandId: text,
+  taskId: taskIdSchema,
+  updatedAt: timestamp,
+  replayed: Schema.Boolean,
+})
+export type TaskMutationReceipt = Schema.Schema.Type<typeof taskMutationReceiptSchema>
 
 export const registerProjectCommandSchema = Schema.Struct({
   // Optional only for existing internal callers; renderer commands always provide an ID.
@@ -342,6 +366,11 @@ export const workspaceEntityPageOptionsSchema = Schema.Struct({
   ),
 })
 export type WorkspaceEntityPageOptions = Schema.Schema.Type<typeof workspaceEntityPageOptionsSchema>
+export const workspaceTaskPageOptionsSchema = Schema.Struct({
+  ...workspaceEntityPageOptionsSchema.fields,
+  includeArchived: Schema.optional(Schema.Boolean),
+})
+export type WorkspaceTaskPageOptions = Schema.Schema.Type<typeof workspaceTaskPageOptionsSchema>
 export const workspaceCheckoutPageOptionsSchema = Schema.Struct({
   afterCheckoutId: Schema.optional(text),
   limit: Schema.optional(
@@ -441,8 +470,36 @@ export const workspacePayloadPageSchema = Schema.Struct({
 })
 export type WorkspacePayloadPage = Schema.Schema.Type<typeof workspacePayloadPageSchema>
 export const workspaceProjectReadSchema = Schema.Struct({ ...projectSchema.fields, ...payloadSummaryFields })
+export const workspaceProjectRuntimeSummarySchema = Schema.Struct({
+  attentionCount: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  workingCount: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+})
+export type WorkspaceProjectRuntimeSummary = Schema.Schema.Type<typeof workspaceProjectRuntimeSummarySchema>
+export const workspaceProjectListItemSchema = Schema.Struct({
+  ...workspaceProjectReadSchema.fields,
+  runtime: Schema.optional(workspaceProjectRuntimeSummarySchema),
+})
+export type WorkspaceProjectListItem = Schema.Schema.Type<typeof workspaceProjectListItemSchema>
 export const workspaceCheckoutReadSchema = Schema.Struct({ ...workspaceCheckoutSchema.fields, ...payloadSummaryFields })
+export const workspaceTaskLatestRunSchema = Schema.Struct({
+  runId: agentRunIdSchema,
+  driverId: Schema.NullOr(text),
+  connectionId: Schema.NullOr(text),
+  modelId: Schema.NullOr(Schema.String),
+  branch: Schema.NullOr(Schema.String),
+  activityAt: timestamp,
+})
+export const workspaceTaskRuntimeSummarySchema = Schema.Struct({
+  runStatus: Schema.NullOr(agentRunStatusSchema),
+  pendingRequestKind: Schema.NullOr(Schema.Literals(['approval', 'question'])),
+  latestRun: Schema.NullOr(workspaceTaskLatestRunSchema),
+})
+export type WorkspaceTaskRuntimeSummary = Schema.Schema.Type<typeof workspaceTaskRuntimeSummarySchema>
 export const workspaceTaskReadSchema = Schema.Struct({ ...taskSchema.fields, ...payloadSummaryFields })
+export const workspaceTaskListItemSchema = Schema.Struct({
+  ...workspaceTaskReadSchema.fields,
+  runtime: workspaceTaskRuntimeSummarySchema,
+})
 
 export const workspaceExecutionEventSchema = Schema.Struct({
   ...payloadSummaryFields,
@@ -496,7 +553,7 @@ export const workspacePendingRuntimeRequestPageOptionsSchema = Schema.Struct({
 })
 
 export const workspaceProjectReadPageSchema = Schema.Struct({
-  items: Schema.Array(workspaceProjectReadSchema),
+  items: Schema.Array(workspaceProjectListItemSchema),
   total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   nextAfterId: Schema.NullOr(projectIdSchema),
 })
@@ -512,7 +569,7 @@ export const workspaceProjectDetailSchema = Schema.Struct({
 export type WorkspaceProjectDetail = Schema.Schema.Type<typeof workspaceProjectDetailSchema>
 
 export const workspaceTaskReadPageSchema = Schema.Struct({
-  items: Schema.Array(workspaceTaskReadSchema),
+  items: Schema.Array(workspaceTaskListItemSchema),
   total: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   nextAfterId: Schema.NullOr(taskIdSchema),
 })

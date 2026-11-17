@@ -64,20 +64,23 @@ export function createWorkspaceAtoms(
     query: (request: WorkspaceRequest<'workspace:listTasks'>, id: string) =>
       client.query('workspace:listTasks', request, queryOptions(id)),
   })
-  const sidebarTaskSlots = new Map<ProjectId, typeof workspaceTasks>()
+  const sidebarTaskSlots = new Map<ProjectId, Map<string | null, typeof workspaceTasks>>()
   const sidebarTaskReaders = new Map<typeof workspaceTasks, number>()
-  const workspaceTasksForSidebar = (projectId: ProjectId) => {
-    const cached = sidebarTaskSlots.get(projectId)
+  const workspaceTasksForSidebar = (projectId: ProjectId, afterId: string | null) => {
+    const projectSlots = sidebarTaskSlots.get(projectId)
+    const cached = projectSlots?.get(afterId)
     if (cached) return cached
     const slot = createRpcQuerySlot({
       key: workspaceQueryKey,
       query: (request: WorkspaceRequest<'workspace:listTasks'>, id: string) =>
         client.query('workspace:listTasks', request, queryOptions(id)),
     })
-    sidebarTaskSlots.set(projectId, slot)
+    const nextProjectSlots = projectSlots ?? new Map<string | null, typeof workspaceTasks>()
+    nextProjectSlots.set(afterId, slot)
+    sidebarTaskSlots.set(projectId, nextProjectSlots)
     if (sidebarTaskSlots.size > 128) {
-      for (const [id, candidate] of sidebarTaskSlots) {
-        if (sidebarTaskReaders.has(candidate)) continue
+      for (const [id, pages] of sidebarTaskSlots) {
+        if ([...pages.values()].some(candidate => sidebarTaskReaders.has(candidate))) continue
         sidebarTaskSlots.delete(id)
         break
       }
@@ -165,7 +168,11 @@ export function createWorkspaceAtoms(
   const queryPolling = createWorkspaceQueryPolling(
     (options.runtime ?? client.runtime.factory)(options.layer ?? ApplicationProtocolLayer),
     {
-      targets: () => [...fallbackTargets, ...sidebarTaskSlots.values(), ...scopedQueries],
+      targets: () => [
+        ...fallbackTargets,
+        ...[...sidebarTaskSlots.values()].flatMap(pages => [...pages.values()]),
+        ...scopedQueries,
+      ],
       beforeRefresh: waitForWorkspaceConnection,
     },
   )
@@ -182,9 +189,14 @@ export function createWorkspaceAtoms(
   const refreshWorkspace = (registry: AtomRegistry.AtomRegistry, source: 'command' | 'event') => {
     const targets =
       source === 'command'
-        ? [...fallbackTargets, workspaceRequests, ...sidebarTaskSlots.values()]
+        ? [
+            ...fallbackTargets,
+            workspaceRequests,
+            ...[...sidebarTaskSlots.values()].flatMap(pages => [...pages.values()]),
+          ]
         : [
             workspaceStatus,
+            workspaceProjects,
             workspaceTasks,
             workspaceTask,
             workspaceTaskSnapshot,
@@ -193,7 +205,7 @@ export function createWorkspaceAtoms(
             workspaceFollowUps,
             workspaceRequestResponses,
             workspaceSteerIntents,
-            ...sidebarTaskSlots.values(),
+            ...[...sidebarTaskSlots.values()].flatMap(pages => [...pages.values()]),
           ]
     queryPolling.refresh(registry, [...targets, ...scopedQueries])
     const conversation = registry.get(workspaceConversation.requestAtom)
@@ -233,6 +245,12 @@ export function createWorkspaceAtoms(
   )
   const createTaskAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createTask'>) =>
     rpc('workspace:createTask', request),
+  )
+  const renameTaskAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:renameTask'>) =>
+    rpc('workspace:renameTask', request),
+  )
+  const setTaskArchivedAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:setTaskArchived'>) =>
+    rpc('workspace:setTaskArchived', request),
   )
   const startRunAtom = workspaceRuntime.fn<WorkspaceRequest<'workspace:startRun'>>()(
     (input, get) =>
@@ -344,6 +362,8 @@ export function createWorkspaceAtoms(
     createProjectAtom,
     cloneProjectAtom,
     createTaskAtom,
+    renameTaskAtom,
+    setTaskArchivedAtom,
     startRunAtom,
     interruptAtom,
     respondAtom,
@@ -383,6 +403,8 @@ export const {
   createProjectAtom,
   cloneProjectAtom,
   createTaskAtom,
+  renameTaskAtom,
+  setTaskArchivedAtom,
   startRunAtom,
   interruptAtom,
   respondAtom,

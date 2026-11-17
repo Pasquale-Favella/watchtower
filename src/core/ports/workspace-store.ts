@@ -26,12 +26,15 @@ import type {
   RecordDriverEventCommand,
   RecordRequestResponseCommand,
   RecordSteerCommand,
+  RenameTaskCommand,
   RegisterCheckoutCommand,
   RegisterProjectCommand,
   RequestResponsePage,
   SettleDeliveryCommand,
+  SetTaskArchivedCommand,
   SteerIntentPage,
   TaskCreationReceipt,
+  TaskMutationReceipt,
   WorkspaceCheckoutPageOptions,
   WorkspaceConversationPage,
   WorkspaceConversationPageReadOptions,
@@ -47,6 +50,7 @@ import type {
   WorkspaceReadPageOptions,
   WorkspaceSnapshot,
   WorkspaceTaskDetail,
+  WorkspaceTaskPageOptions,
   WorkspaceTaskReadPage,
 } from '@/shared/schemas/workspace-store.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
@@ -68,6 +72,10 @@ export class WorkspaceStore extends Context.Service<
       command: RegisterCheckoutCommand,
     ) => Effect.Effect<CheckoutRegistrationReceipt, WorkspaceStoreError>
     readonly createTask: (command: CreateTaskCommand) => Effect.Effect<TaskCreationReceipt, WorkspaceStoreError>
+    readonly renameTask: (command: RenameTaskCommand) => Effect.Effect<TaskMutationReceipt, WorkspaceStoreError>
+    readonly setTaskArchived: (
+      command: SetTaskArchivedCommand,
+    ) => Effect.Effect<TaskMutationReceipt, WorkspaceStoreError>
     readonly beginRun: (command: BeginRunCommand) => Effect.Effect<CommandReceipt, WorkspaceStoreError>
     readonly claimDispatch: (
       runId: AgentRunId,
@@ -159,7 +167,7 @@ export class WorkspaceStore extends Context.Service<
     ) => Effect.Effect<WorkspaceProjectDetail, WorkspaceStoreError>
     readonly listTasks: (
       projectId: ProjectId,
-      options?: WorkspaceEntityPageOptions,
+      options?: WorkspaceTaskPageOptions,
     ) => Effect.Effect<WorkspaceTaskReadPage, WorkspaceStoreError>
     readonly searchPromptConversations?: (
       request: Schema.Schema.Type<typeof promptConversationSearchSchema>,

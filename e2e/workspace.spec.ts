@@ -112,11 +112,38 @@ test('workspace opens by default, persists project and task across reload, and c
     await expect(window.getByRole('status').filter({ hasText: 'Using the existing Project' })).toBeVisible()
     const projectGroup = window.getByRole('button', { name: 'Workspace fixture', exact: true })
     if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
-    await window.getByRole('button', { name: /Verify workspace composition/ }).click()
+    await window.getByRole('button', { name: /^Verify workspace composition,/ }).click()
     await expect(window.getByRole('heading', { name: task.title, exact: true })).toBeVisible()
     await expect(window.getByRole('region', { name: 'Conversation history', exact: true })).toContainText(
       'Send a message to start the conversation.',
     )
+    // Sidebar refreshes must not override a folder the user explicitly collapsed.
+    await projectGroup.click()
+    await expect(projectGroup).toHaveAttribute('aria-expanded', 'false')
+    const otherRepository = join(directory, 'other-repository')
+    execFileSync('git', ['init', otherRepository], { stdio: 'pipe' })
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Workspace Test',
+        '-c',
+        'user.email=workspace@example.invalid',
+        'commit',
+        '--allow-empty',
+        '-m',
+        'Initial fixture',
+      ],
+      { cwd: otherRepository, stdio: 'pipe' },
+    )
+    const otherRegistration = await invokeRpc(window, 'workspace:registerProject', {
+      commandId: randomUUID(),
+      path: otherRepository,
+      name: 'Another project',
+    })
+    expect(otherRegistration.ok).toBe(true)
+    await expect(window.getByRole('button', { name: 'Another project', exact: true })).toBeVisible()
+    await expect(projectGroup).toHaveAttribute('aria-expanded', 'false')
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     const newChat = window.getByRole('region', { name: 'New chat', exact: true })
     await expect(newChat.getByRole('combobox', { name: 'Project', exact: true })).toHaveText('No project')
@@ -125,7 +152,7 @@ test('workspace opens by default, persists project and task across reload, and c
     expect(await invokeRpc(window, 'workspace:listTasks', { projectId: project.id })).toEqual(tasks)
     await window.reload()
     await switchVertical(window, 'Workspace')
-    await expect(newChat.getByRole('textbox', { name: 'Prompt', exact: true })).toHaveValue(
+    await expect(newChat.getByRole('textbox', { name: 'Prompt', exact: true })).toHaveText(
       'A draft without a repository',
     )
     await window.screenshot({ path: test.info().outputPath('workspace.png'), fullPage: true })
