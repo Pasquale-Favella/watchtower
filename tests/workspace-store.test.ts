@@ -2820,6 +2820,65 @@ describe('WorkspaceStore', () => {
     })
   })
 
+  it('orders Task pages by latest task or execution activity and keeps the afterId cursor stable', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      for (const id of ['t-2', 't-3']) {
+        await run(
+          store.createTask({
+            task: { ...task, id: id as never },
+            conversation: { ...conversation, id: `c-${id}` as never },
+          }),
+        )
+      }
+      await run(
+        store.renameTask({
+          commandId: 'rename-t1',
+          taskId: task.id,
+          title: 'Task one',
+          updatedAt: '2026-10-29T10:03:00Z',
+        }),
+      )
+      await run(
+        store.renameTask({
+          commandId: 'rename-t2',
+          taskId: 't-2' as never,
+          title: 'Task two',
+          updatedAt: '2026-10-29T10:04:00Z',
+        }),
+      )
+      await run(
+        store.renameTask({
+          commandId: 'rename-t3',
+          taskId: 't-3' as never,
+          title: 'Task three',
+          updatedAt: '2026-10-29T10:03:00Z',
+        }),
+      )
+      await acceptRun(store, run)
+      await run(
+        store.recordDriverEvent(command.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'task-list-recent-activity',
+          occurredAt: '2026-10-29T10:05:00Z',
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn-1' },
+        }),
+      )
+
+      const first = await run(store.listTasks(project.id, { limit: 1 }))
+      expect(first).toMatchObject({
+        total: 3,
+        items: [{ id: task.id, runtime: { lastActivityAt: '2026-10-29T10:05:00Z' } }],
+        nextAfterId: task.id,
+      })
+      const second = await run(store.listTasks(project.id, { limit: 1, afterId: first.nextAfterId ?? undefined }))
+      expect(second).toMatchObject({ items: [{ id: 't-2' }], nextAfterId: 't-2' })
+      const third = await run(store.listTasks(project.id, { limit: 1, afterId: second.nextAfterId ?? undefined }))
+      expect(third).toMatchObject({ items: [{ id: 't-3' }], nextAfterId: null })
+    })
+  })
+
   it('includes compact live Run and pending request state in Task pages', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)

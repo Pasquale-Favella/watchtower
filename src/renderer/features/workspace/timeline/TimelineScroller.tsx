@@ -178,24 +178,26 @@ export function TimelineScroller<Row extends { readonly id: string }>({
           Restoring reading position…
         </p>
       )}
-      {follow.pill === 'visible' && (
-        <Button
-          type="button"
-          variant="secondary"
-          size="sm"
-          className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2 rounded-full shadow-sm"
-          onClick={() => {
-            restoredRef.current = true
-            setRestorationPending(false)
-            writeScrollAnchor(conversationId, null)
-            dispatch({ type: 'resume' })
-            void listRef.current?.scrollToEnd({ animated: !prefersReducedMotion() })
-          }}
-        >
-          <ArrowDownIcon aria-hidden />
-          Scroll to end
-        </Button>
-      )}
+      <Button
+        type="button"
+        variant="secondary"
+        size="icon-sm"
+        data-active={follow.pill === 'visible'}
+        aria-label="Scroll to end"
+        aria-hidden={follow.pill !== 'visible'}
+        tabIndex={follow.pill === 'visible' ? 0 : -1}
+        title="Scroll to end"
+        className="border-border bg-background text-foreground hover:bg-muted hover:text-foreground absolute bottom-4 left-1/2 z-10 -translate-x-1/2 transition-[translate,scale,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)]"
+        onClick={() => {
+          restoredRef.current = true
+          setRestorationPending(false)
+          writeScrollAnchor(conversationId, null)
+          dispatch({ type: 'resume' })
+          void listRef.current?.scrollToEnd({ animated: !prefersReducedMotion() })
+        }}
+      >
+        <ArrowDownIcon aria-hidden />
+      </Button>
     </div>
   )
 }

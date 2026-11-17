@@ -124,6 +124,33 @@ describe('conversation durable view projection', () => {
     expect(decodeConversationEvent(event(3, { event: { kind: 'unknown' } }))).toBeNull()
   })
 
+  it('hides only the legacy ACP session-info notice while preserving agent notices and errors', () => {
+    const entries = projectConversationView([
+      item(1),
+      {
+        ...item(2),
+        event: event(2, {
+          event: { kind: 'nativeNotice', message: 'ACP reported updated session information.' },
+        }),
+      },
+      {
+        ...item(3),
+        event: event(3, { event: { kind: 'nativeNotice', message: 'The agent changed modes.' } }),
+      },
+      {
+        ...item(4),
+        event: event(4, { event: { kind: 'turnFailed', message: 'Agent failed.' } }),
+      },
+    ]).entries
+    const assistant = entries.find(entry => entry.kind === 'assistant')
+    if (!assistant || assistant.kind !== 'assistant') throw new Error('Expected an assistant turn')
+
+    expect(assistant.blocks.filter(block => block.kind === 'notice').map(block => block.event)).toEqual([
+      { kind: 'nativeNotice', message: 'The agent changed modes.' },
+      { kind: 'turnFailed', message: 'Agent failed.' },
+    ])
+  })
+
   it('validates payload type and record identity after chunk reassembly', () => {
     const message = { id: 'message-1', content: 'Full prompt', createdAt: '2026-10-30T12:00:00Z' }
     const fullEvent = event(8, { event: { kind: 'textDelta', text: 'Full assistant text', itemId: 'block-8' } })

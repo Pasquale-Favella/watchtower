@@ -36,7 +36,13 @@ export function mergeConversationItems(
 
 export type ConversationTurnBlock =
   | { readonly kind: 'text'; readonly text: string; readonly itemId: string | null; readonly sequence: number }
-  | { readonly kind: 'thinking'; readonly text: string; readonly itemId: string | null; readonly sequence: number }
+  | {
+      readonly kind: 'thinking'
+      readonly text: string
+      readonly itemId: string | null
+      readonly sequence: number
+      readonly streaming: boolean
+    }
   | ({
       readonly kind: 'tool'
       readonly toolCallId: string
@@ -265,6 +271,7 @@ function observeRun(
     case 'turnStarted':
       transitionRun(run, 'active', event.occurredAt, true)
       run.startedAt ??= event.occurredAt
+      run.lastOutput = null
       if (run.pending.size > 0) transitionRun(run, 'awaitingInput', event.occurredAt)
       break
     case 'turnCompleted':
@@ -387,6 +394,12 @@ export function projectConversationView(
     const hydratedEvent = hydratedEvents.get(event.sequence)
     const driver = decodeConversationEvent(hydratedEvent ?? event)
     observeRun(runs, event, driver)
+    if (
+      driver?.kind === 'sessionMetadataUpdated' ||
+      (driver?.kind === 'nativeNotice' && driver.message === 'ACP reported updated session information.')
+    ) {
+      continue
+    }
     if (!driver && !event.payloadTruncated) continue
     const runGeneration = runKeyFor(event)
     if (driver && 'nativeTurnId' in driver && driver.nativeTurnId)
@@ -441,6 +454,24 @@ export function projectConversationView(
       turn.terminal = true
   }
 
+  const activeTurn = lastTurn.current
+  const activeRun = activeTurn ? runs.get(activeTurn.runKey) : undefined
+  let activeReasoningBlock: ConversationTurnBlock | undefined
+  if (
+    activeTurn &&
+    activeRun?.status === 'active' &&
+    activeRun.pending.size === 0 &&
+    activeRun.lastOutput === 'reasoning'
+  ) {
+    for (let index = activeTurn.blocks.length - 1; index >= 0; index -= 1) {
+      const block = activeTurn.blocks[index]
+      if (block?.kind === 'thinking') {
+        activeReasoningBlock = block
+        break
+      }
+    }
+  }
+
   const projected = entries.map((entry): ConversationEntry => {
     if (entry.kind !== 'assistant') return entry
     const run = runs.get(entry.runKey)
@@ -464,7 +495,9 @@ export function projectConversationView(
             pendingRequestKind: null,
             lastOutput: null,
           },
-      blocks: [...entry.blocks],
+      blocks: entry.blocks.map(block =>
+        block === activeReasoningBlock && block.kind === 'thinking' ? { ...block, streaming: true } : block,
+      ),
       audit: [...entry.audit],
     }
   })
@@ -510,7 +543,12 @@ function appendTurnBlock(
       blocks[blocks.length - 1] = { ...previous, text: previous.text + event.text }
       return
     }
-    blocks.push({ kind, text: event.text, itemId: event.itemId ?? null, sequence })
+    const itemId = event.itemId ?? null
+    if (kind === 'thinking') {
+      blocks.push({ kind, text: event.text, itemId, sequence, streaming: false })
+    } else {
+      blocks.push({ kind, text: event.text, itemId, sequence })
+    }
     return
   }
   if (event.kind === 'toolStarted' || event.kind === 'toolUpdated' || event.kind === 'toolCompleted') {

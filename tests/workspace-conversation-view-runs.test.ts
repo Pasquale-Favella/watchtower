@@ -42,6 +42,13 @@ function turnRun(items: WorkspaceConversationPageItem[]) {
   return turn.run
 }
 
+function assistantTurn(items: WorkspaceConversationPageItem[]) {
+  const { entries } = projectConversationView(items)
+  const turn = entries.find(entry => entry.kind === 'assistant')
+  if (!turn || turn.kind !== 'assistant') throw new Error('Expected an assistant turn')
+  return turn
+}
+
 describe('conversation run projection', () => {
   it('settles a completed Run with its start and terminal timestamps', () => {
     nextSequence = 0
@@ -111,6 +118,60 @@ describe('conversation run projection', () => {
       driver({ kind: 'textDelta', text: 'answer' }, 2),
     ])
     expect(projection.activity?.label).toBe('working')
+  })
+
+  it('streams only the latest reasoning block while that block is active', () => {
+    nextSequence = 0
+    const turn = assistantTurn([
+      status('runStarted', 0),
+      driver({ kind: 'reasoningDelta', text: 'first thought', itemId: 'first' }, 1),
+      driver({ kind: 'textDelta', text: 'answer' }, 2),
+      driver({ kind: 'reasoningDelta', text: 'second thought', itemId: 'second' }, 3),
+    ])
+    expect(turn.blocks.filter(block => block.kind === 'thinking').map(block => block.streaming)).toEqual([false, true])
+  })
+
+  it('stops reasoning animation when the run settles', () => {
+    nextSequence = 0
+    const turn = assistantTurn([
+      status('runStarted', 0),
+      driver({ kind: 'reasoningDelta', text: 'finished thought' }, 1),
+      driver({ kind: 'turnCompleted' }, 2),
+    ])
+    expect(turn.blocks.find(block => block.kind === 'thinking')).toMatchObject({ streaming: false })
+  })
+
+  it('stops reasoning animation when tool work follows', () => {
+    nextSequence = 0
+    const turn = assistantTurn([
+      status('runStarted', 0),
+      driver({ kind: 'reasoningDelta', text: 'thought' }, 1),
+      driver({ kind: 'toolStarted', toolCallId: 'tool-1', name: 'Read file' }, 2),
+    ])
+    expect(turn.blocks.find(block => block.kind === 'thinking')).toMatchObject({ streaming: false })
+  })
+
+  it('stops reasoning animation while the agent awaits a response', () => {
+    nextSequence = 0
+    const turn = assistantTurn([
+      status('runStarted', 0),
+      driver({ kind: 'reasoningDelta', text: 'thought' }, 1),
+      driver(
+        {
+          kind: 'requestPending',
+          request: {
+            requestId: 'request-1',
+            runId: RUN,
+            generation: 1,
+            kind: 'question',
+            prompt: 'Choose an option',
+            questions: [],
+          },
+        },
+        2,
+      ),
+    ])
+    expect(turn.blocks.find(block => block.kind === 'thinking')).toMatchObject({ streaming: false })
   })
 
   it('shows a queued Run as working from its first record', () => {

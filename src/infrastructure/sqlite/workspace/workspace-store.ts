@@ -291,6 +291,14 @@ const migrations = [
         ON workspace_agent_run(task_id, status, submitted_at DESC, id DESC);
     `),
   },
+  {
+    version: 14,
+    name: 'index_execution_events_by_task_activity',
+    up: executeSqliteScript(`
+      CREATE INDEX IF NOT EXISTS workspace_execution_event_by_task_activity
+        ON workspace_execution_event(task_id, occurred_at DESC);
+    `),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
@@ -2589,10 +2597,46 @@ const makeService = Effect.gen(function* () {
             const total = Number(counts[0]?.total ?? 0)
             const items: Array<Task> = []
             let cursor = afterId
+            let cursorActivityAt: string | null = null
+            if (cursor !== '') {
+              const cursorRows = yield* sql`
+                SELECT MAX(
+                  COALESCE(json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END, '$.updatedAt'), ''),
+                  COALESCE((SELECT MAX(e.occurred_at) FROM workspace_execution_event e WHERE e.task_id = workspace_task.id), '')
+                ) AS activity_at
+                FROM workspace_task
+                WHERE id = ${cursor} AND project_id = ${projectId}
+                  AND (${includeArchivedFlag} = 1 OR archived = 0)
+              `
+              if (cursorRows[0]?.activity_at != null) cursorActivityAt = String(cursorRows[0].activity_at)
+            }
             let hasMore = false
-            for (let index = 0; index < limit; index += 1) {
-              const rows = yield* sql`
-                SELECT t.id, t.payload,
+            const rows = yield* sql`
+                WITH task_activity AS (
+                  SELECT task.id, task.project_id, task.archived,
+                    MAX(
+                      COALESCE(json_extract(CASE WHEN json_valid(task.payload) THEN task.payload ELSE '{}' END, '$.updatedAt'), ''),
+                      COALESCE((SELECT MAX(e.occurred_at) FROM workspace_execution_event e WHERE e.task_id = task.id), '')
+                    ) AS activity_at
+                  FROM workspace_task task
+                  WHERE task.project_id = ${projectId}
+                    AND (${includeArchivedFlag} = 1 OR task.archived = 0)
+                ), task_page AS (
+                  SELECT t.id, t.activity_at
+                  FROM task_activity t
+                  WHERE t.project_id = ${projectId}
+                    AND (${includeArchivedFlag} = 1 OR t.archived = 0)
+                    AND (
+                      (${cursorActivityAt} IS NULL AND t.id > ${cursor})
+                      OR (${cursorActivityAt} IS NOT NULL AND (
+                        t.activity_at < ${cursorActivityAt}
+                        OR (t.activity_at = ${cursorActivityAt} AND t.id > ${cursor})
+                      ))
+                    )
+                  ORDER BY t.activity_at DESC, t.id ASC
+                  LIMIT ${limit + 1}
+                )
+                SELECT t.id, t.activity_at,
                   (
                     SELECT r.status
                     FROM workspace_agent_run r
@@ -2654,19 +2698,24 @@ const makeService = Effect.gen(function* () {
                     END, r.submitted_at DESC, r.id DESC
                     LIMIT 1
                   ) AS latest_run_metadata
-                FROM workspace_task t
-                WHERE t.project_id = ${projectId}
-                  AND (${includeArchivedFlag} = 1 OR t.archived = 0)
-                  AND t.id > ${cursor}
-                ORDER BY t.id
-                LIMIT 1
+                FROM task_page t
+                ORDER BY t.activity_at DESC, t.id ASC
               `
-              const row = rows[0]
-              if (!row) break
-              const decodedTask = summarize(yield* decodeJson(taskSchema)(String(row.payload)), 'task', String(row.id))
+            hasMore = rows.length > limit
+            for (const row of rows.slice(0, limit)) {
+              const taskRows = yield* sql`SELECT project_id, payload FROM workspace_task WHERE id = ${row.id}`
+              const taskRow = taskRows[0]
+              if (!taskRow)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Task disappeared during page read'))
+              const decodedTask = summarize(
+                yield* decodeJson(taskSchema)(String(taskRow.payload)),
+                'task',
+                String(row.id),
+              )
               const task = {
                 ...decodedTask,
                 runtime: {
+                  lastActivityAt: String(row.activity_at),
                   runStatus: row.runtime_run_status == null ? null : String(row.runtime_run_status),
                   pendingRequestKind:
                     row.runtime_pending_request_kind === 'approval' || row.runtime_pending_request_kind === 'question'
@@ -2678,18 +2727,14 @@ const makeService = Effect.gen(function* () {
                       : yield* decodeJson(workspaceTaskLatestRunSchema)(String(row.latest_run_metadata)),
                 },
               }
-              if (task.id !== row.id || task.projectId !== projectId)
+              if (task.id !== row.id || task.projectId !== projectId || taskRow.project_id !== projectId)
                 return yield* Effect.fail(safeError('invalid-data', 'Stored Task membership failed validation'))
               if (!(yield* appendEntityPageItem(items, task, total, 'Task'))) {
                 hasMore = true
                 break
               }
               cursor = task.id
-            }
-            if (!hasMore) {
-              const more =
-                yield* sql`SELECT 1 AS found FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0) AND id > ${cursor} LIMIT 1`
-              hasMore = more.length > 0
+              cursorActivityAt = String(row.activity_at)
             }
             return yield* Schema.decodeUnknownEffect(workspaceTaskReadPageSchema)({
               items,

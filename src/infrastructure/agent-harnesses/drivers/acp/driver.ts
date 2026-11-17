@@ -1042,7 +1042,14 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
       }
       return [{ kind: 'capabilitiesUpdated', capabilities: state.liveCapabilities }]
     case 'session_info_update':
-      return [{ kind: 'nativeNotice', message: 'ACP reported updated session information.' }]
+      return [
+        {
+          kind: 'sessionMetadataUpdated',
+          ...(update.title !== undefined ? { title: update.title } : {}),
+          ...(update.updatedAt !== undefined ? { updatedAt: update.updatedAt } : {}),
+          ...(update._meta !== undefined ? { metadata: update._meta } : {}),
+        },
+      ]
   }
 }
 

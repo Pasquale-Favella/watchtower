@@ -471,6 +471,28 @@ function collectUpdates(updates: readonly SessionUpdate[]) {
 }
 
 describe('generic ACP driver', () => {
+  it('persists session metadata updates without turning them into transport notices', async () => {
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'session_info_update',
+        title: 'Investigate startup',
+        updatedAt: '2026-11-17T12:00:00Z',
+        _meta: { branch: 'fix/startup' },
+      },
+    ])
+
+    expect(events).toContainEqual({
+      kind: 'sessionMetadataUpdated',
+      title: 'Investigate startup',
+      updatedAt: '2026-11-17T12:00:00Z',
+      metadata: { branch: 'fix/startup' },
+    })
+    expect(events).not.toContainEqual({
+      kind: 'nativeNotice',
+      message: 'ACP reported updated session information.',
+    })
+  })
+
   it('keeps per-model reasoning efforts, including an explicitly empty effort list', async () => {
     const fake = makeFakeAcp()
     fake.openCodeOptions = true

@@ -705,7 +705,7 @@ function TurnBlock({
         </div>
       )
     case 'thinking':
-      return <ReasoningBlock text={block.text} streaming={live} />
+      return <ReasoningBlock text={block.text} streaming={block.streaming} />
     case 'plan':
       return <PlanBlock entries={block.entries} explanation={block.explanation} streaming={live} />
     case 'media':

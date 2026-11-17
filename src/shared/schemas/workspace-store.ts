@@ -490,6 +490,7 @@ export const workspaceTaskLatestRunSchema = Schema.Struct({
   activityAt: timestamp,
 })
 export const workspaceTaskRuntimeSummarySchema = Schema.Struct({
+  lastActivityAt: Schema.optional(timestamp),
   runStatus: Schema.NullOr(agentRunStatusSchema),
   pendingRequestKind: Schema.NullOr(Schema.Literals(['approval', 'question'])),
   latestRun: Schema.NullOr(workspaceTaskLatestRunSchema),

@@ -33,7 +33,7 @@ import {
   type WorkspaceRequest,
 } from './hooks.js'
 import { catalogView, modelDisplayName } from './model-picker/catalog.js'
-import { appendUniquePage } from './project-ui.js'
+import { appendUniquePage, compareTaskActivity, taskActivityAt } from './project-ui.js'
 import { useWorkspaceProjectDialog } from './use-project-dialog.js'
 
 const PAGE_SIZE = 30
@@ -688,7 +688,7 @@ function SidebarTaskGroup({
       : tasks
   const visibleTasksBySection = TASK_SECTIONS.map(section => ({
     ...section,
-    tasks: visibleTasks.filter(task => taskSection(task) === section.id),
+    tasks: visibleTasks.filter(task => taskSection(task) === section.id).sort(compareTaskActivity),
   })).filter(section => section.tasks.length > 0)
 
   const toggleSection = (sectionId: TaskSectionId) => {
@@ -825,10 +825,7 @@ function SidebarTaskRow({
         modelView.kind === 'listed' || modelView.kind === 'session' ? modelView.models : [],
       )
     : null
-  const activityAt =
-    latestRun?.activityAt && Date.parse(latestRun.activityAt) > Date.parse(task.updatedAt)
-      ? latestRun.activityAt
-      : task.updatedAt
+  const activityAt = taskActivityAt(task)
   const activityTime = formatTaskUpdatedAt(activityAt)
   const elapsedTime = compactElapsedTime(activityAt, nowMs)
   const connection = latestRun?.connectionId ? connectionsById.get(latestRun.connectionId) : undefined

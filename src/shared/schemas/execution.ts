@@ -310,6 +310,12 @@ export const agentDriverEventSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal('requestPending'), request: agentRequestSchema }),
   Schema.Struct({ kind: Schema.Literal('requestResolved'), requestId: text, decision: agentRequestDecisionSchema }),
   Schema.Struct({
+    kind: Schema.Literal('sessionMetadataUpdated'),
+    title: Schema.optional(Schema.NullOr(Schema.String)),
+    updatedAt: Schema.optional(Schema.NullOr(Schema.String)),
+    metadata: Schema.optional(Schema.Unknown),
+  }),
+  Schema.Struct({
     kind: Schema.Literal('usageReported'),
     semantics: Schema.Literals(['delta', 'cumulative', 'final']),
     scope: Schema.Literals(['run', 'session', 'subagent']),
