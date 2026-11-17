@@ -495,9 +495,15 @@ export function projectConversationView(
             pendingRequestKind: null,
             lastOutput: null,
           },
-      blocks: entry.blocks.map(block =>
-        block === activeReasoningBlock && block.kind === 'thinking' ? { ...block, streaming: true } : block,
-      ),
+      blocks: entry.blocks.map(block => {
+        if (
+          block.kind === 'tool' &&
+          block.status === 'running' &&
+          (entry.terminal || (run && terminalRunStatuses.has(run.status)))
+        )
+          return { ...block, status: 'unknown' }
+        return block === activeReasoningBlock && block.kind === 'thinking' ? { ...block, streaming: true } : block
+      }),
       audit: [...entry.audit],
     }
   })

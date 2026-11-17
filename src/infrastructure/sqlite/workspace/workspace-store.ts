@@ -652,9 +652,12 @@ const makeService = Effect.gen(function* () {
             const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
             if (command.archived && Number(rows[0].archived) === 0) {
               const activeRuns = yield* sql`
-                SELECT id FROM workspace_agent_run
-                WHERE task_id = ${command.taskId}
-                  AND status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                SELECT r.id FROM workspace_agent_run r
+                LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                WHERE r.task_id = ${command.taskId}
+                  AND (r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                    OR (r.status IN ('uncertain', 'recoveryRequired')
+                      AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')))
                 LIMIT 1
               `
               if (activeRuns.length > 0)
@@ -2146,7 +2149,7 @@ const makeService = Effect.gen(function* () {
   })
 
   const requireTask = Effect.fnUntraced(function* (taskId: string) {
-    const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId} AND archived = 0`
+    const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId}`
     if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
     const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
     if (task.id !== taskId || task.projectId !== rows[0].project_id)
@@ -2772,8 +2775,7 @@ const makeService = Effect.gen(function* () {
         const page = yield* decodeEntityPageOptions(options)
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const rows =
-              yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId} AND archived = 0`
+            const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId}`
             const row = rows[0] as Record<string, unknown> | undefined
             if (!row) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
             const task = summarize(
@@ -3081,8 +3083,7 @@ const makeService = Effect.gen(function* () {
           return yield* Effect.fail(safeError('invalid-data', 'Snapshot page limit is invalid'))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const rows =
-              yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId} AND archived = 0`
+            const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId}`
             if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
             const taskRow = rows[0] as Record<string, unknown>
             const taskPayload = yield* decodeJson(

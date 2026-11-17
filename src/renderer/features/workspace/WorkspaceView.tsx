@@ -217,7 +217,7 @@ function TaskConversation({
                 <div className="p-5 text-sm">No conversation activity yet.</div>
               )}
             </div>
-            {conversation && (
+            {conversation && task.status !== 'archived' && (
               <div key={conversation.id} className="shrink-0">
                 <WorkspaceComposer
                   onOpenFile={panel.openFile}
@@ -226,6 +226,11 @@ function TaskConversation({
                   onSideChatCreated={id => panel.addSurface('side-chat', id)}
                 />
               </div>
+            )}
+            {task.status === 'archived' && (
+              <p className="text-muted-foreground border-t px-4 py-3 text-sm">
+                This chat is archived. Restore it to send a message.
+              </p>
             )}
             <WorkspaceTerminalDrawer
               target={terminalTarget}

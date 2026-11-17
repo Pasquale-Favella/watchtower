@@ -85,6 +85,17 @@ describe('Workspace Task actions', () => {
       await expect(run(store.listTasks('project-actions' as never, { includeArchived: true }))).resolves.toMatchObject({
         items: [{ status: 'archived', archivedAt: at }],
       })
+      await expect(run(store.readTaskDetail('task-actions' as never))).resolves.toMatchObject({
+        task: { status: 'archived', archivedAt: at },
+        conversations: [{ id: 'conversation-actions' }],
+      })
+      await expect(run(store.readTaskSnapshot('task-actions' as never, 10))).resolves.toMatchObject({
+        task: { status: 'archived' },
+      })
+      await expect(run(store.listNativeAgentSessions('task-actions' as never))).resolves.toMatchObject({ items: [] })
+      await expect(run(store.listPendingRuntimeRequests('task-actions' as never, 0, 10))).resolves.toMatchObject({
+        items: [],
+      })
       await run(
         store.setTaskArchived({
           commandId: 'restore-actions',
@@ -124,6 +135,79 @@ describe('Workspace Task actions', () => {
       await expect(run(store.listTasks('project-actions' as never))).resolves.toMatchObject({
         items: [{ status: 'open', archivedAt: null }],
       })
+
+      await run(store.claimDispatch(begin.runId, 7, at))
+      await run(
+        store.failDispatch(begin.runId, {
+          ownerEpoch: 7,
+          occurredAt: at,
+          outcome: 'uncertain',
+          reason: 'event-stream-ended',
+        }),
+      )
+      await expect(
+        run(
+          store.setTaskArchived({
+            commandId: 'archive-unresolved',
+            taskId: begin.taskId,
+            archived: true,
+            updatedAt: at,
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'invalid-transition' })
+      await run(store.releaseDispatchAfterCleanup(begin.runId, 7))
+      await expect(
+        run(
+          store.setTaskArchived({ commandId: 'archive-resolved', taskId: begin.taskId, archived: true, updatedAt: at }),
+        ),
+      ).resolves.toMatchObject({ replayed: false })
+      await run(
+        store.setTaskArchived({ commandId: 'restore-resolved', taskId: begin.taskId, archived: false, updatedAt: at }),
+      )
+
+      const interrupted = {
+        ...begin,
+        commandId: 'run-interrupted',
+        runId: 'run-interrupted' as never,
+        provisionalAgentSessionId: 'session-interrupted',
+      }
+      await run(store.beginRun(interrupted))
+      await run(store.claimDispatch(interrupted.runId, 7, at))
+      await run(
+        store.acknowledgeDispatch(interrupted.runId, {
+          ownerEpoch: 7,
+          nativeSessionId: 'native-interrupted',
+          nativeTurnId: 'turn-interrupted',
+          acknowledgedAt: at,
+        }),
+      )
+      await run(
+        store.recordDriverEvent(interrupted.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'interrupted',
+          occurredAt: at,
+          event: { kind: 'turnInterrupted', nativeTurnId: 'turn-interrupted' },
+        }),
+      )
+      await expect(
+        run(
+          store.setTaskArchived({
+            commandId: 'archive-interrupted',
+            taskId: begin.taskId,
+            archived: true,
+            updatedAt: at,
+          }),
+        ),
+      ).resolves.toMatchObject({ replayed: false })
+      await expect(run(store.readTaskDetail(begin.taskId))).resolves.toMatchObject({
+        task: { status: 'archived' },
+        conversations: [{ id: begin.conversationId }],
+      })
+      await expect(run(store.readTaskSnapshot(begin.taskId, 10))).resolves.toMatchObject({
+        runs: expect.arrayContaining([expect.objectContaining({ id: interrupted.runId, status: 'interrupted' })]),
+      })
+      await expect(run(store.listNativeAgentSessions(begin.taskId))).resolves.toMatchObject({ total: 1 })
     } finally {
       await runtime.dispose()
     }

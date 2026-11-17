@@ -62,6 +62,38 @@ describe('conversation run projection', () => {
     expect(run).toMatchObject({ status: 'completed', startedAt: at(0), settledAt: at(12.5), pendingRequestKind: null })
   })
 
+  it.each(['turnCompleted', 'turnInterrupted', 'turnFailed'] as const)(
+    'stops showing an unfinished command as running after %s',
+    terminalKind => {
+      nextSequence = 0
+      const turn = assistantTurn([
+        status('runStarted', 0),
+        driver({ kind: 'toolStarted', toolCallId: 'command-1', name: 'Bash' }, 1),
+        driver({ kind: terminalKind, ...(terminalKind === 'turnFailed' ? { message: 'Stopped' } : {}) }, 2),
+      ])
+      expect(turn.blocks.find(block => block.kind === 'tool')).toMatchObject({ status: 'unknown' })
+    },
+  )
+
+  it('stops showing an unfinished command as running after the Run fails without a terminal driver event', () => {
+    nextSequence = 0
+    const turn = assistantTurn([
+      status('runStarted', 0),
+      driver({ kind: 'toolStarted', toolCallId: 'command-1', name: 'Bash' }, 1),
+      status('runFailed', 2),
+    ])
+    expect(turn.blocks.find(block => block.kind === 'tool')).toMatchObject({ status: 'unknown' })
+  })
+
+  it('keeps an unfinished command running while the Run is active', () => {
+    nextSequence = 0
+    const turn = assistantTurn([
+      status('runStarted', 0),
+      driver({ kind: 'toolStarted', toolCallId: 'command-1', name: 'Bash' }, 1),
+    ])
+    expect(turn.blocks.find(block => block.kind === 'tool')).toMatchObject({ status: 'running' })
+  })
+
   it('reports an interrupted Run and never reopens it from a non-turn record', () => {
     nextSequence = 0
     const items = [
