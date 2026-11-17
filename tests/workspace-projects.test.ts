@@ -154,7 +154,7 @@ describe('workspace project registration', () => {
     }
   })
 
-  it('uses real Git identities to distinguish same-name repositories and fence aliases of one checkout', async () => {
+  it('uses real Git identities to distinguish same-name repositories and share aliases of one checkout', async () => {
     const cache = resolvePath('node_modules/.cache')
     mkdirSync(cache, { recursive: true })
     const directory = mkdtempSync(join(cache, 'workspace-projects-'))
@@ -242,8 +242,9 @@ describe('workspace project registration', () => {
         )
       }
       await runtime.runPromise(store.beginRun(run('1')))
-      expect(await runtime.runPromise(store.beginRun(run('3')).pipe(Effect.flip))).toMatchObject({
-        code: 'admission-conflict',
+      await expect(runtime.runPromise(store.beginRun(run('3')))).resolves.toMatchObject({
+        runId: 'run-3',
+        replayed: false,
       })
     } finally {
       await runtime.dispose()
