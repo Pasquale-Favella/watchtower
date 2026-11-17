@@ -58,7 +58,7 @@ const messages = {
   'unsupported-access-mode': 'The selected access mode is not available for this agent connection.',
   'checkout-busy':
     'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
-  'checkout-in-use': 'Another agent is still using this checkout. Stop it or choose a different worktree.',
+  'conversation-in-use': 'This conversation already has an active agent turn. Wait for it to finish or stop it.',
 } as const
 function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
@@ -68,7 +68,7 @@ function sanitize(error: unknown): WorkspaceRpcError {
   if (Schema.is(Store.WorkspaceStoreError)(error)) {
     switch (error.code) {
       case 'admission-conflict':
-        return failure('checkout-in-use')
+        return failure('conversation-in-use')
       case 'not-found':
         return failure('not-found')
       case 'database-unavailable':

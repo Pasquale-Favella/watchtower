@@ -299,7 +299,7 @@ const seed = Effect.gen(function* () {
   }
 })
 
-it('explains a live checkout reservation without reporting a command identity conflict', async () => {
+it('explains an active Conversation turn without reporting a command identity conflict', async () => {
   const { runtime, close } = makeWorkspace()
   try {
     const rejected = await runtime.runPromise(
@@ -313,8 +313,8 @@ it('explains a live checkout reservation without reporting a command identity co
       ),
     )
     expect(rejected).toMatchObject({
-      code: 'checkout-in-use',
-      message: 'Another agent is still using this checkout. Stop it or choose a different worktree.',
+      code: 'conversation-in-use',
+      message: 'This conversation already has an active agent turn. Wait for it to finish or stop it.',
     })
   } finally {
     await close()

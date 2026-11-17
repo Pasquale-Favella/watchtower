@@ -831,17 +831,14 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 message: 'Execution service is stopping and cannot promote a queued run',
               })
             const next = (yield* store.listQueuedFollowUps(conversationId, { limit: 1 })).items[0]
-            const targetCheckoutId = next?.checkoutId ?? command.checkoutId
             if (
               Array.from(workers.values()).some(
-                state =>
-                  state.claim.runId !== command.runId &&
-                  (state.claim.conversationId === conversationId || state.claim.checkoutId === targetCheckoutId),
+                state => state.claim.runId !== command.runId && state.claim.conversationId === conversationId,
               )
             )
               return yield* new WorkspaceStoreError({
                 code: 'admission-conflict',
-                message: 'A native run still owns this Conversation or Workspace Checkout',
+                message: 'A native run still owns this Conversation',
               })
             if (workers.size >= maxConcurrentRuns + maxQueuedRuns)
               return yield* new ExecutionServiceError({
@@ -930,15 +927,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         for (const head of page.items) {
           afterPosition = head.position
           if (head.held || workers.size >= maxConcurrentRuns || nativeCleanupUnconfirmed) continue
-          const targetCheckoutId = head.checkoutId ?? head.context?.checkoutId
-          if (
-            Array.from(workers.values()).some(
-              state =>
-                state.claim.conversationId === head.conversationId ||
-                (targetCheckoutId !== undefined && state.claim.checkoutId === targetCheckoutId),
-            )
-          )
-            continue
+          if (Array.from(workers.values()).some(state => state.claim.conversationId === head.conversationId)) continue
           const runStatus = head.context?.runStatus
           if (runStatus && isActiveQueueRun(runStatus)) continue
           if (runStatus !== 'completed') {

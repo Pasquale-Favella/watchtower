@@ -25,7 +25,7 @@ export function isRejectedSubmission(error: unknown): boolean {
       'stale',
       'conflict',
       'checkout-busy',
-      'checkout-in-use',
+      'conversation-in-use',
     ].includes(error.code)
   )
 }

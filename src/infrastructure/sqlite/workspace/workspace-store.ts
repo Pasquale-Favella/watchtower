@@ -711,7 +711,7 @@ const makeService = Effect.gen(function* () {
 
             const rows = yield* sql`
         SELECT t.project_id AS task_project, t.archived, c.task_id AS conversation_task,
-          w.project_id AS checkout_project, w.payload AS checkout_payload
+          w.project_id AS checkout_project
         FROM workspace_task t
         JOIN workspace_conversation c ON c.id = ${command.conversationId}
         JOIN workspace_checkout w ON w.id = ${command.checkoutId}
@@ -724,7 +724,6 @@ const makeService = Effect.gen(function* () {
               archived: number
               conversation_task: string
               checkout_project: string
-              checkout_payload: string
             }
             if (
               membership.archived ||
@@ -759,30 +758,19 @@ const makeService = Effect.gen(function* () {
               }
             }
 
-            const requestedCheckout = yield* decodeJson(workspaceCheckoutSchema)(membership.checkout_payload)
-            const active = yield* sql`
-        SELECT DISTINCT c.payload AS checkout_payload FROM workspace_agent_run r
-        JOIN workspace_dispatch_intent i ON i.run_id = r.id
-        JOIN workspace_checkout c ON c.id = r.checkout_id
-        WHERE r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired')
-          AND i.state NOT IN ('settled', 'failed')
-      `
-            const activeCheckouts = yield* Effect.forEach(active as Array<{ checkout_payload: unknown }>, row =>
-              decodeJson(workspaceCheckoutSchema)(String(row.checkout_payload)),
-            )
-            if (activeCheckouts.some(activeCheckout => activeCheckout.path === requestedCheckout.path))
-              return yield* Effect.fail(
-                safeError('admission-conflict', 'Workspace path has an active or unresolved Run'),
-              )
             const sessionRuns = yield* sql`
         SELECT r.id FROM workspace_agent_run r
         JOIN workspace_dispatch_intent i ON i.run_id = r.id
-        WHERE (r.session_id = ${command.provisionalAgentSessionId} OR i.provisional_session_id = ${command.provisionalAgentSessionId})
+        WHERE ((i.conversation_id = ${command.conversationId} AND i.checkout_id = ${command.checkoutId})
+          OR r.session_id = ${command.provisionalAgentSessionId}
+          OR i.provisional_session_id = ${command.provisionalAgentSessionId})
           AND r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired')
           AND i.state NOT IN ('settled', 'failed')
       `
             if (sessionRuns.length > 0)
-              return yield* Effect.fail(safeError('admission-conflict', 'Agent Session already has an active turn'))
+              return yield* Effect.fail(
+                safeError('admission-conflict', 'Conversation or Agent Session already has an active turn'),
+              )
 
             const previous = command.retryOfRunId
               ? yield* sql`SELECT payload FROM workspace_agent_run WHERE id = ${command.retryOfRunId} AND task_id = ${command.taskId}`

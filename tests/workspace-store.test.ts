@@ -1713,7 +1713,7 @@ describe('WorkspaceStore', () => {
     })
   })
 
-  it('rejects conflicting checkout starts while a dispatch remains unresolved', async () => {
+  it('rejects overlapping turns in the same Agent Session', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
       await run(store.beginRun(command))
@@ -1777,7 +1777,7 @@ describe('WorkspaceStore', () => {
     })
   })
 
-  it('rejects concurrent starts for distinct checkouts with the same stored path', async () => {
+  it('admits concurrent Conversations using the same stored checkout path', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
       const otherProject = { ...project, id: 'p-2' as never, repositoryIdentity: 'repo:two' }
@@ -1788,19 +1788,42 @@ describe('WorkspaceStore', () => {
       await run(store.createTask({ task: otherTask, conversation: otherConversation }))
       await run(store.beginRun(command))
 
-      await expect(
-        run(
-          store.beginRun({
-            ...command,
-            commandId: 'cmd-same-path',
-            runId: 'run-same-path' as never,
-            taskId: otherTask.id,
-            conversationId: otherConversation.id,
-            checkoutId: otherCheckout.id,
-            provisionalAgentSessionId: 'session-same-path',
-          }),
-        ),
-      ).rejects.toMatchObject({ code: 'admission-conflict' })
+      const second = {
+        ...command,
+        commandId: 'cmd-same-path',
+        runId: 'run-same-path' as never,
+        taskId: otherTask.id,
+        conversationId: otherConversation.id,
+        checkoutId: otherCheckout.id,
+        provisionalAgentSessionId: 'session-same-path',
+      }
+      await expect(run(store.beginRun(second))).resolves.toMatchObject({ runId: second.runId })
+      await expect(run(store.claimDispatch(second.runId, 7, '2026-10-29T10:00:02Z'))).resolves.toMatchObject({
+        workspacePath: checkout.path,
+      })
+    })
+  })
+
+  it('admits concurrent Tasks in one Workspace Checkout', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const otherTask = { ...task, id: 't-2' as never }
+      const otherConversation = { ...conversation, id: 'c-2' as never }
+      await run(store.createTask({ task: otherTask, conversation: otherConversation }))
+      await run(store.beginRun(command))
+      await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))
+      const second = {
+        ...command,
+        commandId: 'cmd-2',
+        runId: 'run-2' as never,
+        taskId: otherTask.id,
+        conversationId: otherConversation.id,
+        provisionalAgentSessionId: 'session-2',
+      }
+      await expect(run(store.beginRun(second))).resolves.toMatchObject({ runId: second.runId })
+      await expect(run(store.claimDispatch(second.runId, 7, '2026-10-29T10:00:02Z'))).resolves.toMatchObject({
+        checkoutId: checkout.id,
+      })
     })
   })
 

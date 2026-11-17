@@ -42,7 +42,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'cleanup-unconfirmed',
     'unsupported-access-mode',
     'checkout-busy',
-    'checkout-in-use',
+    'conversation-in-use',
   ]),
   message: Schema.Literals([
     'Workspace is unavailable.',
@@ -55,7 +55,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'Native connection cleanup could not be confirmed.',
     'The selected access mode is not available for this agent connection.',
     'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
-    'Another agent is still using this checkout. Stop it or choose a different worktree.',
+    'This conversation already has an active agent turn. Wait for it to finish or stop it.',
   ]),
 }) {}
 
