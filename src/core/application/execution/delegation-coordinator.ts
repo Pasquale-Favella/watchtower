@@ -236,9 +236,18 @@ export class DelegationCoordinator extends Context.Service<
               wakeState: 'disposed',
               occurredAt: yield* now,
             })
-            const queued = yield* store.listQueuedFollowUps(requested.childConversationId, { limit: 100 })
-            for (const item of queued.items)
-              yield* execution.cancelQueuedFollowUp(requested.childConversationId, item.commandId)
+            // The store caps a page at 50 items, so the queue is walked page by page.
+            let afterPosition = 0
+            while (true) {
+              const queued = yield* store.listQueuedFollowUps(requested.childConversationId, {
+                afterPosition,
+                limit: 50,
+              })
+              for (const item of queued.items)
+                yield* execution.cancelQueuedFollowUp(requested.childConversationId, item.commandId)
+              if (queued.nextAfterPosition === null) break
+              afterPosition = queued.nextAfterPosition
+            }
             if (requested.childRunId)
               yield* execution.interrupt(requested.childRunId).pipe(Effect.catch(() => Effect.void))
             return (yield* store.getDelegation(delegationId)) ?? requested
@@ -328,6 +337,8 @@ export class DelegationCoordinator extends Context.Service<
       })
 
       const recover = Effect.fn('DelegationCoordinator.recover')(function* () {
+        // Read before settling: a child settled below queues its own wake, so it must not also appear here.
+        const due = yield* store.listDueDelegationWakes(RECOVERY_BATCH)
         const active = yield* store.listDelegations({ activeOnly: true, limit: RECOVERY_BATCH })
         for (const record of active.items) {
           const runStatus = yield* childRunStatus(record).pipe(Effect.catch(() => Effect.succeed(null)))
@@ -340,7 +351,6 @@ export class DelegationCoordinator extends Context.Service<
             }),
           )
         }
-        const due = yield* store.listDueDelegationWakes(RECOVERY_BATCH)
         for (const record of due) yield* enqueueWake(record).pipe(Effect.catch(() => Effect.void))
       })
 
