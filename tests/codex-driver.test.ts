@@ -730,10 +730,23 @@ describe('Codex native App Server driver', () => {
     )
   })
 
-  it('injects the task browser MCP through Codex thread configuration on start and resume', async () => {
+  it('injects the browser and orchestrator MCP endpoints through Codex thread configuration on start and resume', async () => {
     const browserContext = {
       ...context,
-      mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' }],
+      mcpEndpoints: [
+        { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+        { name: 'watchtower-orchestrator' as const, url: 'http://127.0.0.1:43124/mcp', token: 'orchestrator-token' },
+      ],
+    }
+    const endpointConfig = {
+      'mcp_servers.watchtower-browser': {
+        url: 'http://127.0.0.1:43123/mcp',
+        http_headers: { Authorization: 'Bearer run-token' },
+      },
+      'mcp_servers.watchtower-orchestrator': {
+        url: 'http://127.0.0.1:43124/mcp',
+        http_headers: { Authorization: 'Bearer orchestrator-token' },
+      },
     }
     const freshServer = fakeServer()
     await Effect.runPromise(
@@ -743,14 +756,7 @@ describe('Codex native App Server driver', () => {
           const opening = yield* Effect.forkScoped(connection.openSession(browserContext))
           const start = yield* freshServer.read
           expect(start.method).toBe('thread/start')
-          expect(start.params).toMatchObject({
-            config: {
-              'mcp_servers.watchtower-browser': {
-                url: 'http://127.0.0.1:43123/mcp',
-                http_headers: { Authorization: 'Bearer run-token' },
-              },
-            },
-          })
+          expect(start.params).toMatchObject({ config: endpointConfig })
           yield* freshServer.send({ id: start.id, result: { thread: { id: 'thread-browser' } } })
           yield* Fiber.join(opening)
           yield* connection.close(100)
@@ -771,15 +777,7 @@ describe('Codex native App Server driver', () => {
           )
           const resume = yield* resumedServer.read
           expect(resume.method).toBe('thread/resume')
-          expect(resume.params).not.toHaveProperty('config.mcp_servers')
-          expect(resume.params).toMatchObject({
-            config: {
-              'mcp_servers.watchtower-browser': {
-                url: 'http://127.0.0.1:43123/mcp',
-                http_headers: { Authorization: 'Bearer run-token' },
-              },
-            },
-          })
+          expect(resume.params).toMatchObject({ config: endpointConfig })
           yield* resumedServer.send({
             id: resume.id,
             result: { cwd: context.workspacePath, thread: { id: 'thread-browser-resume', turns: [] } },
@@ -791,6 +789,66 @@ describe('Codex native App Server driver', () => {
           yield* connection.close(100)
         }),
       ),
+    )
+  })
+
+  it('classifies orchestrator MCP calls as delegation and links the Delegation on completion', async () => {
+    const server = fakeServer()
+    const events = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession(context))
+          const thread = yield* server.read
+          yield* server.send({ id: thread.id, result: { thread: { id: 'thread-orch' } } })
+          const session = yield* Fiber.join(opening)
+          const runId = 'run-orch' as Parameters<typeof session.submit>[0]['runId']
+          const submitting = yield* Effect.forkScoped(
+            session.submit({ runId, messages: [{ role: 'user', content: 'Delegate the audit' }], attachmentIds: [] }),
+          )
+          const start = yield* server.read
+          yield* server.send({ id: start.id, result: { turn: { id: 'turn-orch', status: 'inProgress' } } })
+          yield* Fiber.join(submitting)
+          const reading = yield* Effect.forkScoped(session.events(runId).pipe(Stream.runCollect))
+          const notify = (method: string, extra: Record<string, unknown>) =>
+            server.send({ method, params: { threadId: 'thread-orch', turnId: 'turn-orch', ...extra } })
+          yield* notify('item/started', {
+            item: {
+              id: 'orch',
+              type: 'mcpToolCall',
+              server: 'watchtower-orchestrator',
+              tool: 'delegation_start',
+              status: 'inProgress',
+            },
+          })
+          yield* notify('item/completed', {
+            item: {
+              id: 'orch',
+              type: 'mcpToolCall',
+              server: 'watchtower-orchestrator',
+              tool: 'delegation_start',
+              status: 'completed',
+              result: {
+                content: [{ type: 'text', text: JSON.stringify({ id: 'dlg-1', childTaskId: 'task-child' }) }],
+              },
+            },
+          })
+          yield* notify('turn/completed', { turn: { id: 'turn-orch', status: 'completed' } })
+          const collected = yield* Fiber.join(reading)
+          yield* connection.close(100)
+          return collected
+        }),
+      ),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'toolStarted', toolCallId: 'orch', category: 'delegation' }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolCompleted',
+        toolCallId: 'orch',
+        orchestration: { delegationId: 'dlg-1', childTaskId: 'task-child' },
+      }),
     )
   })
 
