@@ -418,7 +418,9 @@ export class DelegationService extends Context.Service<
             return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), false)
           }
           // The waiter is registered before launch, so a child that settles during launch still reaches this caller.
-          const watch = yield* coordinator.watch(id).pipe(Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())))
+          const watch = yield* coordinator
+            .watch(id)
+            .pipe(Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())))
           const settled = yield* launch.pipe(
             Effect.flatMap(() => watch.awaitSettled(request.waitTimeoutMs).pipe(Effect.mapError(storeFailure))),
             Effect.ensuring(watch.release()),
