@@ -165,12 +165,22 @@ export const delegationSummarySchema = Schema.Struct({
 })
 export type DelegationSummary = Schema.Schema.Type<typeof delegationSummarySchema>
 
+/** A model the connection's catalog lists, with the effort levels (modes) it offers for that model. */
+export const delegationModelChoiceSchema = Schema.Struct({
+  id: boundedText(256),
+  label: Schema.String,
+  modes: Schema.optional(
+    Schema.Array(Schema.Struct({ id: boundedText(256), label: Schema.String })).check(Schema.isMaxLength(32)),
+  ),
+})
+export type DelegationModelChoice = Schema.Schema.Type<typeof delegationModelChoiceSchema>
+
 export const delegationTargetChoiceSchema = Schema.Struct({
   connectionId: boundedText(128),
   label: Schema.String,
   driverId: boundedText(128),
   accessModes: Schema.Array(agentAccessModeSchema),
-  models: Schema.Array(Schema.Struct({ id: boundedText(256), label: Schema.String })).check(Schema.isMaxLength(64)),
+  models: Schema.Array(delegationModelChoiceSchema).check(Schema.isMaxLength(64)),
   modelsKnown: Schema.Boolean,
 })
 export type DelegationTargetChoice = Schema.Schema.Type<typeof delegationTargetChoiceSchema>

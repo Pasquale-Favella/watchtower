@@ -22,6 +22,7 @@ import {
   type DelegationId,
   type DelegationIsolation,
   type DelegationList,
+  type DelegationModelChoice,
   type DelegationRecord,
   type DelegationSummary,
   type DelegationTargetChoice,
@@ -47,7 +48,13 @@ export interface DelegationCallerScope extends DelegationCaller {
 export interface StartDelegationRequest {
   readonly task: string
   readonly title?: string | undefined
-  readonly target?: { readonly connectionId: string; readonly modelId?: string | undefined } | undefined
+  readonly target?:
+    | {
+        readonly connectionId: string
+        readonly modelId?: string | undefined
+        readonly modeId?: string | undefined
+      }
+    | undefined
   readonly isolation?: DelegationIsolation | undefined
   readonly accessMode?: AgentAccessMode | undefined
   readonly wait: boolean
@@ -60,6 +67,8 @@ export interface DelegationConnectionRef {
   readonly id: string
   readonly label: string
   readonly driverId: string
+  /** The models its cached catalog lists. Absent until the connection has been inspected. */
+  readonly models?: ReadonlyArray<DelegationModelChoice> | undefined
 }
 
 export interface DelegationServiceOptions {
@@ -203,13 +212,15 @@ export class DelegationService extends Context.Service<
           const loaded = yield* options.loadConnections()
           const connections: Array<DelegationTargetChoice> = []
           for (const connection of loaded.slice(0, 64)) {
+            const models = (connection.models ?? []).slice(0, 64)
             connections.push({
               connectionId: connection.id,
               label: connection.label,
               driverId: connection.driverId,
               accessModes: yield* accessModesOf(connection.driverId),
-              models: [],
-              modelsKnown: false,
+              models,
+              // A connection that lists no models is treated as unknown, so the caller may name a model freely.
+              modelsKnown: models.length > 0,
             })
           }
           const depth = link?.depth ?? 0
@@ -270,6 +281,17 @@ export class DelegationService extends Context.Service<
           const choice = connections.find(connection => connection.id === connectionId)
           if (!choice)
             return yield* new DelegationError({ code: 'connection-unavailable', message: 'That connection is not available.' })
+          // A named model that the catalog lists must offer the requested effort. An unlisted model is passed through.
+          const listedModel = choice.models?.find(model => model.id === request.target?.modelId)
+          if (
+            listedModel &&
+            request.target?.modeId !== undefined &&
+            !(listedModel.modes ?? []).some(mode => mode.id === request.target?.modeId)
+          )
+            return yield* new DelegationError({
+              code: 'invalid-request',
+              message: 'That model does not offer the requested effort.',
+            })
           const narrowing = narrowChildAccessMode({
             parent: caller.accessMode,
             requested: request.accessMode,
@@ -329,7 +351,7 @@ export class DelegationService extends Context.Service<
             driverId: choice.driverId,
             connectionId: choice.id,
             modelId: request.target ? (request.target.modelId ?? null) : (parentContext.modelId ?? null),
-            modeId: null,
+            modeId: request.target?.modeId ?? null,
             accessMode: narrowing.mode,
             accessModeRequested: request.accessMode ?? null,
             accessModeSteppedDownFrom: narrowing.steppedDownFrom,
@@ -381,7 +403,7 @@ export class DelegationService extends Context.Service<
               prompt: request.task,
               attachments: [],
               modelId: record.modelId,
-              modeId: null,
+              modeId: record.modeId,
               accessMode: narrowing.mode,
               nativeSessionId: null,
               retryOfRunId: null,

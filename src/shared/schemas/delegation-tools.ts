@@ -32,6 +32,11 @@ export const delegationToolTargetSchema = Schema.Struct({
       description: 'Model id from delegation_capabilities. Omit for the connection default.',
     }),
   ),
+  effort: Schema.optionalKey(
+    Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1), Schema.isMaxLength(256)).annotate({
+      description: 'Effort id from the model efforts in delegation_capabilities. Omit for the default.',
+    }),
+  ),
 })
 export type DelegationToolTarget = Schema.Schema.Type<typeof delegationToolTargetSchema>
 
@@ -132,7 +137,13 @@ export const delegationToolCapabilitiesOutputSchema = Schema.Struct({
       connection: Schema.String,
       label: Schema.String,
       accessModes: Schema.Array(agentAccessModeSchema),
-      models: Schema.Array(Schema.String).check(Schema.isMaxLength(DELEGATION_TOOL_MODEL_MAX)),
+      models: Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          label: Schema.String,
+          efforts: Schema.optionalKey(Schema.Array(Schema.String).check(Schema.isMaxLength(DELEGATION_TOOL_MODEL_MAX))),
+        }),
+      ).check(Schema.isMaxLength(DELEGATION_TOOL_MODEL_MAX)),
       modelsKnown: Schema.Boolean,
     }),
   ).check(Schema.isMaxLength(DELEGATION_TOOL_CONNECTION_MAX)),

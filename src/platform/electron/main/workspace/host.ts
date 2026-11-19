@@ -532,9 +532,15 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         )
         const service = Context.get(serviceContext, ExecutionService)
         const delegationLayer = DelegationService.layer({
+          // Models come from the last inspection the picker already ran. Delegation never probes a connection itself.
           loadConnections: () =>
-            Effect.succeed(
-              catalogRows.map(row => ({ id: row.connectionId, label: row.label, driverId: row.driverId })),
+            Effect.sync(() =>
+              catalogRows.map(row => ({
+                id: row.connectionId,
+                label: row.label,
+                driverId: row.driverId,
+                models: observedInspections.get(row.connectionId)?.capabilities.models.items,
+              })),
             ),
           ...(options.createWorktree ? { createWorktree: options.createWorktree } : {}),
         }).pipe(

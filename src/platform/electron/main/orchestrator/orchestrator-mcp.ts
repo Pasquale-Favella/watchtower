@@ -123,7 +123,11 @@ function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Ef
             connection: connection.connectionId,
             label: connection.label,
             accessModes: connection.accessModes,
-            models: connection.models.map(model => model.id).slice(0, 20),
+            models: connection.models.slice(0, 20).map(model => ({
+              id: model.id,
+              label: model.label,
+              ...(model.modes ? { efforts: model.modes.map(mode => mode.id) } : {}),
+            })),
             modelsKnown: connection.modelsKnown,
           })),
         })),
@@ -135,7 +139,11 @@ function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Ef
           task: request.task,
           title: request.title,
           target: request.target
-            ? { connectionId: request.target.connection, modelId: request.target.model }
+            ? {
+                connectionId: request.target.connection,
+                modelId: request.target.model,
+                modeId: request.target.effort,
+              }
             : undefined,
           isolation: request.isolation,
           accessMode: request.accessMode,
