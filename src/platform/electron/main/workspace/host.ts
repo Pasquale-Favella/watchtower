@@ -27,7 +27,10 @@ import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
-import { acquireOrchestratorMcp } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
+import {
+  acquireOrchestratorMcp,
+  type OrchestrationRunner,
+} from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
 import {
   ConnectionInspectionError,
   discoverWorkspacePromptCatalog,
@@ -65,6 +68,8 @@ export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
   readonly orchestratorStdio?: (endpoint: { readonly url: string; readonly token: string }) => NonNullable<AgentMcpEndpoint['stdio']>
   /** Creates an isolated checkout for `isolation: 'worktree'` delegations. Absent means worktrees are unavailable. */
   readonly createWorktree?: DelegationServiceOptions['createWorktree']
+  /** Runs orchestration tool Effects on the composition root's runtime. Absent means no orchestrator endpoint is attached. */
+  readonly runOrchestration?: OrchestrationRunner
   readonly closeDeadlineMs?: number
   readonly connectionInspectionDeadlineMs?: number
   readonly connectionCleanupDeadlineMs?: number
@@ -476,7 +481,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         ): Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope> =>
           Effect.gen(function* () {
             const prepared = options.prepareSession ? yield* options.prepareSession(context) : context
-            if (!context.runId) return prepared
+            if (!context.runId || !options.runOrchestration) return prepared
             const delegations = delegationBox.delegations
             if (!delegations)
               return yield* new AgentDriverError({ code: 'invalid-state', message: 'Orchestration is not ready.' })
@@ -489,6 +494,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
                 accessMode: context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
               },
               delegations,
+              run: options.runOrchestration,
             })
             const stdio = options.orchestratorStdio?.(endpoint)
             return {

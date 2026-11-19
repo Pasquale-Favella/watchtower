@@ -4,7 +4,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 import type * as Scope from 'effect/Scope'
 
-import type { DelegationCallerScope,DelegationService } from '@/core/application/commands/delegation-service.js'
+import type { DelegationCallerScope, DelegationService } from '@/core/application/commands/delegation-service.js'
 import type { AgentMcpEndpoint } from '@/core/ports/agent-driver.js'
 import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import { acquireLoopbackMcp } from '@/platform/mcp/loopback-endpoint.js'
@@ -69,9 +69,13 @@ const advertised = TOOLS.map(tool => ({
   },
 }))
 
+/** Executes an Effect for this Node callback boundary. The composition root supplies it, so this module runs no Effects itself. */
+export type OrchestrationRunner = <A, E>(effect: Effect.Effect<A, E>) => Promise<A>
+
 export interface OrchestratorMcpScope {
   readonly caller: DelegationCallerScope
   readonly delegations: DelegationService['Service']
+  readonly run: OrchestrationRunner
   readonly signal: AbortSignal
 }
 
@@ -105,7 +109,7 @@ function summaryView(summary: DelegationSummary): DelegationToolSummary {
 }
 
 /** Runs one call against the bound caller. A DelegationError becomes a typed tool error with its code. */
-function run(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Effect.Effect<unknown, unknown> {
+function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Effect.Effect<unknown, unknown> {
   const { caller, delegations } = scope
   switch (name) {
     case 'delegation_capabilities':
@@ -180,17 +184,19 @@ async function callTool(scope: OrchestratorMcpScope, name: string, args: unknown
   if (scope.signal.aborted) return toolError('unavailable', 'This run can no longer delegate.')
   const decoded = Schema.decodeUnknownResult(tool.input)(args ?? {})
   if (decoded._tag === 'Failure') return toolError('invalid-request', 'Invalid arguments. Check the tool schema.')
-  const outcome = await Effect.runPromise(
-    run(scope, tool.name, decoded.success).pipe(
-      Effect.map(value => ({ ok: true as const, value: validatedOutput(tool.name, value) })),
-      Effect.catch(error =>
-        Effect.succeed({
-          ok: false as const,
-          error: error instanceof DelegationError ? { code: error.code, message: error.message } : null,
-        }),
+  const outcome = await scope
+    .run(
+      invoke(scope, tool.name, decoded.success).pipe(
+        Effect.map(value => ({ ok: true as const, value: validatedOutput(tool.name, value) })),
+        Effect.catch(error =>
+          Effect.succeed({
+            ok: false as const,
+            error: error instanceof DelegationError ? { code: error.code, message: error.message } : null,
+          }),
+        ),
       ),
-    ),
-  ).catch(() => ({ ok: false as const, error: null }))
+    )
+    .catch(() => ({ ok: false as const, error: null }))
   if (!outcome.ok) return outcome.error ? toolError(outcome.error.code, outcome.error.message) : unavailable()
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(outcome.value) }],
@@ -202,7 +208,7 @@ export function createOrchestratorMcpServer(scope: OrchestratorMcpScope): Server
   const server = new Server({ name: 'watchtower-orchestrator', version: '1.0.0' }, { capabilities: { tools: {} } })
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     // The start tool is hidden once no depth remains, so a child never sees a tool it cannot use.
-    const capabilities = await Effect.runPromise(scope.delegations.capabilities(scope.caller)).catch(() => null)
+    const capabilities = await scope.run(scope.delegations.capabilities(scope.caller)).catch(() => null)
     const hideStart = capabilities !== null && capabilities.remainingDepth < 1
     return { tools: advertised.filter(tool => !(hideStart && tool.name === 'delegation_start')) }
   })
@@ -214,10 +220,11 @@ export function createOrchestratorMcpServer(scope: OrchestratorMcpScope): Server
 export const acquireOrchestratorMcp = Effect.fn('acquireOrchestratorMcp')(function* (scope: {
   readonly caller: DelegationCallerScope
   readonly delegations: DelegationService['Service']
+  readonly run: OrchestrationRunner
 }): Effect.fn.Return<AgentMcpEndpoint, AgentDriverError, Scope.Scope> {
   const endpoint = yield* acquireLoopbackMcp({
     createServer: signal => createOrchestratorMcpServer({ ...scope, signal }),
-    runRequest: request => Effect.runPromise(request),
+    runRequest: request => scope.run(request),
     startFailure: 'The orchestration connection could not start.',
   })
   return { name: 'watchtower-orchestrator' as const, ...endpoint }

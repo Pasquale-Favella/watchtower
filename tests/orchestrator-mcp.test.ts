@@ -73,7 +73,11 @@ async function withEndpoint<A>(
   return Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const endpoint = yield* acquireOrchestratorMcp({ caller, delegations })
+        const endpoint = yield* acquireOrchestratorMcp({
+          caller,
+          delegations,
+          run: effect => Effect.runPromise(effect),
+        })
         return yield* Effect.promise(() => use(endpoint.url, endpoint.token))
       }),
     ),

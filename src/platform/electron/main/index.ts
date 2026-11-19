@@ -224,6 +224,8 @@ const workspaceHostLayer = Layer.effect(
             { name: 'WATCHTOWER_ORCHESTRATOR_MCP_TOKEN', value: endpoint.token },
           ],
         }),
+        // Explicit types keep this callback from inferring through the runtime that consumes it.
+        runOrchestration: <A, E>(request: Effect.Effect<A, E>): Promise<A> => mainRuntime.runPromise(request),
         // The explicit return type keeps this callback from inferring through the runtime that consumes it.
         createWorktree: (request): Effect.Effect<WorkspaceCheckout, unknown> =>
           Effect.tryPromise({
