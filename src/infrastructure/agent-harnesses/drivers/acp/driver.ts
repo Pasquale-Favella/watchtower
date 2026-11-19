@@ -225,6 +225,8 @@ interface AcpSessionState {
   readonly identity: AgentSessionIdentity
   readonly browserMcpUnavailable: boolean
   readonly queues: Map<AgentRunId, RunChannel>
+  /** Open tool calls that are orchestration tools. Their later updates usually omit the title that names them. */
+  readonly orchestrationToolCalls: Set<string>
   readonly completedRuns: Array<AgentRunId>
   readonly permissions: Map<string, PendingRequest>
   readonly replay: Array<ReplayRecord>
@@ -436,13 +438,13 @@ function filePatch(path: string, oldText: string | null | undefined, newText: st
     .slice(0, budget)
 }
 
-function toolMetadata(update: ToolCallUpdate): AgentToolMetadata {
+function toolMetadata(update: ToolCallUpdate, knownOrchestration = false): AgentToolMetadata {
   const input = toolHints(update.rawInput)
   const output = toolHints(update.rawOutput)
   const nativeCommand = input?.command ?? input?.cmd
   const command = typeof nativeCommand === 'string' ? nativeCommand : nativeCommand?.join(' ')
   // Orchestration calls are classified by tool name, whatever the ACP tool kind reports.
-  const delegation = isOrchestratorToolTitle(update.title)
+  const delegation = knownOrchestration || isOrchestratorToolTitle(update.title)
   const category = delegation ? 'delegation' : toolCategory(update.kind)
   const orchestration = delegation ? orchestrationReferenceFromRaw(update.rawOutput) : undefined
   const exitCode = output?.exitCode ?? output?.exit_code
@@ -528,8 +530,12 @@ function toolContentText(update: ToolCallUpdate): string | undefined {
   return raw ?? (update.content != null ? text : undefined)
 }
 
-function translateTool(update: ToolCallUpdate, started: boolean): readonly AgentDriverEvent[] {
-  const metadata = toolMetadata(update)
+function translateTool(
+  update: ToolCallUpdate,
+  started: boolean,
+  orchestration: boolean,
+): readonly AgentDriverEvent[] {
+  const metadata = toolMetadata(update, orchestration)
   const input = displayValue(update.rawInput)
   const output = toolContentText(update)
   const name = update.title?.trim().slice(0, 4096)
@@ -1020,10 +1026,16 @@ function translateUpdate(update: SessionUpdate, state: AcpSessionState): Readonl
     }
     case 'user_message_chunk':
       return []
-    case 'tool_call':
-      return translateTool(update, true)
-    case 'tool_call_update':
-      return translateTool(update, false)
+    case 'tool_call': {
+      if (isOrchestratorToolTitle(update.title)) state.orchestrationToolCalls.add(update.toolCallId)
+      return translateTool(update, true, state.orchestrationToolCalls.has(update.toolCallId))
+    }
+    case 'tool_call_update': {
+      const delegation = state.orchestrationToolCalls.has(update.toolCallId)
+      if (update.status === 'completed' || update.status === 'failed')
+        state.orchestrationToolCalls.delete(update.toolCallId)
+      return translateTool(update, false, delegation)
+    }
     case 'usage_update': {
       state.eventSequence += 1
       return [
@@ -1520,6 +1532,7 @@ function makeSessionState(
     identity: { nativeSessionId, generation: context.generation },
     browserMcpUnavailable,
     queues: new Map(),
+    orchestrationToolCalls: new Set(),
     completedRuns: [],
     permissions: new Map(),
     replay: [],
