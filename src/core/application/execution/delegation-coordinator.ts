@@ -61,7 +61,7 @@ export class DelegationCoordinator extends Context.Service<
     readonly settleLaunchFailure: (
       delegationId: DelegationId,
       returnedToCaller: boolean,
-    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError | DelegationError>
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError | ExecutionServiceError | DelegationError>
     /** Requests cancellation: the child Run is interrupted, its queued follow-ups are dropped, and no wake is sent. */
     readonly cancel: (
       delegationId: DelegationId,
