@@ -939,6 +939,88 @@ describe('Claude Agent SDK native driver', () => {
     expect(fakeCall(resumed).options.mcpServers).toEqual(fakeCall(fresh).options.mcpServers)
   })
 
+  it('attaches the orchestrator endpoint and classifies its delegation tools with their Delegation on completion', async () => {
+    const endpoints = {
+      ...context,
+      mcpEndpoints: [
+        { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'browser-token' },
+        { name: 'watchtower-orchestrator' as const, url: 'http://127.0.0.1:43124/mcp', token: 'orchestrator-token' },
+      ],
+    }
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key' })
+    const events = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          const session = yield* connection.openSession(endpoints)
+          const call = fakeCall(fake)
+          const submitting = yield* Effect.forkScoped(session.submit(turn))
+          const sent = yield* Effect.promise(() => promptIterator(call).next())
+          const sessionId = session.identity.nativeSessionId
+          call.push({
+            type: 'stream_event',
+            uuid: '00000000-0000-4000-8000-000000000097',
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            user_message_uuid: inputUuid(sent.value),
+            event: { type: 'message_start', message: assistantMessage(sessionId, []).message },
+          } satisfies SDKMessage)
+          yield* Fiber.join(submitting)
+          const collection = yield* Effect.forkScoped(session.events(runId).pipe(Stream.runCollect))
+          call.push(
+            assistantMessage(sessionId, [
+              {
+                type: 'tool_use',
+                id: 'orch',
+                name: 'mcp__watchtower-orchestrator__delegation_start',
+                input: { task: 'Audit the parser' },
+              },
+            ]),
+          )
+          call.push({
+            type: 'user',
+            session_id: sessionId,
+            parent_tool_use_id: null,
+            message: {
+              role: 'user',
+              content: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'orch',
+                  content: [{ type: 'text', text: JSON.stringify({ id: 'dlg-1', childTaskId: 'task-child' }) }],
+                },
+              ],
+            },
+          })
+          call.push(resultMessage(sessionId, '00000000-0000-4000-8000-000000000096'))
+          const collected = yield* Fiber.join(collection)
+          yield* connection.close(1000)
+          return collected
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+    expect(fakeCall(fake).options.mcpServers).toMatchObject({
+      'watchtower-browser': { type: 'http', headers: { Authorization: 'Bearer browser-token' } },
+      'watchtower-orchestrator': {
+        type: 'http',
+        url: 'http://127.0.0.1:43124/mcp',
+        headers: { Authorization: 'Bearer orchestrator-token' },
+      },
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'toolStarted', toolCallId: 'orch', category: 'delegation' }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolCompleted',
+        toolCallId: 'orch',
+        orchestration: { delegationId: 'dlg-1', childTaskId: 'task-child' },
+      }),
+    )
+  })
+
   it('holds approvals and structured questions pending until an explicit scoped decision', async () => {
     const fake = fakeSdk()
     const layer = makeClaudeAgentDriver({
