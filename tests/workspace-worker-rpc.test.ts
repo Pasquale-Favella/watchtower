@@ -108,6 +108,124 @@ describe('workspace worker RPC server', () => {
     expect(result.snapshot.runContexts).toMatchObject([{ modelId: 'model-new' }])
   })
 
+  it('round-trips delegation records, wakes, reads and cancellation through the worker', async () => {
+    const childTask = {
+      id: 'task-child' as never,
+      projectId: project.id,
+      title: 'Audit',
+      description: '',
+      createdAt: project.createdAt,
+    }
+    const childConversation = {
+      id: 'conversation-child' as never,
+      title: 'Audit',
+      createdAt: project.createdAt,
+    }
+    const childRunId = 'run-child' as never
+    const delegationId = 'dlg-rpc' as never
+    const record = {
+      id: delegationId,
+      commandId: 'delegation:rpc',
+      projectId: project.id,
+      parentTaskId: task.id,
+      parentConversationId: conversation.id,
+      parentRunId: command.runId,
+      childTaskId: childTask.id,
+      childConversationId: childConversation.id,
+      childRunId,
+      checkoutId: checkout.id,
+      depth: 1,
+      title: 'Audit',
+      driverId: 'codex-app-server',
+      connectionId: 'codex-1',
+      modelId: null,
+      modeId: null,
+      accessMode: 'approval-required' as const,
+      accessModeRequested: null,
+      accessModeSteppedDownFrom: null,
+      isolation: 'shared' as const,
+      status: 'queued' as const,
+      wake: 'always' as const,
+      wakeState: 'notDue' as const,
+      pendingRequest: null,
+      resultText: null,
+      resultTruncated: false,
+      cancelRequestedAt: null,
+      resultReadAt: null,
+      createdAt: project.createdAt,
+      settledAt: null,
+    }
+    const result = await Effect.runPromise(
+      withWorkspaceStore((store, sqlScope) =>
+        Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(WorkspaceWorkerRpcGroup)
+          yield* client['workspace-worker:registerProject']({ commandId: 'register', project, mainCheckout: checkout })
+          yield* client['workspace-worker:createTask']({ commandId: 'create', task, conversation })
+          yield* client['workspace-worker:beginRun'](command)
+          yield* client['workspace-worker:claimDispatch']({
+            runId: command.runId,
+            ownerEpoch: 7,
+            claimedAt: command.issuedAt,
+          })
+          yield* client['workspace-worker:acknowledgeDispatch']({
+            runId: command.runId,
+            acknowledgement: { ownerEpoch: 7, nativeSessionId: 'native-parent', acknowledgedAt: command.issuedAt },
+          })
+          const createCommand = {
+            commandId: 'delegation:rpc',
+            issuedAt: command.issuedAt,
+            parentRunId: command.runId,
+            parentTaskId: task.id,
+            parentConversationId: conversation.id,
+            task: { ...childTask, description: '' },
+            conversation: childConversation,
+            record,
+            limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+          }
+          const receipt = yield* client['workspace-worker:createDelegation'](createCommand)
+          const replay = yield* client['workspace-worker:createDelegation'](createCommand)
+          const byId = yield* client['workspace-worker:getDelegation']({ delegationId })
+          const byChild = yield* client['workspace-worker:getDelegationByChildTask']({ childTaskId: childTask.id })
+          const listed = yield* client['workspace-worker:listDelegations']({ parentTaskId: task.id, limit: 10 })
+          const woken = yield* client['workspace-worker:setDelegationWake']({
+            commandId: 'wake-pending',
+            delegationId,
+            wakeState: 'pending',
+            occurredAt: command.issuedAt,
+          })
+          const due = yield* client['workspace-worker:listDueDelegationWakes']({ limit: 10 })
+          const settled = yield* client['workspace-worker:settleDelegation']({
+            commandId: 'settle-rpc',
+            delegationId,
+            status: 'completed',
+            resultText: 'Audit done',
+            resultTruncated: false,
+            occurredAt: command.issuedAt,
+          })
+          const read = yield* client['workspace-worker:markDelegationRead']({
+            delegationId,
+            readAt: command.issuedAt,
+          })
+          const cancelling = yield* client['workspace-worker:requestDelegationCancel']({
+            delegationId,
+            requestedAt: command.issuedAt,
+          })
+          return { receipt, replay, byId, byChild, listed, woken, due, settled, read, cancelling }
+        }).pipe(Effect.provide(workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) }))),
+      ),
+    )
+    expect(result.receipt).toMatchObject({ delegationId, replayed: false })
+    expect(result.replay).toMatchObject({ delegationId, replayed: true })
+    expect(result.byId).toMatchObject({ id: delegationId, childRunId, wakeState: 'notDue' })
+    expect(result.byChild).toMatchObject({ id: delegationId })
+    expect(result.listed.items.map(item => item.id)).toEqual([delegationId])
+    expect(result.woken).toMatchObject({ wakeState: 'pending' })
+    expect(result.due.map(item => item.id)).toEqual([delegationId])
+    expect(result.settled).toMatchObject({ status: 'completed', resultText: 'Audit done' })
+    expect(result.read.resultReadAt).toBe(command.issuedAt)
+    expect(result.cancelling.cancelRequestedAt).toBeNull()
+  })
+
   it('rejects a worker without the prompt attachment protocol', () => {
     expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 7 })).toThrow()
     expect(() => Schema.decodeUnknownSync(workspaceWorkerReadySchema)({ protocolVersion: 8 })).toThrow()
