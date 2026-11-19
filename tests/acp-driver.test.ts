@@ -693,6 +693,37 @@ describe('generic ACP driver', () => {
     expect(events.some(event => event.kind === 'nativeNotice')).toBe(false)
   })
 
+  it('classifies orchestrator tool calls by title as delegation and links the Delegation on completion', async () => {
+    const events = await collectUpdates([
+      {
+        sessionUpdate: 'tool_call',
+        toolCallId: 'orch',
+        title: 'watchtower-orchestrator: delegation_start',
+        kind: 'other',
+        status: 'in_progress',
+        rawInput: { task: 'Audit the parser' },
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'orch',
+        status: 'completed',
+        rawOutput: { content: [{ type: 'text', text: JSON.stringify({ id: 'dlg-1', childTaskId: 'task-child' }) }] },
+      },
+      { sessionUpdate: 'tool_call', toolCallId: 'read', title: 'Read file', kind: 'read', status: 'in_progress' },
+    ])
+    expect(events).toContainEqual(
+      expect.objectContaining({ kind: 'toolStarted', toolCallId: 'orch', category: 'delegation' }),
+    )
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'toolCompleted',
+        toolCallId: 'orch',
+        orchestration: { delegationId: 'dlg-1', childTaskId: 'task-child' },
+      }),
+    )
+    expect(events).not.toContainEqual(expect.objectContaining({ toolCallId: 'read', category: 'delegation' }))
+  })
+
   it('retains completed diffs, text and inline images even when no progress update preceded completion', async () => {
     const image = 'iVBORw0KGgo='
     const events = await collectUpdates([
