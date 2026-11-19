@@ -6,16 +6,17 @@ import type { DraftTerminalTarget, TerminalTarget } from '@/shared/schemas/termi
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { currentConversationRuns } from './composer-state.js'
+import { useDelegations } from './delegation/hooks.js'
 import {
   useWorkspaceNativeAgentSessions,
   useWorkspaceProject,
   useWorkspaceTask,
   useWorkspaceTaskSnapshot,
 } from './hooks.js'
-import { useSideChats } from './side-chat/hooks.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { attachmentPromptToken } from './prompt-editor.js'
 import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
+import { useSideChats } from './side-chat/hooks.js'
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
@@ -86,6 +87,7 @@ function TaskConversation({
   const appendDraft = useDraftAppend()
   const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
   const sideChats = useSideChats(taskId)
+  const delegations = useDelegations(taskId)
   const nativeSessions = useWorkspaceNativeAgentSessions({ taskId, options: { limit: 50 } })
   const sessionIdsByRunId = useMemo(
     () => new Map(snapshot.data?.runs.map(run => [run.id, run.sessionId ?? null] as const) ?? []),
@@ -141,6 +143,9 @@ function TaskConversation({
       onToggleDetails={detail.data ? toggleDetails : undefined}
       relatedSideChatCount={
         sideChats.items.filter(item => !conversation || item.parentConversationId === conversation.id).length
+      }
+      relatedDelegationCount={
+        delegations.items.filter(item => !conversation || item.parentConversationId === conversation.id).length
       }
     />
   )

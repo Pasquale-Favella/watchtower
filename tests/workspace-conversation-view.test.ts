@@ -77,6 +77,31 @@ describe('conversation durable view projection', () => {
     expect(merged.map(row => row.event.sequence)).toEqual([1, 2, 3])
   })
 
+  it('renders a delegation wake as a notice and never as a user message', () => {
+    const wake = {
+      id: 'wake-1',
+      content: 'Delegated task result',
+      createdAt: '2026-10-30T12:00:00Z',
+      origin: 'delegation' as const,
+      delegation: {
+        delegationId: 'delegation-1' as never,
+        childTaskId: 'task-child' as never,
+        title: 'Check the migration',
+        status: 'completed' as const,
+      },
+    }
+    const projection = projectConversationView([item(1, wake), item(2, { ...wake, id: 'wake-1' })])
+    expect(projection.entries.some(entry => entry.kind === 'user')).toBe(false)
+    expect(projection.entries).toEqual([
+      expect.objectContaining({
+        kind: 'status',
+        notice: 'delegationWake',
+        id: 'delegation-wake:wake-1',
+        delegation: expect.objectContaining({ title: 'Check the migration', status: 'completed' }),
+      }),
+    ])
+  })
+
   it('preserves a user message attached to a duplicated run event', () => {
     const message = { id: 'message-1', content: 'Original prompt', createdAt: '2026-10-30T12:00:00Z' }
     expect(mergeConversationItems([item(1, message)], [item(1)])[0]?.userMessage).toEqual(message)

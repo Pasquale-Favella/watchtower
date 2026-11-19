@@ -1,14 +1,16 @@
-import { BotIcon, CheckIcon, CircleAlertIcon, CircleHelpIcon, ChevronRightIcon, LoaderCircleIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, CircleHelpIcon, LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { Badge } from '@/renderer/components/ui/badge'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
 import { cn } from '@/renderer/shared/lib/utils'
 
+import { nativeDelegateView } from '../delegation/delegation-view.js'
+import { DelegationTooltip } from '../delegation/DelegationTooltip.js'
 import { formatRunDuration } from './duration.js'
 import { CopyTextButton } from './MessageActions.js'
 import { ToolOutputPanel } from './ToolOutputPanel.js'
-import { delegateChildStatusLabel, delegateChildrenSummary, delegateDisplayStatus, type ToolBlock } from './work-log.js'
+import { delegateChildrenSummary, delegateChildStatusLabel, delegateDisplayStatus, type ToolBlock } from './work-log.js'
 
 type DelegateStatus = ToolBlock['status']
 
@@ -69,10 +71,14 @@ export function DelegateRow({ tool }: { readonly tool: ToolBlock }): React.JSX.E
         ) : (
           <BotIcon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
         )}
-        <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium">{label ?? 'Delegated task'}</span>
-          {tool.name && <span className="text-muted-foreground block truncate font-mono text-[10px]">{tool.name}</span>}
-        </span>
+        <DelegationTooltip view={nativeDelegateView(tool)} className="block min-w-0 flex-1">
+          <span className="block min-w-0">
+            <span className="block truncate font-medium">{label ?? 'Delegated task'}</span>
+            {tool.name && (
+              <span className="text-muted-foreground block truncate font-mono text-[10px]">{tool.name}</span>
+            )}
+          </span>
+        </DelegationTooltip>
         {model && (
           <span className="text-muted-foreground hidden max-w-24 truncate sm:inline" title={model}>
             {model}

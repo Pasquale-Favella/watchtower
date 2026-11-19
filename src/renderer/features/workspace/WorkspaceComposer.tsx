@@ -29,6 +29,7 @@ import {
   useWorkspaceConnectionCatalog,
   useWorkspaceConnections,
 } from './connection-hooks.js'
+import { DelegationStrip } from './delegation/DelegationStrip.js'
 import { WORKSPACE_DRAFT_MAX_LENGTH } from './draft-storage.js'
 import {
   useCancelQueuedFollowUp,
@@ -1056,6 +1057,7 @@ function WorkspaceComposerContent({
             {submissionHint}
           </p>
         )}
+        <DelegationStrip taskId={task.id} projectId={task.projectId} />
         <WorkspaceRequests taskId={task.id} conversationId={conversationId} />
         <WorkspacePromptInput
           onOpenFile={onOpenFile}

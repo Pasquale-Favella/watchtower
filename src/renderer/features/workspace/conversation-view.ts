@@ -1,6 +1,7 @@
 import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 
+import type { DelegationWakeMessage } from '@/shared/schemas/delegation.js'
 import {
   type AgentDriverEvent,
   agentDriverEventSchema,
@@ -13,9 +14,9 @@ import {
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceRunContext } from '@/shared/schemas/workspace-store.js'
 import {
-  workspaceConversationMessageSchema,
-  conversationHandoffDataSchema,
   type ConversationHandoffData,
+  conversationHandoffDataSchema,
+  workspaceConversationMessageSchema,
   type WorkspaceConversationPageItem,
   type WorkspaceExecutionEvent,
   workspaceExecutionEventSchema,
@@ -129,10 +130,12 @@ export interface ConversationAssistantTurn {
 
 export interface ConversationStatusNotice {
   readonly kind: 'status'
-  readonly notice?: 'newSession' | 'contextHandoff'
+  readonly notice?: 'newSession' | 'contextHandoff' | 'delegationWake'
   readonly handoff?: ConversationHandoffData | undefined
   readonly fromConnectionId?: string | undefined
   readonly toConnectionId?: string | undefined
+  /** The settled Delegated Task a `delegationWake` notice reports. */
+  readonly delegation?: DelegationWakeMessage | undefined
   readonly id: string
   readonly sequence: number
   readonly event: WorkspaceExecutionEvent
@@ -358,6 +361,7 @@ export function projectConversationView(
   const ordered = [...items].sort((a, b) => a.event.sequence - b.event.sequence)
   const entries: Array<ConversationUserMessage | ConversationStatusNotice | MutableAssistantTurn> = []
   const users = new Map<string, ConversationUserMessage>()
+  const wakes = new Set<string>()
   const activeNativeTurns = new Map<string, string>()
   const toolStates = new Map<string, Extract<ConversationTurnBlock, { readonly kind: 'tool' }>>()
   const requestBlocks: RequestBlockIndex = new Map()
@@ -411,7 +415,22 @@ export function projectConversationView(
       if (sessionId) previousNativeSessionId = sessionId
       if (context?.connectionId) previousConnectionId = context.connectionId
     }
-    if (item.userMessage && !users.has(item.userMessage.id)) {
+    // A delegation wake is data the parent Agent reads, so it renders as a notice, never as a user message.
+    if (item.userMessage?.origin === 'delegation') {
+      const wake = item.userMessage
+      if (!wakes.has(wake.id)) {
+        wakes.add(wake.id)
+        entries.push({
+          kind: 'status',
+          notice: 'delegationWake',
+          delegation: wake.delegation,
+          id: `delegation-wake:${wake.id}`,
+          sequence: event.sequence,
+          event,
+        })
+        lastTurn.current = null
+      }
+    } else if (item.userMessage && !users.has(item.userMessage.id)) {
       const user: ConversationUserMessage = {
         kind: 'user',
         id: `message:${item.userMessage.id}`,

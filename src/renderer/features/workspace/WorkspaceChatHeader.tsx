@@ -20,9 +20,19 @@ interface Props {
   readonly detailsMode: ConversationDetailsMode
   readonly onToggleDetails: (() => void) | undefined
   readonly relatedSideChatCount?: number | undefined
+  readonly relatedDelegationCount?: number | undefined
 }
 
 export function WorkspaceChatHeader(props: Props): React.JSX.Element {
+  const sideChatCount = props.relatedSideChatCount ?? 0
+  const delegationCount = props.relatedDelegationCount ?? 0
+  const relatedCount = sideChatCount + delegationCount
+  const relatedLabel = [
+    delegationCount > 0 ? `${delegationCount} delegated task${delegationCount === 1 ? '' : 's'}` : null,
+    sideChatCount > 0 ? `${sideChatCount} side chat${sideChatCount === 1 ? '' : 's'}` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ')
   return (
     <header aria-label="Chat header" className="flex h-12 shrink-0 items-center gap-2 border-b px-3">
       <SidebarTrigger aria-label="Toggle workspace navigation" />
@@ -39,12 +49,8 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
       <div className="flex shrink-0 items-center gap-0.5">
         <HeaderToggle
           label="Conversation details"
-          count={props.relatedSideChatCount}
-          countLabel={
-            props.relatedSideChatCount
-              ? `${props.relatedSideChatCount} side chat${props.relatedSideChatCount === 1 ? '' : 's'}`
-              : undefined
-          }
+          count={relatedCount}
+          countLabel={relatedCount > 0 ? relatedLabel : undefined}
           pressed={props.detailsOpen}
           onClick={props.onToggleDetails}
           popoverTrigger={props.detailsMode === 'popover'}

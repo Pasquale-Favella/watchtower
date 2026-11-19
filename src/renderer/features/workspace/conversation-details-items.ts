@@ -8,6 +8,7 @@ export const CONVERSATION_DETAILS_ITEMS = [
   { id: 'changes', label: 'Diff' },
   { id: 'pullRequests', label: 'Pull requests' },
   { id: 'sideChats', label: 'Side chats' },
+  { id: 'delegations', label: 'Delegated tasks' },
 ] as const
 
 export type ConversationDetailsItemId = (typeof CONVERSATION_DETAILS_ITEMS)[number]['id']

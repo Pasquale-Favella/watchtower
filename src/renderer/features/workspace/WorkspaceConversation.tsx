@@ -3,12 +3,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Markdown } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { Button } from '@/renderer/components/ui/button'
+import { useWorkspaceConnections } from '@/renderer/features/workspace/connection-hooks.js'
 import {
   useWorkspaceConversation,
   useWorkspaceEvents,
   useWorkspacePayload,
 } from '@/renderer/features/workspace/hooks.js'
-import { useWorkspaceConnections } from '@/renderer/features/workspace/connection-hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
@@ -35,6 +35,7 @@ import {
   messagePayloadReference,
   projectConversationView,
 } from './conversation-view.js'
+import { DelegationWakeNotice } from './delegation/DelegationWakeNotice.js'
 import { useMarkdownImageLoader } from './markdown-navigation-hooks.js'
 import {
   createPayloadCache,
@@ -48,8 +49,9 @@ import {
 import { PromptMessageContent } from './PromptMessageContent.js'
 import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
-import { DelegateRow } from './timeline/DelegateRow.js'
 import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
+import { DelegateRow } from './timeline/DelegateRow.js'
+import { DelegationRow } from './timeline/DelegationRow.js'
 import { MediaBlock } from './timeline/MediaBlock.js'
 import { MessageActions } from './timeline/MessageActions.js'
 import { PlanBlock } from './timeline/PlanBlock.js'
@@ -58,6 +60,7 @@ import { RequestRow } from './timeline/RequestRow.js'
 import { buildTimelineRows, timelineRowType } from './timeline/timeline-rows.js'
 import { TimelineScroller } from './timeline/TimelineScroller.js'
 import { turnCopyText } from './timeline/turn-segments.js'
+import { isOrchestrationTool } from './timeline/work-log.js'
 import { TurnFoldRow, WorkGroupRow } from './timeline/WorkLog.js'
 import { usePendingStart } from './use-pending-start.js'
 
@@ -383,6 +386,7 @@ function WorkspaceConversationView({
         entry =>
           entry.kind !== 'status' ||
           entry.notice === 'newSession' ||
+          entry.notice === 'delegationWake' ||
           !['runQueued', 'dispatchClaimed', 'runStarted'].includes(entry.event.kind),
       ),
       activity,
@@ -571,7 +575,12 @@ function WorkspaceConversationView({
                   onDisclosureChange={onDisclosureChange}
                 />
               )
-            else if (segment.kind === 'delegate') content = <DelegateRow tool={segment.tool} />
+            else if (segment.kind === 'delegate')
+              content = isOrchestrationTool(segment.tool) ? (
+                <DelegationRow tool={segment.tool} />
+              ) : (
+                <DelegateRow tool={segment.tool} />
+              )
             else if (segment.kind === 'fold') {
               content = (
                 <TurnFoldRow
@@ -769,6 +778,7 @@ function ConversationStatusEntry({
   readonly entry: ConversationStatusNotice
   readonly connectionLabels: ReadonlyMap<string, string>
 }): React.JSX.Element {
+  if (entry.notice === 'delegationWake') return <DelegationWakeNotice delegation={entry.delegation} />
   if (entry.notice === 'contextHandoff' && entry.handoff) {
     const handoff = entry.handoff
     const source = connectionLabels.get(handoff.sourceConnectionId) ?? handoff.sourceConnectionId

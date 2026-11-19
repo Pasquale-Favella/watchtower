@@ -5,12 +5,13 @@ import { Button } from '@/renderer/components/ui/button'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
+import { DelegationDetails } from './delegation/DelegationDetails.js'
 import { useSwitchBranch, useWorkspaceBranches, useWorkspaceProject, useWorkspaceTaskSnapshot } from './hooks.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
 import { useCreateSideChat, useSideChats } from './side-chat/hooks.js'
-import { sideChatStatus, sideChatStatusLabel } from './side-chat/status.js'
 import { WorkspaceQueryScopeContext } from './side-chat/scope-context.js'
+import { sideChatStatus, sideChatStatusLabel } from './side-chat/status.js'
 import { useSideChatQueryScope } from './side-chat/use-side-chat-query-scope.js'
 import type { ConversationDetailsItems } from './use-conversation-details-items.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
@@ -154,6 +155,9 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
             </p>
           )}
         </section>
+      )}
+      {props.visible.delegations && props.taskId && (
+        <DelegationDetails taskId={props.taskId} conversationId={props.conversationId ?? null} />
       )}
       {sideChats.error && !props.taskId && (
         <p role="alert" className="text-destructive px-2.5 py-1 text-xs">
