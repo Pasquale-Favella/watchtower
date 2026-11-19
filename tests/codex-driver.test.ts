@@ -733,7 +733,7 @@ describe('Codex native App Server driver', () => {
   it('injects the task browser MCP through Codex thread configuration on start and resume', async () => {
     const browserContext = {
       ...context,
-      browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+      mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' }],
     }
     const freshServer = fakeServer()
     await Effect.runPromise(

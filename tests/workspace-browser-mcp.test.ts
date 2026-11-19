@@ -138,7 +138,7 @@ async function openMcpEndpoint(manager: WorkspacePreviewManager, host: Workspace
       request => Effect.runPromise(request),
     ).pipe(Effect.provideService(Scope.Scope, scope)),
   )
-  const browserMcp = prepared.browserMcp
+  const browserMcp = prepared.mcpEndpoints.find(endpoint => endpoint.name === 'watchtower-browser')
   if (!browserMcp) throw new Error('Browser MCP endpoint was not prepared.')
   return { scope, browserMcp }
 }

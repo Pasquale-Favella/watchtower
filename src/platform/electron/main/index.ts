@@ -15,7 +15,7 @@ import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
 import { join } from 'path'
 
-import { WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
+import { WorkspaceCheckouts, WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import {
@@ -105,6 +105,7 @@ import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
 import { TerminalRpcError } from '@/shared/rpc/terminal.js'
 import { pullRequestRpcMessages, WorkspacePullRequestRpcError } from '@/shared/rpc/workspace-pull-requests.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
+import type { WorkspaceCheckout } from '@/shared/schemas/workspace.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -198,21 +199,38 @@ const workspaceHostLayer = Layer.effect(
           ).pipe(
             Effect.map(prepared => ({
               ...prepared,
-              browserMcp: {
-                ...prepared.browserMcp,
+              // The browser endpoint keeps its stdio bridge for harnesses that accept only stdio servers.
+              mcpEndpoints: prepared.mcpEndpoints.map(endpoint => ({
+                ...endpoint,
                 stdio: {
                   command: process.execPath,
                   args: [join(__dirname, 'browser-mcp-proxy.js')],
                   env: [
                     { name: 'ELECTRON_RUN_AS_NODE', value: '1' },
-                    { name: 'WATCHTOWER_BROWSER_MCP_URL', value: prepared.browserMcp.url },
-                    { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: prepared.browserMcp.token },
+                    { name: 'WATCHTOWER_BROWSER_MCP_URL', value: endpoint.url },
+                    { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: endpoint.token },
                   ],
                 },
-              },
+              })),
             })),
           )
         },
+        orchestratorStdio: endpoint => ({
+          command: process.execPath,
+          args: [join(__dirname, 'orchestrator-mcp-proxy.js')],
+          env: [
+            { name: 'ELECTRON_RUN_AS_NODE', value: '1' },
+            { name: 'WATCHTOWER_ORCHESTRATOR_MCP_URL', value: endpoint.url },
+            { name: 'WATCHTOWER_ORCHESTRATOR_MCP_TOKEN', value: endpoint.token },
+          ],
+        }),
+        // The explicit return type keeps this callback from inferring through the runtime that consumes it.
+        createWorktree: (request): Effect.Effect<WorkspaceCheckout, unknown> =>
+          Effect.tryPromise({
+            try: () =>
+              mainRuntime.runPromise(Effect.flatMap(WorkspaceCheckouts, checkouts => checkouts.createWorktree(request))),
+            catch: error => error,
+          }),
         enrichPrompt: claim =>
           enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
             Effect.provideService(SideChatPersistence, sideChatStorage),

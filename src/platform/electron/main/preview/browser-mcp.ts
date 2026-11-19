@@ -1,6 +1,5 @@
-import { randomBytes, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import { mkdir, realpath, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
@@ -9,7 +8,7 @@ import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import { AgentDriverError, type AgentSessionContext } from '@/core/ports/agent-driver.js'
-import { handleMcpHttpRequest } from '@/platform/mcp/http-server.js'
+import { acquireLoopbackMcp } from '@/platform/mcp/loopback-endpoint.js'
 import {
   type WorkspaceBrowserInput,
   type WorkspaceBrowserOperation,
@@ -273,38 +272,14 @@ export const acquireBrowserMcp = Effect.fn('acquireBrowserMcp')(function* (
   scope: Omit<BrowserMcpScope, 'signal'>,
   runRequest: (request: Effect.Effect<void>) => Promise<void>,
 ) {
-  const token = randomBytes(32).toString('hex')
-  const controller = new AbortController()
-  const browserScope: BrowserMcpScope = { ...scope, signal: controller.signal, control: { busy: false } }
-  const http = createServer((req, res) => {
-    if (controller.signal.aborted) {
-      res.writeHead(410).end()
-      return
-    }
-    void runRequest(handleMcpHttpRequest(req, res, token, () => createBrowserMcpServer(browserScope))).catch(() =>
-      res.destroy(),
-    )
+  // One control object per endpoint: concurrent browser calls on the same endpoint see each other's busy state.
+  const control = { busy: false }
+  const endpoint = yield* acquireLoopbackMcp({
+    createServer: signal => createBrowserMcpServer({ ...scope, signal, control }),
+    runRequest,
+    release: () => scope.manager.releaseAgent(scope.context.taskId, scope.context.sessionId),
+    startFailure: 'The Workspace browser connection could not start.',
   })
-  yield* Effect.addFinalizer(() =>
-    Effect.gen(function* () {
-      controller.abort()
-      yield* Effect.promise(() => scope.manager.releaseAgent(scope.context.taskId, scope.context.sessionId))
-      http.closeAllConnections()
-      yield* Effect.callback<undefined>(resume => {
-        http.close(() => resume(Effect.succeed(undefined)))
-      })
-    }),
-  )
-  yield* Effect.callback<undefined, AgentDriverError>(resume => {
-    const failed = () => resume(Effect.fail(browserError('The Workspace browser connection could not start.')))
-    http.once('error', failed)
-    http.listen(0, '127.0.0.1', () => {
-      http.off('error', failed)
-      resume(Effect.succeed(undefined))
-    })
-  })
-  const address = http.address()
-  if (!address || typeof address === 'string')
-    return yield* browserError('The Workspace browser connection could not start.')
-  return { ...scope.context, browserMcp: { url: `http://127.0.0.1:${address.port}/mcp`, token } }
+  return { ...scope.context, mcpEndpoints: [{ name: 'watchtower-browser' as const, ...endpoint }] }
 })
+

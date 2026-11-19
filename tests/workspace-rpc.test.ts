@@ -245,8 +245,9 @@ function makeWorkspace(options: { readonly respondGate?: Deferred.Deferred<undef
         ensureOpen: Effect.void,
         eventHighWatermark: highWatermark,
         status: yield* SubscriptionRef.make<WorkspaceHostStatus>({ state: 'ready', ownerEpoch: 1 }),
+        // These tests never reach the delegation service, so the placeholder is never called.
         withExecution: use =>
-          use(service, 1).pipe(
+          use(service, 1, null as never).pipe(
             Effect.tap(() =>
               store
                 .pageEvents(0, 1)

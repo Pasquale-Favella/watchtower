@@ -44,6 +44,11 @@ import {
 } from '@/core/ports/agent-driver.js'
 import { type JsonRpcTransport, spawnJsonRpcStdio } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
+import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import {
+  isOrchestratorToolTitle,
+  orchestrationReferenceFromRaw,
+} from '@/infrastructure/agent-harnesses/orchestration.js'
 import type {
   AgentAccessMode,
   AgentCapabilities,
@@ -54,7 +59,6 @@ import type {
   AgentSessionIdentity,
   AgentToolMetadata,
 } from '@/shared/schemas/execution.js'
-import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 import { DEFAULT_AGENT_ACCESS_MODE, MAX_AGENT_CATALOG_CHOICES } from '@/shared/schemas/execution.js'
 import type { AgentRunId } from '@/shared/schemas/workspace.js'
 
@@ -71,27 +75,55 @@ const MAX_TOOL_ITEMS = 64
 const MAX_IMAGE_DATA = 512 * 1024
 const REPLAY_CURSOR_PREFIX = 'acp-replay:'
 
+/**
+ * One MCP server entry per loopback endpoint. HTTP is used when the agent advertises it; otherwise an endpoint with a
+ * stdio bridge is launched as a stdio server. An endpoint with neither path is omitted.
+ */
 function sessionMcpServers(context: AgentSessionContext, httpMcpSupported: boolean): AcpMcpServer[] {
-  if (!context.browserMcp) return []
-  if (!httpMcpSupported && context.browserMcp.stdio) {
-    return [
-      {
-        name: 'watchtower-browser',
-        command: context.browserMcp.stdio.command,
-        args: [...context.browserMcp.stdio.args],
-        env: context.browserMcp.stdio.env.map(({ name, value }) => ({ name, value })),
-      },
-    ]
-  }
-  if (!httpMcpSupported) return []
-  return [
-    {
-      type: 'http',
-      name: 'watchtower-browser',
-      url: context.browserMcp.url,
-      headers: [{ name: 'Authorization', value: `Bearer ${context.browserMcp.token}` }],
-    },
-  ]
+  return (context.mcpEndpoints ?? []).flatMap((endpoint): AcpMcpServer[] => {
+    if (httpMcpSupported)
+      return [
+        {
+          type: 'http',
+          name: endpoint.name,
+          url: endpoint.url,
+          headers: [{ name: 'Authorization', value: `Bearer ${endpoint.token}` }],
+        },
+      ]
+    if (endpoint.stdio)
+      return [
+        {
+          name: endpoint.name,
+          command: endpoint.stdio.command,
+          args: [...endpoint.stdio.args],
+          env: endpoint.stdio.env.map(({ name, value }) => ({ name, value })),
+        },
+      ]
+    return []
+  })
+}
+
+/** True when the browser endpoint exists but this agent can receive it through neither HTTP nor its stdio bridge. */
+function browserMcpUnavailable(context: AgentSessionContext, httpMcpSupported: boolean): boolean {
+  const endpoint = context.mcpEndpoints?.find(item => item.name === 'watchtower-browser')
+  return Boolean(endpoint && !httpMcpSupported && !endpoint.stdio)
+}
+
+/** The orchestrator is available on ACP through HTTP or its stdio bridge; either path is enough to delegate. */
+function orchestratorCapability(
+  context: AgentSessionContext,
+  httpMcpSupported: boolean,
+): AgentCapabilities['delegation'] {
+  const endpoint = context.mcpEndpoints?.find(item => item.name === 'watchtower-orchestrator')
+  if (endpoint && (httpMcpSupported || endpoint.stdio))
+    return capability(
+      'supported',
+      'driver',
+      httpMcpSupported
+        ? 'The orchestrator endpoint is attached over HTTP MCP.'
+        : 'The orchestrator endpoint is attached through its stdio bridge.',
+    )
+  return capability('unsupported', 'driver', 'The orchestrator endpoint could not be attached to this ACP session.')
 }
 
 const defaultScrubbedEnvironment = Object.freeze([
@@ -409,7 +441,10 @@ function toolMetadata(update: ToolCallUpdate): AgentToolMetadata {
   const output = toolHints(update.rawOutput)
   const nativeCommand = input?.command ?? input?.cmd
   const command = typeof nativeCommand === 'string' ? nativeCommand : nativeCommand?.join(' ')
-  const category = toolCategory(update.kind)
+  // Orchestration calls are classified by tool name, whatever the ACP tool kind reports.
+  const delegation = isOrchestratorToolTitle(update.title)
+  const category = delegation ? 'delegation' : toolCategory(update.kind)
+  const orchestration = delegation ? orchestrationReferenceFromRaw(update.rawOutput) : undefined
   const exitCode = output?.exitCode ?? output?.exit_code
   const durationMs = output?.durationMs ?? output?.duration_ms
   const changes: NonNullable<AgentToolMetadata['changes']>[number][] = []
@@ -434,6 +469,7 @@ function toolMetadata(update: ToolCallUpdate): AgentToolMetadata {
     .map(path => path.slice(0, 4096))
   return {
     ...(category ? { category } : {}),
+    ...(orchestration ? { orchestration } : {}),
     ...(update.title ? { description: update.title.slice(0, 4096) } : {}),
     ...(command !== undefined ? { command: command.slice(0, MAX_TOOL_TEXT) } : {}),
     ...(input?.cwd !== undefined ? { cwd: input.cwd.slice(0, 4096) } : {}),
@@ -1969,7 +2005,7 @@ function createConnection(
               context,
               native.nativeSessionId,
               connectionState.loadSessionSupported,
-              Boolean(context.browserMcp && !connectionState.browserMcpHttpSupported && !context.browserMcp.stdio),
+              browserMcpUnavailable(context, connectionState.browserMcpHttpSupported),
               true,
             )
           : undefined
@@ -2029,12 +2065,13 @@ function createConnection(
           context,
           response.sessionId,
           connectionState.loadSessionSupported,
-          Boolean(context.browserMcp && !connectionState.browserMcpHttpSupported && !context.browserMcp.stdio),
+          browserMcpUnavailable(context, connectionState.browserMcpHttpSupported),
           false,
         )
         state.liveCapabilities = {
           ...state.liveCapabilities,
           promptContent: { images: initialized.agentCapabilities?.promptCapabilities?.image === true, files: true },
+          delegation: orchestratorCapability(context, connectionState.browserMcpHttpSupported),
         }
         state.poison = error => poisonConnection(state as AcpSessionState, error)
         state.replaying = false

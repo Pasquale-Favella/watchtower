@@ -1,0 +1,77 @@
+import * as Schema from 'effect/Schema'
+
+import type { AgentToolMetadata } from '@/shared/schemas/execution.js'
+
+/** The server name every harness registers the orchestrator endpoint under. */
+export const ORCHESTRATOR_MCP_SERVER = 'watchtower-orchestrator'
+
+const TOOL_PREFIX = 'delegation_'
+
+/** Tools that only read delegation state. Drivers may allow them without an approval prompt. */
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(['delegation_capabilities', 'delegation_status', 'delegation_list'])
+
+/** Claude names MCP tools `mcp__<server>__<tool>`. */
+const claudePrefix = `mcp__${ORCHESTRATOR_MCP_SERVER}__`
+export const claudeOrchestratorToolName = (tool: string): string => `${claudePrefix}${tool}`
+
+export const isClaudeOrchestratorTool = (name: string): boolean => name.startsWith(`${claudePrefix}${TOOL_PREFIX}`)
+
+export const isClaudeReadOnlyOrchestratorTool = (name: string): boolean =>
+  name.startsWith(claudePrefix) && READ_ONLY_TOOLS.has(name.slice(claudePrefix.length))
+
+/** Codex reports the MCP server on each tool item. */
+export const isCodexOrchestratorTool = (server: string | undefined, tool: string | undefined): boolean =>
+  server === ORCHESTRATOR_MCP_SERVER && tool !== undefined && tool.startsWith(TOOL_PREFIX)
+
+const referenceOutput = Schema.fromJsonString(
+  Schema.Struct({ id: Schema.String, childTaskId: Schema.optionalKey(Schema.String) }),
+)
+
+/**
+ * The delegation a successful orchestration tool result describes. Error results carry no `id`, so they yield
+ * nothing and never link a timeline row to a Delegation.
+ */
+export function orchestrationReference(output: string | undefined): AgentToolMetadata['orchestration'] {
+  if (output === undefined) return undefined
+  const decoded = Schema.decodeUnknownOption(referenceOutput)(output)
+  if (decoded._tag === 'None') return undefined
+  return {
+    delegationId: decoded.value.id,
+    ...(decoded.value.childTaskId !== undefined ? { childTaskId: decoded.value.childTaskId } : {}),
+  }
+}
+
+const referenceObject = Schema.Struct({ id: Schema.String, childTaskId: Schema.optionalKey(Schema.String) })
+const mcpWrapped = Schema.Struct({
+  structuredContent: Schema.optionalKey(referenceObject),
+  content: Schema.optionalKey(Schema.Array(Schema.Struct({ text: Schema.optionalKey(Schema.String) }))),
+})
+
+/**
+ * The same reference from a raw ACP tool output. Agents report either the tool's own JSON, an MCP result with
+ * `structuredContent`, or an MCP result whose text part holds the JSON.
+ */
+export function orchestrationReferenceFromRaw(raw: unknown): AgentToolMetadata['orchestration'] {
+  if (typeof raw === 'string') return orchestrationReference(raw)
+  const direct = Schema.decodeUnknownOption(referenceObject)(raw)
+  if (direct._tag === 'Some')
+    return {
+      delegationId: direct.value.id,
+      ...(direct.value.childTaskId !== undefined ? { childTaskId: direct.value.childTaskId } : {}),
+    }
+  const wrapped = Schema.decodeUnknownOption(mcpWrapped)(raw)
+  if (wrapped._tag === 'None') return undefined
+  if (wrapped.value.structuredContent)
+    return {
+      delegationId: wrapped.value.structuredContent.id,
+      ...(wrapped.value.structuredContent.childTaskId !== undefined
+        ? { childTaskId: wrapped.value.structuredContent.childTaskId }
+        : {}),
+    }
+  const text = wrapped.value.content?.find(part => part.text !== undefined)?.text
+  return orchestrationReference(text)
+}
+
+/** ACP reports an MCP tool by its title, which names the tool (for example `watchtower-orchestrator: delegation_start`). */
+export const isOrchestratorToolTitle = (title: string | null | undefined): boolean =>
+  typeof title === 'string' && /(^|[\s:/_-])delegation_(capabilities|start|status|list|cancel)$/.test(title.trim())

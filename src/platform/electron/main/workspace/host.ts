@@ -14,13 +14,20 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
+import {
+  DelegationService,
+  type DelegationServiceOptions,
+} from '@/core/application/commands/delegation-service.js'
 import { ExecutionService, ExecutionServiceError } from '@/core/application/commands/execution-service.js'
+import { DelegationCoordinator } from '@/core/application/execution/delegation-coordinator.js'
+import type { AgentMcpEndpoint, AgentSessionContext } from '@/core/ports/agent-driver.js'
 import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
+import { acquireOrchestratorMcp } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
 import {
   ConnectionInspectionError,
   discoverWorkspacePromptCatalog,
@@ -31,7 +38,7 @@ import {
   WorkspaceWorkerSupervisor,
   WorkspaceWorkerSupervisorLive,
 } from '@/platform/electron/main/workspace/supervisor.js'
-import type { AgentPromptCatalog } from '@/shared/schemas/execution.js'
+import { type AgentPromptCatalog, DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type { HarnessConnection } from '@/shared/schemas/harness-connections.js'
 import type { WorkspaceConnection } from '@/shared/schemas/workspace-connections.js'
 import type { WorkspaceConnectionInspection } from '@/shared/schemas/workspace-connections.js'
@@ -54,6 +61,10 @@ export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
   readonly loadDrivers?: () => Effect.Effect<AgentDriverRegistry['Service'], unknown>
   readonly loadCheckoutResolver?: () => Effect.Effect<CheckoutResolver['Service'], unknown>
   readonly runtimeExecutable?: string
+  /** Builds the stdio launch for the orchestrator endpoint, for harnesses that accept only stdio servers. */
+  readonly orchestratorStdio?: (endpoint: { readonly url: string; readonly token: string }) => NonNullable<AgentMcpEndpoint['stdio']>
+  /** Creates an isolated checkout for `isolation: 'worktree'` delegations. Absent means worktrees are unavailable. */
+  readonly createWorktree?: DelegationServiceOptions['createWorktree']
   readonly closeDeadlineMs?: number
   readonly connectionInspectionDeadlineMs?: number
   readonly connectionCleanupDeadlineMs?: number
@@ -71,6 +82,7 @@ type Execution = ExecutionService['Service']
 interface OwnedExecution {
   readonly ownerEpoch: number
   readonly service: Execution
+  readonly delegations: DelegationService['Service']
   readonly scope: Scope.Closeable
   readonly leases: Set<Fiber.Fiber<unknown, unknown>>
   retiring: boolean
@@ -84,7 +96,11 @@ export class WorkspaceHost extends Context.Service<
     /** The first opening failure is sticky; retry requires a new application host. */
     readonly ensureOpen: Effect.Effect<void, WorkspaceStoreError, ChildProcessSpawner.ChildProcessSpawner>
     readonly withExecution: <A, E, R>(
-      use: (execution: Execution, ownerEpoch: number) => Effect.Effect<A, E, R>,
+      use: (
+        execution: Execution,
+        ownerEpoch: number,
+        delegations: DelegationService['Service'],
+      ) => Effect.Effect<A, E, R>,
     ) => Effect.Effect<
       A,
       E | WorkspaceHostError | WorkspaceStoreError | ExecutionServiceError | HarnessConnectionResolutionError,
@@ -441,7 +457,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             checkoutResolver = Context.get(checkoutContext, CheckoutResolver)
           }
         }
-        const { connections } = yield* getConnectionCatalog
+        const { connections, rows: catalogRows } = yield* getConnectionCatalog
         if (!isCurrent(ownerEpoch)) return yield* closedExecution()
         const layers = Layer.mergeAll(
           Layer.succeed(WorkspaceStore, owner.store),
@@ -450,15 +466,58 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
           HarnessConnectionResolver.layer(connections, { runtimeExecutable: options.runtimeExecutable }),
         )
         const serviceScope = yield* Scope.make()
+        // The delegation services are built after ExecutionService, so the execution hooks read them lazily.
+        const delegationBox: {
+          coordinator?: DelegationCoordinator['Service'] | undefined
+          delegations?: DelegationService['Service'] | undefined
+        } = {}
+        const composeSession = (
+          context: AgentSessionContext,
+        ): Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope> =>
+          Effect.gen(function* () {
+            const prepared = options.prepareSession ? yield* options.prepareSession(context) : context
+            if (!context.runId) return prepared
+            const delegations = delegationBox.delegations
+            if (!delegations)
+              return yield* new AgentDriverError({ code: 'invalid-state', message: 'Orchestration is not ready.' })
+            const endpoint = yield* acquireOrchestratorMcp({
+              caller: {
+                projectId: context.projectId,
+                taskId: context.taskId,
+                conversationId: context.conversationId,
+                runId: context.runId,
+                accessMode: context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+              },
+              delegations,
+            })
+            const stdio = options.orchestratorStdio?.(endpoint)
+            return {
+              ...prepared,
+              mcpEndpoints: [
+                ...(prepared.mcpEndpoints ?? []),
+                stdio ? { ...endpoint, stdio } : endpoint,
+              ],
+            }
+          })
         const serviceContext = yield* Layer.buildWithScope(
           ExecutionService.layer({
             enrichPrompt: options.enrichPrompt,
-            prepareSession: options.prepareSession,
+            prepareSession: composeSession,
             resolveAttachments: options.resolveAttachments,
             ownerEpoch,
             closeDeadlineMs: options.closeDeadlineMs,
             publishCommittedEvent: event =>
-              SubscriptionRef.update(eventHighWatermark, value => Math.max(value, event.sequence)),
+              SubscriptionRef.update(eventHighWatermark, value => Math.max(value, event.sequence)).pipe(
+                Effect.andThen(
+                  Effect.suspend(() =>
+                    delegationBox.coordinator ? delegationBox.coordinator.observe(event) : Effect.void,
+                  ),
+                ),
+              ),
+            onRunFinished: claim =>
+              Effect.suspend(() =>
+                delegationBox.coordinator ? delegationBox.coordinator.runFinished(claim) : Effect.void,
+              ),
           }),
           serviceScope,
         ).pipe(
@@ -466,7 +525,35 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
           Effect.onExit(exit => (Exit.isFailure(exit) ? Scope.close(serviceScope, Exit.void) : Effect.void)),
         )
         const service = Context.get(serviceContext, ExecutionService)
-        execution = { ownerEpoch, service, scope: serviceScope, leases: new Set(), retiring: false }
+        const delegationLayer = DelegationService.layer({
+          loadConnections: () =>
+            Effect.succeed(
+              catalogRows.map(row => ({ id: row.connectionId, label: row.label, driverId: row.driverId })),
+            ),
+          ...(options.createWorktree ? { createWorktree: options.createWorktree } : {}),
+        }).pipe(
+          Layer.provideMerge(DelegationCoordinator.layer),
+          Layer.provide(Layer.merge(layers, Layer.succeed(ExecutionService, service))),
+        )
+        const delegationContext = yield* Layer.buildWithScope(delegationLayer, serviceScope).pipe(
+          Effect.onExit(exit => (Exit.isFailure(exit) ? Scope.close(serviceScope, Exit.void) : Effect.void)),
+        )
+        delegationBox.coordinator = Context.get(delegationContext, DelegationCoordinator)
+        delegationBox.delegations = Context.get(delegationContext, DelegationService)
+        // Settle children whose Runs ended while the app was closed, and deliver wakes that were due.
+        yield* Effect.forkIn(
+          delegationBox.coordinator.recover().pipe(Effect.catch(() => Effect.void)),
+          serviceScope,
+          { startImmediately: true },
+        )
+        execution = {
+          ownerEpoch,
+          service,
+          delegations: delegationBox.delegations,
+          scope: serviceScope,
+          leases: new Set(),
+          retiring: false,
+        }
         if (!isCurrent(ownerEpoch)) {
           yield* retireExecution()
           return yield* closedExecution()
@@ -564,7 +651,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
                       SubscriptionRef.getUnsafe(supervisor.ownerEpoch) !== owned.ownerEpoch
                     )
                       return yield* closedExecution()
-                    return yield* use(owned.service, owned.ownerEpoch)
+                    return yield* use(owned.service, owned.ownerEpoch, owned.delegations)
                   }).pipe(
                     Effect.ensuring(
                       Effect.suspend(() => {

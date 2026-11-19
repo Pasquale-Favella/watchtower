@@ -1274,7 +1274,7 @@ describe('generic ACP driver', () => {
   it('injects the task browser HTTP MCP on fresh and resumed ACP sessions', async () => {
     const browserContext = {
       ...context,
-      browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+      mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' }],
     }
     const fresh = makeFakeAcp()
     fresh.httpMcpSupported = true
@@ -1290,7 +1290,7 @@ describe('generic ACP driver', () => {
     expect(fresh.sessionMcpServers[0]).toEqual([
       {
         type: 'http',
-        name: 'watchtower-browser',
+        name: 'watchtower-browser' as const,
         url: 'http://127.0.0.1:43123/mcp',
         headers: [{ name: 'Authorization', value: 'Bearer run-token' }],
       },
@@ -1318,7 +1318,7 @@ describe('generic ACP driver', () => {
           const connection = yield* fake.driver.connect({ connectionId: 'acp-browser-unsupported' })
           const session = yield* connection.openSession({
             ...context,
-            browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+            mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' }],
           })
           const run = runId('run-browser-unsupported')
           const reading = yield* Effect.forkScoped(Stream.runCollect(session.events(run)))
@@ -1348,18 +1348,21 @@ describe('generic ACP driver', () => {
           const connection = yield* fake.driver.connect({ connectionId: 'acp-browser-stdio' })
           yield* connection.openSession({
             ...context,
-            browserMcp: {
-              url: 'http://127.0.0.1:43123/mcp',
-              token: 'run-token',
-              stdio: {
-                command: 'electron.exe',
-                args: ['browser-mcp-proxy.js'],
-                env: [
-                  { name: 'WATCHTOWER_BROWSER_MCP_URL', value: 'http://127.0.0.1:43123/mcp' },
-                  { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: 'run-token' },
-                ],
+            mcpEndpoints: [
+              {
+                name: 'watchtower-browser' as const,
+                url: 'http://127.0.0.1:43123/mcp',
+                token: 'run-token',
+                stdio: {
+                  command: 'electron.exe',
+                  args: ['browser-mcp-proxy.js'],
+                  env: [
+                    { name: 'WATCHTOWER_BROWSER_MCP_URL', value: 'http://127.0.0.1:43123/mcp' },
+                    { name: 'WATCHTOWER_BROWSER_MCP_TOKEN', value: 'run-token' },
+                  ],
+                },
               },
-            },
+            ],
           })
           yield* connection.close(1000)
         }),
@@ -1367,7 +1370,7 @@ describe('generic ACP driver', () => {
     )
     expect(fake.sessionMcpServers[0]).toEqual([
       {
-        name: 'watchtower-browser',
+        name: 'watchtower-browser' as const,
         command: 'electron.exe',
         args: ['browser-mcp-proxy.js'],
         env: [
@@ -1376,6 +1379,58 @@ describe('generic ACP driver', () => {
         ],
       },
     ])
+  })
+
+  it('attaches the orchestrator endpoint over HTTP or its stdio bridge and reports delegation as supported', async () => {
+    const endpoints = [
+      { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'browser-token' },
+      {
+        name: 'watchtower-orchestrator' as const,
+        url: 'http://127.0.0.1:43124/mcp',
+        token: 'orchestrator-token',
+        stdio: {
+          command: 'electron.exe',
+          args: ['orchestrator-mcp-proxy.js'],
+          env: [{ name: 'WATCHTOWER_ORCHESTRATOR_MCP_URL', value: 'http://127.0.0.1:43124/mcp' }],
+        },
+      },
+    ]
+    const stdioFake = makeFakeAcp()
+    const stdioSupport = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* stdioFake.driver.connect({ connectionId: 'acp-orchestrator-stdio' })
+          const session = yield* connection.openSession({ ...context, mcpEndpoints: endpoints })
+          yield* connection.close(1000)
+          return session.capabilities.delegation?.support
+        }),
+      ),
+    )
+    // The browser endpoint has neither HTTP nor a stdio bridge here, so it is omitted; the orchestrator bridges over stdio.
+    expect(stdioFake.sessionMcpServers[0]).toEqual([expect.objectContaining({ name: 'watchtower-orchestrator' })])
+    expect(stdioFake.sessionMcpServers[0]?.[0]).toMatchObject({
+      command: 'electron.exe',
+      args: ['orchestrator-mcp-proxy.js'],
+    })
+    expect(stdioSupport).toBe('supported')
+
+    const httpFake = makeFakeAcp()
+    httpFake.httpMcpSupported = true
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* httpFake.driver.connect({ connectionId: 'acp-orchestrator-http' })
+          yield* connection.openSession({ ...context, mcpEndpoints: endpoints })
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(httpFake.sessionMcpServers[0]?.[1]).toEqual({
+      type: 'http',
+      name: 'watchtower-orchestrator',
+      url: 'http://127.0.0.1:43124/mcp',
+      headers: [{ name: 'Authorization', value: 'Bearer orchestrator-token' }],
+    })
   })
 
   it('closes scoped transports once and uses typed unsupported steering', async () => {

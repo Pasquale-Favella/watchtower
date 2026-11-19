@@ -33,6 +33,11 @@ import {
 } from '@/core/ports/agent-driver.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import {
+  isClaudeOrchestratorTool,
+  isClaudeReadOnlyOrchestratorTool,
+  orchestrationReference,
+} from '@/infrastructure/agent-harnesses/orchestration.js'
+import {
   discoverClaudePromptCatalog,
   normalizeAgentPromptCatalog,
 } from '@/infrastructure/agent-harnesses/prompt-catalog.js'
@@ -123,6 +128,7 @@ const capabilities: AgentCapabilities = {
   steer: unsupported('The SDK has no in-turn steering API; submit is queued for a subsequent turn.'),
   respond: supported('Resolves the exact pending canUseTool callback while it is held by the SDK.'),
   reconcile: unsupported('The SDK query API does not expose a durable event replay cursor.'),
+  delegation: supported('Attaches the watchtower-orchestrator endpoint through the SDK mcpServers option.'),
   models: [],
   modes: [],
 }
@@ -330,7 +336,9 @@ function toolMetadata(name: string, input: unknown): AgentToolMetadata {
     Task: 'subagent',
     Agent: 'subagent',
   }
-  let result: AgentToolMetadata = { category: name.startsWith('mcp__') ? 'mcp' : (categories[name] ?? 'other') }
+  let result: AgentToolMetadata = {
+    category: isClaudeOrchestratorTool(name) ? 'delegation' : name.startsWith('mcp__') ? 'mcp' : (categories[name] ?? 'other'),
+  }
   function add(fields: AgentToolMetadata): void {
     const next = { ...result, ...fields }
     if (new TextEncoder().encode(JSON.stringify(next)).byteLength <= 6000) result = next
@@ -460,11 +468,18 @@ const claudeProcessEnvironment = (apiKey: string | undefined): Record<string, st
 }
 
 /** Defers each tool call to the held permission callback, optionally only for tools with the given name. */
-const askBeforeTool = (matcher?: string): NonNullable<Options['hooks']> => ({
+const askBeforeTool = (matcher?: string, allowReadOnlyOrchestration = false): NonNullable<Options['hooks']> => ({
   PreToolUse: [
     {
       ...(matcher === undefined ? {} : { matcher }),
-      hooks: [async () => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } })],
+      hooks: [
+        async input => {
+          // Read-only delegation state never changes authority, so it does not need a prompt.
+          const toolName = 'tool_name' in input && typeof input.tool_name === 'string' ? input.tool_name : ''
+          const allowed = allowReadOnlyOrchestration && isClaudeReadOnlyOrchestratorTool(toolName)
+          return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: allowed ? 'allow' : 'ask' } }
+        },
+      ],
     },
   ],
 })
@@ -476,7 +491,7 @@ const claudePermissionOptions = (
 ): Pick<Options, 'permissionMode' | 'allowDangerouslySkipPermissions' | 'hooks'> => {
   switch (accessMode) {
     case 'approval-required':
-      return { permissionMode: 'default', hooks: askBeforeTool() }
+      return { permissionMode: 'default', hooks: askBeforeTool(undefined, true) }
     case 'auto-accept-edits':
       return { permissionMode: 'acceptEdits', hooks: askBeforeTool('AskUserQuestion') }
     case 'auto':
@@ -642,15 +657,14 @@ const modeOptions = (
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
     includePartialMessages: true,
-    ...(context.browserMcp
+    ...(context.mcpEndpoints?.length
       ? {
-          mcpServers: {
-            'watchtower-browser': {
-              type: 'http' as const,
-              url: context.browserMcp.url,
-              headers: { Authorization: `Bearer ${context.browserMcp.token}` },
-            },
-          },
+          mcpServers: Object.fromEntries(
+            context.mcpEndpoints.map(endpoint => [
+              endpoint.name,
+              { type: 'http' as const, url: endpoint.url, headers: { Authorization: `Bearer ${endpoint.token}` } },
+            ]),
+          ),
         }
       : {}),
     ...(native ? { resume: native.nativeSessionId } : { sessionId: nativeSessionId }),
@@ -693,6 +707,7 @@ const makeSession = (
     const pending = new Map<string, PendingRequest>()
     const messagesByUuid = new Map<string, AgentRunId>()
     const activeTools = new Map<string, AgentRunId>()
+    const orchestrationToolIds = new Set<string>()
     const delegateChildrenByTool = new Map<string, Map<string, { id: string; status: string; message?: string }>>()
     const delegateTasks = new Map<
       string,
@@ -791,6 +806,7 @@ const makeSession = (
     ): Effect.fn.Return<void, AgentDriverError> {
       if (!runId) return
       activeTools.set(toolCallId, runId)
+      if (isClaudeOrchestratorTool(name)) orchestrationToolIds.add(toolCallId)
       const encoded = encodeToolInput(input, MAX_TOOL_CONTENT_BYTES)
       const initialInput = streaming && encoded === '{}' ? '' : encoded
       const inline = initialInput === undefined || JSON.stringify(initialInput).length <= 6000
@@ -1142,10 +1158,15 @@ const makeSession = (
                     ? block.content.flatMap(part => (part.type === 'text' ? [part.text] : [])).join('\n')
                     : undefined)
               if (output !== undefined) yield* emitToolText(runId, block.tool_use_id, 'output', output)
+              const orchestration = orchestrationToolIds.has(block.tool_use_id)
+                ? orchestrationReference(output)
+                : undefined
+              orchestrationToolIds.delete(block.tool_use_id)
               yield* emit(runId, {
                 kind: 'toolCompleted',
                 toolCallId: block.tool_use_id,
                 ...structured.metadata,
+                ...(orchestration ? { orchestration } : {}),
                 error:
                   block.is_error || (structured.metadata.exitCode !== undefined && structured.metadata.exitCode !== 0)
                     ? 'Tool execution failed.'

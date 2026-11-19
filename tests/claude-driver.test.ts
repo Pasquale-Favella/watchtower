@@ -904,7 +904,7 @@ describe('Claude Agent SDK native driver', () => {
   it('injects the task browser HTTP MCP on fresh and resumed Claude sessions', async () => {
     const browserContext = {
       ...context,
-      browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+      mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' }],
     }
     const fresh = fakeSdk()
     await Effect.runPromise(

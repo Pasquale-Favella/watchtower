@@ -2546,7 +2546,7 @@ describe('ExecutionService', () => {
             order.push('prepare')
             return {
               ...context,
-              browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' },
+              mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' }],
             }
           }),
           () => Effect.sync(() => void order.push('prepared-resource-close')),
@@ -2563,7 +2563,7 @@ describe('ExecutionService', () => {
 
       expect(openedContext).toMatchObject({
         taskId: 'task-1',
-        browserMcp: { url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' },
+        mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' }],
       })
       expect(order).toEqual(['prepare', 'open', 'connection-close', 'prepared-resource-close'])
     } finally {

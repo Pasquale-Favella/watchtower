@@ -61,18 +61,22 @@ export interface AgentSessionContext {
   readonly configValues?: Readonly<Record<string, string>> | undefined
   /** Absent is treated as the fail-safe default; drivers never widen a missing value. */
   readonly accessMode?: AgentAccessMode | undefined
-  /** Ephemeral task-scoped browser MCP endpoint. Never persisted with session state. */
-  readonly browserMcp?:
+  /** The Agent Run this session serves. Immutable for the dispatch. */
+  readonly runId?: AgentRunId | undefined
+  /** Ephemeral loopback MCP endpoints, acquired in the Driver Connection scope. Never persisted with session state. */
+  readonly mcpEndpoints?: ReadonlyArray<AgentMcpEndpoint> | undefined
+}
+
+export interface AgentMcpEndpoint {
+  readonly name: 'watchtower-browser' | 'watchtower-orchestrator'
+  readonly url: string
+  readonly token: string
+  /** Stdio bridge for harnesses that accept only stdio MCP servers. */
+  readonly stdio?:
     | {
-        readonly url: string
-        readonly token: string
-        readonly stdio?:
-          | {
-              readonly command: string
-              readonly args: ReadonlyArray<string>
-              readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>
-            }
-          | undefined
+        readonly command: string
+        readonly args: ReadonlyArray<string>
+        readonly env: ReadonlyArray<{ readonly name: string; readonly value: string }>
       }
     | undefined
 }

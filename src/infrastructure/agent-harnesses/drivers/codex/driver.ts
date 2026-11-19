@@ -15,6 +15,7 @@ import {
   type AgentDriverConnection,
   AgentDriverError,
   type AgentDriverSession,
+  type AgentMcpEndpoint,
   type AgentSessionContext,
   type AgentTurnInput,
   type NativeSessionReference,
@@ -28,6 +29,7 @@ import {
   spawnJsonRpcStdio,
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
+import { isCodexOrchestratorTool, orchestrationReference } from '@/infrastructure/agent-harnesses/orchestration.js'
 import type {
   AgentAccessMode,
   AgentCapabilities,
@@ -232,6 +234,8 @@ const ItemNotification = Schema.Struct({
     query: Schema.optional(Schema.String),
     url: Schema.optional(Schema.String),
     tool: Schema.optional(Schema.String),
+    // mcpToolCall items name their MCP server (verified against the app-server v2 ThreadItem schema).
+    server: Schema.optional(Schema.String),
     path: Schema.optional(Schema.String),
     savedPath: Schema.optional(Schema.NullOr(Schema.String)),
     review: Schema.optional(Schema.String),
@@ -340,6 +344,7 @@ const textReplay = {
   evidence: [{ source: 'protocol', detail: 'Codex thread/resume history' }],
 } as const
 const capabilities: AgentCapabilities = {
+  delegation: supported,
   openSession: supported,
   loadSession: supported,
   submit: supported,
@@ -595,14 +600,14 @@ function openSession(
               excludeTurns: false,
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
-              ...(context.browserMcp ? { config: codexBrowserMcpConfig(context.browserMcp) } : {}),
+              ...(context.mcpEndpoints?.length ? { config: codexMcpConfig(context.mcpEndpoints) } : {}),
             }
           : {
               cwd: context.workspacePath,
               ...(context.modelId ? { model: context.modelId } : {}),
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
-              ...(context.browserMcp ? { config: codexBrowserMcpConfig(context.browserMcp) } : {}),
+              ...(context.mcpEndpoints?.length ? { config: codexMcpConfig(context.mcpEndpoints) } : {}),
             },
       )
       .pipe(Effect.mapError(toDriverFailure))
@@ -701,19 +706,30 @@ function openSession(
   })
 }
 
-function codexBrowserMcpConfig(browserMcp: NonNullable<AgentSessionContext['browserMcp']>): {
-  readonly 'mcp_servers.watchtower-browser': {
-    readonly url: string
-    readonly http_headers: Readonly<Record<string, string>>
-  }
-} {
-  return {
-    // Override this server rather than replacing the user's MCP server table.
-    'mcp_servers.watchtower-browser': {
-      url: browserMcp.url,
-      http_headers: { Authorization: `Bearer ${browserMcp.token}` },
-    },
-  }
+/** One override entry per loopback endpoint. Overrides a server of the same name rather than the user's whole table. */
+function codexMcpConfig(endpoints: ReadonlyArray<AgentMcpEndpoint>): Readonly<
+  Record<
+    `mcp_servers.${string}`,
+    { readonly url: string; readonly http_headers: Readonly<Record<string, string>> }
+  >
+> {
+  return Object.fromEntries(
+    endpoints.map(endpoint => [
+      `mcp_servers.${endpoint.name}`,
+      { url: endpoint.url, http_headers: { Authorization: `Bearer ${endpoint.token}` } },
+    ]),
+  )
+}
+
+const codexMcpResult = Schema.Struct({
+  content: Schema.Array(Schema.Struct({ text: Schema.optional(Schema.String) })),
+})
+
+/** Codex wraps MCP results as `{ content: [{ type: 'text', text }] }`; the text is the tool's JSON. */
+function codexMcpResultText(result: unknown): string | undefined {
+  const decoded = Schema.decodeUnknownOption(codexMcpResult)(result)
+  if (decoded._tag === 'None') return undefined
+  return decoded.value.content.find(part => part.text !== undefined)?.text
 }
 
 function readNativeGoal(client: JsonRpcClient, threadId: string) {
@@ -1905,11 +1921,16 @@ function notificationEvent(method: string, params: unknown, turnId: string | und
       completed.status === 'failed' ||
       (completed.exitCode != null && completed.exitCode !== 0) ||
       completed.error != null
+    const orchestration =
+      completed.type === 'mcpToolCall' && isCodexOrchestratorTool(completed.server, completed.tool)
+        ? orchestrationReference(codexMcpResultText(completed.result))
+        : undefined
     return {
       kind: 'toolCompleted',
       toolCallId: item.item.id,
       name: completed.name?.trim() || item.item.type,
       ...codexToolDetails(completed),
+      ...(orchestration ? { orchestration } : {}),
       ...(output !== undefined ? { output: boundedNativeText(output, MAX_TOOL_OUTPUT_BYTES) } : {}),
       ...(failed
         ? {
@@ -1942,7 +1963,10 @@ function codexToolDetails(
     collabAgentToolCall: 'subagent',
     webSearch: 'web',
   } as const
-  const category = categoryByType[item.type as keyof typeof categoryByType]
+  const category =
+    item.type === 'mcpToolCall' && isCodexOrchestratorTool(item.server, item.tool)
+      ? 'delegation'
+      : categoryByType[item.type as keyof typeof categoryByType]
   const command = typeof item.command === 'string' ? item.command : item.command?.join(' ')
   const changes = item.changes?.slice(0, 16).flatMap((change): NonNullable<AgentToolMetadata['changes']>[number][] => {
     const kind = typeof change.kind === 'string' ? change.kind : change.kind.type
