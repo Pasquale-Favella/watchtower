@@ -10,6 +10,7 @@ import {
   FileTextIcon,
   GlobeIcon,
   LoaderCircleIcon,
+  NetworkIcon,
   PlugIcon,
   SearchIcon,
   TerminalIcon,
@@ -46,6 +47,7 @@ const categoryIcons: Record<ToolCategory, typeof TerminalIcon> = {
   search: SearchIcon,
   web: GlobeIcon,
   subagent: BotIcon,
+  delegation: NetworkIcon,
   mcp: PlugIcon,
   other: WrenchIcon,
 }

@@ -1,7 +1,7 @@
 import type { ConversationAssistantTurn, ConversationRun, ConversationTurnBlock } from '../conversation-view.js'
 import { elapsedBetween, formatRunDuration } from './duration.js'
 import { planCopyText } from './plan-text.js'
-import { summarizeToolCalls, toolCategoryFor, type ToolBlock, type WorkSummary } from './work-log.js'
+import { isDelegateTool, summarizeToolCalls, type ToolBlock, type WorkSummary } from './work-log.js'
 
 export interface WorkGroup {
   readonly key: string
@@ -41,7 +41,7 @@ function rawSegments(blocks: readonly ConversationTurnBlock[]): RawSegment[] {
       segments.push({ kind: 'block', block })
       continue
     }
-    if (toolCategoryFor(block) === 'subagent') {
+    if (isDelegateTool(block)) {
       segments.push({ kind: 'delegate', tool: block })
       continue
     }
@@ -80,8 +80,7 @@ function delegateSegment(tool: ToolBlock): TurnSegment {
 /** Tool calls that did not fail: the routine activity a settled Run folds into one row. */
 function routineTools(blocks: readonly ConversationTurnBlock[]): ToolBlock[] {
   return blocks.filter(
-    (block): block is ToolBlock =>
-      block.kind === 'tool' && block.status !== 'failed' && toolCategoryFor(block) !== 'subagent',
+    (block): block is ToolBlock => block.kind === 'tool' && block.status !== 'failed' && !isDelegateTool(block),
   )
 }
 

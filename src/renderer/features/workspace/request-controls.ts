@@ -24,6 +24,8 @@ export function requestLabel(request: AgentRequest): string {
       return 'Web access approval'
     case 'subagent':
       return 'Subagent approval'
+    case 'delegation':
+      return 'Delegated task approval'
     case 'mcp':
       return 'App access approval'
     default:

@@ -28,6 +28,7 @@ const categoryLabels: Record<ToolCategory, string> = {
   search: 'Search',
   web: 'Web lookup',
   subagent: 'Agent',
+  delegation: 'Delegated task',
   mcp: 'MCP tool',
   other: 'Tool',
 }

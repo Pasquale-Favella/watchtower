@@ -36,7 +36,20 @@ describe('semantic tool presentation', () => {
     ['collabAgentToolCall', 'subagent'],
     ['mcp__server__query', 'mcp'],
     ['mcpToolCall', 'mcp'],
+    ['mcp__watchtower-orchestrator__delegation_start', 'delegation'],
+    ['mcp__watchtower-orchestrator__delegation_get', 'delegation'],
+    ['delegation_cancel', 'delegation'],
   ])('classifies %s as %s', (name, category) => expect(toolCategory(name)).toBe(category))
+
+  it('presents orchestration calls as delegated tasks, not generic MCP calls', () => {
+    const delegated = tool({
+      name: 'mcp__watchtower-orchestrator__delegation_start',
+      category: 'delegation',
+      orchestration: { delegationId: 'delegation-1', childTaskId: 'task-child' },
+    })
+    expect(toolPresentation(delegated)).toMatchObject({ category: 'delegation', label: 'Delegated task' })
+    expect(summarizeToolCalls([delegated]).label).toBe('1 agent call')
+  })
 
   it('uses explicit provider metadata before optional input hints', () => {
     expect(

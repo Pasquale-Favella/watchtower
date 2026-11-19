@@ -1,7 +1,7 @@
 import type { ConversationTurnBlock } from '../conversation-view.js'
 
 export type ToolBlock = Extract<ConversationTurnBlock, { readonly kind: 'tool' }>
-export type ToolCategory = 'command' | 'search' | 'read' | 'edit' | 'web' | 'subagent' | 'mcp' | 'other'
+export type ToolCategory = 'command' | 'search' | 'read' | 'edit' | 'web' | 'subagent' | 'delegation' | 'mcp' | 'other'
 
 export interface WorkSummary {
   /** Sentence fragment such as `Ran 3 commands, edited 2 files`. */
@@ -13,6 +13,8 @@ export interface WorkSummary {
 /** Classify a tool by the name its driver reports. Unrecognized names stay `other`. */
 export function toolCategory(name: string): ToolCategory {
   const normalized = name.toLowerCase()
+  // Orchestration tools (watchtower-orchestrator) start or inspect Delegated Tasks.
+  if (/^(?:mcp__watchtower-orchestrator__)?delegation_/.test(normalized)) return 'delegation'
   if (/^mcp(?:[._:/-]|$)|mcptoolcall/.test(normalized)) return 'mcp'
   if (/subagent|collabagent|spawn_agent|delegate|^task$|^agent$/.test(normalized)) return 'subagent'
   if (/web.?search|browse|fetch|open.?url/.test(normalized)) return 'web'
@@ -30,13 +32,24 @@ const metadataCategories = {
   search: 'search',
   web: 'web',
   subagent: 'subagent',
-  delegation: 'subagent',
+  delegation: 'delegation',
   mcp: 'mcp',
   other: 'other',
 } as const satisfies Record<NonNullable<ToolBlock['category']>, ToolCategory>
 
 export function toolCategoryFor(tool: ToolBlock): ToolCategory {
   return tool.category ? metadataCategories[tool.category] : toolCategory(tool.name)
+}
+
+/** Native harness subagents and orchestration delegations: both render as delegates, never as routine activity. */
+export function isDelegateTool(tool: ToolBlock): boolean {
+  const category = toolCategoryFor(tool)
+  return category === 'subagent' || category === 'delegation'
+}
+
+/** Orchestration calls that start or inspect a Delegated Task. */
+export function isOrchestrationTool(tool: ToolBlock): boolean {
+  return toolCategoryFor(tool) === 'delegation'
 }
 
 export function delegateChildStatusLabel(status: string): string {
@@ -134,6 +147,7 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
         webSearches += 1
         break
       case 'subagent':
+      case 'delegation':
         agents += 1
         break
       case 'mcp':

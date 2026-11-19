@@ -13,8 +13,8 @@ import {
   turnCopyText,
 } from '../src/renderer/features/workspace/timeline/turn-segments.js'
 import {
-  delegateChildStatusLabel,
   delegateChildrenSummary,
+  delegateChildStatusLabel,
   delegateDisplayStatus,
   summarizeToolCalls,
   toolCategory,
@@ -188,6 +188,24 @@ describe('work log grouping', () => {
     expect(segments.map(segment => segment.kind)).toEqual(['fold', 'delegate', 'delegate'])
     expect(delegateDisplayStatus(completed)).toBe('completed')
     expect(delegateDisplayStatus(failed)).toBe('failed')
+  })
+
+  it('gives orchestration delegations their own segment and keeps them out of the routine fold', () => {
+    const started = {
+      ...tool(2, 'mcp__watchtower-orchestrator__delegation_start', 'completed'),
+      category: 'delegation',
+      orchestration: { delegationId: 'delegation-1', childTaskId: 'task-child' },
+    } satisfies Tool
+    const segments = buildTurnSegments(turn('completed', [tool(0, 'Read'), started, tool(3, 'Bash')]))
+    expect(segments.map(segment => segment.kind)).toEqual(['fold', 'delegate'])
+    expect(segments[1]).toMatchObject({ kind: 'delegate', tool: { orchestration: { delegationId: 'delegation-1' } } })
+    expect(segments[0]).toMatchObject({ kind: 'fold', summary: { toolCount: 2 } })
+  })
+
+  it('classifies a delegation by name when the driver sends no category', () => {
+    const named = tool(1, 'mcp__watchtower-orchestrator__delegation_list', 'completed')
+    const segments = buildTurnSegments(turn('active', [named]))
+    expect(segments.map(segment => segment.kind)).toEqual(['delegate'])
   })
 
   it('uses native child statuses over an early completed call status', () => {
