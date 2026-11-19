@@ -472,6 +472,54 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           const payload = { afterSequence, limit, throughSequence }
           return invoke('workspace-worker:pageEvents', payload, () => rawClient['workspace-worker:pageEvents'](payload))
         },
+        createDelegation: command =>
+          invoke('workspace-worker:createDelegation', command, () =>
+            rawClient['workspace-worker:createDelegation'](command),
+          ),
+        getDelegation: delegationId => {
+          const payload = { delegationId }
+          return invoke('workspace-worker:getDelegation', payload, () =>
+            rawClient['workspace-worker:getDelegation'](payload),
+          )
+        },
+        getDelegationByChildTask: childTaskId => {
+          const payload = { childTaskId }
+          return invoke('workspace-worker:getDelegationByChildTask', payload, () =>
+            rawClient['workspace-worker:getDelegationByChildTask'](payload),
+          )
+        },
+        listDelegations: query =>
+          invoke('workspace-worker:listDelegations', query, () => rawClient['workspace-worker:listDelegations'](query)),
+        settleDelegation: command =>
+          invoke('workspace-worker:settleDelegation', command, () =>
+            rawClient['workspace-worker:settleDelegation'](command),
+          ),
+        setDelegationWake: command =>
+          invoke('workspace-worker:setDelegationWake', command, () =>
+            rawClient['workspace-worker:setDelegationWake'](command),
+          ),
+        setDelegationPendingRequest: command =>
+          invoke('workspace-worker:setDelegationPendingRequest', command, () =>
+            rawClient['workspace-worker:setDelegationPendingRequest'](command),
+          ),
+        requestDelegationCancel: (delegationId, requestedAt) => {
+          const payload = { delegationId, requestedAt }
+          return invoke('workspace-worker:requestDelegationCancel', payload, () =>
+            rawClient['workspace-worker:requestDelegationCancel'](payload),
+          )
+        },
+        markDelegationRead: (delegationId, readAt) => {
+          const payload = { delegationId, readAt }
+          return invoke('workspace-worker:markDelegationRead', payload, () =>
+            rawClient['workspace-worker:markDelegationRead'](payload),
+          )
+        },
+        listDueDelegationWakes: limit => {
+          const payload = { limit }
+          return invoke('workspace-worker:listDueDelegationWakes', payload, () =>
+            rawClient['workspace-worker:listDueDelegationWakes'](payload),
+          )
+        },
         readTaskSnapshot: (taskId, runLimit): Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError> => {
           const payload = { taskId, runLimit }
           return invoke('workspace-worker:readTaskSnapshot', payload, () =>

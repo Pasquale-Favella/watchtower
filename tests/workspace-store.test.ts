@@ -1470,6 +1470,9 @@ describe('WorkspaceStore', () => {
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN config_values`
             yield* sql`ALTER TABLE workspace_follow_up_queue DROP COLUMN held`
+            yield* sql`DROP TABLE IF EXISTS workspace_delegation`
+            yield* sql`ALTER TABLE workspace_message DROP COLUMN delegation_id`
+            yield* sql`ALTER TABLE workspace_message DROP COLUMN origin`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 10`
           }),
         )
@@ -2532,6 +2535,9 @@ describe('WorkspaceStore', () => {
             yield* sql`ALTER TABLE workspace_dispatch_intent DROP COLUMN access_mode`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN attachments`
             yield* sql`ALTER TABLE workspace_agent_session DROP COLUMN capabilities`
+            yield* sql`DROP TABLE IF EXISTS workspace_delegation`
+            yield* sql`ALTER TABLE workspace_message DROP COLUMN delegation_id`
+            yield* sql`ALTER TABLE workspace_message DROP COLUMN origin`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`
             yield* sql`ALTER TABLE workspace_worker_epoch DROP COLUMN allocated_epoch`
           }),

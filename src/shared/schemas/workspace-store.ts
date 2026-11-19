@@ -230,6 +230,9 @@ export const beginRunCommandSchema = Schema.Struct({
   accessMode: Schema.optional(agentAccessModeSchema),
   nativeSessionId: Schema.optional(Schema.NullOr(Schema.String)),
   retryOfRunId: Schema.optional(Schema.NullOr(agentRunIdSchema)),
+  /** Message origin recorded on the user message of this Run. A delegation wake or a delegated child's first message. */
+  origin: Schema.optional(Schema.Literals(['user', 'delegation'])),
+  delegationId: Schema.optional(delegationIdSchema),
 })
 export type BeginRunCommand = Schema.Schema.Type<typeof beginRunCommandSchema>
 
@@ -669,6 +672,8 @@ export const workspaceTaskDetailSchema = Schema.Struct({
   conversations: Schema.Array(workspaceConversationReadSchema),
   totalConversations: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   nextAfterConversationId: Schema.NullOr(conversationIdSchema),
+  /** The Delegation that started this Task, so a child can open its parent without a list query. */
+  delegatedFrom: Schema.optional(workspaceTaskRuntimeSummarySchema.fields.delegatedFrom),
 })
 export type WorkspaceTaskDetail = Schema.Schema.Type<typeof workspaceTaskDetailSchema>
 

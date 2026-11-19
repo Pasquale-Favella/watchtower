@@ -381,6 +381,43 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.promoteNextFollowUp(conversationId, command),
         true,
       ),
+    'workspace-worker:createDelegation': command =>
+      execute('workspace-worker:createDelegation', command, () => options.store.createDelegation(command), true),
+    'workspace-worker:getDelegation': ({ delegationId }) =>
+      execute('workspace-worker:getDelegation', { delegationId }, () => options.store.getDelegation(delegationId)),
+    'workspace-worker:getDelegationByChildTask': ({ childTaskId }) =>
+      execute('workspace-worker:getDelegationByChildTask', { childTaskId }, () =>
+        options.store.getDelegationByChildTask(childTaskId),
+      ),
+    'workspace-worker:listDelegations': query =>
+      execute('workspace-worker:listDelegations', query, () => options.store.listDelegations(query)),
+    'workspace-worker:settleDelegation': command =>
+      execute('workspace-worker:settleDelegation', command, () => options.store.settleDelegation(command), true),
+    'workspace-worker:setDelegationWake': command =>
+      execute('workspace-worker:setDelegationWake', command, () => options.store.setDelegationWake(command), true),
+    'workspace-worker:setDelegationPendingRequest': command =>
+      execute(
+        'workspace-worker:setDelegationPendingRequest',
+        command,
+        () => options.store.setDelegationPendingRequest(command),
+        true,
+      ),
+    'workspace-worker:requestDelegationCancel': ({ delegationId, requestedAt }) =>
+      execute(
+        'workspace-worker:requestDelegationCancel',
+        { delegationId, requestedAt },
+        () => options.store.requestDelegationCancel(delegationId, requestedAt),
+        true,
+      ),
+    'workspace-worker:markDelegationRead': ({ delegationId, readAt }) =>
+      execute(
+        'workspace-worker:markDelegationRead',
+        { delegationId, readAt },
+        () => options.store.markDelegationRead(delegationId, readAt),
+        true,
+      ),
+    'workspace-worker:listDueDelegationWakes': ({ limit }) =>
+      execute('workspace-worker:listDueDelegationWakes', { limit }, () => options.store.listDueDelegationWakes(limit)),
     'workspace-worker:shutdown': () => Effect.flatMap(WorkspaceWorkerRpcState, state => state.shutdown()),
   })
 

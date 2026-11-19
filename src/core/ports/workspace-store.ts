@@ -2,37 +2,43 @@ import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import type * as Schema from 'effect/Schema'
 
+import type { DelegationList, DelegationRecord } from '@/shared/schemas/delegation.js'
 import type {
-  promptConversationSearchSchema,
   promptConversationMatchesSchema,
+  promptConversationSearchSchema,
 } from '@/shared/schemas/prompt-context.js'
-
 import type { AgentRunId, ConversationId, ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type {
   BeginRunCommand,
   CheckoutRegistrationReceipt,
   CommandReceipt,
+  CreateDelegationCommand,
   CreateTaskCommand,
+  DelegationQuery,
+  DelegationReceipt,
   DispatchClaim,
   DispatchFailureCommand,
   EnqueueFollowUpCommand,
   FollowUpReceipt,
-  QueuedFollowUpHeadPage,
   NativeSessionBinding,
   OwnerEpochAcquisition,
   ProjectRegistrationReceipt,
   PromotedFollowUp,
+  QueuedFollowUpHeadPage,
   QueuedFollowUpPage,
   RecordConversationHandoffCommand,
   RecordDriverEventCommand,
   RecordRequestResponseCommand,
   RecordSteerCommand,
-  RenameTaskCommand,
   RegisterCheckoutCommand,
   RegisterProjectCommand,
+  RenameTaskCommand,
   RequestResponsePage,
-  SettleDeliveryCommand,
+  SetDelegationPendingRequestCommand,
+  SetDelegationWakeCommand,
   SetTaskArchivedCommand,
+  SettleDelegationCommand,
+  SettleDeliveryCommand,
   SteerIntentPage,
   TaskCreationReceipt,
   TaskMutationReceipt,
@@ -207,5 +213,22 @@ export class WorkspaceStore extends Context.Service<
       taskId: TaskId,
       runLimit: number,
     ) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>
+    /** Creates the child Task, its Conversation and the Delegation row in one transaction, idempotent on commandId. */
+    readonly createDelegation: (command: CreateDelegationCommand) => Effect.Effect<DelegationReceipt, WorkspaceStoreError>
+    readonly getDelegation: (delegationId: string) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
+    readonly getDelegationByChildTask: (childTaskId: TaskId) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
+    readonly listDelegations: (query: DelegationQuery) => Effect.Effect<DelegationList, WorkspaceStoreError>
+    readonly settleDelegation: (command: SettleDelegationCommand) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly setDelegationWake: (command: SetDelegationWakeCommand) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly setDelegationPendingRequest: (
+      command: SetDelegationPendingRequestCommand,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly markDelegationRead: (delegationId: string, readAt: string) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    /** Records a cancel request once; a settled or already-cancelled Delegation is returned unchanged. */
+    readonly requestDelegationCancel: (
+      delegationId: string,
+      requestedAt: string,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly listDueDelegationWakes: (limit: number) => Effect.Effect<ReadonlyArray<DelegationRecord>, WorkspaceStoreError>
   }
 >()('watchtower/core/WorkspaceStore') {}

@@ -1,23 +1,18 @@
-import * as Effect from 'effect/Effect'
 import * as Result from 'effect/Result'
-import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { workspaceDelegationHandlers } from '../src/platform/electron/main/rpc/workspace-delegation-handlers.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import { WorkspaceDelegationRpcGroup } from '../src/shared/rpc/workspace-delegations.js'
 import {
   DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
   DELEGATION_MAX_DEPTH,
   DELEGATION_WAIT_MAX_MS,
-  delegationIdSchema,
   delegationListSchema,
   delegationRecordSchema,
   delegationStartRequestSchema,
 } from '../src/shared/schemas/delegation.js'
 import { agentToolMetadataSchema } from '../src/shared/schemas/execution.js'
-import { taskIdSchema } from '../src/shared/schemas/workspace.js'
 import {
   createDelegationCommandSchema,
   enqueueFollowUpCommandSchema,
@@ -162,25 +157,4 @@ describe('delegation contracts', () => {
     }
   })
 
-  it('answers the stub handlers through the real RPC client', async () => {
-    const result = await Effect.runPromise(
-      Effect.gen(function* () {
-        const client = yield* RpcTest.makeClient(WorkspaceDelegationRpcGroup)
-        const page = yield* client['delegation:list']({ parentTaskId: taskIdSchema.make('parent-task') })
-        const getCode = yield* client['delegation:get']({ delegationId: delegationIdSchema.make('delegation-a') }).pipe(
-          Effect.map(() => 'resolved'),
-          Effect.catchTag('DelegationError', error => Effect.succeed(error.code)),
-        )
-        const cancelCode = yield* client['delegation:cancel']({
-          commandId: 'cancel-a',
-          delegationId: delegationIdSchema.make('delegation-a'),
-        }).pipe(
-          Effect.map(() => 'resolved'),
-          Effect.catchTag('DelegationError', error => Effect.succeed(error.code)),
-        )
-        return { page, getCode, cancelCode }
-      }).pipe(Effect.scoped, Effect.provide(workspaceDelegationHandlers)),
-    )
-    expect(result).toEqual({ page: { items: [], truncated: false }, getCode: 'not-found', cancelCode: 'not-found' })
-  })
 })

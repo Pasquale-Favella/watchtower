@@ -15,6 +15,7 @@ import {
   UnsupportedLedgerSchemaVersion,
 } from '@/infrastructure/sqlite/sqlite-migrations.js'
 import { searchPromptConversations } from '@/infrastructure/sqlite/workspace/prompt-conversation-search.js'
+import { type DelegationList, type DelegationRecord, delegationRecordSchema } from '@/shared/schemas/delegation.js'
 import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
 import {
   agentAccessModeSchema,
@@ -35,6 +36,18 @@ import {
   type WorkspaceCheckout,
   workspaceCheckoutSchema,
 } from '@/shared/schemas/workspace.js'
+import {
+  type CreateDelegationCommand,
+  createDelegationCommandSchema,
+  delegationQuerySchema,
+  delegationReceiptSchema,
+  type SetDelegationPendingRequestCommand,
+  setDelegationPendingRequestCommandSchema,
+  type SetDelegationWakeCommand,
+  setDelegationWakeCommandSchema,
+  type SettleDelegationCommand,
+  settleDelegationCommandSchema,
+} from '@/shared/schemas/workspace-store.js'
 import {
   type BeginRunCommand,
   beginRunCommandSchema,
@@ -300,6 +313,39 @@ const migrations = [
         ON workspace_execution_event(task_id, occurred_at DESC);
     `),
   },
+  {
+    // Reserved for the parallel side-chat migration. The runner requires contiguous versions, so this slot is kept
+    // empty here. Replace it with that package's migration when both branches are merged.
+    version: 15,
+    name: 'reserved_side_chat_slot',
+    up: executeSqliteScript(''),
+  },
+  {
+    version: 16,
+    name: 'agent_started_delegated_tasks',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_delegation (
+        id TEXT PRIMARY KEY,
+        command_id TEXT NOT NULL UNIQUE,
+        parent_task_id TEXT NOT NULL REFERENCES workspace_task(id),
+        parent_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        parent_run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        child_task_id TEXT NOT NULL UNIQUE REFERENCES workspace_task(id),
+        child_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        depth INTEGER NOT NULL CHECK (depth = 1),
+        status TEXT NOT NULL,
+        wake_state TEXT NOT NULL CHECK (wake_state IN ('notDue', 'pending', 'queued', 'delivered', 'disposed')),
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        settled_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS workspace_delegation_by_parent_run ON workspace_delegation(parent_run_id, status);
+      CREATE INDEX IF NOT EXISTS workspace_delegation_by_parent_task ON workspace_delegation(parent_task_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS workspace_delegation_wake_due ON workspace_delegation(wake_state) WHERE wake_state = 'pending';
+      ALTER TABLE workspace_message ADD COLUMN origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user', 'delegation'));
+      ALTER TABLE workspace_message ADD COLUMN delegation_id TEXT;
+    `),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
@@ -341,6 +387,7 @@ const receiptServerFields = {
   registerProject: [],
   registerCheckout: [],
   createTask: [],
+  createDelegation: [],
   renameTask: ['updatedAt'],
   setTaskArchived: ['updatedAt'],
   beginRun: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
@@ -378,6 +425,35 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
       commandId: creation.commandId,
       task: { projectId: creation.task.projectId, title: creation.task.title, description: creation.task.description },
       conversation: { title: creation.conversation.title },
+    }
+  } else if (kind === 'createDelegation') {
+    // Retries keep the same identifiers and content, but the issue time and record timestamps differ.
+    const delegation = command as CreateDelegationCommand
+    const { record } = delegation
+    intent = {
+      commandId: delegation.commandId,
+      parentRunId: delegation.parentRunId,
+      parentTaskId: delegation.parentTaskId,
+      parentConversationId: delegation.parentConversationId,
+      task: { id: delegation.task.id, projectId: delegation.task.projectId, title: delegation.task.title, description: delegation.task.description },
+      conversation: { id: delegation.conversation.id, title: delegation.conversation.title },
+      record: {
+        id: record.id,
+        childTaskId: record.childTaskId,
+        childConversationId: record.childConversationId,
+        childRunId: record.childRunId,
+        checkoutId: record.checkoutId,
+        depth: record.depth,
+        title: record.title,
+        driverId: record.driverId,
+        connectionId: record.connectionId,
+        modelId: record.modelId,
+        modeId: record.modeId,
+        accessMode: record.accessMode,
+        accessModeRequested: record.accessModeRequested,
+        isolation: record.isolation,
+        wake: record.wake,
+      },
     }
   }
   // An absent access mode means the default, so omitting the default keeps pre-migration receipts replayable.
@@ -805,7 +881,7 @@ const makeService = Effect.gen(function* () {
               failure: null,
             }
             yield* sql`INSERT INTO workspace_agent_run (id, task_id, checkout_id, generation, status, submitted_at, payload) VALUES (${run.id}, ${run.taskId}, ${command.checkoutId}, ${run.generation}, 'queued', ${run.submittedAt}, ${encode(run)})`
-            yield* sql`INSERT INTO workspace_message (id, run_id, conversation_id, role, content, created_at) VALUES (${`user:${run.id}`}, ${run.id}, ${command.conversationId}, 'user', ${command.prompt}, ${command.issuedAt})`
+            yield* sql`INSERT INTO workspace_message (id, run_id, conversation_id, role, content, created_at, origin, delegation_id) VALUES (${`user:${run.id}`}, ${run.id}, ${command.conversationId}, 'user', ${command.prompt}, ${command.issuedAt}, ${command.origin ?? 'user'}, ${command.delegationId ?? null})`
             yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, access_mode, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.accessMode ?? DEFAULT_AGENT_ACCESS_MODE}, ${command.nativeSessionId ?? null}, 'pending')`
             yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])}, config_values = ${encode(command.configValues ?? {})} WHERE run_id = ${run.id}`
             yield* sql`UPDATE workspace_message SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
@@ -2014,6 +2090,10 @@ const makeService = Effect.gen(function* () {
               configValues: followUp.configValues ?? command.configValues,
               accessMode: followUp.accessMode === undefined ? command.accessMode : followUp.accessMode,
               nativeSessionId: followUp.nativeSessionId ?? command.nativeSessionId,
+              // A queued delegation wake keeps its origin through promotion.
+              ...(followUp.origin === 'delegation'
+                ? { origin: 'delegation' as const, delegationId: followUp.delegationId }
+                : {}),
             })
             if (receipt.replayed)
               return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
@@ -2598,17 +2678,20 @@ const makeService = Effect.gen(function* () {
   const listTasks: WorkspaceStore['Service']['listTasks'] = (projectId, options) =>
     guard(
       Effect.gen(function* () {
-        const { afterId, limit, includeArchived } = yield* Schema.decodeUnknownEffect(workspaceTaskPageOptionsSchema)(
-          options ?? {},
-        ).pipe(
+        const { afterId, limit, includeArchived, includeDelegated } = yield* Schema.decodeUnknownEffect(
+          workspaceTaskPageOptionsSchema,
+        )(options ?? {}).pipe(
           Effect.map(value => ({
             afterId: value.afterId ?? '',
             limit: value.limit ?? 20,
             includeArchived: value.includeArchived ?? false,
+            includeDelegated: value.includeDelegated ?? false,
           })),
           Effect.mapError(() => safeError('invalid-data', 'Workspace task cursor or limit is invalid')),
         )
         const includeArchivedFlag = includeArchived ? 1 : 0
+        // Delegated child Tasks are listed only on request; the sidebar shows them nested under their parent.
+        const includeDelegatedFlag = includeDelegated ? 1 : 0
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${projectId}`
@@ -2617,7 +2700,7 @@ const makeService = Effect.gen(function* () {
             if (project.id !== projectId)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
             const counts =
-              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0)`
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0) AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = workspace_task.id))`
             const total = Number(counts[0]?.total ?? 0)
             const items: Array<Task> = []
             let cursor = afterId
@@ -2645,6 +2728,7 @@ const makeService = Effect.gen(function* () {
                   FROM workspace_task task
                   WHERE task.project_id = ${projectId}
                     AND (${includeArchivedFlag} = 1 OR task.archived = 0)
+                    AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = task.id))
                 ), task_page AS (
                   SELECT t.id, t.activity_at
                   FROM task_activity t
@@ -2736,10 +2820,36 @@ const makeService = Effect.gen(function* () {
                 'task',
                 String(row.id),
               )
+              const delegatedFromRows =
+                yield* sql`SELECT id, parent_task_id, status FROM workspace_delegation WHERE child_task_id = ${row.id}`
+              const delegatedChildRows = yield* sql`
+                SELECT COUNT(*) AS total,
+                  COALESCE(SUM(CASE WHEN settled_at IS NULL THEN 1 ELSE 0 END), 0) AS active,
+                  COALESCE(SUM(CASE WHEN settled_at IS NULL AND json_extract(payload, '$.pendingRequest') IS NOT NULL THEN 1 ELSE 0 END), 0) AS attention
+                FROM workspace_delegation WHERE parent_task_id = ${row.id}
+              `
+              const delegatedFrom = delegatedFromRows[0]
+                ? {
+                    delegationId: String(delegatedFromRows[0].id),
+                    parentTaskId: String(delegatedFromRows[0].parent_task_id),
+                    status: String(delegatedFromRows[0].status),
+                  }
+                : null
+              const delegatedChildTotal = Number(delegatedChildRows[0]?.total ?? 0)
+              const delegatedChildren =
+                delegatedChildTotal === 0
+                  ? null
+                  : {
+                      total: delegatedChildTotal,
+                      active: Number(delegatedChildRows[0]?.active ?? 0),
+                      attention: Number(delegatedChildRows[0]?.attention ?? 0),
+                    }
               const task = {
                 ...decodedTask,
                 runtime: {
                   lastActivityAt: String(row.activity_at),
+                  delegatedFrom,
+                  delegatedChildren,
                   runStatus: row.runtime_run_status == null ? null : String(row.runtime_run_status),
                   pendingRequestKind:
                     row.runtime_pending_request_kind === 'approval' || row.runtime_pending_request_kind === 'question'
@@ -2868,11 +2978,21 @@ const makeService = Effect.gen(function* () {
                 yield* sql`SELECT 1 AS found FROM workspace_conversation WHERE task_id = ${taskId} AND id > ${conversationCursor} LIMIT 1`
               conversationsHaveMore = more.length > 0
             }
+            const delegatedFromRows =
+              yield* sql`SELECT id, parent_task_id, status FROM workspace_delegation WHERE child_task_id = ${taskId}`
+            const delegatedFrom = delegatedFromRows[0]
+              ? {
+                  delegationId: String(delegatedFromRows[0].id),
+                  parentTaskId: String(delegatedFromRows[0].parent_task_id),
+                  status: String(delegatedFromRows[0].status),
+                }
+              : null
             return yield* Schema.decodeUnknownEffect(workspaceTaskDetailSchema)({
               task,
               conversations,
               totalConversations,
               nextAfterConversationId: conversationsHaveMore ? conversationCursor : null,
+              delegatedFrom,
             }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Task detail failed validation')))
           }),
         )
@@ -3008,7 +3128,7 @@ const makeService = Effect.gen(function* () {
               for (let index = 0; index < limit; index += 1) {
                 if (beforeSequence < 1) break
                 const rows =
-                  yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${beforeSequence} AND e.sequence <= ${highWatermark} ORDER BY e.sequence DESC LIMIT 1`
+                  yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments, m.origin AS message_origin, d.payload AS message_delegation FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' LEFT JOIN workspace_delegation d ON d.id = m.delegation_id WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${beforeSequence} AND e.sequence <= ${highWatermark} ORDER BY e.sequence DESC LIMIT 1`
                 const row = rows[0] as Record<string, unknown> | undefined
                 if (!row) break
                 const storedEvent = yield* decodeStoredEvent(row)
@@ -3023,6 +3143,7 @@ const makeService = Effect.gen(function* () {
                           String(row.message_attachments ?? '[]'),
                         ),
                         createdAt: row.message_created_at,
+                        ...(yield* messageOriginFields(row)),
                       }
                 const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
                   event,
@@ -3062,7 +3183,7 @@ const makeService = Effect.gen(function* () {
             let cursor = afterSequence
             for (let index = 0; index < limit; index += 1) {
               const rows =
-                yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
+                yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments, m.origin AS message_origin, d.payload AS message_delegation FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' LEFT JOIN workspace_delegation d ON d.id = m.delegation_id WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
               const row = rows[0] as Record<string, unknown> | undefined
               if (!row) break
               const storedEvent = yield* decodeStoredEvent(row)
@@ -3075,6 +3196,7 @@ const makeService = Effect.gen(function* () {
                       content: row.message_content,
                       attachments: yield* decodeJson(promptAttachmentsSchema)(String(row.message_attachments ?? '[]')),
                       createdAt: row.message_created_at,
+                      ...(yield* messageOriginFields(row)),
                     }
               const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
                 event,
@@ -3265,6 +3387,238 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  // Delegation rows keep hot columns (status, wake state, settlement) in step with the decoded payload.
+  const ACTIVE_PARENT_STATUSES = ['starting', 'running', 'awaitingInput']
+
+  const decodeDelegationRows = Effect.fnUntraced(function* (rows: ReadonlyArray<unknown>) {
+    const items: Array<DelegationRecord> = []
+    for (const row of rows) {
+      const payload = (row as Record<string, unknown>).payload
+      items.push(yield* decodeJson(delegationRecordSchema)(String(payload)))
+    }
+    return items
+  })
+
+  /** Wake messages carry their origin and a bounded summary of the Delegated Task; ordinary messages add nothing. */
+  const messageOriginFields = Effect.fnUntraced(function* (row: Record<string, unknown>) {
+    if (row.message_origin !== 'delegation' || row.message_delegation == null) return {}
+    const record = yield* decodeJson(delegationRecordSchema)(String(row.message_delegation))
+    return {
+      origin: 'delegation' as const,
+      delegation: {
+        delegationId: record.id,
+        childTaskId: record.childTaskId,
+        title: record.title,
+        status: record.status,
+      },
+    }
+  })
+
+  const loadDelegation = Effect.fnUntraced(function* (delegationId: string) {
+    const rows = yield* sql`SELECT payload FROM workspace_delegation WHERE id = ${delegationId}`
+    return rows[0] ? yield* decodeJson(delegationRecordSchema)(String(rows[0].payload)) : null
+  })
+
+  const saveDelegation = (record: DelegationRecord) =>
+    sql`UPDATE workspace_delegation SET status = ${record.status}, wake_state = ${record.wakeState}, settled_at = ${record.settledAt}, payload = ${encode(record)} WHERE id = ${record.id}`
+
+  const createDelegation: WorkspaceStore['Service']['createDelegation'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(createDelegationCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'createDelegation', command))
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const saved = yield* decodeJson(delegationReceiptSchema)(String(prior[0].payload))
+              return { ...saved, replayed: true }
+            }
+            const parents = yield* sql`
+              SELECT r.status, r.task_id, i.conversation_id
+              FROM workspace_agent_run r
+              LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              WHERE r.id = ${command.parentRunId}
+            `
+            const parent = parents[0]
+            if (
+              !parent ||
+              String(parent.task_id) !== command.parentTaskId ||
+              String(parent.conversation_id) !== command.parentConversationId
+            )
+              return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))
+            if (!ACTIVE_PARENT_STATUSES.includes(String(parent.status)))
+              return yield* Effect.fail(safeError('invalid-transition', 'Parent Run is not active'))
+            const parentLink = yield* sql`SELECT depth FROM workspace_delegation WHERE child_task_id = ${command.parentTaskId}`
+            const depth = parentLink[0] ? Number(parentLink[0].depth) + 1 : 1
+            if (depth !== command.record.depth || depth > command.limits.maxDepth)
+              return yield* Effect.fail(safeError('admission-conflict', 'Delegation depth limit reached'))
+            const active =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_delegation WHERE parent_run_id = ${command.parentRunId} AND settled_at IS NULL`
+            if (Number(active[0]?.total ?? 0) >= command.limits.maxActivePerParentRun)
+              return yield* Effect.fail(safeError('admission-conflict', 'Parent Run has too many active delegations'))
+            const projects = yield* sql`SELECT id FROM workspace_project WHERE id = ${command.task.projectId}`
+            if (!projects[0]) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const task = { ...command.task, status: 'open', updatedAt: command.task.createdAt }
+            yield* sql`INSERT INTO workspace_task (id, project_id, archived, payload) VALUES (${task.id}, ${task.projectId}, 0, ${encode(task)})`
+            yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${task.id}, ${encode({ ...command.conversation, taskId: task.id })})`
+            const record = command.record
+            yield* sql`
+              INSERT INTO workspace_delegation (id, command_id, parent_task_id, parent_conversation_id, parent_run_id, child_task_id, child_conversation_id, depth, status, wake_state, payload, created_at, settled_at)
+              VALUES (${record.id}, ${command.commandId}, ${record.parentTaskId}, ${record.parentConversationId}, ${record.parentRunId}, ${record.childTaskId}, ${record.childConversationId}, ${record.depth}, ${record.status}, ${record.wakeState}, ${encode(record)}, ${record.createdAt}, NULL)
+            `
+            const result = {
+              commandId: command.commandId,
+              delegationId: record.id,
+              replayed: false,
+              acceptedAt: command.issuedAt,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('createDelegation', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const getDelegation: WorkspaceStore['Service']['getDelegation'] = delegationId => guard(loadDelegation(delegationId))
+
+  const getDelegationByChildTask: WorkspaceStore['Service']['getDelegationByChildTask'] = childTaskId =>
+    guard(
+      Effect.gen(function* () {
+        const rows = yield* sql`SELECT payload FROM workspace_delegation WHERE child_task_id = ${childTaskId}`
+        return rows[0] ? yield* decodeJson(delegationRecordSchema)(String(rows[0].payload)) : null
+      }),
+    )
+
+  const listDelegations: WorkspaceStore['Service']['listDelegations'] = query =>
+    guard(
+      Effect.gen(function* () {
+        const request = yield* Schema.decodeUnknownEffect(delegationQuerySchema)(query).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation query is invalid')),
+        )
+        const limit = request.limit ?? 50
+        const parentRunId = request.parentRunId ?? null
+        const parentTaskId = request.parentTaskId ?? null
+        const activeOnly = request.activeOnly === true ? 1 : 0
+        const rows = yield* sql`
+          SELECT payload FROM workspace_delegation
+          WHERE (${parentRunId} IS NULL OR parent_run_id = ${parentRunId})
+            AND (${parentTaskId} IS NULL OR parent_task_id = ${parentTaskId})
+            AND (${activeOnly} = 0 OR settled_at IS NULL)
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${limit + 1}
+        `
+        const items = yield* decodeDelegationRows(rows)
+        return { items: items.slice(0, limit), truncated: items.length > limit } satisfies DelegationList
+      }),
+    )
+
+  const settleDelegation: WorkspaceStore['Service']['settleDelegation'] = (command: SettleDelegationCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(settleDelegationCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation settlement is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            // Settlement is written once; a replayed terminal event returns the stored outcome.
+            if (current.settledAt !== null) return current
+            const next: DelegationRecord = {
+              ...current,
+              status: command.status,
+              resultText: command.resultText,
+              resultTruncated: command.resultTruncated,
+              pendingRequest: null,
+              settledAt: command.occurredAt,
+            }
+            yield* saveDelegation(next)
+            return next
+          }),
+        )
+      }),
+    )
+
+  const setDelegationWake: WorkspaceStore['Service']['setDelegationWake'] = (command: SetDelegationWakeCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(setDelegationWakeCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation wake command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            const next = { ...current, wakeState: command.wakeState }
+            yield* saveDelegation(next)
+            return next
+          }),
+        )
+      }),
+    )
+
+  const setDelegationPendingRequest: WorkspaceStore['Service']['setDelegationPendingRequest'] = (
+    command: SetDelegationPendingRequestCommand,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(setDelegationPendingRequestCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation request command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            const next = { ...current, pendingRequest: command.pendingRequest }
+            yield* saveDelegation(next)
+            return next
+          }),
+        )
+      }),
+    )
+
+  const requestDelegationCancel: WorkspaceStore['Service']['requestDelegationCancel'] = (delegationId, requestedAt) =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const current = yield* loadDelegation(delegationId)
+          if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+          if (current.settledAt !== null || current.cancelRequestedAt !== null) return current
+          const next = { ...current, cancelRequestedAt: requestedAt }
+          yield* saveDelegation(next)
+          return next
+        }),
+      ),
+    )
+
+  const markDelegationRead: WorkspaceStore['Service']['markDelegationRead'] = (delegationId, readAt) =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const current = yield* loadDelegation(delegationId)
+          if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+          if (current.settledAt === null || current.resultReadAt !== null) return current
+          const next = { ...current, resultReadAt: readAt }
+          yield* saveDelegation(next)
+          return next
+        }),
+      ),
+    )
+
+  const listDueDelegationWakes: WorkspaceStore['Service']['listDueDelegationWakes'] = limit =>
+    guard(
+      Effect.gen(function* () {
+        const rows = yield* sql`SELECT payload FROM workspace_delegation WHERE wake_state = 'pending' ORDER BY created_at, id LIMIT ${limit}`
+        return yield* decodeDelegationRows(rows)
+      }),
+    )
+
   return WorkspaceStore.of({
     searchPromptConversations: request => guard(searchPromptConversations(sql, request)),
     registerProject,
@@ -3306,6 +3660,16 @@ const makeService = Effect.gen(function* () {
     listPendingRuntimeRequests,
     readConversationPage,
     readTaskSnapshot,
+    createDelegation,
+    getDelegation,
+    getDelegationByChildTask,
+    listDelegations,
+    settleDelegation,
+    setDelegationWake,
+    setDelegationPendingRequest,
+    markDelegationRead,
+    requestDelegationCancel,
+    listDueDelegationWakes,
   })
 })
 
