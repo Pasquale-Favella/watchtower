@@ -382,7 +382,7 @@ export class DelegationService extends Context.Service<
             return yield* summaryOf(yield* ownedBy(existing, caller), false)
           }
 
-          const launched = yield* execution
+          const launch = execution
             .start({
               commandId: `delegation-run:${key}`,
               issuedAt: createdAt,
@@ -405,21 +405,26 @@ export class DelegationService extends Context.Service<
               delegationId: id,
             })
             .pipe(
-              Effect.as(true),
               Effect.catch(() =>
-                coordinator.settleLaunchFailure(id, request.wait).pipe(
+                coordinator.settleLaunchFailure(id).pipe(
                   Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())),
-                  Effect.as(false),
                 ),
               ),
+              Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())),
             )
 
-          if (launched && request.wait) {
-            const settled = yield* coordinator.awaitSettled(id, request.waitTimeoutMs).pipe(Effect.mapError(storeFailure))
-            if (settled) return yield* summaryOf(settled, false)
-            return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), true)
+          if (!request.wait) {
+            yield* launch
+            return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), false)
           }
-          return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), false)
+          // The waiter is registered before launch, so a child that settles during launch still reaches this caller.
+          const watch = yield* coordinator.watch(id).pipe(Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())))
+          const settled = yield* launch.pipe(
+            Effect.flatMap(() => watch.awaitSettled(request.waitTimeoutMs).pipe(Effect.mapError(storeFailure))),
+            Effect.ensuring(watch.release()),
+          )
+          if (settled) return yield* summaryOf(settled, false)
+          return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), true)
         })
 
         const status = Effect.fn('DelegationService.status')(function* (

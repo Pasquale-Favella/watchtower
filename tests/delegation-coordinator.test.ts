@@ -139,7 +139,7 @@ interface Harness {
   readonly interrupts: Array<string>
 }
 
-async function harness(wake: 'always' | 'settledOnly' = 'always', seeded = true): Promise<Harness> {
+async function harness(wake: 'always' | 'settledOnly' = 'always', seeded = true, childClaimed = true): Promise<Harness> {
   const followUps: Array<string> = []
   const interrupts: Array<string> = []
   const runtime = coordinatorRuntime(followUps, interrupts)
@@ -150,7 +150,8 @@ async function harness(wake: 'always' | 'settledOnly' = 'always', seeded = true)
     await runtime.runPromise(store.createTask({ task: parentTask, conversation: parentConversation }))
     await runtime.runPromise(acceptRun(store, parentCommand))
     await runtime.runPromise(store.createDelegation(createCommand(wake)))
-    await runtime.runPromise(acceptRun(store, childCommand))
+    if (childClaimed) await runtime.runPromise(acceptRun(store, childCommand))
+    else await runtime.runPromise(store.beginRun(childCommand))
   }
   return { runtime, store, coordinator, followUps, interrupts }
 }
@@ -276,7 +277,8 @@ describe('DelegationCoordinator settlement', () => {
     try {
       const received = await h.runtime.runPromise(
         Effect.gen(function* () {
-          const waiter = yield* Effect.forkChild(h.coordinator.awaitSettled('dlg-1' as never, 60_000), {
+          const watch = yield* h.coordinator.watch('dlg-1' as never)
+          const waiter = yield* Effect.forkChild(watch.awaitSettled(60_000), {
             startImmediately: true,
           })
           yield* Effect.yieldNow
@@ -296,26 +298,42 @@ describe('DelegationCoordinator settlement', () => {
     }
   })
 
-  it('returns null when a wait times out and leaves the wake pending for the parent', async () => {
+  it('returns null when a wait times out, upgrades the wake to always, and queues it on settlement', async () => {
     const h = await harness('settledOnly')
     try {
       const outcome = await h.runtime.runPromise(
         Effect.gen(function* () {
-          const waiter = yield* Effect.forkChild(h.coordinator.awaitSettled('dlg-1' as never, 1_000), {
+          const watch = yield* h.coordinator.watch('dlg-1' as never)
+          const waiter = yield* Effect.forkChild(watch.awaitSettled(1_000), {
             startImmediately: true,
           })
           yield* Effect.yieldNow
           yield* TestClock.adjust(1_000)
           const timedOut = yield* Fiber.join(waiter)
+          const upgraded = yield* h.store.getDelegation('dlg-1')
           yield* childEvent(h.store, 'child-start', { kind: 'turnStarted', nativeTurnId: 'native-turn' })
           yield* childEvent(h.store, 'child-terminal', { kind: 'turnCompleted', nativeTurnId: 'native-turn' })
           yield* h.coordinator.runFinished({ runId: childRunId, taskId: childTask.id })
-          return { timedOut, record: yield* h.store.getDelegation('dlg-1') }
+          return { timedOut, upgraded, record: yield* h.store.getDelegation('dlg-1') }
         }).pipe(Effect.provide(TestClock.layer())),
       )
       expect(outcome.timedOut).toBeNull()
-      expect(outcome.record).toMatchObject({ status: 'completed', wakeState: 'pending' })
+      expect(outcome.upgraded).toMatchObject({ wake: 'always', wakeState: 'notDue' })
+      expect(outcome.record).toMatchObject({ status: 'completed', wake: 'always', wakeState: 'pending' })
       expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+
+  it('settles a cancelled child that was never claimed, so its slot is released', async () => {
+    const h = await harness('always', true, false)
+    try {
+      const record = await h.runtime.runPromise(h.coordinator.cancel('dlg-1' as never))
+      expect(record).toMatchObject({ status: 'cancelled', wakeState: 'disposed', cancelRequestedAt: expect.any(String) })
+      expect(record.settledAt).not.toBeNull()
+      expect(h.interrupts).toEqual([])
+      expect(h.followUps).toEqual([])
     } finally {
       await h.runtime.dispose()
     }

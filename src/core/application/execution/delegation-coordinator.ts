@@ -17,8 +17,9 @@ import {
   DelegationError,
   type DelegationId,
   type DelegationRecord,
+  type DelegationSettledStatus,
 } from '@/shared/schemas/delegation.js'
-import { agentDriverEventSchema,type AgentRunStatus } from '@/shared/schemas/execution.js'
+import { agentDriverEventSchema, type AgentRunStatus } from '@/shared/schemas/execution.js'
 import type { AgentRunId, TaskId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceExecutionEvent, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
@@ -37,6 +38,17 @@ const now = Effect.map(DateTime.now, DateTime.formatIso)
 const notFound = () => new DelegationError({ code: 'not-found', message: 'Delegation was not found.' })
 
 /**
+ * A `wait` caller's claim on a Delegation's settlement. It is registered before the child launches, so a child that
+ * settles during launch hands its result to the caller and no wake is queued for the parent.
+ */
+export interface DelegationWatch {
+  /** Blocks until settlement or the timeout. On timeout it returns null and the wake is upgraded to `always`. */
+  readonly awaitSettled: (timeoutMs: number) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
+  /** Detaches a watch that was never awaited to the end, such as when its caller is interrupted. Idempotent. */
+  readonly release: () => Effect.Effect<void>
+}
+
+/**
  * Owns the lifecycle after launch: settlement when a child Run ends, the wake that returns the result to the parent,
  * waiters for `wait` calls, cancellation, the parent-stop cascade, and recovery after a restart.
  *
@@ -49,20 +61,21 @@ export class DelegationCoordinator extends Context.Service<
     readonly observe: (event: WorkspaceExecutionEvent) => Effect.Effect<void>
     /** Called when a worker finishes. Settles a child and wakes its parent, or cancels the children of a stopped parent. */
     readonly runFinished: (claim: { readonly runId: AgentRunId; readonly taskId: TaskId }) => Effect.Effect<void>
-    /** Blocks until the Delegation settles or the timeout passes. On timeout it returns null and the wake then queues. */
-    readonly awaitSettled: (
+    /** Registers a `wait` caller. Call it before the child launches, then await the returned watch. */
+    readonly watch: (
       delegationId: DelegationId,
-      timeoutMs: number,
-    ) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
+    ) => Effect.Effect<DelegationWatch, WorkspaceStoreError | DelegationError>
     /**
-     * Settles a Delegation whose child Run never started. The parent hears of it through the wake, unless the caller
-     * that started it is still waiting and receives the result directly.
+     * Settles a Delegation whose child Run never started. The parent hears of it through the wake, unless a waiter
+     * is attached and receives the result directly.
      */
     readonly settleLaunchFailure: (
       delegationId: DelegationId,
-      returnedToCaller: boolean,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError | ExecutionServiceError | DelegationError>
-    /** Requests cancellation: the child Run is interrupted, its queued follow-ups are dropped, and no wake is sent. */
+    /**
+     * Requests cancellation: the child Run is interrupted, its queued follow-ups are dropped, and no wake is sent. A
+     * child whose Run was never claimed has no worker to report back, so it settles as cancelled here.
+     */
     readonly cancel: (
       delegationId: DelegationId,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError | ExecutionServiceError | DelegationError>
@@ -154,6 +167,33 @@ export class DelegationCoordinator extends Context.Service<
         yield* enqueueWake(pending)
       })
 
+      /**
+       * Writes the terminal state, hands it to an attached waiter and decides the wake. Runs under the Delegation lock,
+       * so a waiter is either attached here or has already detached, never both.
+       */
+      const finish = Effect.fn('DelegationCoordinator.finish')(function* (
+        delegationId: DelegationId,
+        outcome: {
+          readonly status: DelegationSettledStatus
+          readonly resultText: string | null
+          readonly resultTruncated: boolean
+        },
+      ) {
+        const settled = yield* store.settleDelegation({
+          commandId: `delegation-settle:${delegationId}`,
+          delegationId,
+          status: outcome.status,
+          resultText: outcome.resultText,
+          resultTruncated: outcome.resultTruncated,
+          occurredAt: yield* now,
+        })
+        const waiter = waiters.get(delegationId)
+        waiters.delete(delegationId)
+        if (waiter) yield* Deferred.succeed(waiter, settled)
+        yield* deliverWake(settled, waiter !== undefined)
+        return settled
+      })
+
       /** Settles a child from its Run's final status. Runs under the Delegation lock. */
       const settleFromRun = Effect.fn('DelegationCoordinator.settleFromRun')(function* (
         record: DelegationRecord,
@@ -173,24 +213,15 @@ export class DelegationCoordinator extends Context.Service<
               DELEGATION_RESULT_MAX_CHARS,
             ).pipe(Effect.catch(() => Effect.succeed({ text: '', truncated: false })))
           : { text: '', truncated: false }
-        const settled = yield* store.settleDelegation({
-          commandId: `delegation-settle:${record.id}`,
-          delegationId: record.id,
+        return yield* finish(record.id, {
           status,
           resultText: result.text.length > 0 ? result.text : null,
           resultTruncated: result.truncated,
-          occurredAt: yield* now,
         })
-        const waiter = waiters.get(record.id)
-        waiters.delete(record.id)
-        if (waiter) yield* Deferred.succeed(waiter, settled)
-        yield* deliverWake(settled, waiter !== undefined)
-        return settled
       })
 
       const settleLaunchFailure = Effect.fn('DelegationCoordinator.settleLaunchFailure')(function* (
         delegationId: DelegationId,
-        returnedToCaller: boolean,
       ) {
         return yield* withLock(
           delegationId,
@@ -198,19 +229,11 @@ export class DelegationCoordinator extends Context.Service<
             const current = yield* store.getDelegation(delegationId)
             if (!current) return yield* Effect.fail(notFound())
             if (current.settledAt !== null) return current
-            const settled = yield* store.settleDelegation({
-              commandId: `delegation-settle:${delegationId}`,
-              delegationId,
+            return yield* finish(delegationId, {
               status: 'failed',
               resultText: 'The delegated task could not start.',
               resultTruncated: false,
-              occurredAt: yield* now,
             })
-            const waiter = waiters.get(delegationId)
-            waiters.delete(delegationId)
-            if (waiter) yield* Deferred.succeed(waiter, settled)
-            yield* deliverWake(settled, returnedToCaller)
-            return settled
           }),
         )
       })
@@ -248,6 +271,9 @@ export class DelegationCoordinator extends Context.Service<
               if (queued.nextAfterPosition === null) break
               afterPosition = queued.nextAfterPosition
             }
+            const runStatus = yield* childRunStatus(requested)
+            if (runStatus === null || runStatus === 'queued')
+              return yield* finish(delegationId, { status: 'cancelled', resultText: null, resultTruncated: false })
             if (requested.childRunId)
               yield* execution.interrupt(requested.childRunId).pipe(Effect.catch(() => Effect.void))
             return (yield* store.getDelegation(delegationId)) ?? requested
@@ -308,32 +334,53 @@ export class DelegationCoordinator extends Context.Service<
         for (const delegation of started.items) yield* cancelRecord(delegation.id).pipe(Effect.catch(() => Effect.void))
       }, Effect.catchCause(() => Effect.void))
 
-      const awaitSettled = Effect.fn('DelegationCoordinator.awaitSettled')(function* (
-        delegationId: DelegationId,
-        timeoutMs: number,
-      ) {
+      /** Upgrades a `settledOnly` wake to `always`, so the settled result still reaches the parent. */
+      const upgradeWake = Effect.fn('DelegationCoordinator.upgradeWake')(function* (delegationId: DelegationId) {
+        const current = yield* store.getDelegation(delegationId)
+        if (!current || current.settledAt !== null || current.wake === 'always') return
+        yield* store.setDelegationWake({
+          commandId: `delegation-wake-upgraded:${delegationId}`,
+          delegationId,
+          wakeState: current.wakeState,
+          wake: 'always',
+          occurredAt: yield* now,
+        })
+      })
+
+      /** Detaches the waiter unless settlement has already taken it. A detached waiter's result now queues as a wake. */
+      const detachWaiter = (delegationId: DelegationId, deferred: Deferred.Deferred<DelegationRecord>) =>
+        withLock(
+          delegationId,
+          Effect.suspend(() => {
+            if (waiters.get(delegationId) !== deferred) return Effect.void
+            waiters.delete(delegationId)
+            return upgradeWake(delegationId)
+          }),
+        )
+
+      const watch = Effect.fn('DelegationCoordinator.watch')(function* (delegationId: DelegationId) {
         const deferred = yield* Deferred.make<DelegationRecord>()
-        const immediate = yield* withLock(
+        yield* withLock(
           delegationId,
           Effect.gen(function* () {
             const current = yield* store.getDelegation(delegationId)
-            if (!current || current.settledAt !== null) return current
-            waiters.set(delegationId, deferred)
-            return null
+            if (!current) return yield* Effect.fail(notFound())
+            if (current.settledAt !== null) yield* Deferred.succeed(deferred, current)
+            else waiters.set(delegationId, deferred)
           }),
         )
-        if (immediate !== null) return immediate
-        const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(timeoutMs))
-        if (Option.isSome(result)) return result.value
-        // Timed out: detach the waiter unless settlement has already taken it, in which case its result is delivered.
-        return yield* withLock(
-          delegationId,
-          Effect.suspend(() => {
-            if (waiters.get(delegationId) !== deferred) return Deferred.await(deferred)
-            waiters.delete(delegationId)
-            return Effect.succeed(null)
-          }),
-        )
+        return {
+          awaitSettled: timeoutMs =>
+            Effect.gen(function* () {
+              const result = yield* Deferred.await(deferred).pipe(Effect.timeoutOption(timeoutMs))
+              if (Option.isSome(result)) return result.value
+              yield* detachWaiter(delegationId, deferred)
+              // Settlement takes the waiter under the lock, so a completed deferred means its result is here.
+              if (!(yield* Deferred.isDone(deferred))) return null
+              return yield* Deferred.await(deferred)
+            }),
+          release: () => detachWaiter(delegationId, deferred).pipe(Effect.ignore),
+        } satisfies DelegationWatch
       })
 
       const recover = Effect.fn('DelegationCoordinator.recover')(function* () {
@@ -357,7 +404,7 @@ export class DelegationCoordinator extends Context.Service<
       return DelegationCoordinator.of({
         observe: event => observe(event).pipe(Effect.catchCause(() => Effect.void)),
         runFinished,
-        awaitSettled,
+        watch,
         settleLaunchFailure,
         cancel: cancelRecord,
         recover,

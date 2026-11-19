@@ -8,6 +8,7 @@ import {
   delegationSettledStatusSchema,
   delegationStatusSchema,
   delegationWakeMessageSchema,
+  delegationWakeSchema,
   delegationWakeStateSchema,
 } from '@/shared/schemas/delegation.js'
 import {
@@ -192,6 +193,7 @@ export const setDelegationWakeCommandSchema = Schema.Struct({
   commandId: text,
   delegationId: delegationIdSchema,
   wakeState: delegationWakeStateSchema,
+  wake: Schema.optionalKey(delegationWakeSchema),
   occurredAt: timestamp,
 })
 export type SetDelegationWakeCommand = Schema.Schema.Type<typeof setDelegationWakeCommandSchema>

@@ -3555,7 +3555,7 @@ const makeService = Effect.gen(function* () {
           Effect.gen(function* () {
             const current = yield* loadDelegation(command.delegationId)
             if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
-            const next = { ...current, wakeState: command.wakeState }
+            const next = { ...current, wakeState: command.wakeState, wake: command.wake ?? current.wake }
             yield* saveDelegation(next)
             return next
           }),

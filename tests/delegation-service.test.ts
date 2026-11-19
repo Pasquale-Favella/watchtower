@@ -78,6 +78,8 @@ const acceptRun = (store: WorkspaceStore['Service'], command: BeginRunCommand) =
 
 interface HarnessOptions {
   readonly createWorktree?: DelegationServiceOptions['createWorktree']
+  /** Settles each child inside its launch, before the start call returns, as a fast child can. */
+  readonly settleChildOnLaunch?: boolean
 }
 
 /**
@@ -87,6 +89,9 @@ interface HarnessOptions {
 function buildHarness(options: HarnessOptions = {}) {
   const starts: Array<BeginRunCommand> = []
   const interrupts: Array<string> = []
+  const followUps: Array<string> = []
+  /** Set by openParent, so a launch can settle its child through the same coordinator the service uses. */
+  const lifecycle: { coordinator?: DelegationCoordinator['Service'] } = {}
   const storeLayer = WorkspaceStoreLive({ filename: ':memory:' })
   const registry = Layer.succeed(
     AgentDriverRegistry,
@@ -111,6 +116,22 @@ function buildHarness(options: HarnessOptions = {}) {
         start: (command: BeginRunCommand) =>
           acceptRun(store, command).pipe(
             Effect.tap(() => Effect.sync(() => starts.push(command))),
+            Effect.tap(() =>
+              options.settleChildOnLaunch
+                ? Effect.gen(function* () {
+                    yield* store.recordDriverEvent(command.runId, {
+                      ownerEpoch: 7,
+                      generation: 1,
+                      eventId: 'launch-terminal',
+                      occurredAt: ts,
+                      event: { kind: 'turnCompleted', nativeTurnId: 'native-turn' },
+                    })
+                    const coordinator = lifecycle.coordinator
+                    if (!coordinator) return yield* Effect.die('The coordinator was not opened for this harness.')
+                    yield* coordinator.runFinished({ runId: command.runId, taskId: command.taskId })
+                  })
+                : Effect.void,
+            ),
             Effect.as({} as never),
           ),
         interrupt: (runId: string) =>
@@ -118,6 +139,10 @@ function buildHarness(options: HarnessOptions = {}) {
             interrupts.push(runId)
           }),
         cancelQueuedFollowUp: () => Effect.void,
+        enqueueFollowUp: (command: { readonly commandId: string }) =>
+          Effect.sync(() => {
+            followUps.push(command.commandId)
+          }).pipe(Effect.as({} as never)),
       } as unknown as ExecutionService['Service'])
     }),
   ).pipe(Layer.provideMerge(base))
@@ -126,7 +151,7 @@ function buildHarness(options: HarnessOptions = {}) {
     ...(options.createWorktree ? { createWorktree: options.createWorktree } : {}),
   }).pipe(Layer.provideMerge(DelegationCoordinator.layer), Layer.provideMerge(execution))
   const runtime = ManagedRuntime.make(service)
-  return { runtime, starts, interrupts }
+  return { runtime, starts, interrupts, followUps, lifecycle }
 }
 
 type Built = ReturnType<typeof buildHarness>
@@ -135,6 +160,7 @@ type Built = ReturnType<typeof buildHarness>
 async function openParent(built: Built) {
   const store = await built.runtime.runPromise(WorkspaceStore)
   const service = await built.runtime.runPromise(DelegationService)
+  built.lifecycle.coordinator = await built.runtime.runPromise(DelegationCoordinator)
   await built.runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
   await built.runtime.runPromise(store.createTask({ task: parentTask, conversation: parentConversation }))
   await built.runtime.runPromise(acceptRun(store, parentCommand))
@@ -325,6 +351,20 @@ describe('DelegationService', () => {
       const settled = await built.runtime.runPromise(service.status(parentCaller, started.delegationId))
       expect(settled).toMatchObject({ status: 'completed', settled: true, resultText: 'Audit done' })
       expect((await built.runtime.runPromise(store.getDelegation(started.delegationId)))?.resultReadAt).not.toBeNull()
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('gives a wait caller a child that settles during launch, and queues no wake for the parent', async () => {
+    const built = buildHarness({ settleChildOnLaunch: true })
+    try {
+      const { store, service } = await openParent(built)
+      const summary = await built.runtime.runPromise(service.start(parentCaller, request({ wait: true })))
+      expect(summary).toMatchObject({ status: 'completed', settled: true, waitTimedOut: false })
+      const record = await built.runtime.runPromise(store.getDelegation(summary.delegationId))
+      expect(record).toMatchObject({ wakeState: 'disposed' })
+      expect(built.followUps).toEqual([])
     } finally {
       await built.runtime.dispose()
     }
