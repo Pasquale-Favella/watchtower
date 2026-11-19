@@ -173,7 +173,7 @@ export type AgentRequestDecision = Schema.Schema.Type<typeof agentRequestDecisio
 
 export const agentToolMetadataSchema = Schema.Struct({
   category: Schema.optional(
-    Schema.Literals(['command', 'fileRead', 'fileWrite', 'search', 'web', 'subagent', 'mcp', 'other']),
+    Schema.Literals(['command', 'fileRead', 'fileWrite', 'search', 'web', 'subagent', 'delegation', 'mcp', 'other']),
   ),
   orchestration: Schema.optional(
     Schema.Struct({

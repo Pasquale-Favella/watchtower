@@ -30,6 +30,7 @@ const metadataCategories = {
   search: 'search',
   web: 'web',
   subagent: 'subagent',
+  delegation: 'subagent',
   mcp: 'mcp',
   other: 'other',
 } as const satisfies Record<NonNullable<ToolBlock['category']>, ToolCategory>
