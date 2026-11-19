@@ -4,8 +4,8 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { describe, expect, it } from 'vitest'
 
 import {
-  DelegationService,
   type DelegationCallerScope,
+  DelegationService,
   type DelegationServiceOptions,
   type StartDelegationRequest,
 } from '@/core/application/commands/delegation-service.js'

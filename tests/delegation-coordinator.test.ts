@@ -110,8 +110,8 @@ const acceptRun = (store: WorkspaceStore['Service'], command: BeginRunCommand) =
 function coordinatorRuntime(followUps: Array<string>, interrupts: Array<string>) {
   const execution = Layer.effect(
     ExecutionService,
-    Effect.gen(function* () {
-      return ExecutionService.of({
+    Effect.sync(() =>
+      ExecutionService.of({
         enqueueFollowUp: (command: { readonly commandId: string }) =>
           Effect.sync(() => {
             followUps.push(command.commandId)
@@ -121,8 +121,8 @@ function coordinatorRuntime(followUps: Array<string>, interrupts: Array<string>)
           Effect.sync(() => {
             interrupts.push(runId)
           }),
-      } as unknown as ExecutionService['Service'])
-    }),
+      } as unknown as ExecutionService['Service']),
+    ),
   ).pipe(Layer.provideMerge(WorkspaceStoreLive({ filename: ':memory:' })))
   return ManagedRuntime.make(DelegationCoordinator.layer.pipe(Layer.provideMerge(execution)))
 }
