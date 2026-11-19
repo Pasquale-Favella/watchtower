@@ -37,7 +37,7 @@ const TOOLS = [
   {
     name: 'delegation_start',
     description:
-      'Start a delegated task. The child sees only `task`, not your conversation, so write it complete. Completion wakes this run; do not poll. Keep the returned id. Never put secrets in `task`.',
+      'Start a delegated task that sees only `task`, so write it complete. Its completion wakes this run; do not poll.',
     input: delegationToolStartInputSchema,
   },
   {
