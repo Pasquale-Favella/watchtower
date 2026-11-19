@@ -87,6 +87,11 @@ export interface ExecutionServiceOptions {
   readonly maxConcurrentRuns?: number | undefined
   readonly maxQueuedRuns?: number | undefined
   readonly publishCommittedEvent?: ((event: WorkspaceExecutionEvent) => Effect.Effect<void, unknown>) | undefined
+  /**
+   * Runs once when a worker finishes, whatever the outcome, before queued follow-ups are pumped. Delegations use it to
+   * settle children and queue wakes. Its failures never fail the worker.
+   */
+  readonly onRunFinished?: ((claim: DispatchClaim) => Effect.Effect<void, unknown>) | undefined
 }
 
 interface ManagedRun {
@@ -113,6 +118,7 @@ interface ManagedRun {
 const timestamp = Effect.map(DateTime.now, DateTime.formatIso)
 
 const contextFor = (claim: DispatchClaim): AgentSessionContext => ({
+  runId: claim.runId,
   sessionId: (claim.agentSessionId ?? claim.provisionalAgentSessionId) as AgentSessionContext['sessionId'],
   projectId: claim.projectId,
   taskId: claim.taskId,
@@ -601,6 +607,9 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         }),
       )
 
+    const finishedHook = (claim: DispatchClaim) =>
+      input.onRunFinished ? input.onRunFinished(claim).pipe(Effect.catchCause(() => Effect.void)) : Effect.void
+
     const trackedWorker = (state: ManagedRun) =>
       Effect.gen(function* () {
         yield* Deferred.await(state.ready)
@@ -616,6 +625,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             }
           }),
         )
+        // Delegation settlement runs before queued follow-ups are pumped, so a settled child's wake is promoted in turn.
+        yield* finishedHook(state.claim)
         if ((state.terminal || state.settled) && !stopping) {
           workers.delete(state.claim.runId)
           if (!state.cleanupConfirmed || nativeCleanupUnconfirmed) {
