@@ -72,6 +72,21 @@ export function orchestrationReferenceFromRaw(raw: unknown): AgentToolMetadata['
   return orchestrationReference(text)
 }
 
-/** ACP reports an MCP tool by its title, which names the tool (for example `watchtower-orchestrator: delegation_start`). */
+const ORCHESTRATOR_TOOLS = [
+  'delegation_capabilities',
+  'delegation_start',
+  'delegation_status',
+  'delegation_list',
+  'delegation_cancel',
+] as const
+
+/**
+ * ACP reports an MCP tool by its title: the bare tool name, or the name with its server (`watchtower-orchestrator:
+ * delegation_start`, `mcp__watchtower-orchestrator__delegation_start`). Any other title is not an orchestration tool.
+ */
+const ORCHESTRATOR_TOOL_TITLE = new RegExp(
+  `^(?:(?:mcp__)?${ORCHESTRATOR_MCP_SERVER}(?:__|\\s*[:/]\\s*))?(?:${ORCHESTRATOR_TOOLS.join('|')})$`,
+)
+
 export const isOrchestratorToolTitle = (title: string | null | undefined): boolean =>
-  typeof title === 'string' && /(^|[\s:/_-])delegation_(capabilities|start|status|list|cancel)$/.test(title.trim())
+  typeof title === 'string' && ORCHESTRATOR_TOOL_TITLE.test(title.trim())

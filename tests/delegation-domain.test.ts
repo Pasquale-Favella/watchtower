@@ -107,8 +107,19 @@ describe('orchestration tool recognition', () => {
     expect(isCodexOrchestratorTool('watchtower-orchestrator', 'delegation_list')).toBe(true)
     expect(isCodexOrchestratorTool('watchtower-browser', 'delegation_list')).toBe(false)
     expect(isOrchestratorToolTitle('watchtower-orchestrator: delegation_cancel')).toBe(true)
+    expect(isOrchestratorToolTitle('delegation_start')).toBe(true)
+    expect(isOrchestratorToolTitle('mcp__watchtower-orchestrator__delegation_list')).toBe(true)
     expect(isOrchestratorToolTitle(null)).toBe(false)
     expect(isOrchestratorToolTitle('Read file')).toBe(false)
+  })
+
+  it('classifies only the orchestrator tool names, not any title that ends in a delegation_ suffix', () => {
+    expect(isOrchestratorToolTitle('Run delegation_start')).toBe(false)
+    expect(isOrchestratorToolTitle('my_delegation_status')).toBe(false)
+    expect(isOrchestratorToolTitle('other-server: delegation_start')).toBe(false)
+    expect(isOrchestratorToolTitle('watchtower-orchestrator: delegation_start_all')).toBe(false)
+    expect(isOrchestratorToolTitle('watchtower-orchestrator: delegation_run')).toBe(false)
+    expect(isOrchestratorToolTitle('mcp__watchtower-browser__delegation_start')).toBe(false)
   })
 
   it('reads the delegation reference from successful results only', () => {
