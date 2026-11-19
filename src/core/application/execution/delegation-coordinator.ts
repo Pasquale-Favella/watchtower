@@ -54,6 +54,14 @@ export class DelegationCoordinator extends Context.Service<
       delegationId: DelegationId,
       timeoutMs: number,
     ) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
+    /**
+     * Settles a Delegation whose child Run never started. The parent hears of it through the wake, unless the caller
+     * that started it is still waiting and receives the result directly.
+     */
+    readonly settleLaunchFailure: (
+      delegationId: DelegationId,
+      returnedToCaller: boolean,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError | DelegationError>
     /** Requests cancellation: the child Run is interrupted, its queued follow-ups are dropped, and no wake is sent. */
     readonly cancel: (
       delegationId: DelegationId,
@@ -178,6 +186,33 @@ export class DelegationCoordinator extends Context.Service<
         if (waiter) yield* Deferred.succeed(waiter, settled)
         yield* deliverWake(settled, waiter !== undefined)
         return settled
+      })
+
+      const settleLaunchFailure = Effect.fn('DelegationCoordinator.settleLaunchFailure')(function* (
+        delegationId: DelegationId,
+        returnedToCaller: boolean,
+      ) {
+        return yield* withLock(
+          delegationId,
+          Effect.gen(function* () {
+            const current = yield* store.getDelegation(delegationId)
+            if (!current) return yield* Effect.fail(notFound())
+            if (current.settledAt !== null) return current
+            const settled = yield* store.settleDelegation({
+              commandId: `delegation-settle:${delegationId}`,
+              delegationId,
+              status: 'failed',
+              resultText: 'The delegated task could not start.',
+              resultTruncated: false,
+              occurredAt: yield* now,
+            })
+            const waiter = waiters.get(delegationId)
+            waiters.delete(delegationId)
+            if (waiter) yield* Deferred.succeed(waiter, settled)
+            yield* deliverWake(settled, returnedToCaller)
+            return settled
+          }),
+        )
       })
 
       const childRunStatus = Effect.fn('DelegationCoordinator.childRunStatus')(function* (record: DelegationRecord) {
@@ -313,6 +348,7 @@ export class DelegationCoordinator extends Context.Service<
         observe: event => observe(event).pipe(Effect.catchCause(() => Effect.void)),
         runFinished,
         awaitSettled,
+        settleLaunchFailure,
         cancel: cancelRecord,
         recover,
       })

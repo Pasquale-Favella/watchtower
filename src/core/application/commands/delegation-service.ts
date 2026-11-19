@@ -234,24 +234,19 @@ export class DelegationService extends Context.Service<
           } satisfies DelegationCapabilities
         })
 
-        /** Settles a Delegation whose child Run could not start. The parent receives a failed result, not silence. */
-        const failLaunch = Effect.fn('DelegationService.failLaunch')(function* (key: string, id: DelegationId) {
-          yield* store
-            .settleDelegation({
-              commandId: `delegation-launch-failed:${key}`,
-              delegationId: id,
-              status: 'failed',
-              resultText: 'The delegated task could not start.',
-              resultTruncated: false,
-              occurredAt: yield* now,
-            })
-            .pipe(Effect.mapError(storeFailure))
-        })
-
         const start = Effect.fn('DelegationService.start')(function* (
           caller: DelegationCallerScope,
           request: StartDelegationRequest,
         ) {
+          // Identifiers derive from the parent Run and the client request id, so a retry addresses the same Delegation.
+          // The retry is answered before any limit or liveness check, which would otherwise refuse a replay.
+          const clientKey =
+            request.clientRequestId === undefined ? undefined : token(`${caller.runId}:${request.clientRequestId}`)
+          if (clientKey !== undefined) {
+            const replayed = yield* store.getDelegation(`dlg-${clientKey}`).pipe(Effect.mapError(storeFailure))
+            if (replayed) return yield* summaryOf(yield* ownedBy(replayed, caller), false)
+          }
+
           // The parent Run must be live. A stop request or a finished Run cannot start children.
           const snapshot = yield* store.readTaskSnapshot(caller.taskId, RUN_SCAN).pipe(Effect.mapError(storeFailure))
           const parentRun = snapshot.runs.find(run => run.id === caller.runId)
@@ -300,8 +295,7 @@ export class DelegationService extends Context.Service<
           if (narrowing.outcome === 'refused')
             return yield* new DelegationError({ code: narrowing.code, message: narrowing.message })
 
-          // Identifiers derive from the client request id, so a retry addresses the same Delegation.
-          const key = token(request.clientRequestId ?? randomUUID())
+          const key = clientKey ?? token(randomUUID())
           const id = `dlg-${key}` as DelegationId
           const commandId = `delegation:${key}`
           const childTaskId = `task-${key}` as TaskId
@@ -412,7 +406,12 @@ export class DelegationService extends Context.Service<
             })
             .pipe(
               Effect.as(true),
-              Effect.catch(() => failLaunch(key, id).pipe(Effect.as(false))),
+              Effect.catch(() =>
+                coordinator.settleLaunchFailure(id, request.wait).pipe(
+                  Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())),
+                  Effect.as(false),
+                ),
+              ),
             )
 
           if (launched && request.wait) {
