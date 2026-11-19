@@ -25,6 +25,13 @@ import type { WorkspaceProjectReadPage, WorkspaceTaskReadPage } from '@/shared/s
 
 import { useWorkspaceConnectionCatalog, useWorkspaceConnections } from './connection-hooks.js'
 import {
+  delegatedChildTotal,
+  delegateSignalLabel,
+  hasDelegateAttention,
+  isDelegatedChild,
+} from './delegation/sidebar-delegation.js'
+import { SidebarDelegateChildren, SidebarDelegateToggle } from './delegation/SidebarDelegates.js'
+import {
   useRenameTask,
   useSetTaskArchived,
   useWorkspaceProject,
@@ -113,7 +120,8 @@ function taskSection(task: SidebarTask): TaskSectionId {
     task.runtime?.pendingRequestKind ||
     task.runtime?.runStatus === 'awaitingInput' ||
     task.runtime?.runStatus === 'uncertain' ||
-    task.runtime?.runStatus === 'recoveryRequired'
+    task.runtime?.runStatus === 'recoveryRequired' ||
+    hasDelegateAttention(task)
   )
     return 'attention'
   if (
@@ -130,7 +138,12 @@ function taskSectionIsCollapsedByDefault(sectionId: TaskSectionId): boolean {
   return sectionId === 'completed' || sectionId === 'archived'
 }
 
+/** The parent's own signal first, then what its delegated Tasks are doing. */
 function taskSignalLabel(task: SidebarTask): string | null {
+  return ownTaskSignalLabel(task) ?? delegateSignalLabel(task)
+}
+
+function ownTaskSignalLabel(task: SidebarTask): string | null {
   if (task.runtime?.pendingRequestKind === 'approval') return 'Approval needed'
   if (task.runtime?.pendingRequestKind === 'question') return 'Answer needed'
   switch (task.runtime?.runStatus) {
@@ -678,7 +691,8 @@ function SidebarTaskGroup({
 
   const activeCursor = request.options?.afterId ?? null
 
-  const tasks = loadedTaskGroup?.items ?? []
+  // Child Tasks belong under their parent; they never appear as top-level rows.
+  const tasks = (loadedTaskGroup?.items ?? []).filter(task => !isDelegatedChild(task))
   const projectLabel = accessibleLabel.startsWith('Chats in ')
     ? accessibleLabel.slice('Chats in '.length)
     : 'No project'
@@ -720,6 +734,7 @@ function SidebarTaskGroup({
         nowMs={nowMs}
         section={section}
         connectionsById={connectionsById}
+        selectedTaskId={selectedTaskId}
         onSelectTask={onSelectTask}
       />
     )
@@ -796,6 +811,7 @@ function SidebarTaskRow({
   nowMs,
   section,
   connectionsById,
+  selectedTaskId,
   onSelectTask,
 }: {
   readonly task: SidebarTask
@@ -806,11 +822,14 @@ function SidebarTaskRow({
   readonly nowMs: number
   readonly section: TaskSectionId
   readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
+  readonly selectedTaskId: TaskId | null
   readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
 }) {
   const renameTask = useRenameTask()
   const setTaskArchived = useSetTaskArchived()
   const [editing, setEditing] = useState(false)
+  const [delegatesOpen, setDelegatesOpen] = useState(false)
+  const delegatedTotal = delegatedChildTotal(task)
   const [draft, setDraft] = useState(task.title)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -883,6 +902,14 @@ function SidebarTaskRow({
   return (
     <li className="group/task relative list-none rounded-md">
       <div className="relative flex min-h-9 items-center">
+        {!editing && delegatedTotal > 0 && (
+          <SidebarDelegateToggle
+            title={task.title}
+            total={delegatedTotal}
+            expanded={delegatesOpen}
+            onToggle={() => setDelegatesOpen(open => !open)}
+          />
+        )}
         {editing ? (
           <Input
             ref={inputRef}
@@ -1001,6 +1028,14 @@ function SidebarTaskRow({
           </div>
         )}
       </div>
+      {delegatesOpen && delegatedTotal > 0 && (
+        <SidebarDelegateChildren
+          taskId={task.id}
+          projectId={projectId}
+          selectedTaskId={selectedTaskId}
+          onSelectTask={onSelectTask}
+        />
+      )}
       {error && (
         <p id={`${task.id}-rename-error`} role="status" className="text-destructive px-2.5 pb-1 text-[10px]">
           {error}
