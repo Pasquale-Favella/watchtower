@@ -96,7 +96,7 @@ _Avoid_: session
 
 **Side chat**:
 An independently addressable Task and Conversation linked to a parent
-Conversation at a fixed point in its history.
+Conversation at a fixed point in its history. Unlike a Delegated Task, a side chat is started by the user, seeded from a fixed parent snapshot, and returns nothing to the parent Task.
 _Avoid_: reply branch
 
 **Context handoff**:
@@ -137,9 +137,24 @@ finishing a Run does not establish Task delivery.
 _Avoid_: session, conversation
 
 **Delegated agent**:
-A child agent started by a Harness during a Run. Its native identity and
-progress belong to that Harness; it does not become a Watchtower Task.
-_Avoid_: side chat
+A child agent a Harness starts natively during a Run, such as a Claude Agent call or a Codex collaboration call. Its native identity and progress belong to that Harness; it does not become a Watchtower Task.
+_Avoid_: side chat, delegated task
+
+**Delegated Task**:
+A Task that an Agent Run starts through the orchestration tools, on any Harness Connection. It is a full Task with its own Conversation, Agent Sessions and Runs, linked to its parent Run by a Delegation. Settling a Delegated Task does not complete the parent Task.
+_Avoid_: subtask, sub-agent, child run
+
+**Delegation**:
+The durable link from a parent Agent Run to the Delegated Task it started. It records the isolation, access mode, wake policy, status, result snapshot and whether the parent has read the result.
+_Avoid_: handoff, spawn
+
+**Delegation wake**:
+A message queued into the parent Conversation when a Delegated Task settles. It carries the Delegated Task's result as data for the parent Agent to read.
+_Avoid_: notification, callback
+
+**Orchestration tools**:
+The in-app MCP tools an Agent Run uses to list delegation targets, start Delegated Tasks, read their status and cancel them. The server is bound to one Agent Run by a bearer credential.
+_Avoid_: agent tools, MCP tools
 
 **Work Artifact**:
 An output of managed work, such as a patch, report or handoff package. It is
@@ -178,6 +193,7 @@ _Avoid_: realized savings, guaranteed savings
 
 ## Rules
 
+- A Delegated Task's Runs never exceed the access mode of the Run that started them.
 - The README's platform claim (Windows | macOS | Linux) is the product
   promise; packaging config must never regress below it (ADR 0015).
 - Providers auto-detect from local files and never require API keys (ADR 0012).
