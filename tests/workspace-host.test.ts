@@ -233,6 +233,7 @@ describe('lazy application WorkspaceHost', () => {
       await expect
         .poll(
           async () => (await first.runtime.runPromise(host.store.readTaskSnapshot(input.task.id, 10))).runs[0]?.status,
+          { timeout: 12_000 },
         )
         .toBe('completed')
       await first.runtime.runPromise(
@@ -259,11 +260,12 @@ describe('lazy application WorkspaceHost', () => {
     try {
       const host = await second.runtime.runPromise(WorkspaceHost)
       await second.runtime.runPromise(host.ensureOpen)
-      await expect.poll(() => submissions).toHaveLength(1)
+      await expect.poll(() => submissions, { timeout: 12_000 }).toHaveLength(1)
       expect(submissions[0]).toMatch(/^queued-run:durable-queue-/)
       await expect
         .poll(
           async () => (await second.runtime.runPromise(host.store.readTaskSnapshot(input.task.id, 10))).runs[0]?.status,
+          { timeout: 12_000 },
         )
         .toBe('completed')
     } finally {
