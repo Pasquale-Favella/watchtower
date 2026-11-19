@@ -84,6 +84,7 @@ import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
 import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
 import { terminalHandlers } from '@/platform/electron/main/rpc/terminal-handlers.js'
 import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
+import { workspaceDelegationHandlers } from '@/platform/electron/main/rpc/workspace-delegation-handlers.js'
 import { workspaceDeviceHandlers } from '@/platform/electron/main/rpc/workspace-device-handlers.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
 import { workspacePreviewHandlers } from '@/platform/electron/main/rpc/workspace-preview-handlers.js'
@@ -632,6 +633,7 @@ app.whenReady().then(async () => {
                     ),
                 }),
                 workspaceSideChatHandlers,
+                workspaceDelegationHandlers,
               ),
             ),
             provideHandlers,

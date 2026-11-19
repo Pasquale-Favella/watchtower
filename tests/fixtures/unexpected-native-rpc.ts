@@ -10,6 +10,7 @@ import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'
 import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
 import { TerminalRpcGroup } from '../../src/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '../../src/shared/rpc/workspace.js'
+import { WorkspaceDelegationRpcGroup } from '../../src/shared/rpc/workspace-delegations.js'
 import { WorkspaceDeviceRpcGroup } from '../../src/shared/rpc/workspace-devices.js'
 import { WorkspacePreviewRpcGroup } from '../../src/shared/rpc/workspace-preview.js'
 import { WorkspacePullRequestRpcGroup } from '../../src/shared/rpc/workspace-pull-requests.js'
@@ -115,6 +116,12 @@ const unexpectedWorkspaceSideChatRpcGroupHandlers = WorkspaceSideChatRpcGroup.to
   'sideChat:bringBack': unexpected,
 })
 
+const unexpectedWorkspaceDelegationRpcGroupHandlers = WorkspaceDelegationRpcGroup.toLayer({
+  'delegation:list': unexpected,
+  'delegation:get': unexpected,
+  'delegation:cancel': unexpected,
+})
+
 export const unexpectedWorkspacePanelHandlers = Layer.mergeAll(
   unexpectedCheckoutNavigationHandlers,
   unexpectedCheckoutActionsRpcGroupHandlers,
@@ -122,6 +129,7 @@ export const unexpectedWorkspacePanelHandlers = Layer.mergeAll(
   unexpectedWorkspaceDeviceRpcGroupHandlers,
   unexpectedWorkspacePullRequestRpcGroupHandlers,
   unexpectedWorkspaceSideChatRpcGroupHandlers,
+  unexpectedWorkspaceDelegationRpcGroupHandlers,
 )
 
 export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({

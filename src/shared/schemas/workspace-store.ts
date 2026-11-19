@@ -1,6 +1,16 @@
 import * as Schema from 'effect/Schema'
 
 import {
+  DELEGATION_RESULT_MAX_CHARS,
+  delegationIdSchema,
+  delegationPendingRequestSchema,
+  delegationRecordSchema,
+  delegationSettledStatusSchema,
+  delegationStatusSchema,
+  delegationWakeMessageSchema,
+  delegationWakeStateSchema,
+} from '@/shared/schemas/delegation.js'
+import {
   agentAccessModeSchema,
   agentCapabilitiesSchema,
   agentConfigValuesSchema,
@@ -147,6 +157,58 @@ export const createTaskCommandSchema = Schema.Struct({
   }),
 })
 export type CreateTaskCommand = Schema.Schema.Type<typeof createTaskCommandSchema>
+
+const count = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
+const positiveCount = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))
+export const createDelegationCommandSchema = Schema.Struct({
+  commandId: text,
+  issuedAt: timestamp,
+  parentRunId: agentRunIdSchema,
+  parentTaskId: taskIdSchema,
+  parentConversationId: conversationIdSchema,
+  task: createTaskCommandSchema.fields.task,
+  conversation: createTaskCommandSchema.fields.conversation,
+  record: delegationRecordSchema,
+  limits: Schema.Struct({ maxDepth: positiveCount, maxActivePerParentRun: positiveCount }),
+})
+export type CreateDelegationCommand = Schema.Schema.Type<typeof createDelegationCommandSchema>
+export const delegationReceiptSchema = Schema.Struct({
+  commandId: text,
+  delegationId: delegationIdSchema,
+  replayed: Schema.Boolean,
+  acceptedAt: timestamp,
+})
+export type DelegationReceipt = Schema.Schema.Type<typeof delegationReceiptSchema>
+export const settleDelegationCommandSchema = Schema.Struct({
+  commandId: text,
+  delegationId: delegationIdSchema,
+  status: delegationSettledStatusSchema,
+  resultText: Schema.NullOr(Schema.String.check(Schema.isMaxLength(DELEGATION_RESULT_MAX_CHARS))),
+  resultTruncated: Schema.Boolean,
+  occurredAt: timestamp,
+})
+export type SettleDelegationCommand = Schema.Schema.Type<typeof settleDelegationCommandSchema>
+export const setDelegationWakeCommandSchema = Schema.Struct({
+  commandId: text,
+  delegationId: delegationIdSchema,
+  wakeState: delegationWakeStateSchema,
+  occurredAt: timestamp,
+})
+export type SetDelegationWakeCommand = Schema.Schema.Type<typeof setDelegationWakeCommandSchema>
+export const setDelegationPendingRequestCommandSchema = Schema.Struct({
+  commandId: text,
+  delegationId: delegationIdSchema,
+  pendingRequest: Schema.NullOr(delegationPendingRequestSchema),
+  occurredAt: timestamp,
+})
+export type SetDelegationPendingRequestCommand = Schema.Schema.Type<typeof setDelegationPendingRequestCommandSchema>
+export const delegationQuerySchema = Schema.Struct({
+  parentRunId: Schema.optional(agentRunIdSchema),
+  parentTaskId: Schema.optional(taskIdSchema),
+  activeOnly: Schema.optional(Schema.Boolean),
+  limit: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200))),
+})
+export type DelegationQuery = Schema.Schema.Type<typeof delegationQuerySchema>
 
 export const beginRunCommandSchema = Schema.Struct({
   commandId: text,
@@ -316,6 +378,8 @@ export const enqueueFollowUpCommandSchema = Schema.Struct({
   modeId: beginRunCommandSchema.fields.modeId,
   configValues: beginRunCommandSchema.fields.configValues,
   accessMode: beginRunCommandSchema.fields.accessMode,
+  origin: Schema.optional(Schema.Literals(['user', 'delegation'])),
+  delegationId: Schema.optional(delegationIdSchema),
 })
 export type EnqueueFollowUpCommand = Schema.Schema.Type<typeof enqueueFollowUpCommandSchema>
 
@@ -369,6 +433,7 @@ export type WorkspaceEntityPageOptions = Schema.Schema.Type<typeof workspaceEnti
 export const workspaceTaskPageOptionsSchema = Schema.Struct({
   ...workspaceEntityPageOptionsSchema.fields,
   includeArchived: Schema.optional(Schema.Boolean),
+  includeDelegated: Schema.optional(Schema.Boolean),
 })
 export type WorkspaceTaskPageOptions = Schema.Schema.Type<typeof workspaceTaskPageOptionsSchema>
 export const workspaceCheckoutPageOptionsSchema = Schema.Struct({
@@ -494,6 +559,18 @@ export const workspaceTaskRuntimeSummarySchema = Schema.Struct({
   runStatus: Schema.NullOr(agentRunStatusSchema),
   pendingRequestKind: Schema.NullOr(Schema.Literals(['approval', 'question'])),
   latestRun: Schema.NullOr(workspaceTaskLatestRunSchema),
+  delegatedFrom: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        delegationId: delegationIdSchema,
+        parentTaskId: taskIdSchema,
+        status: delegationStatusSchema,
+      }),
+    ),
+  ),
+  delegatedChildren: Schema.optional(
+    Schema.NullOr(Schema.Struct({ total: count, active: count, attention: count })),
+  ),
 })
 export type WorkspaceTaskRuntimeSummary = Schema.Schema.Type<typeof workspaceTaskRuntimeSummarySchema>
 export const workspaceTaskReadSchema = Schema.Struct({ ...taskSchema.fields, ...payloadSummaryFields })
@@ -640,6 +717,8 @@ export const workspaceConversationMessageSchema = Schema.Struct({
   content: Schema.String,
   attachments: Schema.optional(promptAttachmentsSchema),
   createdAt: timestamp,
+  origin: Schema.optional(Schema.Literals(['user', 'delegation'])),
+  delegation: Schema.optional(delegationWakeMessageSchema),
 })
 export const workspaceConversationPageItemSchema = Schema.Struct({
   event: workspaceExecutionEventSchema,

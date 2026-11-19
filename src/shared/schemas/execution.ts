@@ -142,6 +142,7 @@ export const agentCapabilitiesSchema = Schema.Struct({
   configOptions: Schema.optional(Schema.Array(agentConfigOptionSchema)),
   promptContent: Schema.optional(Schema.Struct({ images: Schema.Boolean, files: Schema.Boolean })),
   commands: Schema.optional(Schema.Array(agentSlashCommandSchema).check(Schema.isMaxLength(256))),
+  delegation: Schema.optional(capabilitySchema),
 })
 export type AgentCapabilities = Schema.Schema.Type<typeof agentCapabilitiesSchema>
 
@@ -173,6 +174,12 @@ export type AgentRequestDecision = Schema.Schema.Type<typeof agentRequestDecisio
 export const agentToolMetadataSchema = Schema.Struct({
   category: Schema.optional(
     Schema.Literals(['command', 'fileRead', 'fileWrite', 'search', 'web', 'subagent', 'mcp', 'other']),
+  ),
+  orchestration: Schema.optional(
+    Schema.Struct({
+      delegationId: Schema.optional(Schema.String),
+      childTaskId: Schema.optional(Schema.String),
+    }),
   ),
   command: Schema.optional(Schema.String),
   cwd: Schema.optional(Schema.String),

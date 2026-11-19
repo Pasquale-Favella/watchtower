@@ -12,6 +12,7 @@ import { OrbShellRpcGroup, ShellRpcGroup } from '@/shared/rpc/shell.js'
 import { TerminalRpcGroup } from '@/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
 import { WorkspacePreviewRpcGroup } from '@/shared/rpc/workspace-preview.js'
+import { WorkspaceDelegationRpcGroup } from '@/shared/rpc/workspace-delegations.js'
 import { WorkspaceDeviceRpcGroup } from '@/shared/rpc/workspace-devices.js'
 import { WorkspacePullRequestRpcGroup } from '@/shared/rpc/workspace-pull-requests.js'
 import { WorkspaceSideChatRpcGroup } from '@/shared/rpc/workspace-side-chats.js'
@@ -23,6 +24,7 @@ export const ApplicationRpcGroup = AnalyticsRpcGroup.merge(ConfigRpcGroup)
   .merge(WorkspaceDeviceRpcGroup)
   .merge(WorkspacePullRequestRpcGroup)
   .merge(WorkspaceSideChatRpcGroup)
+  .merge(WorkspaceDelegationRpcGroup)
   .merge(CheckoutInspectionRpcGroup)
   .merge(CheckoutActionsRpcGroup)
   .merge(CheckoutNavigationRpcGroup)
