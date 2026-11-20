@@ -7,6 +7,8 @@ import { Button } from '@/renderer/components/ui/button'
 import { readScrollAnchor, type TimelineScrollAnchor, writeScrollAnchor } from './conversation-memory.js'
 import { initialTimelineFollow, reduceTimelineFollow, SCROLL_PILL_SHOW_DELAY_MS } from './follow-state.js'
 import { attachTimelineViewport, prefersReducedMotion } from './scroll-keys.js'
+import { TIMELINE_MINIMAP_JUMP_INSET_PX, type TimelineMinimapItem } from './timeline-minimap.js'
+import { TimelineMinimap } from './TimelineMinimap.js'
 
 const MAINTAIN_END = {
   animated: false,
@@ -51,6 +53,8 @@ export function TimelineScroller<Row extends { readonly id: string }>({
   getRowType,
   extraData,
   historyExhausted = false,
+  header,
+  minimapItems,
 }: {
   readonly conversationId: string
   readonly rows: readonly Row[]
@@ -58,6 +62,9 @@ export function TimelineScroller<Row extends { readonly id: string }>({
   readonly getRowType: (row: Row) => string
   readonly extraData?: unknown
   readonly historyExhausted?: boolean
+  /** Rendered above the oldest row, inside the list so it scrolls with the history (e.g. the load-earlier control). */
+  readonly header?: React.ReactNode
+  readonly minimapItems?: readonly TimelineMinimapItem[]
 }): React.JSX.Element {
   const listRef = useRef<LegendListRef | null>(null)
   const readyRef = useRef(false)
@@ -136,6 +143,21 @@ export function TimelineScroller<Row extends { readonly id: string }>({
   }, [conversationId, historyExhausted, remembered, rows])
   useLayoutEffect(restoreAnchor, [restoreAnchor])
 
+  const getList = useCallback(() => listRef.current, [])
+  const jumpTo = useCallback((item: TimelineMinimapItem) => {
+    const list = listRef.current
+    if (!list) return
+    restoredRef.current = true
+    setRestorationPending(false)
+    dispatch({ type: 'scrolledUp' })
+    const target = { messageId: item.id, offset: TIMELINE_MINIMAP_JUMP_INSET_PX }
+    const isCurrent = () => listRef.current === list
+    // Far rows are only estimated until measured, so settle the alignment once the scroll lands.
+    void list
+      .scrollToKey({ key: item.id, viewOffset: target.offset, animated: !prefersReducedMotion() })
+      .then(() => (isCurrent() ? restorePosition(list, target, isCurrent) : undefined))
+  }, [])
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
       <LegendList<Row>
@@ -170,9 +192,14 @@ export function TimelineScroller<Row extends { readonly id: string }>({
         className="h-full min-h-0 flex-1 scrollbar-thin scrollbar-gutter-stable overflow-x-hidden overscroll-contain [overflow-anchor:none]"
         style={{ visibility: restorationPending ? 'hidden' : undefined }}
         aria-busy={restorationPending}
-        ListHeaderComponent={<div aria-hidden className="h-4" />}
+        ListHeaderComponent={
+          <div data-timeline-header className="px-4 pt-4">
+            <div className="max-w-chat mx-auto w-full">{header}</div>
+          </div>
+        }
         ListFooterComponent={<div aria-hidden className="h-1" />}
       />
+      {minimapItems && !restorationPending && <TimelineMinimap items={minimapItems} list={getList} onSelect={jumpTo} />}
       {restorationPending && (
         <p role="status" className="text-muted-foreground absolute inset-x-4 top-4 text-sm">
           Restoring reading position…

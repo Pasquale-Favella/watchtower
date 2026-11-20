@@ -92,6 +92,25 @@ test('chat virtualizes variable heights and holds the reader through streaming, 
     await page.getByRole('textbox', { name: 'Prompt', exact: true }).press('PageUp')
     await expect(page.getByRole('button', { name: 'Scroll to end', exact: true })).toBeVisible()
     await expect.poll(gap).toBeGreaterThan(200)
+    const rail = page.getByRole('button', { name: /^Jump to message:/ })
+    await expect(rail).toBeVisible()
+    const beforeJump = (await readingAnchor(messages)).id
+    await page.getByRole('button', { name: 'Previous message', exact: true }).click()
+    await expect.poll(async () => (await readingAnchor(messages)).id).not.toBe(beforeJump)
+    // The target user message lands at the jump inset near the top of the viewport.
+    await expect
+      .poll(() =>
+        messages.evaluate(viewport => {
+          const top = viewport.getBoundingClientRect().top
+          return [...viewport.querySelectorAll<HTMLElement>('[data-message-id]')].some(row => {
+            const offset = row.getBoundingClientRect().top - top
+            return offset > 20 && offset < 28
+          })
+        }),
+      )
+      .toBe(true)
+    await rail.hover()
+    await page.screenshot({ path: test.info().outputPath('workspace-timeline-minimap.png') })
     expect(errors).toEqual([])
     await page.screenshot({ path: test.info().outputPath('workspace-timeline.png') })
   } finally {

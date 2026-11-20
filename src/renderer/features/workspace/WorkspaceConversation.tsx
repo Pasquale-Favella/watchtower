@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
-import { Button } from '@/renderer/components/ui/button'
+import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { useWorkspaceConnections } from '@/renderer/features/workspace/connection-hooks.js'
 import {
   useWorkspaceConversation,
@@ -58,7 +59,9 @@ import { MessageActions } from './timeline/MessageActions.js'
 import { PlanBlock } from './timeline/PlanBlock.js'
 import { ReasoningBlock } from './timeline/ReasoningBlock.js'
 import { RequestRow } from './timeline/RequestRow.js'
+import { buildTimelineMinimapItems } from './timeline/timeline-minimap.js'
 import { buildTimelineRows, timelineRowType } from './timeline/timeline-rows.js'
+import { TimelineHistoryControl } from './timeline/TimelineHistoryControl.js'
 import { TimelineScroller } from './timeline/TimelineScroller.js'
 import { turnCopyText } from './timeline/turn-segments.js'
 import { isOrchestrationTool } from './timeline/work-log.js'
@@ -426,6 +429,7 @@ function WorkspaceConversationView({
     runContextsByRunId,
     hasLeading,
   ])
+  const minimapItems = useMemo(() => buildTimelineMinimapItems(rows), [rows])
   useEffect(() => {
     if (activeRequest || conversation.error) return
     if (!restoredAnchor.current) {
@@ -492,9 +496,12 @@ function WorkspaceConversationView({
 
   if (conversation.status === 'loading' && processedRequest === null && rows.length === 0) {
     return (
-      <div className="text-muted-foreground p-5 text-sm" role="status">
-        Loading conversation…
-      </div>
+      <LoadingRegion label="Loading conversation…" className="flex flex-col gap-5 p-5">
+        <Skeleton className="ml-auto h-9 w-3/5 rounded-lg" />
+        <SkeletonLines lines={3} />
+        <Skeleton className="ml-auto h-9 w-2/5 rounded-lg" />
+        <SkeletonLines lines={4} />
+      </LoadingRegion>
     )
   }
   if (conversation.error && rows.length === 0) {
@@ -529,29 +536,6 @@ function WorkspaceConversationView({
           Reconnecting to new conversation activity…
         </p>
       )}
-      {(showsOlderControl || loadingOlder) && (
-        <div className="flex shrink-0 flex-wrap items-center justify-center gap-3 border-b px-4 py-2">
-          {showsOlderControl && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={activeRequest !== null}
-              onClick={() => {
-                setProcessedRequest(null)
-                setActiveRequest(olderRequest)
-              }}
-            >
-              Load older messages
-            </Button>
-          )}
-          {loadingOlder && (
-            <span className="text-muted-foreground text-xs" role="status">
-              Loading history…
-            </span>
-          )}
-        </div>
-      )}
       {rows.length === 0 && processedRequest !== null ? (
         <p className="text-muted-foreground p-5 text-sm">Send a message to start the conversation.</p>
       ) : (
@@ -561,6 +545,18 @@ function WorkspaceConversationView({
           getRowType={timelineRowType}
           extraData={timelineExtraData}
           historyExhausted={processedRequest !== null && !hasOlderHistory && activeRequest?.direction !== 'backward'}
+          minimapItems={minimapItems}
+          header={
+            <TimelineHistoryControl
+              hasMore={showsOlderControl}
+              loading={loadingOlder}
+              onLoadEarlier={() => {
+                if (activeRequest !== null || !olderRequest) return
+                setProcessedRequest(null)
+                setActiveRequest(olderRequest)
+              }}
+            />
+          }
           renderRow={row => {
             if (row.kind === 'leading') return leading
             if (row.kind === 'user') {

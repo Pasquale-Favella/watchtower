@@ -33,7 +33,7 @@ test('workspace opens recent conversation activity and loads large content in th
     await switchVertical(window, 'Workspace')
     const projectGroup = window.getByRole('button', { name: 'History fixture', exact: true })
     if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
-    await window.getByRole('button', { name: /Read recent activity/ }).click()
+    await window.getByRole('button', { name: /^Read recent activity,/ }).click()
     const history = window.getByRole('region', { name: 'Conversation history' })
     const messages = history.getByRole('region', { name: 'Messages', exact: true })
     await expect(messages.getByText('CURRENT_REPLY_VISIBLE', { exact: true })).toBeVisible()
@@ -48,7 +48,8 @@ test('workspace opens recent conversation activity and loads large content in th
     await switchVertical(window, 'Workspace')
     await expect(window.getByRole('heading', { name: 'Read recent activity', exact: true })).toBeVisible()
     await expect(messages.getByText('CURRENT_REPLY_VISIBLE', { exact: true })).toBeVisible()
-    const older = history.getByRole('button', { name: 'Load older messages', exact: true })
+    // The control stays in place while a page loads; it only disappears once history is exhausted.
+    const older = history.getByRole('button', { name: /^Load(ing)? older messages/ })
     for (let index = 0; index < 5 && (await older.count()); index++) {
       const before = Number(await history.getAttribute('data-history-start'))
       await older.click()

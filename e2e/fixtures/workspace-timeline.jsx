@@ -64,6 +64,15 @@ function Fixture() {
         conversationId={conversation}
         rows={conversation === 'first' ? rows : [message(1000)]}
         getRowType={rowType}
+        minimapItems={
+          conversation === 'first'
+            ? rows.flatMap((row, rowIndex) =>
+                rowIndex % 25 === 0
+                  ? [{ id: row.id, rowIndex, userText: row.text.split('\n')[0], assistantText: 'A reply preview.' }]
+                  : [],
+              )
+            : undefined
+        }
         renderRow={row => (
           <div className="typeset">
             <Markdown>{row.text}</Markdown>
