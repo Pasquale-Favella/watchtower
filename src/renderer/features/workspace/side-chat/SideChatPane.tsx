@@ -72,10 +72,12 @@ export function SideChatPane(props: SideChatPaneProps): React.JSX.Element {
     )
   if (!binding.data)
     return (
-      <LoadingRegion label="Loading side chat..." className="flex flex-col gap-3 p-4">
-        <Skeleton className="ml-auto h-9 w-3/5 rounded-lg" />
-        <SkeletonLines lines={4} />
-      </LoadingRegion>
+      <div className="p-4">
+        <LoadingRegion label="Loading side chat..." className="max-w-chat mx-auto flex flex-col gap-3">
+          <Skeleton className="ml-auto h-9 w-3/5 rounded-lg" />
+          <SkeletonLines lines={4} />
+        </LoadingRegion>
+      </div>
     )
   return (
     <WorkspaceQueryScopeContext value={scope}>

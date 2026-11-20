@@ -496,12 +496,14 @@ function WorkspaceConversationView({
 
   if (conversation.status === 'loading' && processedRequest === null && rows.length === 0) {
     return (
-      <LoadingRegion label="Loading conversation…" className="flex flex-col gap-5 p-5">
-        <Skeleton className="ml-auto h-9 w-3/5 rounded-lg" />
-        <SkeletonLines lines={3} />
-        <Skeleton className="ml-auto h-9 w-2/5 rounded-lg" />
-        <SkeletonLines lines={4} />
-      </LoadingRegion>
+      <div className="px-4 py-5">
+        <LoadingRegion label="Loading conversation…" className="max-w-chat mx-auto flex flex-col gap-5">
+          <Skeleton className="ml-auto h-9 w-3/5 rounded-lg" />
+          <SkeletonLines lines={3} />
+          <Skeleton className="ml-auto h-9 w-2/5 rounded-lg" />
+          <SkeletonLines lines={4} />
+        </LoadingRegion>
+      </div>
     )
   }
   if (conversation.error && rows.length === 0) {

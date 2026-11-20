@@ -174,10 +174,12 @@ function TaskConversation({
     return (
       <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
         {header}
-        <LoadingRegion label="Loading Task…" className="flex flex-col gap-4 p-4">
-          <Skeleton className="h-4 w-2/5" />
-          <SkeletonLines lines={4} />
-        </LoadingRegion>
+        <div className="p-4">
+          <LoadingRegion label="Loading Task…" className="max-w-chat mx-auto flex flex-col gap-4">
+            <Skeleton className="h-4 w-2/5" />
+            <SkeletonLines lines={4} />
+          </LoadingRegion>
+        </div>
       </Popover>
     )
 
