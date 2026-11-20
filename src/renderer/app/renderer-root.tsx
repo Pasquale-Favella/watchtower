@@ -1,7 +1,8 @@
-import { RegistryContext } from '@effect/atom-react'
+import { RegistryContext, useAtomValue } from '@effect/atom-react'
 import type { ReactNode } from 'react'
 
 import { type RendererRuntimeOwner, rendererRuntimeOwner } from '@/renderer/app/renderer-runtime.js'
+import { Toaster } from '@/renderer/components/ui/sonner'
 import { hydratePreferences, preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
 import { browserPreferenceStorage } from '@/renderer/shared/lib/preferences-browser'
 import { themeIsDark } from '@/renderer/shared/lib/shell'
@@ -54,8 +55,14 @@ export function RendererRoot({ children }: RendererRootProps) {
     <RegistryContext.Provider value={rendererRuntimeOwner.registry}>
       {children}
       <ThemeSync />
+      <AppToaster />
     </RegistryContext.Provider>
   )
+}
+
+function AppToaster() {
+  const theme = useAtomValue(preferencesAtom).theme
+  return <Toaster theme={theme} position="bottom-right" closeButton />
 }
 
 function ThemeSync() {
