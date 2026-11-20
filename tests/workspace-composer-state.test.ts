@@ -9,6 +9,7 @@ import {
   latestConversationSession,
   latestUnresolvedRun,
   shouldSubmitComposerKey,
+  targetSelectionError,
   validateResumeSelection,
 } from '@/renderer/features/workspace/composer-state.js'
 import type { AgentRun } from '@/shared/schemas/execution.js'
@@ -86,6 +87,35 @@ describe('workspace composer state', () => {
     expect(connectionHandoffTarget(session, 'connection-b')).toBe(session)
     expect(connectionHandoffTarget(null, 'connection-b')).toBeNull()
     expect(connectionHandoffTarget(session, '')).toBeNull()
+  })
+
+  it('names why a selected agent cannot take the next message, and stays silent while it is unknown', () => {
+    const detected = new Set(['connection-a'])
+    expect(targetSelectionError({ connectionId: '', detectedConnectionIds: detected, inspected: null })).toBeNull()
+    expect(
+      targetSelectionError({ connectionId: 'connection-a', detectedConnectionIds: detected, inspected: null }),
+    ).toBeNull()
+    expect(
+      targetSelectionError({
+        connectionId: 'connection-a',
+        detectedConnectionIds: detected,
+        inspected: { canSubmit: true },
+      }),
+    ).toBeNull()
+    expect(
+      targetSelectionError({
+        connectionId: 'connection-gone',
+        detectedConnectionIds: detected,
+        inspected: null,
+      }),
+    ).toMatch(/no longer available/)
+    expect(
+      targetSelectionError({
+        connectionId: 'connection-a',
+        detectedConnectionIds: detected,
+        inspected: { canSubmit: false },
+      }),
+    ).toMatch(/cannot continue this chat/)
   })
 
   it('continues the most recent matching native context and leaves stale or different contexts unselected', () => {

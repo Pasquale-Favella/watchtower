@@ -22,6 +22,7 @@ import {
   latestUnresolvedRun,
   resolveComposerDispatch,
   shouldSubmitComposerKey,
+  targetSelectionError,
   validateResumeSelection,
 } from './composer-state.js'
 import { configOptionsForModel, configValuesForOptions, withoutModelSpecificConfigValues } from './config-values.js'
@@ -439,6 +440,12 @@ function WorkspaceComposerContent({
   } else {
     freshSessionMessage = 'The next message starts a fresh agent session. Earlier messages remain in this Conversation.'
   }
+  const requestedConnectionId = resumeMode && selectedSession ? selectedSession.connectionId : selectedConnectionId || preferences?.connectionId || ''
+  const targetError = targetSelectionError({
+    connectionId: requestedConnectionId,
+    detectedConnectionIds,
+    inspected: inspected ? { canSubmit: submitAvailable } : null,
+  })
   const blocked = !contextComplete || Boolean(pendingStart) || Boolean(pendingStarts.store.error)
   const actionStateReady =
     snapshot.data !== null &&
@@ -452,7 +459,8 @@ function WorkspaceComposerContent({
     !sessions.error &&
     !followUps.error
   let submissionHint = ''
-  if (!selectedConnection) submissionHint = 'Choose an agent below to continue.'
+  if (targetError) submissionHint = targetError
+  else if (!selectedConnection) submissionHint = 'Choose an agent below to continue.'
   else if (inspected && resumeMode && !validatedSession)
     submissionHint = "This chat's agent session could not be confirmed. Start a new chat to continue."
   else if (inspected && !submitAvailable) submissionHint = 'The selected agent cannot continue this chat.'
@@ -675,6 +683,10 @@ function WorkspaceComposerContent({
         ...(Object.keys(submittedConfigValues).length > 0 ? { configValues: submittedConfigValues } : {}),
       }
       void sendIntent({ kind: 'enqueue', command, prompt, draftValue: draft })
+      return
+    }
+    if (targetError) {
+      setError(targetError)
       return
     }
     if (!submitAvailable || !checkoutId || !selectedConnection) return
@@ -1156,6 +1168,15 @@ function WorkspaceComposerContent({
                 access={{ ...access, onChange: changeAccessMode }}
                 onConnectionChange={id => {
                   if (!canSwitchConnection || (lockedConnectionId && id !== lockedConnectionId)) return
+                  const unavailable = targetSelectionError({
+                    connectionId: id,
+                    detectedConnectionIds,
+                    inspected: null,
+                  })
+                  if (unavailable) {
+                    setError(unavailable)
+                    return
+                  }
                   setSelectedConnectionId(id)
                   setModelId('')
                   setModeId('')

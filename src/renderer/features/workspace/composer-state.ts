@@ -153,6 +153,19 @@ export function connectionHandoffTarget(
     ? continuation
     : null
 }
+/** Why the requested agent cannot take the next message, or null while it can or is still being inspected. */
+export function targetSelectionError(input: {
+  readonly connectionId: string
+  readonly detectedConnectionIds: ReadonlySet<string>
+  readonly inspected: { readonly canSubmit: boolean } | null
+}): string | null {
+  if (!input.connectionId) return null
+  if (!input.detectedConnectionIds.has(input.connectionId))
+    return 'The selected agent is no longer available. Choose another agent to continue.'
+  if (input.inspected && !input.inspected.canSubmit) return 'The selected agent cannot continue this chat.'
+  return null
+}
+
 export interface ResumeSelection {
   readonly taskId: TaskId
   readonly conversationId: ConversationId
