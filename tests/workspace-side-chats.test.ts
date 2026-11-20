@@ -457,6 +457,13 @@ describe('side chat context and independent identity', () => {
       }),
     )
   })
+  it('titles a new side chat from its request and falls back to Side chat', async () => {
+    const h = harness()
+    const titled = await h.run(service => service.create({ ...request, title: 'Trace the parser' }))
+    expect(titled.title).toBe('Trace the parser')
+    const untitled = await h.run(service => service.create({ ...request, commandId: 'create-untitled' }))
+    expect(untitled.title).toBe('Side chat')
+  })
   it('shares the parent checkout, and ignores any checkout choice on the request', async () => {
     const h = harness()
     h.setParentCheckout(otherCheckoutId)
