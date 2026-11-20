@@ -12,10 +12,12 @@ import type {
   BeginRunCommand,
   CheckoutRegistrationReceipt,
   CommandReceipt,
+  ConsumeSideChatBringBackCommand,
   CreateDelegationCommand,
   CreateTaskCommand,
   DelegationQuery,
   DelegationReceipt,
+  DeleteSideChatTaskCommand,
   DispatchClaim,
   DispatchFailureCommand,
   EnqueueFollowUpCommand,
@@ -39,6 +41,8 @@ import type {
   SetTaskArchivedCommand,
   SettleDelegationCommand,
   SettleDeliveryCommand,
+  SideChatBringBackOutcome,
+  SideChatBringBackRecord,
   SteerIntentPage,
   TaskCreationReceipt,
   TaskMutationReceipt,
@@ -163,6 +167,20 @@ export class WorkspaceStore extends Context.Service<
       ownerEpoch: number,
     ) => Effect.Effect<void, WorkspaceStoreError>
     readonly releaseRetiredDispatches: (ownerEpoch: number) => Effect.Effect<void, WorkspaceStoreError>
+    /** Records a side chat's bring-back; it is consumed by the parent Conversation's next Run. */
+    readonly recordSideChatBringBack: (
+      record: SideChatBringBackRecord,
+    ) => Effect.Effect<SideChatBringBackOutcome, WorkspaceStoreError>
+    /** Consumes the parent Conversation's pending bring-back for this Run, once; a retry returns the same record. */
+    readonly consumeSideChatBringBack: (
+      runId: AgentRunId,
+      command: ConsumeSideChatBringBackCommand,
+    ) => Effect.Effect<SideChatBringBackRecord | null, WorkspaceStoreError>
+    readonly readPendingSideChatBringBack: (
+      conversationId: ConversationId,
+    ) => Effect.Effect<SideChatBringBackRecord | null, WorkspaceStoreError>
+    /** Deletes a side chat Task and its Conversation; `false` when `onlyIfUnused` finds Runs. */
+    readonly deleteSideChatTask: (command: DeleteSideChatTaskCommand) => Effect.Effect<boolean, WorkspaceStoreError>
     readonly acquireOwnerEpoch: (recoveredAt: string) => Effect.Effect<OwnerEpochAcquisition, WorkspaceStoreError>
     readonly pageEvents: (
       afterSequence: number,
@@ -214,21 +232,34 @@ export class WorkspaceStore extends Context.Service<
       runLimit: number,
     ) => Effect.Effect<WorkspaceSnapshot, WorkspaceStoreError>
     /** Creates the child Task, its Conversation and the Delegation row in one transaction, idempotent on commandId. */
-    readonly createDelegation: (command: CreateDelegationCommand) => Effect.Effect<DelegationReceipt, WorkspaceStoreError>
+    readonly createDelegation: (
+      command: CreateDelegationCommand,
+    ) => Effect.Effect<DelegationReceipt, WorkspaceStoreError>
     readonly getDelegation: (delegationId: string) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
-    readonly getDelegationByChildTask: (childTaskId: TaskId) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
+    readonly getDelegationByChildTask: (
+      childTaskId: TaskId,
+    ) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError>
     readonly listDelegations: (query: DelegationQuery) => Effect.Effect<DelegationList, WorkspaceStoreError>
-    readonly settleDelegation: (command: SettleDelegationCommand) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
-    readonly setDelegationWake: (command: SetDelegationWakeCommand) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly settleDelegation: (
+      command: SettleDelegationCommand,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly setDelegationWake: (
+      command: SetDelegationWakeCommand,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
     readonly setDelegationPendingRequest: (
       command: SetDelegationPendingRequestCommand,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
-    readonly markDelegationRead: (delegationId: string, readAt: string) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    readonly markDelegationRead: (
+      delegationId: string,
+      readAt: string,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
     /** Records a cancel request once; a settled or already-cancelled Delegation is returned unchanged. */
     readonly requestDelegationCancel: (
       delegationId: string,
       requestedAt: string,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
-    readonly listDueDelegationWakes: (limit: number) => Effect.Effect<ReadonlyArray<DelegationRecord>, WorkspaceStoreError>
+    readonly listDueDelegationWakes: (
+      limit: number,
+    ) => Effect.Effect<ReadonlyArray<DelegationRecord>, WorkspaceStoreError>
   }
 >()('watchtower/core/WorkspaceStore') {}

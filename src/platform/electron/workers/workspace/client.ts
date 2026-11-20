@@ -456,6 +456,28 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:releaseRetiredDispatches'](payload),
           )
         },
+        recordSideChatBringBack: record => {
+          const payload = { record }
+          return invoke('workspace-worker:recordSideChatBringBack', payload, () =>
+            rawClient['workspace-worker:recordSideChatBringBack'](payload),
+          )
+        },
+        consumeSideChatBringBack: (runId, command) => {
+          const payload = { runId, command }
+          return invoke('workspace-worker:consumeSideChatBringBack', payload, () =>
+            rawClient['workspace-worker:consumeSideChatBringBack'](payload),
+          )
+        },
+        readPendingSideChatBringBack: conversationId => {
+          const payload = { conversationId }
+          return invoke('workspace-worker:readPendingSideChatBringBack', payload, () =>
+            rawClient['workspace-worker:readPendingSideChatBringBack'](payload),
+          )
+        },
+        deleteSideChatTask: command =>
+          invoke('workspace-worker:deleteSideChatTask', command, () =>
+            rawClient['workspace-worker:deleteSideChatTask'](command),
+          ),
         acquireOwnerEpoch: recoveredAt => {
           const payload = { recoveredAt }
           return invoke('workspace-worker:acquireOwnerEpoch', payload, () =>

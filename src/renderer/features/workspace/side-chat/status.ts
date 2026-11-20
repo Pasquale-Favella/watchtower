@@ -51,6 +51,31 @@ export function sideChatStatus(runs: readonly AgentRun[]): SideChatStatus {
   }
 }
 
+export type SideChatTabState = 'needsApproval' | 'needsInput' | 'running'
+
+/** Tab dot state; null means no dot. A pending approval or question outranks the Run's own status. */
+export function sideChatTabState(input: {
+  readonly runs: readonly AgentRun[]
+  readonly pendingRequestKind: 'approval' | 'question' | null | undefined
+}): SideChatTabState | null {
+  if (input.pendingRequestKind === 'approval') return 'needsApproval'
+  if (input.pendingRequestKind === 'question') return 'needsInput'
+  const status = sideChatStatus(input.runs)
+  if (status === 'waiting') return 'needsInput'
+  return status === 'queued' || status === 'running' || status === 'stopping' ? 'running' : null
+}
+
+/** Composer rule: a side chat cannot start another side chat, and it carries text only. */
+export function sideChatCommandBlock(input: {
+  readonly embedded: boolean
+  readonly attachmentCount: number
+}): { readonly reason: string } | null {
+  if (input.embedded) return { reason: 'Side chats cannot start side chats.' }
+  if (input.attachmentCount > 0)
+    return { reason: 'Side chats take text only. Remove the attachments and context, then send it again.' }
+  return null
+}
+
 export function sideChatStatusLabel(status: SideChatStatus): string {
   switch (status) {
     case 'notStarted':
@@ -74,4 +99,15 @@ export function sideChatStatusLabel(status: SideChatStatus): string {
     case 'recovering':
       return 'Recovering'
   }
+}
+
+const tabStateLabel: Record<SideChatTabState, string> = {
+  needsApproval: 'needs approval',
+  needsInput: 'needs input',
+  running: 'running',
+}
+
+/** The tab's accessible name: its live title, followed by its state when one applies. */
+export function sideChatTabName(title: string, state: SideChatTabState | null): string {
+  return state ? `${title}, ${tabStateLabel[state]}` : title
 }

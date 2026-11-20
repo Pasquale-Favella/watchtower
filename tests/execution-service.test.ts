@@ -289,6 +289,7 @@ describe('ExecutionService', () => {
       get: id => Effect.succeed(id === record.binding.id ? record : null),
       put: () => Effect.die('Unexpected side-chat write'),
       list: () => Effect.die('Unexpected side-chat list'),
+      remove: () => Effect.die('Unexpected side-chat removal'),
     })
     const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
     const store = await storeRuntime.runPromise(WorkspaceStore)
@@ -308,9 +309,10 @@ describe('ExecutionService', () => {
     const runtime = makeRuntime(
       () => Effect.succeed(makeConnection(session)),
       {
-        enrichPrompt: claim =>
+        enrichPrompt: (claim, workspaceStore) =>
           enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
             Effect.provideService(SideChatPersistence, persistence),
+            Effect.provideService(WorkspaceStore, workspaceStore),
             Effect.mapError(() => new AgentDriverError({ code: 'invalid-state', message: 'Context unavailable.' })),
           ),
       },
@@ -351,6 +353,70 @@ describe('ExecutionService', () => {
       expect(submittedPrompts[0]).toContain('First side question')
       expect(submittedPrompts[0]).toContain(record.context)
       expect(submittedPrompts[1]).toBe('Continue the side discussion')
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
+  it('delivers a pending side chat bring-back once, with the next Run of the main Conversation', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    await setup(store, runStore)
+    await runStore(
+      store.recordSideChatBringBack({
+        id: 'bring-back-1',
+        parentTaskId: task.id,
+        parentConversationId: conversation.id,
+        sideChatId: 'side-chat:execution-test',
+        sideTaskId: 'side-task:execution-test' as never,
+        sideConversationId: 'side-conversation:execution-test' as never,
+        sourceRunId: 'side-source-run' as never,
+        title: 'Side chat',
+        digest: 'User: which picker?\nAssistant: keep the central picker.',
+        truncated: false,
+        status: 'pending',
+        createdAt: '2026-10-29T10:00:05.000Z',
+        consumedRunId: null,
+        consumedAt: null,
+      }),
+    )
+    const submittedPrompts: Array<string | undefined> = []
+    const session = makeSession({
+      events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+      submit: input =>
+        Effect.sync(() => {
+          submittedPrompts.push(input.messages[0]?.content)
+          return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
+        }),
+    })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), {}, store)
+    try {
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, prompt: 'Main question' }))
+      await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('completed')
+      await run(
+        service.start({
+          ...command,
+          commandId: 'main-second',
+          runId: 'main-second-run' as never,
+          provisionalAgentSessionId: 'main-second-session',
+          prompt: 'Second question',
+        }),
+      )
+      await expect
+        .poll(
+          async () =>
+            (await run(store.readTaskSnapshot(task.id, 10))).runs.find(item => item.id === 'main-second-run')?.status,
+        )
+        .toBe('completed')
+      expect(submittedPrompts[0]).toContain('Side chat "Side chat" was brought back')
+      expect(submittedPrompts[0]).toContain('Assistant: keep the central picker.')
+      expect(submittedPrompts[0]).toContain('Current request: Main question')
+      expect(submittedPrompts[1]).toBe('Second question')
+      await expect(run(store.readPendingSideChatBringBack(conversation.id))).resolves.toBeNull()
     } finally {
       await runtime.dispose()
       await storeRuntime.dispose()
@@ -2546,7 +2612,9 @@ describe('ExecutionService', () => {
             order.push('prepare')
             return {
               ...context,
-              mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' }],
+              mcpEndpoints: [
+                { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' },
+              ],
             }
           }),
           () => Effect.sync(() => void order.push('prepared-resource-close')),
@@ -2563,7 +2631,9 @@ describe('ExecutionService', () => {
 
       expect(openedContext).toMatchObject({
         taskId: 'task-1',
-        mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' }],
+        mcpEndpoints: [
+          { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'ephemeral-token' },
+        ],
       })
       expect(order).toEqual(['prepare', 'open', 'connection-close', 'prepared-resource-close'])
     } finally {

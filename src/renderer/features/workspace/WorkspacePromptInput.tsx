@@ -39,7 +39,8 @@ import { type PromptInputHandle, WorkspacePromptEditor } from './WorkspacePrompt
 type Props = {
   readonly onOpenFile?: ((path: string) => void) | undefined
   readonly onOpenModelPicker?: (query?: string) => void
-  readonly onPromptCommand?: (name: 'side' | 'btw') => void
+  /** Lists /side and /btw, which only insert text; a disabled reason keeps them listed but unavailable. */
+  readonly sideChat?: { readonly disabledReason: string | null } | undefined
   readonly history?: readonly string[]
   readonly nativeCommands?: readonly {
     readonly name: string
@@ -270,20 +271,43 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   }
   const sourceRows: MenuRow[] = []
   if (query?.kind === 'command') {
-    for (const action of [
+    const sideReason = props.sideChat?.disabledReason ?? undefined
+    const actions: Array<{
+      readonly path: string
+      readonly label: string
+      readonly description: string
+      readonly disabledReason?: string | undefined
+    }> = [
       { path: 'attach', label: 'attach', description: 'Attach files or paste an image' },
       ...(props.onOpenModelPicker
         ? [{ path: 'model', label: 'model', description: 'Switch response model for this thread' }]
         : []),
-      ...(props.onPromptCommand
+      ...(props.sideChat
         ? [
-            { path: 'side', label: 'side', description: 'Start a side conversation' },
-            { path: 'btw', label: 'btw', description: 'Add a side note to this conversation' },
+            {
+              path: 'side',
+              label: 'side',
+              description: sideReason ?? 'Start a side chat',
+              disabledReason: sideReason,
+            },
+            {
+              path: 'btw',
+              label: 'btw',
+              description: sideReason ?? 'Add a side note to this conversation',
+              disabledReason: sideReason,
+            },
           ]
         : []),
-    ]) {
+    ]
+    for (const action of actions) {
       sourceRows.push({
-        view: { id: `action:${action.path}`, label: action.label, description: action.description, category: 'action' },
+        view: {
+          id: `action:${action.path}`,
+          label: action.label,
+          description: action.description,
+          category: 'action',
+          ...(action.disabledReason ? { disabledReason: action.disabledReason } : {}),
+        },
         source: { kind: 'action', path: action.path, label: action.label },
       })
     }
@@ -565,12 +589,20 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
     const capturedTrigger = trigger
     const capturedValue = inputRef.current?.getValue() ?? props.value
     if (item.source.kind === 'action') {
+      if (item.view.disabledReason) return
+      if (item.source.path === 'side' || item.source.path === 'btw') {
+        // The command only inserts text; a side chat is created when the message is sent.
+        const next = `${capturedValue.slice(0, capturedTrigger.start)}/${item.source.path} ${capturedValue.slice(capturedTrigger.end)}`
+        inputRef.current?.setValue(next, capturedTrigger.start + item.source.path.length + 2)
+        closeMenu()
+        requestAnimationFrame(() => inputRef.current?.focus())
+        return
+      }
       const nextValue = capturedValue.slice(0, capturedTrigger.start) + capturedValue.slice(capturedTrigger.end)
       inputRef.current?.setValue(nextValue, capturedTrigger.start)
       closeMenu()
       if (item.source.path === 'attach') fileRef.current?.click()
       else if (item.source.path === 'model') props.onOpenModelPicker?.(capturedTrigger.modelQuery)
-      else if (item.source.path === 'side' || item.source.path === 'btw') props.onPromptCommand?.(item.source.path)
       return
     }
     if (item.source.kind === 'native' || item.source.kind === 'providerCommand') {
@@ -854,7 +886,8 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
                     type="button"
                     role="option"
                     aria-selected={index === active}
-                    className={`flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'}`}
+                    aria-disabled={item.view.disabledReason ? true : undefined}
+                    className={`flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'} ${item.view.disabledReason ? 'opacity-60' : ''}`}
                     onMouseDown={event => event.preventDefault()}
                     onMouseEnter={() => setActive(index)}
                     onClick={() => void pick(index)}

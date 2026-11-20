@@ -27,7 +27,9 @@ import {
 } from '@/shared/schemas/execution.js'
 import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
 import {
+  type AgentRunId,
   agentSessionIdSchema,
+  type ConversationId,
   projectIdSchema,
   projectSchema,
   type Task,
@@ -54,8 +56,12 @@ import {
   checkoutRegistrationReceiptSchema,
   type CommandReceipt,
   commandReceiptSchema,
+  type ConsumeSideChatBringBackCommand,
+  consumeSideChatBringBackCommandSchema,
   type CreateTaskCommand,
   createTaskCommandSchema,
+  type DeleteSideChatTaskCommand,
+  deleteSideChatTaskCommandSchema,
   type DispatchClaim,
   dispatchFailureCommandSchema,
   enqueueFollowUpCommandSchema,
@@ -82,6 +88,9 @@ import {
   setTaskArchivedCommandSchema,
   type SettleDeliveryCommand,
   settleDeliveryCommandSchema,
+  type SideChatBringBackOutcome,
+  type SideChatBringBackRecord,
+  sideChatBringBackRecordSchema,
   steerHistoryItemSchema,
   steerIntentSchema,
   taskCreationReceiptSchema,
@@ -314,11 +323,24 @@ const migrations = [
     `),
   },
   {
-    // Reserved for the parallel side-chat migration. The runner requires contiguous versions, so this slot is kept
-    // empty here. Replace it with that package's migration when both branches are merged.
     version: 15,
-    name: 'reserved_side_chat_slot',
-    up: executeSqliteScript(''),
+    name: 'side_chat_bring_back',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_task ADD COLUMN side_chat INTEGER NOT NULL DEFAULT 0 CHECK (side_chat IN (0, 1));
+      UPDATE workspace_task SET side_chat = 1 WHERE id LIKE 'side-task:%';
+      CREATE INDEX index_tasks_by_project_listed ON workspace_task (project_id, archived, side_chat);
+      CREATE TABLE workspace_side_chat_bring_back (
+        id TEXT PRIMARY KEY,
+        parent_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        side_chat_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'superseded', 'cancelled')),
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_run_id TEXT REFERENCES workspace_agent_run(id)
+      );
+      CREATE UNIQUE INDEX index_side_chat_bring_back_pending
+        ON workspace_side_chat_bring_back (parent_conversation_id) WHERE status = 'pending';
+      `),
   },
   {
     version: 16,
@@ -435,7 +457,12 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
       parentRunId: delegation.parentRunId,
       parentTaskId: delegation.parentTaskId,
       parentConversationId: delegation.parentConversationId,
-      task: { id: delegation.task.id, projectId: delegation.task.projectId, title: delegation.task.title, description: delegation.task.description },
+      task: {
+        id: delegation.task.id,
+        projectId: delegation.task.projectId,
+        title: delegation.task.title,
+        description: delegation.task.description,
+      },
       conversation: { id: delegation.conversation.id, title: delegation.conversation.title },
       record: {
         id: record.id,
@@ -653,7 +680,8 @@ const makeService = Effect.gen(function* () {
             }
             const projects = yield* sql`SELECT id FROM workspace_project WHERE id = ${command.task.projectId}`
             if (projects.length === 0) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
-            yield* sql`INSERT INTO workspace_task (id, project_id, archived, payload) VALUES (${command.task.id}, ${command.task.projectId}, 0, ${encode({ ...command.task, status: 'open', updatedAt: command.task.createdAt })})`
+            const { sideChat, ...task } = command.task
+            yield* sql`INSERT INTO workspace_task (id, project_id, archived, side_chat, payload) VALUES (${task.id}, ${task.projectId}, 0, ${sideChat ? 1 : 0}, ${encode({ ...task, status: 'open', updatedAt: task.createdAt })})`
             yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${command.task.id}, ${encode({ ...command.conversation, taskId: command.task.id })})`
             const result = {
               commandId,
@@ -1544,6 +1572,142 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  // Side chat bring-back: a pending transfer on the parent Conversation, consumed by its next Run.
+  const decodeBringBack = decodeJson(sideChatBringBackRecordSchema)
+  const writeBringBack = (record: SideChatBringBackRecord) =>
+    sql`UPDATE workspace_side_chat_bring_back SET status = ${record.status}, payload = ${encode(record)}, consumed_run_id = ${record.consumedRunId} WHERE id = ${record.id}`
+  const pendingBringBackFor = Effect.fnUntraced(function* (parentConversationId: string) {
+    const rows =
+      yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE parent_conversation_id = ${parentConversationId} AND status = 'pending'`
+    return rows[0] ? yield* decodeBringBack(String(rows[0].payload)) : null
+  })
+  // A pre-submit failure never reached the driver, so its consumed bring-back waits for the next Run.
+  const releaseSideChatBringBacks = Effect.fnUntraced(function* (runId: string) {
+    const rows =
+      yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE consumed_run_id = ${runId} AND status = 'consumed'`
+    for (const row of rows) {
+      const record = yield* decodeBringBack(String(row.payload))
+      const pending = yield* pendingBringBackFor(record.parentConversationId)
+      yield* writeBringBack(
+        pending
+          ? { ...record, status: 'superseded', consumedRunId: null, consumedAt: null }
+          : { ...record, status: 'pending', consumedRunId: null, consumedAt: null },
+      )
+    }
+  })
+
+  const recordSideChatBringBackInTransaction = Effect.fnUntraced(function* (decoded: SideChatBringBackRecord) {
+    const busy = yield* sql`
+      SELECT 1 FROM workspace_agent_run r
+      JOIN workspace_dispatch_intent i ON i.run_id = r.id
+      WHERE i.conversation_id = ${decoded.parentConversationId}
+        AND r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+      LIMIT 1
+    `
+    const queued =
+      yield* sql`SELECT 1 FROM workspace_follow_up_queue WHERE conversation_id = ${decoded.parentConversationId} LIMIT 1`
+    if (busy[0] || queued[0]) return { _tag: 'parent-busy' } as const
+    const pending = yield* pendingBringBackFor(decoded.parentConversationId)
+    if (pending && pending.sideChatId !== decoded.sideChatId)
+      return { _tag: 'bring-back-pending', pendingSideChatId: pending.sideChatId } as const
+    if (pending) yield* writeBringBack({ ...pending, status: 'superseded' })
+    const recorded: SideChatBringBackRecord = { ...decoded, status: 'pending', consumedRunId: null, consumedAt: null }
+    yield* sql`INSERT INTO workspace_side_chat_bring_back (id, parent_conversation_id, side_chat_id, status, payload, created_at, consumed_run_id) VALUES (${recorded.id}, ${recorded.parentConversationId}, ${recorded.sideChatId}, 'pending', ${encode(recorded)}, ${recorded.createdAt}, NULL)`
+    return { _tag: 'recorded', record: recorded, supersedesId: pending?.id ?? null } as const
+  })
+
+  const recordSideChatBringBack = (record: SideChatBringBackRecord) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(sideChatBringBackRecordSchema)(record).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Side chat bring-back data is invalid')),
+        )
+        const outcome: SideChatBringBackOutcome = yield* sql.withTransaction(
+          recordSideChatBringBackInTransaction(decoded),
+        )
+        return outcome
+      }),
+    )
+
+  const consumeSideChatBringBack = (runId: AgentRunId, command: ConsumeSideChatBringBackCommand) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(consumeSideChatBringBackCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Side chat bring-back command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { row, run } = yield* loadOwnedDispatch(runId, decoded.ownerEpoch)
+            if (row.state !== 'claimed')
+              return yield* Effect.fail(safeError('invalid-transition', 'Side chat bring-back requires a claimed Run'))
+            const consumed =
+              yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE consumed_run_id = ${runId} AND status = 'consumed' LIMIT 1`
+            if (consumed[0]) return yield* decodeBringBack(String(consumed[0].payload))
+            const pending = yield* pendingBringBackFor(String(row.conversation_id))
+            if (!pending) return null
+            const next: SideChatBringBackRecord = {
+              ...pending,
+              status: 'consumed',
+              consumedRunId: run.id,
+              consumedAt: decoded.occurredAt,
+            }
+            yield* writeBringBack(next)
+            yield* appendEvent(run, 'sideChatBringBack', decoded.occurredAt, {
+              bringBackId: pending.id,
+              sideChatId: pending.sideChatId,
+              sourceRunId: pending.sourceRunId,
+              title: pending.title,
+            })
+            return next
+          }),
+        )
+      }),
+    )
+
+  const readPendingSideChatBringBack = (conversationId: ConversationId) => guard(pendingBringBackFor(conversationId))
+
+  const deleteSideChatTask = (command: DeleteSideChatTaskCommand) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(deleteSideChatTaskCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Side chat delete command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const id = decoded.sideTaskId
+            const tasks = yield* sql`SELECT id FROM workspace_task WHERE id = ${id} AND side_chat = 1`
+            if (tasks[0]) {
+              if (decoded.onlyIfUnused) {
+                const runs = yield* sql`SELECT 1 FROM workspace_agent_run WHERE task_id = ${id} LIMIT 1`
+                if (runs[0]) return false
+              }
+              yield* sql`DELETE FROM workspace_driver_event_identity WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_driver_request_state WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_request_response_intent WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_steer_intent WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_message WHERE conversation_id IN (SELECT id FROM workspace_conversation WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_follow_up_queue WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_dispatch_intent WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_execution_event WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_agent_run WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_agent_session WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_conversation WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_task WHERE id = ${id}`
+              // The side chat's createTask receipt would otherwise replay a Task that no longer exists.
+              yield* sql`DELETE FROM workspace_command_receipt WHERE command_id = ${receiptKey(`create-${decoded.sideChatId}`)}`
+            }
+            const pending =
+              yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE side_chat_id = ${decoded.sideChatId} AND status = 'pending'`
+            for (const row of pending) {
+              const record = yield* decodeBringBack(String(row.payload))
+              yield* writeBringBack({ ...record, status: 'cancelled' })
+            }
+            return true
+          }),
+        )
+      }),
+    )
+
   const failDispatch = (
     runId: Parameters<WorkspaceStore['Service']['failDispatch']>[0],
     command: Parameters<WorkspaceStore['Service']['failDispatch']>[1],
@@ -1607,6 +1771,7 @@ const makeService = Effect.gen(function* () {
             } else {
               yield* sql`UPDATE workspace_dispatch_intent SET state = ${outcome} WHERE run_id = ${runId}`
             }
+            if (outcome === 'failed') yield* releaseSideChatBringBacks(runId)
             yield* appendEvent(
               failedRun,
               terminalStatus === 'failed' ? 'runFailed' : 'runUncertain',
@@ -2700,7 +2865,7 @@ const makeService = Effect.gen(function* () {
             if (project.id !== projectId)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
             const counts =
-              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0) AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = workspace_task.id))`
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0) AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = workspace_task.id)) AND side_chat = 0`
             const total = Number(counts[0]?.total ?? 0)
             const items: Array<Task> = []
             let cursor = afterId
@@ -2713,7 +2878,7 @@ const makeService = Effect.gen(function* () {
                 ) AS activity_at
                 FROM workspace_task
                 WHERE id = ${cursor} AND project_id = ${projectId}
-                  AND (${includeArchivedFlag} = 1 OR archived = 0)
+                  AND (${includeArchivedFlag} = 1 OR archived = 0) AND side_chat = 0
               `
               if (cursorRows[0]?.activity_at != null) cursorActivityAt = String(cursorRows[0].activity_at)
             }
@@ -2729,6 +2894,7 @@ const makeService = Effect.gen(function* () {
                   WHERE task.project_id = ${projectId}
                     AND (${includeArchivedFlag} = 1 OR task.archived = 0)
                     AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = task.id))
+                    AND task.side_chat = 0
                 ), task_page AS (
                   SELECT t.id, t.activity_at
                   FROM task_activity t
@@ -3238,7 +3404,7 @@ const makeService = Effect.gen(function* () {
           return yield* Effect.fail(safeError('invalid-data', 'Snapshot page limit is invalid'))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId}`
+            const rows = yield* sql`SELECT id, project_id, payload, side_chat FROM workspace_task WHERE id = ${taskId}`
             if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
             const taskRow = rows[0] as Record<string, unknown>
             const taskPayload = yield* decodeJson(
@@ -3370,7 +3536,7 @@ const makeService = Effect.gen(function* () {
               truncated: Number(queueCounts[0]?.total ?? 0) > queuedFollowUps.length,
             }
             return {
-              task: taskPayload,
+              task: { ...taskPayload, sideChat: Number(taskRow.side_chat) === 1 },
               runs,
               runContexts,
               runCoverage,
@@ -3454,7 +3620,8 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))
             if (!ACTIVE_PARENT_STATUSES.includes(String(parent.status)))
               return yield* Effect.fail(safeError('invalid-transition', 'Parent Run is not active'))
-            const parentLink = yield* sql`SELECT depth FROM workspace_delegation WHERE child_task_id = ${command.parentTaskId}`
+            const parentLink =
+              yield* sql`SELECT depth FROM workspace_delegation WHERE child_task_id = ${command.parentTaskId}`
             const depth = parentLink[0] ? Number(parentLink[0].depth) + 1 : 1
             if (depth !== command.record.depth || depth > command.limits.maxDepth)
               return yield* Effect.fail(safeError('admission-conflict', 'Delegation depth limit reached'))
@@ -3614,7 +3781,8 @@ const makeService = Effect.gen(function* () {
   const listDueDelegationWakes: WorkspaceStore['Service']['listDueDelegationWakes'] = limit =>
     guard(
       Effect.gen(function* () {
-        const rows = yield* sql`SELECT payload FROM workspace_delegation WHERE wake_state = 'pending' ORDER BY created_at, id LIMIT ${limit}`
+        const rows =
+          yield* sql`SELECT payload FROM workspace_delegation WHERE wake_state = 'pending' ORDER BY created_at, id LIMIT ${limit}`
         return yield* decodeDelegationRows(rows)
       }),
     )
@@ -3649,6 +3817,10 @@ const makeService = Effect.gen(function* () {
     recoverWorker,
     releaseDispatchAfterCleanup,
     releaseRetiredDispatches,
+    recordSideChatBringBack,
+    consumeSideChatBringBack,
+    readPendingSideChatBringBack,
+    deleteSideChatTask,
     acquireOwnerEpoch,
     readWorkspacePayload,
     pageEvents,

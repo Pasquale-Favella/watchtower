@@ -22,6 +22,12 @@ describe('Workspace prompt commands', () => {
     expect(parseWorkspacePromptCommand('/side', [])).toEqual({ kind: 'side', prompt: '' })
   })
 
+  it('treats btw exactly like side, including the empty command', () => {
+    expect(parseWorkspacePromptCommand('/btw', [])).toEqual({ kind: 'btw', prompt: '' })
+    expect(parseWorkspacePromptCommand('/side  Same path', [])).toEqual({ kind: 'side', prompt: 'Same path' })
+    expect(parseWorkspacePromptCommand('/btw Same path', [])).toEqual({ kind: 'btw', prompt: 'Same path' })
+  })
+
   it('passes provider slash commands through only when the catalog advertises them', () => {
     const commands = [{ name: 'compact' }, { name: 'goal' }]
     expect(parseWorkspacePromptCommand('/compact', commands)).toEqual({

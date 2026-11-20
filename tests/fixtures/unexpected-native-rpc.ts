@@ -114,6 +114,7 @@ const unexpectedWorkspaceSideChatRpcGroupHandlers = WorkspaceSideChatRpcGroup.to
   'sideChat:get': unexpected,
   'sideChat:list': unexpected,
   'sideChat:bringBack': unexpected,
+  'sideChat:delete': unexpected,
 })
 
 const unexpectedWorkspaceDelegationRpcGroupHandlers = WorkspaceDelegationRpcGroup.toLayer({

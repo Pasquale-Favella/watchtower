@@ -27,7 +27,8 @@ export const workspaceSideChatHandlers = Layer.unwrap(
       'sideChat:get': ({ id }) => ready(service.get(id)),
       'sideChat:list': ({ parentTaskId }) =>
         ready(Effect.map(service.list(parentTaskId), items => ({ items: [...items] }))),
-      'sideChat:bringBack': ({ id }) => ready(Effect.map(service.bringBack(id), text => ({ text }))),
+      'sideChat:bringBack': request => ready(service.bringBack(request)),
+      'sideChat:delete': request => ready(service.delete(request)),
     })
   }),
 )

@@ -20,7 +20,7 @@ import { WorkspacePullRequestsPanel } from './pull-requests/WorkspacePullRequest
 import { type RightPanelSurface, surfaceKind, surfaceLabel, surfaceResource } from './right-panel/right-panel-state.js'
 import type { RightPanelControls } from './right-panel/use-right-panel.js'
 import { WorkspaceRightPanel } from './right-panel/WorkspaceRightPanel.js'
-import { useCreateSideChat, useSideChats } from './side-chat/hooks.js'
+import { useCreateSideChat, useDeleteSideChat } from './side-chat/hooks.js'
 import { SideChatPane } from './side-chat/SideChatPane.js'
 import { useTerminalGroupActions } from './terminal/use-terminal-group-actions.js'
 import { useTerminalGroupContext } from './terminal/use-terminal-group-context.js'
@@ -43,7 +43,9 @@ interface Props {
   readonly onToggleTerminal: () => void
   readonly onAddImage?: ((image: WorkspaceImageContext) => Promise<void>) | undefined
   readonly parent?: { readonly taskId: TaskId; readonly conversationId: ConversationId } | undefined
-  readonly onOpenTask?: ((taskId: TaskId, conversationId: ConversationId) => void) | undefined
+  readonly parentTitle?: string | undefined
+  readonly parentBusy?: boolean | undefined
+  readonly onOpenTerminal?: (() => void) | undefined
   readonly onReferenceText?: ((text: string) => void) | undefined
 }
 
@@ -51,7 +53,7 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
   const terminal = useTerminalGroupActions()
   const groupContext = useTerminalGroupContext(props.terminalTarget, props.retainedTerminalTarget)
   const sideChat = useCreateSideChat()
-  const sideChatHistory = useSideChats(props.parent?.taskId ?? null)
+  const deleteSideChat = useDeleteSideChat()
   const [resourceError, setResourceError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
   const decision = useRef<((confirmed: boolean) => void) | null>(null)
@@ -79,6 +81,13 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
     if (surfaceKind(surface) === 'terminal') {
       const context = groupContext(surfaceResource(surface))
       await terminal.closeGroup(context.target, context.groupId)
+    } else if (surfaceKind(surface) === 'side-chat') {
+      // Closing a side chat that never ran deletes it; one that ran is kept and can be reopened from details.
+      await deleteSideChat.remove({
+        id: surfaceResource(surface),
+        parentTaskId: props.parent?.taskId ?? null,
+        onlyIfUnused: true,
+      })
     } else await props.resources.closeBrowser(surface)
   }
   function openSideChat(): void {
@@ -88,12 +97,9 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
       .create({
         parentTaskId: parent.taskId,
         parentConversationId: parent.conversationId,
-        ...(props.checkoutId ? { checkoutId: props.checkoutId } : {}),
       })
       .then(binding => {
-        if (!binding) return
-        const surface = props.panel.addSurface('side-chat', binding.id)
-        props.resources.setTitle(surface, binding.title)
+        if (binding) props.panel.addSurface('side-chat', binding.id)
       })
       .catch(() => undefined)
   }
@@ -176,10 +182,13 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
           <SideChatPane
             id={resource}
             visible={visible}
-            onOpenAsChat={binding => props.onOpenTask?.(binding.taskId, binding.conversationId)}
-            onClose={() => props.panel.closeSurface(surface)}
+            parentTitle={props.parentTitle ?? ''}
+            parentBusy={props.parentBusy ?? false}
+            onOpenDiff={() => props.panel.openSurface('diff')}
+            onOpenTerminal={props.onOpenTerminal}
+            onClose={() => void close(surface).then(() => props.panel.closeSurface(surface))}
+            onDeleted={() => props.panel.closeSurface(surface)}
             onOpenFile={props.panel.openFile}
-            fileCheckoutId={props.checkoutId}
           />
         )
       case 'pull-requests':
@@ -212,8 +221,6 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
         onAddBrowser={() => props.resources.openBrowser()}
         onAddTerminal={() => props.panel.addSurface('terminal')}
         onAddDevice={() => props.panel.addSurface('device')}
-        sideChatHistory={sideChatHistory.items}
-        onOpenSideChat={id => props.panel.addSurface('side-chat', id)}
         onAddPullRequests={props.projectId ? () => props.panel.openSurface('pull-requests') : undefined}
         onAddSideChat={props.parent ? openSideChat : undefined}
         notice={sideChat.error ?? resourceError}

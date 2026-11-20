@@ -35,6 +35,7 @@ import {
 } from '@/shared/schemas/workspace.js'
 
 import { promptAttachmentsSchema } from './prompt-context.js'
+import { SIDE_CHAT_BRING_BACK_MAX_CHARS } from './workspace-side-chats.js'
 
 const text = Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1))
 const timestamp = Schema.String.check(
@@ -150,6 +151,13 @@ export const createTaskCommandSchema = Schema.Struct({
     title: text,
     description: Schema.String,
     createdAt: timestamp,
+    /** A side chat Task is hidden from Task listings and is owned by its parent Conversation. */
+    sideChat: Schema.optional(
+      Schema.Struct({
+        parentTaskId: taskIdSchema,
+        parentConversationId: conversationIdSchema,
+      }),
+    ),
   }),
   conversation: Schema.Struct({
     id: conversationIdSchema,
@@ -208,7 +216,9 @@ export const delegationQuerySchema = Schema.Struct({
   parentRunId: Schema.optional(agentRunIdSchema),
   parentTaskId: Schema.optional(taskIdSchema),
   activeOnly: Schema.optional(Schema.Boolean),
-  limit: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200))),
+  limit: Schema.optional(
+    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
+  ),
 })
 export type DelegationQuery = Schema.Schema.Type<typeof delegationQuerySchema>
 
@@ -573,9 +583,7 @@ export const workspaceTaskRuntimeSummarySchema = Schema.Struct({
       }),
     ),
   ),
-  delegatedChildren: Schema.optional(
-    Schema.NullOr(Schema.Struct({ total: count, active: count, attention: count })),
-  ),
+  delegatedChildren: Schema.optional(Schema.NullOr(Schema.Struct({ total: count, active: count, attention: count }))),
 })
 export type WorkspaceTaskRuntimeSummary = Schema.Schema.Type<typeof workspaceTaskRuntimeSummarySchema>
 export const workspaceTaskReadSchema = Schema.Struct({ ...taskSchema.fields, ...payloadSummaryFields })
@@ -597,6 +605,7 @@ export const workspaceExecutionEventSchema = Schema.Struct({
     'runFailed',
     'runInterruptRequested',
     'contextHandoff',
+    'sideChatBringBack',
     'driverEvent',
     'requestResponseRecorded',
     'requestResponseSettled',
@@ -813,7 +822,13 @@ export const workspaceRunCoverageSchema = Schema.Struct({
 })
 export type WorkspaceRunCoverage = Schema.Schema.Type<typeof workspaceRunCoverageSchema>
 export const workspaceSnapshotSchema = Schema.Struct({
-  task: Schema.Struct({ id: taskIdSchema, projectId: projectIdSchema, title: text, status: Schema.String }),
+  task: Schema.Struct({
+    id: taskIdSchema,
+    projectId: projectIdSchema,
+    title: text,
+    status: Schema.String,
+    sideChat: Schema.optional(Schema.Boolean),
+  }),
   runs: Schema.Array(agentRunSchema),
   runContexts: Schema.optional(Schema.Array(workspaceRunContextSchema)),
   runCoverage: Schema.optional(workspaceRunCoverageSchema),
@@ -826,3 +841,49 @@ export const workspaceSnapshotSchema = Schema.Struct({
   highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
 })
 export type WorkspaceSnapshot = Schema.Schema.Type<typeof workspaceSnapshotSchema>
+
+export const sideChatBringBackStatusSchema = Schema.Literals(['pending', 'consumed', 'superseded', 'cancelled'])
+export type SideChatBringBackStatus = Schema.Schema.Type<typeof sideChatBringBackStatusSchema>
+
+/** One row per bring-back. At most one row per parent Conversation is `pending`. */
+export const sideChatBringBackRecordSchema = Schema.Struct({
+  id: text,
+  parentTaskId: taskIdSchema,
+  parentConversationId: conversationIdSchema,
+  sideChatId: text,
+  sideTaskId: taskIdSchema,
+  sideConversationId: conversationIdSchema,
+  sourceRunId: agentRunIdSchema,
+  title: Schema.String,
+  digest: Schema.String.check(Schema.isMaxLength(SIDE_CHAT_BRING_BACK_MAX_CHARS)),
+  truncated: Schema.Boolean,
+  status: sideChatBringBackStatusSchema,
+  createdAt: timestamp,
+  consumedRunId: Schema.NullOr(agentRunIdSchema),
+  consumedAt: Schema.NullOr(timestamp),
+})
+export type SideChatBringBackRecord = Schema.Schema.Type<typeof sideChatBringBackRecordSchema>
+
+export const sideChatBringBackOutcomeSchema = Schema.Union([
+  Schema.Struct({
+    _tag: Schema.Literal('recorded'),
+    record: sideChatBringBackRecordSchema,
+    supersedesId: Schema.NullOr(text),
+  }),
+  Schema.Struct({ _tag: Schema.Literal('parent-busy') }),
+  Schema.Struct({ _tag: Schema.Literal('bring-back-pending'), pendingSideChatId: text }),
+])
+export type SideChatBringBackOutcome = Schema.Schema.Type<typeof sideChatBringBackOutcomeSchema>
+
+export const consumeSideChatBringBackCommandSchema = Schema.Struct({
+  ownerEpoch: workerEpochSchema,
+  occurredAt: timestamp,
+})
+export type ConsumeSideChatBringBackCommand = Schema.Schema.Type<typeof consumeSideChatBringBackCommandSchema>
+
+export const deleteSideChatTaskCommandSchema = Schema.Struct({
+  sideChatId: text,
+  sideTaskId: taskIdSchema,
+  onlyIfUnused: Schema.Boolean,
+})
+export type DeleteSideChatTaskCommand = Schema.Schema.Type<typeof deleteSideChatTaskCommandSchema>

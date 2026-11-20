@@ -27,6 +27,9 @@ describe('command palette rows (ADR 0028)', () => {
       expect(rowFilterValue(row)).toContain(row.action)
     }
   })
+  it('lists no workspace Tasks, so side Tasks never reach it', () => {
+    expect(new Set(PALETTE_ROWS.map(row => row.source))).toEqual(new Set(['section', 'action']))
+  })
   it('every row resolves a registry label (unique filter values for cmdk)', () => {
     const labels = [...PALETTE_SECTIONS, ...PALETTE_ACTIONS].map(action => shortcutForAction(action)?.label ?? action)
     expect(labels.every(Boolean)).toBe(true)

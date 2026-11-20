@@ -25,6 +25,9 @@ import {
 } from '@/renderer/components/ui/dropdown-menu'
 import { cn } from '@/renderer/shared/lib/utils'
 
+import { useSideChatTabs } from '../side-chat/hooks.js'
+import { SideChatTabLabel } from '../side-chat/SideChatTabLabel.js'
+import { sideChatTabName } from '../side-chat/status.js'
 import { type RightPanelSurface, surfaceKind, surfaceLabel, surfaceResource } from './right-panel-state.js'
 import type { RightPanelControls } from './use-right-panel.js'
 
@@ -52,8 +55,6 @@ export interface PanelLauncherProps {
   readonly onAddDevice?: (() => void) | undefined
   readonly onAddPullRequests?: (() => void) | undefined
   readonly onAddSideChat?: (() => void) | undefined
-  readonly sideChatHistory?: readonly { readonly id: string; readonly title: string }[] | undefined
-  readonly onOpenSideChat?: ((id: string) => void) | undefined
 }
 
 export function PanelLauncher(props: PanelLauncherProps): React.JSX.Element {
@@ -141,6 +142,7 @@ export function RightPanelTabs(props: Props): React.JSX.Element {
   const [menuOpen, setMenuOpen] = useState(false)
   const [dismissedRequest, setDismissedRequest] = useState(controls.addMenuRequest)
   const launcherOpen = menuOpen || controls.addMenuRequest !== dismissedRequest
+  const sideChatTabs = useSideChatTabs()
 
   const measure = () => {
     const element = viewport.current
@@ -265,6 +267,14 @@ export function RightPanelTabs(props: Props): React.JSX.Element {
                   onClick={() => controls.activate(surface)}
                   onKeyDown={event => keyDown(event, surface)}
                   title={title}
+                  aria-label={
+                    surfaceKind(surface) === 'side-chat'
+                      ? sideChatTabName(
+                          sideChatTabs[surfaceResource(surface)]?.title ?? title,
+                          sideChatTabs[surfaceResource(surface)]?.state ?? null,
+                        )
+                      : undefined
+                  }
                   onMouseDown={event => {
                     if (event.button === 1) event.preventDefault()
                   }}
@@ -277,7 +287,11 @@ export function RightPanelTabs(props: Props): React.JSX.Element {
                   className="focus-visible:ring-ring flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-sm px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset"
                 >
                   <SurfaceIcon surface={surface} />
-                  <span className="truncate">{title}</span>
+                  {surfaceKind(surface) === 'side-chat' ? (
+                    <SideChatTabLabel id={surfaceResource(surface)} fallback={title} />
+                  ) : (
+                    <span className="truncate">{title}</span>
+                  )}
                 </button>
                 <button
                   type="button"
@@ -353,13 +367,6 @@ export function RightPanelTabs(props: Props): React.JSX.Element {
             <DropdownMenuItem key={item.label} disabled={!item.action} onClick={item.action} title={item.hint}>
               {item.icon}
               {item.label}
-            </DropdownMenuItem>
-          ))}
-          {Boolean(props.sideChatHistory?.length) && <DropdownMenuSeparator />}
-          {props.sideChatHistory?.slice(0, 10).map(chat => (
-            <DropdownMenuItem key={chat.id} onClick={() => props.onOpenSideChat?.(chat.id)}>
-              <MessagesSquare />
-              {chat.title}
             </DropdownMenuItem>
           ))}
         </DropdownMenuContent>

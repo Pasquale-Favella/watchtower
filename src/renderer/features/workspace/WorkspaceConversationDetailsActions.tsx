@@ -1,5 +1,5 @@
-import { ArrowUpRight, FileDiff, Folder, GitPullRequest, LoaderCircle, MessageSquare, Plus } from 'lucide-react'
-import { type ReactNode, useEffect, useState } from 'react'
+import { ArrowUpRight, FileDiff, Folder, GitPullRequest, LoaderCircle, MessageSquare } from 'lucide-react'
+import { type ReactNode, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
@@ -9,9 +9,9 @@ import { DelegationDetails } from './delegation/DelegationDetails.js'
 import { useSwitchBranch, useWorkspaceBranches, useWorkspaceProject, useWorkspaceTaskSnapshot } from './hooks.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
-import { useCreateSideChat, useSideChats } from './side-chat/hooks.js'
+import { useSideChats } from './side-chat/hooks.js'
 import { WorkspaceQueryScopeContext } from './side-chat/scope-context.js'
-import { sideChatStatus, sideChatStatusLabel } from './side-chat/status.js'
+import { sideChatStatus, sideChatStatusLabel, sideChatTabState } from './side-chat/status.js'
 import { useSideChatQueryScope } from './side-chat/use-side-chat-query-scope.js'
 import type { ConversationDetailsItems } from './use-conversation-details-items.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
@@ -37,19 +37,19 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
     ? { projectId: props.projectId, ...(props.checkoutId ? { checkoutId: props.checkoutId } : {}) }
     : null
   const sideChats = useSideChats(props.visible.sideChats ? (props.taskId ?? null) : null)
-  const createSideChat = useCreateSideChat()
   const sideChatItems = sideChats.items.filter(
     item => !props.conversationId || item.parentConversationId === props.conversationId,
   )
-  const sideChatOwner =
-    props.taskId && props.conversationId && props.onOpenSideChat
-      ? {
-          parentTaskId: props.taskId,
-          parentConversationId: props.conversationId,
-          checkoutId: props.checkoutId,
-          onOpen: props.onOpenSideChat,
-        }
-      : null
+  const [runningSideChats, setRunningSideChats] = useState<ReadonlySet<string>>(() => new Set())
+  const setSideChatRunning = useCallback((id: string, running: boolean) => {
+    setRunningSideChats(previous => {
+      if (previous.has(id) === running) return previous
+      const next = new Set(previous)
+      if (running) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
   const workspacePath = props.workspacePath
   const workspaceName = workspacePath?.split(/[\\/]/).filter(Boolean).at(-1) ?? workspacePath
 
@@ -104,7 +104,7 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
         <section aria-label="Side chats" className="space-y-1 p-2">
           <div className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
             <MessageSquare aria-hidden="true" className="size-3.5" />
-            <span>Side chats</span>
+            <span>{runningSideChats.size > 0 ? `Side chats · ${runningSideChats.size} running` : 'Side chats'}</span>
           </div>
           {sideChats.error && (
             <p role="alert" className="text-destructive px-1 text-xs">
@@ -125,35 +125,9 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
               item={item}
               disabled={!props.onOpenSideChat}
               onOpen={() => props.onOpenSideChat?.(item.id)}
+              onRunningChange={setSideChatRunning}
             />
           ))}
-          {sideChatOwner && (
-            <button
-              type="button"
-              disabled={createSideChat.pending}
-              className="text-muted-foreground hover:bg-muted flex w-full items-center gap-2 rounded px-1 py-1 text-left text-xs disabled:opacity-50"
-              onClick={() => {
-                void createSideChat
-                  .create({
-                    parentTaskId: sideChatOwner.parentTaskId,
-                    parentConversationId: sideChatOwner.parentConversationId,
-                    ...(sideChatOwner.checkoutId ? { checkoutId: sideChatOwner.checkoutId } : {}),
-                  })
-                  .then(binding => {
-                    if (binding) sideChatOwner.onOpen(binding.id)
-                  })
-                  .catch(() => undefined)
-              }}
-            >
-              <Plus aria-hidden="true" className="size-3.5" />
-              New side chat
-            </button>
-          )}
-          {createSideChat.error && (
-            <p role="alert" className="text-destructive px-1 text-xs">
-              {createSideChat.error}
-            </p>
-          )}
         </section>
       )}
       {props.visible.delegations && props.taskId && (
@@ -172,15 +146,17 @@ function SideChatRelationshipRow({
   item,
   disabled,
   onOpen,
+  onRunningChange,
 }: {
   readonly item: ReturnType<typeof useSideChats>['items'][number]
   readonly disabled: boolean
   readonly onOpen: () => void
+  readonly onRunningChange: (id: string, running: boolean) => void
 }): React.JSX.Element {
   const scope = useSideChatQueryScope()
   return (
     <WorkspaceQueryScopeContext value={scope}>
-      <SideChatRelationshipStatus item={item} disabled={disabled} onOpen={onOpen} />
+      <SideChatRelationshipStatus item={item} disabled={disabled} onOpen={onOpen} onRunningChange={onRunningChange} />
     </WorkspaceQueryScopeContext>
   )
 }
@@ -189,13 +165,20 @@ function SideChatRelationshipStatus({
   item,
   disabled,
   onOpen,
+  onRunningChange,
 }: {
   readonly item: ReturnType<typeof useSideChats>['items'][number]
   readonly disabled: boolean
   readonly onOpen: () => void
+  readonly onRunningChange: (id: string, running: boolean) => void
 }): React.JSX.Element {
   const snapshot = useWorkspaceTaskSnapshot({ taskId: item.taskId, runLimit: 100 })
   const latestRuns = snapshot.data?.runs ?? []
+  const running = sideChatTabState({ runs: latestRuns, pendingRequestKind: null }) === 'running'
+  useEffect(() => {
+    onRunningChange(item.id, running)
+    return () => onRunningChange(item.id, false)
+  }, [item.id, running, onRunningChange])
   const status = snapshot.error
     ? 'Status unavailable'
     : snapshot.data

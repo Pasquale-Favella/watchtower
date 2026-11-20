@@ -109,6 +109,7 @@ export function WorkspaceConversation({
   sessionIdsByRunId,
   runContextsByRunId,
   promptCommands,
+  leading,
 }: {
   readonly conversationId: ConversationId
   readonly workspacePath?: string | undefined
@@ -117,6 +118,8 @@ export function WorkspaceConversation({
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null> | undefined
   readonly runContextsByRunId?: ReadonlyMap<string, WorkspaceRunContext> | undefined
   readonly promptCommands?: readonly string[] | undefined
+  /** Rendered as the first timeline row, for example a side chat's context divider. */
+  readonly leading?: React.ReactNode | undefined
 }): React.JSX.Element {
   const loadImage = useMarkdownImageLoader(scope ?? null)
   const navigation = useMemo(
@@ -131,6 +134,7 @@ export function WorkspaceConversation({
         sessionIdsByRunId={sessionIdsByRunId}
         runContextsByRunId={runContextsByRunId}
         promptCommands={promptCommands}
+        leading={leading}
       />
     </MarkdownNavigationContext>
   )
@@ -141,12 +145,15 @@ function WorkspaceConversationView({
   sessionIdsByRunId = new Map(),
   runContextsByRunId = new Map(),
   promptCommands = [],
+  leading,
 }: {
   readonly conversationId: ConversationId
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null>
   readonly runContextsByRunId?: ReadonlyMap<string, WorkspaceRunContext>
   readonly promptCommands?: readonly string[]
+  readonly leading?: React.ReactNode
 }): React.JSX.Element {
+  const hasLeading = leading !== undefined && leading !== null
   const { projection, stream } = useWorkspaceEvents()
   const connections = useWorkspaceConnections()
   const connectionLabels = useMemo(
@@ -406,8 +413,18 @@ function WorkspaceConversationView({
       const entry = optimisticUserMessage(submission)
       timeline.push({ kind: 'user', id: entry.id, entry, delivery: submission.state })
     }
+    if (hasLeading) timeline.unshift({ kind: 'leading', id: 'timeline-leading' })
     return timeline
-  }, [items, payloadResults, submission, messageKeys, preservedWorkTurns, sessionIdsByRunId, runContextsByRunId])
+  }, [
+    items,
+    payloadResults,
+    submission,
+    messageKeys,
+    preservedWorkTurns,
+    sessionIdsByRunId,
+    runContextsByRunId,
+    hasLeading,
+  ])
   useEffect(() => {
     if (activeRequest || conversation.error) return
     if (!restoredAnchor.current) {
@@ -544,6 +561,7 @@ function WorkspaceConversationView({
           extraData={timelineExtraData}
           historyExhausted={processedRequest !== null && !hasOlderHistory && activeRequest?.direction !== 'backward'}
           renderRow={row => {
+            if (row.kind === 'leading') return leading
             if (row.kind === 'user') {
               const entry = row.entry
               const reference = messagePayloadReference(entry.message)

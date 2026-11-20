@@ -54,8 +54,6 @@ export interface WorkspaceRightPanelProps {
   readonly onAddDevice?: (() => void) | undefined
   readonly onAddPullRequests?: (() => void) | undefined
   readonly onAddSideChat?: (() => void) | undefined
-  readonly sideChatHistory?: readonly { readonly id: string; readonly title: string }[] | undefined
-  readonly onOpenSideChat?: ((id: string) => void) | undefined
   readonly notice?: string | null | undefined
   /** Resource owners may confirm and release a tab before it is removed. Hiding the panel never calls it. */
   readonly beforeCloseSurface?: ((surface: RightPanelSurface) => boolean | Promise<boolean>) | undefined
@@ -187,8 +185,6 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
     onAddDevice: props.onAddDevice,
     onAddPullRequests: props.onAddPullRequests,
     onAddSideChat: props.onAddSideChat,
-    sideChatHistory: props.sideChatHistory,
-    onOpenSideChat: props.onOpenSideChat,
   }
   const content = (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-slot="workspace-panel-content">

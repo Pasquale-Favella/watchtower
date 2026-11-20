@@ -1,30 +1,65 @@
-import { ArrowUpRight, X } from 'lucide-react'
+import { MessagesSquare, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/renderer/components/ui/alert-dialog'
 import { Button } from '@/renderer/components/ui/button'
-import type { WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { SideChatBinding } from '@/shared/schemas/workspace-side-chats.js'
 
-import { useOpenCheckoutFile } from '../checkout-navigation/use-checkout-navigation.js'
 import { isRunActive } from '../composer-state.js'
-import { useWorkspaceNativeAgentSessions, useWorkspaceTask, useWorkspaceTaskSnapshot } from '../hooks.js'
+import {
+  useWorkspaceNativeAgentSessions,
+  useWorkspacePendingRequests,
+  useWorkspaceTask,
+  useWorkspaceTaskSnapshot,
+} from '../hooks.js'
+import { firstPendingRequest } from '../request-drawer-state.js'
+import { TimelineRoutesContext } from '../timeline/timeline-routes.js'
 import { WorkspaceComposer } from '../WorkspaceComposer.js'
 import { WorkspaceConversation } from '../WorkspaceConversation.js'
-import { useBringBackSideChat, useSideChatBinding, useSideChatPreferences } from './hooks.js'
+import {
+  useBringBackSideChat,
+  useDeleteSideChat,
+  usePublishSideChatTab,
+  useSideChatBinding,
+  useSideChatPreferences,
+} from './hooks.js'
 import { WorkspaceQueryScopeContext } from './scope-context.js'
+import { sideChatTabState } from './status.js'
 import { useSideChatQueryScope } from './use-side-chat-query-scope.js'
 
 export interface SideChatPaneProps {
   readonly id: string
   readonly visible?: boolean | undefined
-  readonly onOpenAsChat: (binding: SideChatBinding) => void
+  readonly parentTitle: string
+  /** The main chat has an active or queued Run, so a bring-back must wait. Read from the parent view's snapshot. */
+  readonly parentBusy?: boolean | undefined
   readonly onClose: () => void
+  readonly onDeleted: () => void
+  /** File references open in the main chat's file panel, since a side chat shares its checkout. */
   readonly onOpenFile?: ((path: string) => void) | undefined
-  readonly fileCheckoutId?: WorkspaceCheckoutId | undefined
+  /** Tool diffs open the main chat's diff panel, since a side chat shares its checkout. */
+  readonly onOpenDiff?: (() => void) | undefined
+  /** Command rows open the main chat's terminal drawer. */
+  readonly onOpenTerminal?: (() => void) | undefined
 }
 export function SideChatPane(props: SideChatPaneProps): React.JSX.Element {
   const binding = useSideChatBinding(props.id)
   const scope = useSideChatQueryScope()
+  if (binding.deleted)
+    return (
+      <p role="status" className="text-muted-foreground p-4 text-sm">
+        This side chat was deleted.
+      </p>
+    )
   if (binding.error)
     return (
       <p role="alert" className="text-destructive p-4 text-sm">
@@ -45,11 +80,14 @@ export function SideChatPane(props: SideChatPaneProps): React.JSX.Element {
 }
 function SideChatContent({
   binding,
-  onOpenAsChat,
   onClose,
+  onDeleted,
   visible = true,
   onOpenFile,
-  fileCheckoutId,
+  onOpenDiff,
+  onOpenTerminal,
+  parentTitle,
+  parentBusy = false,
 }: SideChatPaneProps & { readonly binding: SideChatBinding }): React.JSX.Element {
   const detail = useWorkspaceTask({ taskId: binding.taskId, options: { limit: 30 } })
   const snapshot = useWorkspaceTaskSnapshot({ taskId: binding.taskId, runLimit: 100 })
@@ -64,11 +102,9 @@ function SideChatContent({
   )
   const sideBusy = snapshot.data?.runs.some(isRunActive) ?? false
   const completed = snapshot.data?.runs.some(run => run.status === 'completed') ?? false
-  const back = useBringBackSideChat(binding.parentConversationId)
-  const [selection, setSelection] = useState('')
-  const [broughtBack, setBroughtBack] = useState(false)
-  const [fileError, setFileError] = useState<string | null>(null)
-  const openFile = useOpenCheckoutFile()
+  const back = useBringBackSideChat(binding.id)
+  const remove = useDeleteSideChat()
+  const [confirmingDelete, setConfirmingDelete] = useState(false)
   const runContext = snapshot.data?.runContexts?.find(context => context.conversationId === binding.conversationId)
   const promptCommands = useMemo(
     () =>
@@ -77,71 +113,72 @@ function SideChatContent({
         .flatMap(session => session.capabilities?.commands?.map(command => command.name) ?? []) ?? [],
     [nativeSessions.data?.items, binding.conversationId],
   )
-  const activeCheckoutId = runContext?.checkoutId ?? binding.checkoutId
-  function openChatFile(path: string): void {
-    setFileError(null)
-    if (onOpenFile && activeCheckoutId === fileCheckoutId) {
-      onOpenFile(path)
-      return
-    }
-    if (!detail.data) return
-    void openFile({
-      projectId: detail.data.task.projectId,
-      checkoutId: activeCheckoutId,
-      path,
-      editor: 'vscode',
-    }).catch(() => setFileError('Could not open this file.'))
-  }
-  const bringBackLabel = selection ? 'Bring selection back' : 'Bring back'
+  const bringBackReason = parentBusy
+    ? 'Available when the main chat is idle.'
+    : !completed || sideBusy
+      ? 'Available after a finished reply.'
+      : null
+  const title = detail.data?.task.title ?? binding.title
+  const pendingQuery = useMemo(() => firstPendingRequest(binding.taskId), [binding.taskId])
+  const pending = useWorkspacePendingRequests(pendingQuery)
+  const pendingRequestKind = (pending.data?.items ?? []).some(item => item.request.kind === 'approval')
+    ? 'approval'
+    : (pending.data?.items ?? []).some(item => item.request.kind === 'question')
+      ? 'question'
+      : null
+  const tabState = sideChatTabState({ runs: snapshot.data?.runs ?? [], pendingRequestKind })
+  // The pane publishes its tab title and state, so the tab strip and the main chat read them without a query of their own.
+  usePublishSideChatTab(binding.id, title, tabState)
   useSideChatPreferences(binding.parentConversationId, binding.conversationId, binding.checkoutId)
   return (
     <section
       aria-label="Side chat"
+      data-side-chat-pane={binding.taskId}
       aria-hidden={!visible}
       inert={!visible}
       style={!visible ? { display: 'none' } : undefined}
       className="flex h-full min-h-0 flex-col"
-      onPointerUp={event => {
-        const selected = window.getSelection()
-        if (
-          selected?.anchorNode &&
-          selected.focusNode &&
-          event.currentTarget.contains(selected.anchorNode) &&
-          event.currentTarget.contains(selected.focusNode)
-        )
-          setSelection(selected.toString().trim())
-      }}
     >
       <header className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">{binding.title}</span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">{title}</span>
         <Button
           variant="ghost"
           size="xs"
-          disabled={back.pending || (!selection && (sideBusy || !completed))}
-          onClick={() => void back.bringBack(binding.id, selection || undefined).then(setBroughtBack)}
-          title="Add the latest reply to the main chat draft."
+          aria-disabled={bringBackReason !== null}
+          disabled={back.pending}
+          onClick={() => {
+            if (bringBackReason === null) void back.bringBack()
+          }}
+          title={bringBackReason ?? "Adds this side chat to the main chat's next message."}
         >
-          {broughtBack ? 'Added to draft' : bringBackLabel}
+          Bring back
         </Button>
         <Button
           variant="ghost"
           size="icon-xs"
-          aria-label="Open side chat as chat"
-          onClick={() => onOpenAsChat(binding)}
+          aria-label="Delete side chat"
+          disabled={remove.pending || sideBusy}
+          onClick={() => setConfirmingDelete(true)}
         >
-          <ArrowUpRight />
+          <Trash2 />
         </Button>
         <Button variant="ghost" size="icon-xs" aria-label="Close side chat" onClick={onClose}>
           <X />
         </Button>
       </header>
-      <p className="text-muted-foreground shrink-0 border-b px-3 py-1.5 text-[11px]">
-        Includes the main chat as it was when this side chat opened.
-        {binding.contextTruncated ? ' The copied context was shortened.' : ''}
-      </p>
+      {back.receipt && !back.error && (
+        <p role="status" className="text-muted-foreground shrink-0 px-3 py-1.5 text-xs">
+          Brought back. The main chat gets this side chat with your next message.
+        </p>
+      )}
       {back.error && (
         <p role="alert" className="text-destructive px-3 py-2 text-xs">
           {back.error}
+        </p>
+      )}
+      {remove.error && (
+        <p role="alert" className="text-destructive px-3 py-2 text-xs">
+          {remove.error}
         </p>
       )}
       {detail.error && (
@@ -149,36 +186,58 @@ function SideChatContent({
           {detail.error}
         </p>
       )}
-      {fileError && (
-        <p role="alert" className="text-destructive px-3 py-2 text-xs">
-          {fileError}
-        </p>
-      )}
       <div className="min-h-0 flex-1 overflow-hidden [&>section]:h-full">
-        <WorkspaceConversation
-          conversationId={binding.conversationId}
-          sessionIdsByRunId={sessionIdsByRunId}
-          runContextsByRunId={runContextsByRunId}
-          promptCommands={promptCommands}
-          workspacePath={runContext?.workspacePath}
-          onOpenFile={openChatFile}
-          scope={detail.data ? { projectId: detail.data.task.projectId, checkoutId: activeCheckoutId } : undefined}
-        />
+        <TimelineRoutesContext value={{ openDiff: onOpenDiff, openTerminal: onOpenTerminal }}>
+          <WorkspaceConversation
+            conversationId={binding.conversationId}
+            sessionIdsByRunId={sessionIdsByRunId}
+            runContextsByRunId={runContextsByRunId}
+            promptCommands={promptCommands}
+            workspacePath={runContext?.workspacePath}
+            onOpenFile={onOpenFile}
+            scope={detail.data ? { projectId: detail.data.task.projectId, checkoutId: binding.checkoutId } : undefined}
+            leading={
+              <div className="text-muted-foreground flex items-center gap-2 px-3 py-2 text-[11px]">
+                <span className="bg-border h-px flex-1" />
+                <MessagesSquare aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="min-w-0 truncate">Context from {parentTitle || 'the main chat'}</span>
+                <span className="bg-border h-px flex-1" />
+              </div>
+            }
+          />
+        </TimelineRoutesContext>
       </div>
-      {snapshot.data?.runs.length === 0 && (
-        <p className="text-muted-foreground shrink-0 px-4 pt-2 text-xs">
-          Choose New worktree to run alongside the main chat in an isolated checkout.
-        </p>
-      )}
       {detail.data && (
         <WorkspaceComposer
-          onOpenFile={openChatFile}
+          embedded
+          onOpenFile={onOpenFile}
           key={binding.conversationId}
           task={detail.data.task}
           conversationId={binding.conversationId}
-          allowInitialCheckoutChoice
         />
       )}
+      <AlertDialog open={confirmingDelete} onOpenChange={open => setConfirmingDelete(open)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete side chat &quot;{title}&quot;?</AlertDialogTitle>
+            <AlertDialogDescription>This permanently deletes the side chat and its history.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingDelete(false)
+                void remove.remove({ id: binding.id, parentTaskId: binding.parentTaskId }).then(deleted => {
+                  if (deleted) onDeleted()
+                })
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   )
 }

@@ -141,7 +141,9 @@ export function useRightPanel(taskKey: string | null): RightPanelControls {
         toggle()
         return
       }
-      if (event.repeat || isTerminalFocusTarget(event.target)) return
+      // A side chat pane forwards only the panel toggle above; diff and tab shortcuts act on the main panel.
+      const insideSideChat = event.target instanceof Element && event.target.closest('[data-side-chat-pane]') !== null
+      if (event.repeat || insideSideChat || isTerminalFocusTarget(event.target)) return
       if (isModKey(event, 'KeyD')) {
         event.preventDefault()
         change(p => toggleSurface(p, 'diff'))

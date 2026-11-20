@@ -1473,6 +1473,10 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE IF EXISTS workspace_delegation`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN delegation_id`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN origin`
+            yield* sql`DROP INDEX index_side_chat_bring_back_pending`
+            yield* sql`DROP TABLE workspace_side_chat_bring_back`
+            yield* sql`DROP INDEX index_tasks_by_project_listed`
+            yield* sql`ALTER TABLE workspace_task DROP COLUMN side_chat`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 10`
           }),
         )
@@ -2538,6 +2542,10 @@ describe('WorkspaceStore', () => {
             yield* sql`DROP TABLE IF EXISTS workspace_delegation`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN delegation_id`
             yield* sql`ALTER TABLE workspace_message DROP COLUMN origin`
+            yield* sql`DROP INDEX index_side_chat_bring_back_pending`
+            yield* sql`DROP TABLE workspace_side_chat_bring_back`
+            yield* sql`DROP INDEX index_tasks_by_project_listed`
+            yield* sql`ALTER TABLE workspace_task DROP COLUMN side_chat`
             yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id >= 5`
             yield* sql`ALTER TABLE workspace_worker_epoch DROP COLUMN allocated_epoch`
           }),
@@ -3733,6 +3741,193 @@ describe('WorkspaceStore', () => {
       const catchUp = await run(store.readConversationPage(conversation.id, tail.highWatermark, 10))
       expect(catchUp.items.map(item => item.event.kind)).toEqual(['runQueued', 'runFailed'])
       expect(catchUp.items[0]?.userMessage).toMatchObject({ content: 'Prompt 55' })
+    })
+  })
+})
+
+describe('side chat storage', () => {
+  const sideTaskId = 'side-task:side-1' as never
+  const sideConversation = { id: 'side-conversation:side-1' as never, createdAt: '2026-10-29T10:00:00Z' }
+  const sideTask = {
+    id: sideTaskId,
+    projectId: project.id,
+    title: 'Side chat',
+    description: 'Side chat linked to a parent conversation.',
+    createdAt: '2026-10-29T10:00:00Z',
+  }
+  const sideCommand = {
+    ...command,
+    commandId: 'side-cmd-1',
+    runId: 'side-run-1' as never,
+    taskId: sideTaskId,
+    conversationId: sideConversation.id,
+    provisionalAgentSessionId: 'side-session-1',
+    prompt: 'Side question',
+  }
+  const bringBack = (id: string, sideChatId: string) => ({
+    id,
+    parentTaskId: task.id,
+    parentConversationId: conversation.id,
+    sideChatId,
+    sideTaskId,
+    sideConversationId: sideConversation.id,
+    sourceRunId: 'side-run-1' as never,
+    title: 'Side chat',
+    digest: 'User: question\nAssistant: finding',
+    truncated: false,
+    status: 'pending' as const,
+    createdAt: '2026-10-29T10:00:05.000Z',
+    consumedRunId: null,
+    consumedAt: null,
+  })
+  const createSideTask = async (store: WorkspaceStore['Service'], run: RunEffect) => {
+    await run(
+      store.createTask({
+        task: {
+          ...sideTask,
+          sideChat: { parentTaskId: task.id, parentConversationId: conversation.id },
+        },
+        conversation: sideConversation,
+      }),
+    )
+  }
+  const sideChatEvents = async (store: WorkspaceStore['Service'], run: RunEffect) =>
+    (await run(store.pageEvents(0, 500))).events.filter(event => event.kind === 'sideChatBringBack')
+
+  it('hides side chat Tasks from Task listings while keeping them addressable', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      const listed = await run(store.listTasks(project.id, { includeArchived: true }))
+      expect(listed.items.map(item => item.id)).toEqual([task.id])
+      expect(listed.total).toBe(1)
+      const snapshot = await run(store.readTaskSnapshot(sideTaskId, 10))
+      expect(snapshot.task.sideChat).toBe(true)
+      expect((await run(store.readTaskSnapshot(task.id, 10))).task.sideChat).toBe(false)
+    })
+  })
+
+  it('keeps a bring-back refused while the parent Conversation has an active Run or queued follow-up', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      await run(store.beginRun(command))
+      await expect(run(store.recordSideChatBringBack(bringBack('bb-busy', 'side-chat:side-1')))).resolves.toEqual({
+        _tag: 'parent-busy',
+      })
+      await expect(run(store.readPendingSideChatBringBack(conversation.id))).resolves.toBeNull()
+    })
+  })
+
+  it('supersedes a pending bring-back from the same side chat and refuses one from another', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      const first = await run(store.recordSideChatBringBack(bringBack('bb-1', 'side-chat:side-1')))
+      expect(first).toMatchObject({ _tag: 'recorded', supersedesId: null })
+      const second = await run(store.recordSideChatBringBack(bringBack('bb-2', 'side-chat:side-1')))
+      expect(second).toMatchObject({ _tag: 'recorded', supersedesId: 'bb-1' })
+      expect(await run(store.readPendingSideChatBringBack(conversation.id))).toMatchObject({ id: 'bb-2' })
+      await expect(run(store.recordSideChatBringBack(bringBack('bb-3', 'side-chat:other')))).resolves.toEqual({
+        _tag: 'bring-back-pending',
+        pendingSideChatId: 'side-chat:side-1',
+      })
+    })
+  })
+
+  it('consumes a pending bring-back once for the next Run, and a retry returns the same record', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      await run(store.recordSideChatBringBack(bringBack('bb-consume', 'side-chat:side-1')))
+      await run(store.beginRun(command))
+      await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))
+      const consumed = await run(
+        store.consumeSideChatBringBack(command.runId, { ownerEpoch: 7, occurredAt: '2026-10-29T10:00:03Z' }),
+      )
+      expect(consumed).toMatchObject({ id: 'bb-consume', status: 'consumed', consumedRunId: command.runId })
+      const retried = await run(
+        store.consumeSideChatBringBack(command.runId, { ownerEpoch: 7, occurredAt: '2026-10-29T10:00:04Z' }),
+      )
+      expect(retried).toEqual(consumed)
+      expect(await sideChatEvents(store, run)).toHaveLength(1)
+      expect(await run(store.readPendingSideChatBringBack(conversation.id))).toBeNull()
+    })
+  })
+
+  it('returns a consumed bring-back to pending when its Run fails before the driver starts', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      await run(store.recordSideChatBringBack(bringBack('bb-release', 'side-chat:side-1')))
+      await run(store.beginRun(command))
+      await run(store.claimDispatch(command.runId, 7, '2026-10-29T10:00:02Z'))
+      await run(store.consumeSideChatBringBack(command.runId, { ownerEpoch: 7, occurredAt: '2026-10-29T10:00:03Z' }))
+      await run(
+        store.failDispatch(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:04Z',
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      expect(await run(store.readPendingSideChatBringBack(conversation.id))).toMatchObject({
+        id: 'bb-release',
+        status: 'pending',
+        consumedRunId: null,
+      })
+    })
+  })
+
+  it('deletes an unused side chat with its pending bring-back, but keeps one that already has Runs', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      await run(store.recordSideChatBringBack(bringBack('bb-delete', 'side-chat:side-1')))
+      await run(
+        store.createTask({
+          task: {
+            ...sideTask,
+            id: 'side-task:used' as never,
+            sideChat: { parentTaskId: task.id, parentConversationId: conversation.id },
+          },
+          conversation: { id: 'side-conversation:used' as never, createdAt: '2026-10-29T10:00:00Z' },
+        }),
+      )
+      await run(
+        store.beginRun({
+          ...sideCommand,
+          commandId: 'used-cmd',
+          runId: 'used-run' as never,
+          taskId: 'side-task:used' as never,
+          conversationId: 'side-conversation:used' as never,
+        }),
+      )
+      await expect(
+        run(
+          store.deleteSideChatTask({
+            sideChatId: 'side-chat:used',
+            sideTaskId: 'side-task:used' as never,
+            onlyIfUnused: true,
+          }),
+        ),
+      ).resolves.toBe(false)
+      await expect(run(store.readTaskSnapshot('side-task:used' as never, 10))).resolves.toMatchObject({
+        runs: [{ id: 'used-run' }],
+      })
+      await expect(
+        run(store.deleteSideChatTask({ sideChatId: 'side-chat:side-1', sideTaskId, onlyIfUnused: true })),
+      ).resolves.toBe(true)
+      await expect(run(store.readTaskSnapshot(sideTaskId, 10))).rejects.toMatchObject({ code: 'not-found' })
+      await expect(run(store.readPendingSideChatBringBack(conversation.id))).resolves.toBeNull()
+    })
+  })
+
+  it('never deletes a Task that is not a side chat', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(store.deleteSideChatTask({ sideChatId: 'side-chat:none', sideTaskId: task.id, onlyIfUnused: false }))
+      await expect(run(store.readTaskSnapshot(task.id, 10))).resolves.toMatchObject({ task: { id: task.id } })
     })
   })
 })

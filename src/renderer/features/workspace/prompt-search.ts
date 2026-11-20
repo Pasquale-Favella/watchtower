@@ -15,6 +15,8 @@ export interface PromptMenuItem {
   /** Secondary text, such as the parent directory or where a skill is defined. */
   readonly description?: string
   readonly category: 'action' | 'native' | 'skill' | 'command' | 'file' | 'model' | 'conversation' | 'pullRequest'
+  /** Set when the row is listed but cannot run here; picking it does nothing. */
+  readonly disabledReason?: string
   /** Searchable value, such as the checkout path of a file or skill. */
   readonly path?: string
   readonly scope?: string

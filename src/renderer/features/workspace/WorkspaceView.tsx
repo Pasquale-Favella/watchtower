@@ -5,7 +5,7 @@ import { Popover } from '@/renderer/components/ui/popover'
 import type { DraftTerminalTarget, TerminalTarget } from '@/shared/schemas/terminal.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
-import { currentConversationRuns } from './composer-state.js'
+import { currentConversationRuns, isRunActive } from './composer-state.js'
 import { useDelegations } from './delegation/hooks.js'
 import {
   useWorkspaceNativeAgentSessions,
@@ -15,8 +15,9 @@ import {
 } from './hooks.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { attachmentPromptToken } from './prompt-editor.js'
+import { surfaceKind, surfaceResource } from './right-panel/right-panel-state.js'
 import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
-import { useSideChats } from './side-chat/hooks.js'
+import { useSideChatTabs } from './side-chat/hooks.js'
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
@@ -86,7 +87,13 @@ function TaskConversation({
   const resources = useWorkspacePanelResources(ownerKey, panel, taskId)
   const appendDraft = useDraftAppend()
   const snapshot = useWorkspaceTaskSnapshot({ taskId, runLimit: 100 })
-  const sideChats = useSideChats(taskId)
+  const sideTabs = useSideChatTabs()
+  // An open side chat tab that needs an approval or an answer is announced beside the main composer.
+  const waitingSideChat = panel.surfaces.find(surface => {
+    if (surfaceKind(surface) !== 'side-chat') return false
+    const state = sideTabs[surfaceResource(surface)]?.state
+    return state === 'needsApproval' || state === 'needsInput'
+  })
   const delegations = useDelegations(taskId)
   const nativeSessions = useWorkspaceNativeAgentSessions({ taskId, options: { limit: 50 } })
   const sessionIdsByRunId = useMemo(
@@ -141,9 +148,6 @@ function TaskConversation({
       detailsOpen={detailsOpen}
       detailsMode={detailsMode}
       onToggleDetails={detail.data ? toggleDetails : undefined}
-      relatedSideChatCount={
-        sideChats.items.filter(item => !conversation || item.parentConversationId === conversation.id).length
-      }
       relatedDelegationCount={
         delegations.items.filter(item => !conversation || item.parentConversationId === conversation.id).length
       }
@@ -187,6 +191,12 @@ function TaskConversation({
     availableCheckouts.find(item => item.id === (runContext?.checkoutId ?? preferredCheckoutId)) ??
     (!runContext ? project.data?.mainCheckout : undefined)
   const checkoutId = runContext?.checkoutId ?? checkout?.id
+  // A side chat's bring-back waits for this Conversation to be idle, so the side pane reads it from here.
+  const parentBusy = conversation
+    ? currentConversationRuns(snapshot.data?.runs ?? [], snapshot.data?.runContexts ?? [], conversation.id).some(
+        isRunActive,
+      )
+    : false
   const addToChat = conversation
     ? (excerpt: {
         readonly label: string
@@ -234,6 +244,14 @@ function TaskConversation({
             </div>
             {conversation && task.status !== 'archived' && (
               <div key={conversation.id} className="shrink-0">
+                {waitingSideChat && (
+                  <div role="status" className="flex items-center justify-between gap-2 border-t px-4 py-2 text-xs">
+                    <span>Side chat waiting</span>
+                    <Button type="button" variant="outline" size="xs" onClick={() => panel.activate(waitingSideChat)}>
+                      Open
+                    </Button>
+                  </div>
+                )}
                 <WorkspaceComposer
                   onOpenFile={panel.openFile}
                   task={task}
@@ -321,9 +339,10 @@ function TaskConversation({
               ? { taskId, conversationId: conversation.id }
               : undefined
           }
-          onOpenTask={(nextTaskId, nextConversationId) => {
-            onSelectTask(nextTaskId)
-            onSelectConversation(nextConversationId)
+          parentTitle={task.title}
+          parentBusy={parentBusy}
+          onOpenTerminal={() => {
+            if (!terminal.open) terminal.toggle()
           }}
         />
       </div>
@@ -350,7 +369,9 @@ function TaskRightPanel({
   readonly onToggleTerminal: () => void
   readonly onAddToChat?: React.ComponentProps<typeof WorkspacePanelHost>['onAddToChat']
   readonly parent?: React.ComponentProps<typeof WorkspacePanelHost>['parent']
-  readonly onOpenTask?: React.ComponentProps<typeof WorkspacePanelHost>['onOpenTask']
+  readonly parentTitle?: string | undefined
+  readonly parentBusy?: boolean | undefined
+  readonly onOpenTerminal?: (() => void) | undefined
 }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const referenceInDraft = useDraftReference()

@@ -61,6 +61,18 @@ describe('side chat receipt files', () => {
       cleanup(directory)
     }
   })
+  it('removes a receipt and tolerates removing one that is already gone', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'watchtower-side-chat-'))
+    try {
+      await use(directory, store => store.put(record))
+      await use(directory, store => store.remove(record.binding.id))
+      expect(await use(directory, store => store.get(record.binding.id))).toBeNull()
+      await expect(use(directory, store => store.remove(record.binding.id))).resolves.toBeUndefined()
+      expect(await use(directory, store => store.list())).toEqual([])
+    } finally {
+      cleanup(directory)
+    }
+  })
   it('can restore the full allowed context even when JSON must escape every character', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'watchtower-side-chat-'))
     try {

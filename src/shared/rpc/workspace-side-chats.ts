@@ -5,6 +5,10 @@ import { taskIdSchema } from '@/shared/schemas/workspace.js'
 import {
   createSideChatRequestSchema,
   sideChatBindingSchema,
+  sideChatBringBackReceiptSchema,
+  sideChatBringBackRequestSchema,
+  sideChatDeleteReceiptSchema,
+  sideChatDeleteRequestSchema,
   SideChatError,
   sideChatListSchema,
 } from '@/shared/schemas/workspace-side-chats.js'
@@ -22,8 +26,13 @@ export const WorkspaceSideChatRpcGroup = RpcGroup.make(
     error: SideChatError,
   }),
   Rpc.make('sideChat:bringBack', {
-    payload: Schema.Struct({ id }),
-    success: Schema.Struct({ text: Schema.String }),
+    payload: sideChatBringBackRequestSchema,
+    success: sideChatBringBackReceiptSchema,
+    error: SideChatError,
+  }),
+  Rpc.make('sideChat:delete', {
+    payload: sideChatDeleteRequestSchema,
+    success: sideChatDeleteReceiptSchema,
     error: SideChatError,
   }),
 )

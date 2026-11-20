@@ -48,6 +48,7 @@ export const sideChatPersistenceLayer = (directory: string) =>
             yield* fs.writeFileString(temp, JSON.stringify(record), { mode: 0o600 }).pipe(Effect.mapError(unavailable))
             yield* fs.rename(temp, fileFor(record.binding.id)).pipe(Effect.mapError(unavailable))
           }),
+        remove: id => fs.remove(fileFor(id), { force: true }).pipe(Effect.mapError(unavailable)),
         list: () =>
           Effect.gen(function* () {
             if (!(yield* fs.exists(directory).pipe(Effect.mapError(unavailable)))) return []

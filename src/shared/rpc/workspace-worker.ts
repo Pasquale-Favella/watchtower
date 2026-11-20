@@ -2,16 +2,18 @@ import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
 import { delegationListSchema, delegationRecordSchema } from '@/shared/schemas/delegation.js'
-import { promptConversationMatchesSchema,promptConversationSearchSchema } from '@/shared/schemas/prompt-context.js'
+import { promptConversationMatchesSchema, promptConversationSearchSchema } from '@/shared/schemas/prompt-context.js'
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
 import {
   beginRunCommandSchema,
   checkoutRegistrationReceiptSchema,
   commandReceiptSchema,
+  consumeSideChatBringBackCommandSchema,
   createDelegationCommandSchema,
   createTaskCommandSchema,
   delegationQuerySchema,
   delegationReceiptSchema,
+  deleteSideChatTaskCommandSchema,
   dispatchClaimSchema,
   dispatchFailureCommandSchema,
   enqueueFollowUpCommandSchema,
@@ -35,6 +37,8 @@ import {
   setTaskArchivedCommandSchema,
   settleDelegationCommandSchema,
   settleDeliveryCommandSchema,
+  sideChatBringBackOutcomeSchema,
+  sideChatBringBackRecordSchema,
   steerIntentPageSchema,
   taskCreationReceiptSchema,
   taskMutationReceiptSchema,
@@ -166,6 +170,26 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   Rpc.make('workspace-worker:releaseRetiredDispatches', {
     payload: Schema.Struct({ ownerEpoch: workerEpochSchema }),
     success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:recordSideChatBringBack', {
+    payload: Schema.Struct({ record: sideChatBringBackRecordSchema }),
+    success: sideChatBringBackOutcomeSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:consumeSideChatBringBack', {
+    payload: Schema.Struct({ runId: agentRunIdSchema, command: consumeSideChatBringBackCommandSchema }),
+    success: Schema.NullOr(sideChatBringBackRecordSchema),
+    error,
+  }),
+  Rpc.make('workspace-worker:readPendingSideChatBringBack', {
+    payload: Schema.Struct({ conversationId: conversationIdSchema }),
+    success: Schema.NullOr(sideChatBringBackRecordSchema),
+    error,
+  }),
+  Rpc.make('workspace-worker:deleteSideChatTask', {
+    payload: deleteSideChatTaskCommandSchema,
+    success: Schema.Boolean,
     error,
   }),
   Rpc.make('workspace-worker:acquireOwnerEpoch', {

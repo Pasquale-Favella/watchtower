@@ -255,6 +255,26 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.releaseRetiredDispatches(ownerEpoch),
         true,
       ),
+    'workspace-worker:recordSideChatBringBack': ({ record }) =>
+      execute(
+        'workspace-worker:recordSideChatBringBack',
+        { record },
+        () => options.store.recordSideChatBringBack(record),
+        true,
+      ),
+    'workspace-worker:consumeSideChatBringBack': ({ runId, command }) =>
+      execute(
+        'workspace-worker:consumeSideChatBringBack',
+        { runId, command },
+        () => options.store.consumeSideChatBringBack(runId, command),
+        true,
+      ),
+    'workspace-worker:readPendingSideChatBringBack': ({ conversationId }) =>
+      execute('workspace-worker:readPendingSideChatBringBack', { conversationId }, () =>
+        options.store.readPendingSideChatBringBack(conversationId),
+      ),
+    'workspace-worker:deleteSideChatTask': command =>
+      execute('workspace-worker:deleteSideChatTask', command, () => options.store.deleteSideChatTask(command), true),
     'workspace-worker:acquireOwnerEpoch': ({ recoveredAt }) =>
       execute(
         'workspace-worker:acquireOwnerEpoch',

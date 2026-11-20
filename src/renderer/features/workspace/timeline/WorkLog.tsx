@@ -27,6 +27,7 @@ import { cn } from '@/renderer/shared/lib/utils'
 import { formatRunDuration } from './duration.js'
 import { FileChangesBlock } from './FileChangesBlock.js'
 import { CopyTextButton } from './MessageActions.js'
+import { useTimelineRoutes } from './timeline-routes.js'
 import { safeToolUrl, toolPresentation } from './tool-presentation.js'
 import { ToolOutputPanel } from './ToolOutputPanel.js'
 import type { WorkGroup } from './turn-segments.js'
@@ -77,6 +78,7 @@ export function ToolRow({
   readonly onDisclosureChange?: (key: string, open: boolean) => void
 }): React.JSX.Element {
   const [localOpen, setLocalOpen] = useState(false)
+  const routes = useTimelineRoutes()
   const controlled = disclosureKey !== undefined && disclosureChoices !== undefined
   const open = controlled ? (disclosureChoices[disclosureKey] ?? false) : localOpen
   const changeOpen = (next: boolean) => {
@@ -139,6 +141,13 @@ export function ToolRow({
           </p>
         )}
         {presentation.command && <ToolOutputPanel text={presentation.command} label="Command" terminal />}
+        {presentation.category === 'command' && routes.openTerminal && (
+          <div className="flex justify-end">
+            <Button type="button" variant="link" size="xs" onClick={routes.openTerminal}>
+              Open in terminal
+            </Button>
+          </div>
+        )}
         {tool.input && <ToolOutputPanel text={tool.input} label="Input" />}
         {tool.changes?.length ? <FileChangesBlock changes={tool.changes} /> : null}
         {!tool.changes?.length && presentation.paths.length > 0 && (

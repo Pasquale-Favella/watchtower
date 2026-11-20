@@ -12,6 +12,7 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 
+import { sideChatBringBackPrompt } from '@/core/application/commands/workspace-side-chats.js'
 import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
 import { captureConversationContext } from '@/core/application/execution/conversation-context.js'
 import type {
@@ -74,7 +75,10 @@ export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceEr
 }) {}
 
 export interface ExecutionServiceOptions {
-  readonly enrichPrompt?: (claim: DispatchClaim) => Effect.Effect<string, AgentDriverError | ExecutionServiceError>
+  readonly enrichPrompt?: (
+    claim: DispatchClaim,
+    store: WorkspaceStore['Service'],
+  ) => Effect.Effect<string, AgentDriverError | ExecutionServiceError>
   /** Acquires ephemeral task-scoped session capabilities in the driver's connection scope. */
   readonly prepareSession?: (
     context: AgentSessionContext,
@@ -367,7 +371,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             Effect.tapError(error => Effect.sync(() => backgroundFailures.push(Cause.fail(error)))),
           )
           const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
-          let prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim) : state.claim.prompt
+          let prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim, store) : state.claim.prompt
           if (!state.claim.nativeSessionId) {
             const snapshot = yield* store.readTaskSnapshot(state.claim.taskId, 500).pipe(
               Effect.mapError(
@@ -438,6 +442,23 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
               }
             }
           }
+          // Side chat bring-back: consumed once by this Run; a retry of the same dispatch returns the same record.
+          const bringBack = yield* store
+            .consumeSideChatBringBack(state.claim.runId, {
+              ownerEpoch: state.claim.ownerEpoch,
+              occurredAt: yield* timestamp,
+            })
+            .pipe(
+              Effect.mapError(
+                error =>
+                  new ExecutionServiceError({
+                    reason: 'background-failure',
+                    message: 'Side chat bring-back could not be applied.',
+                    cause: error,
+                  }),
+              ),
+            )
+          if (bringBack !== null) prompt = sideChatBringBackPrompt(bringBack, prompt)
           const driver = yield* drivers.resolve(state.claim.driverId)
           if (driver.driverId !== state.claim.driverId) {
             return yield* new ExecutionServiceError({

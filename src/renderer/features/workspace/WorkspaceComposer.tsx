@@ -5,6 +5,7 @@ import { Button } from '@/renderer/components/ui/button'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId, Task, WorkspaceCheckout } from '@/shared/schemas/workspace.js'
+import type { SideChatBinding } from '@/shared/schemas/workspace-side-chats.js'
 
 import { useWorkspaceAgentPreferences } from './agent-preferences.js'
 import type { CheckoutMode } from './checkout-strip-state.js'
@@ -59,10 +60,11 @@ import { PromptMessageContent } from './PromptMessageContent.js'
 import { firstPendingRequest } from './request-drawer-state.js'
 import { promptWithReviewComments, reviewCommentsIncludedInPrompt } from './review/review-comments.js'
 import { useReviewComments } from './review/use-review-comments.js'
-import { useCreateSideChat } from './side-chat/hooks.js'
+import { useCreateSideChat, useDeleteSideChat } from './side-chat/hooks.js'
+import { sideChatCommandBlock } from './side-chat/status.js'
 import { usePendingStart } from './use-pending-start.js'
 import { usePromptHistory } from './use-prompt-history.js'
-import { useDraftAppend, useWorkspaceDraft } from './use-workspace-draft.js'
+import { useWorkspaceDraft } from './use-workspace-draft.js'
 import { WorkspaceAgentPicker } from './WorkspaceAgentPicker.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
 import { WorkspacePromptInput } from './WorkspacePromptInput.js'
@@ -123,6 +125,8 @@ type WorkspaceComposerProps = {
   readonly conversationId: ConversationId
   readonly allowInitialCheckoutChoice?: boolean | undefined
   readonly onSideChatCreated?: ((id: string) => void) | undefined
+  /** A side chat's own composer: it shares the parent's checkout, starts no side chat and takes no focus. */
+  readonly embedded?: boolean | undefined
 }
 
 /** Pinned prompt controls for one Conversation; execution ownership remains with the application. */
@@ -141,8 +145,8 @@ function WorkspaceComposerContent({
   allowInitialCheckoutChoice = false,
   onSideChatCreated,
   onOpenFile,
+  embedded = false,
 }: WorkspaceComposerProps) {
-  const appendDraft = useDraftAppend()
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
   const { accessMode: defaultAccessMode } = useWorkspaceAgentPreferences()
   const attachments = usePromptAttachments(conversationId)
@@ -184,6 +188,7 @@ function WorkspaceComposerContent({
   const inspect = useInspectWorkspaceConnection()
   const startRun = useStartRun()
   const createSideChat = useCreateSideChat()
+  const deleteSideChat = useDeleteSideChat()
   const createWorktree = useCreateWorktree()
   const enqueue = useEnqueueFollowUp()
   const steerRun = useSteerRun()
@@ -566,64 +571,74 @@ function WorkspaceComposerContent({
     }
     if (promptCommand?.kind === 'side' || promptCommand?.kind === 'btw') {
       if (!actionStateReady || blocked || pendingStart || pendingStarts.store.error || intent) return
+      const block = sideChatCommandBlock({
+        embedded,
+        attachmentCount: attachments.items.length + reviewComments.items.length,
+      })
+      if (block) {
+        setError(block.reason)
+        return
+      }
       const rawDraft = draft
       const prompt = promptCommand.prompt
       setError(null)
+      let created: SideChatBinding | null = null
+      let captured: { readonly commandId: string } | null = null
       try {
-        const binding = await createSideChat.create({
+        created = await createSideChat.create({
           parentTaskId: task.id,
           parentConversationId: conversationId,
-          ...(checkoutId ? { checkoutId } : {}),
           ...(prompt ? { title: prompt.slice(0, 200) } : {}),
         })
-        if (!binding) return
-        onSideChatCreated?.(binding.id)
+        if (!created) return
+        const binding = created
         if (prompt) {
           if (
-            selectedConnection &&
-            inspected?.capabilities.openSession.support === 'supported' &&
-            inspected.capabilities.submit.support === 'supported'
-          ) {
-            const sideCommand: WorkspaceRequest<'workspace:startRun'> = {
-              commandId: crypto.randomUUID(),
-              taskId: binding.taskId,
-              conversationId: binding.conversationId,
-              checkoutId: binding.checkoutId,
-              generation: 1,
-              driverId: selectedConnection.driverId,
-              connectionId: selectedConnection.connectionId,
-              prompt,
-              attachments: [],
-              modelId: modelId || null,
-              modeId: modeId || null,
-              accessMode: access.mode,
-              ...(Object.keys(submittedConfigValues).length > 0 ? { configValues: submittedConfigValues } : {}),
-              nativeSessionId: null,
-              retryOfRunId: null,
-            }
-            const captured = pendingStarts.capture({
-              conversationId: binding.conversationId,
-              command: sideCommand,
-              rawDraft: prompt,
-            })
-            if (captured.error || captured.records[binding.conversationId]?.command.commandId !== sideCommand.commandId)
-              throw new Error(captured.error ?? 'The side chat message could not be saved.')
-            if (canClearCapturedDraft(draftRef.current, rawDraft)) {
-              draftRef.current = ''
-              setDraft('')
-              attachments.clearCaptured(attachments.items)
-            }
-            await startRun.execute(sideCommand)
-          } else {
-            appendDraft(binding.conversationId, prompt)
+            !selectedConnection ||
+            inspected?.capabilities.openSession.support !== 'supported' ||
+            inspected.capabilities.submit.support !== 'supported'
+          )
+            throw new Error('Connect an agent before starting a side chat. The message is still in the composer.')
+          // A side chat shares the parent's checkout, so its first Run uses the binding's checkout.
+          const sideCommand: WorkspaceRequest<'workspace:startRun'> = {
+            commandId: crypto.randomUUID(),
+            taskId: binding.taskId,
+            conversationId: binding.conversationId,
+            checkoutId: binding.checkoutId,
+            generation: 1,
+            driverId: selectedConnection.driverId,
+            connectionId: selectedConnection.connectionId,
+            prompt,
+            attachments: [],
+            modelId: modelId || null,
+            modeId: modeId || null,
+            accessMode: access.mode,
+            ...(Object.keys(submittedConfigValues).length > 0 ? { configValues: submittedConfigValues } : {}),
+            nativeSessionId: null,
+            retryOfRunId: null,
           }
+          const saved = pendingStarts.capture({
+            conversationId: binding.conversationId,
+            command: sideCommand,
+            rawDraft: prompt,
+          })
+          if (saved.error || saved.records[binding.conversationId]?.command.commandId !== sideCommand.commandId)
+            throw new Error(saved.error ?? 'The side chat message could not be saved.')
+          captured = { commandId: sideCommand.commandId }
+          await startRun.execute(sideCommand)
         }
         if (canClearCapturedDraft(draftRef.current, rawDraft)) {
           draftRef.current = ''
           setDraft('')
           attachments.clearCaptured(attachments.items)
         }
+        onSideChatCreated?.(binding.id)
       } catch (cause) {
+        // A side chat whose first Run never started is removed, and the composer keeps its text.
+        if (created) {
+          if (captured) pendingStarts.discard(created.conversationId, captured.commandId)
+          await deleteSideChat.remove({ id: created.id, parentTaskId: task.id, onlyIfUnused: true })
+        }
         setError(cause instanceof Error ? cause.message : 'Could not open a side chat.')
       }
       return
@@ -1063,7 +1078,7 @@ function WorkspaceComposerContent({
           onOpenFile={onOpenFile}
           reviewOwnerKey={conversationId}
           value={draft}
-          autoFocus
+          autoFocus={!embedded}
           onChange={value => {
             draftRef.current = value
             setDraft(value)
@@ -1079,26 +1094,15 @@ function WorkspaceComposerContent({
           nativeCommands={observedSession?.capabilities?.commands ?? []}
           onOpenModelPicker={query => agentPickerRef.current?.open(query)}
           history={promptHistory}
-          onPromptCommand={
-            onSideChatCreated
-              ? name => {
-                  setError(null)
-                  void createSideChat
-                    .create({
-                      parentTaskId: task.id,
-                      parentConversationId: conversationId,
-                      ...(checkoutId ? { checkoutId } : {}),
-                    })
-                    .then(binding => {
-                      if (binding) onSideChatCreated(binding.id)
-                    })
-                    .catch(cause => setError(cause instanceof Error ? cause.message : `Could not open a ${name} chat.`))
-                }
-              : undefined
-          }
+          sideChat={{
+            disabledReason: sideChatCommandBlock({ embedded, attachmentCount: 0 })?.reason ?? null,
+          }}
           placeholder={composerPlaceholder({ busy, awaiting, canSteer: steerAvailable })}
           contextStrip={
-            activeCheckout && project.data && (!project.data.project.isScratch || choosingInitialCheckout) ? (
+            !embedded &&
+            activeCheckout &&
+            project.data &&
+            (!project.data.project.isScratch || choosingInitialCheckout) ? (
               <CheckoutStrip
                 mode={shownCheckoutMode}
                 lockedKind={choosingInitialCheckout ? undefined : activeCheckout.kind}

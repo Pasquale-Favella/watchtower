@@ -8,6 +8,7 @@ import type {
 import { buildTurnSegments, type TurnSegment } from './turn-segments.js'
 
 export type TimelineRow =
+  | { readonly kind: 'leading'; readonly id: string }
   | {
       readonly kind: 'user'
       readonly id: string

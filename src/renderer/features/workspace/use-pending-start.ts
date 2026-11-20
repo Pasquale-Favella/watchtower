@@ -50,6 +50,13 @@ export function usePendingStart() {
     },
     [registry],
   )
+  /** Drops a captured start whose Run never began, such as a side chat that was deleted after a failed start. */
+  const discard = useCallback(
+    (conversationId: ConversationId, commandId: string) => {
+      registry.set(updatePendingStartStoreAtom, { kind: 'clear', conversationId, commandId })
+    },
+    [registry],
+  )
 
-  return { store, submissions, messageKeys, capture, reconcile }
+  return { store, submissions, messageKeys, capture, reconcile, discard }
 }

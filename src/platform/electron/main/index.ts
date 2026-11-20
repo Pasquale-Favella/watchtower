@@ -230,12 +230,15 @@ const workspaceHostLayer = Layer.effect(
         createWorktree: (request): Effect.Effect<WorkspaceCheckout, unknown> =>
           Effect.tryPromise({
             try: () =>
-              mainRuntime.runPromise(Effect.flatMap(WorkspaceCheckouts, checkouts => checkouts.createWorktree(request))),
+              mainRuntime.runPromise(
+                Effect.flatMap(WorkspaceCheckouts, checkouts => checkouts.createWorktree(request)),
+              ),
             catch: error => error,
           }),
-        enrichPrompt: claim =>
+        enrichPrompt: (claim, store) =>
           enrichSideChatPrompt(claim.taskId, claim.prompt, claim.nativeSessionId).pipe(
             Effect.provideService(SideChatPersistence, sideChatStorage),
+            Effect.provideService(WorkspaceStore, store),
             Effect.mapError(
               () =>
                 new AgentDriverError({ code: 'invalid-state', message: 'The side chat context could not be read.' }),

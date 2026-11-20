@@ -96,7 +96,9 @@ _Avoid_: session
 
 **Side chat**:
 An independently addressable Task and Conversation linked to a parent
-Conversation at a fixed point in its history. Unlike a Delegated Task, a side chat is started by the user, seeded from a fixed parent snapshot, and returns nothing to the parent Task.
+Conversation at a fixed point in its history. Unlike a Delegated Task, a side chat is started by the user and seeded from a fixed parent snapshot.
+is hidden from Task listings, and is opened from the parent's right panel.
+Bringing it back queues its history for the parent's next Run (ADR 0043).
 _Avoid_: reply branch
 
 **Context handoff**:
