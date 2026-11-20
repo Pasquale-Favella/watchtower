@@ -378,11 +378,26 @@ describe('DelegationCoordinator settlement', () => {
           yield* childEvent(h.store, 'child-start', { kind: 'turnStarted', nativeTurnId: 'native-turn' })
           yield* childEvent(h.store, 'child-text', { kind: 'textDelta', text: 'Recovered answer' })
           yield* childEvent(h.store, 'child-terminal', { kind: 'turnCompleted', nativeTurnId: 'native-turn' })
-          yield* h.coordinator.recover()
+          yield* h.coordinator.recover(8)
         }),
       )
       const record = await h.runtime.runPromise(h.store.getDelegation('dlg-1'))
       expect(record).toMatchObject({ status: 'completed', resultText: 'Recovered answer', wakeState: 'pending' })
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+
+  it('settles a queued child that was never claimed as failed and wakes the parent on recovery', async () => {
+    const h = await harness('always', true, false)
+    try {
+      await h.runtime.runPromise(h.coordinator.recover(8))
+      const record = await h.runtime.runPromise(h.store.getDelegation('dlg-1'))
+      expect(record).toMatchObject({ status: 'failed', wakeState: 'pending', resultText: 'The delegated task could not start.' })
+      expect(record?.settledAt).not.toBeNull()
+      const snapshot = await h.runtime.runPromise(h.store.readTaskSnapshot(childTask.id, 20))
+      expect(snapshot.runs.find(run => run.id === childRunId)?.status).toBe('failed')
       expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
     } finally {
       await h.runtime.dispose()
@@ -408,7 +423,7 @@ describe('DelegationCoordinator settlement', () => {
             wakeState: 'pending',
             occurredAt: ts,
           })
-          yield* h.coordinator.recover()
+          yield* h.coordinator.recover(8)
         }),
       )
       expect(h.followUps).toEqual(['delegation-wake:dlg-1'])

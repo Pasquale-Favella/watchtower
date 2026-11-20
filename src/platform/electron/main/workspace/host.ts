@@ -554,7 +554,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         delegationBox.delegations = Context.get(delegationContext, DelegationService)
         // Settle children whose Runs ended while the app was closed, and deliver wakes that were due.
         yield* Effect.forkIn(
-          delegationBox.coordinator.recover().pipe(Effect.catch(() => Effect.void)),
+          delegationBox.coordinator.recover(ownerEpoch).pipe(Effect.catch(() => Effect.void)),
           serviceScope,
           { startImmediately: true },
         )

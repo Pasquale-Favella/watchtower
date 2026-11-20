@@ -382,8 +382,8 @@ export class DelegationService extends Context.Service<
             return yield* summaryOf(yield* ownedBy(existing, caller), false)
           }
 
-          const launch = execution
-            .start({
+          const launch = coordinator
+            .launch(id, {
               commandId: `delegation-run:${key}`,
               issuedAt: createdAt,
               runId: childRunId,

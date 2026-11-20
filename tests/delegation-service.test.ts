@@ -1,4 +1,5 @@
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { describe, expect, it } from 'vitest'
@@ -80,6 +81,8 @@ interface HarnessOptions {
   readonly createWorktree?: DelegationServiceOptions['createWorktree']
   /** Settles each child inside its launch, before the start call returns, as a fast child can. */
   readonly settleChildOnLaunch?: boolean
+  /** Cancels each new delegation right after it is created and before its child is launched. */
+  readonly cancelAfterCreate?: boolean
 }
 
 /**
@@ -91,8 +94,30 @@ function buildHarness(options: HarnessOptions = {}) {
   const interrupts: Array<string> = []
   const followUps: Array<string> = []
   /** Set by openParent, so a launch can settle its child through the same coordinator the service uses. */
-  const lifecycle: { coordinator?: DelegationCoordinator['Service'] } = {}
-  const storeLayer = WorkspaceStoreLive({ filename: ':memory:' })
+  const lifecycle: { coordinator?: DelegationCoordinator['Service']; service?: DelegationService['Service'] } = {}
+  const liveStoreLayer = WorkspaceStoreLive({ filename: ':memory:' })
+  const storeLayer = options.cancelAfterCreate
+    ? Layer.effect(
+        WorkspaceStore,
+        Effect.gen(function* () {
+          const real = yield* WorkspaceStore
+          return {
+            ...real,
+            createDelegation: (command: Parameters<WorkspaceStore['Service']['createDelegation']>[0]) =>
+              real.createDelegation(command).pipe(
+                Effect.tap(() =>
+                  Effect.gen(function* () {
+                    const service = lifecycle.service
+                    if (!service) return yield* Effect.die('The service was not opened for this harness.')
+                    const cancel = yield* Effect.forkChild(service.cancel(parentCaller, command.record.id))
+                    yield* Fiber.join(cancel)
+                  }).pipe(Effect.orDie),
+                ),
+              ),
+          } as WorkspaceStore['Service']
+        }),
+      ).pipe(Layer.provide(liveStoreLayer))
+    : liveStoreLayer
   const registry = Layer.succeed(
     AgentDriverRegistry,
     AgentDriverRegistry.fromDrivers([
@@ -128,7 +153,7 @@ function buildHarness(options: HarnessOptions = {}) {
                     })
                     const coordinator = lifecycle.coordinator
                     if (!coordinator) return yield* Effect.die('The coordinator was not opened for this harness.')
-                    yield* coordinator.runFinished({ runId: command.runId, taskId: command.taskId })
+                    yield* Effect.forkDetach(coordinator.runFinished({ runId: command.runId, taskId: command.taskId }))
                   })
                 : Effect.void,
             ),
@@ -161,6 +186,7 @@ async function openParent(built: Built) {
   const store = await built.runtime.runPromise(WorkspaceStore)
   const service = await built.runtime.runPromise(DelegationService)
   built.lifecycle.coordinator = await built.runtime.runPromise(DelegationCoordinator)
+  built.lifecycle.service = service
   await built.runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
   await built.runtime.runPromise(store.createTask({ task: parentTask, conversation: parentConversation }))
   await built.runtime.runPromise(acceptRun(store, parentCommand))
@@ -389,6 +415,21 @@ describe('DelegationService', () => {
       const second = await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: 'second' })))
       const fromUser = await built.runtime.runPromise(service.cancelFromUser(second.delegationId))
       expect(fromUser.cancelRequestedAt).not.toBeNull()
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('does not launch a child that was cancelled between its creation and its launch', async () => {
+    const built = buildHarness({ cancelAfterCreate: true })
+    try {
+      const { store, service } = await openParent(built)
+      const summary = await built.runtime.runPromise(service.start(parentCaller, request()))
+      expect(built.starts).toEqual([])
+      expect(summary).toMatchObject({ status: 'cancelled', settled: true })
+      const record = await built.runtime.runPromise(store.getDelegation(summary.delegationId))
+      expect(record).toMatchObject({ status: 'cancelled', wakeState: 'disposed' })
+      expect(built.followUps).toEqual([])
     } finally {
       await built.runtime.dispose()
     }

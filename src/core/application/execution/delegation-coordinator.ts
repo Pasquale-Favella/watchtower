@@ -21,7 +21,7 @@ import {
 } from '@/shared/schemas/delegation.js'
 import { agentDriverEventSchema, type AgentRunStatus } from '@/shared/schemas/execution.js'
 import type { AgentRunId, TaskId } from '@/shared/schemas/workspace.js'
-import type { WorkspaceExecutionEvent, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import type { BeginRunCommand, WorkspaceExecutionEvent, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 const RUN_TERMINAL: ReadonlySet<AgentRunStatus> = new Set<AgentRunStatus>([
   'interrupted',
@@ -61,6 +61,14 @@ export class DelegationCoordinator extends Context.Service<
     readonly observe: (event: WorkspaceExecutionEvent) => Effect.Effect<void>
     /** Called when a worker finishes. Settles a child and wakes its parent, or cancels the children of a stopped parent. */
     readonly runFinished: (claim: { readonly runId: AgentRunId; readonly taskId: TaskId }) => Effect.Effect<void>
+    /**
+     * Starts a child Run under the Delegation lock. A cancel or settlement either lands before the launch decision,
+     * which then launches nothing, or after it, when the cancel interrupts the Run that now exists.
+     */
+    readonly launch: (
+      delegationId: DelegationId,
+      command: BeginRunCommand,
+    ) => Effect.Effect<boolean, WorkspaceStoreError | ExecutionServiceError | DelegationError>
     /** Registers a `wait` caller. Call it before the child launches, then await the returned watch. */
     readonly watch: (
       delegationId: DelegationId,
@@ -79,8 +87,12 @@ export class DelegationCoordinator extends Context.Service<
     readonly cancel: (
       delegationId: DelegationId,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError | ExecutionServiceError | DelegationError>
-    /** Owner-epoch recovery: settle children whose Runs ended while the app was down, and deliver due wakes. */
-    readonly recover: () => Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError>
+    /**
+     * Owner-epoch recovery: settle children whose Runs ended while the app was down, settle children that were
+     * queued but never claimed as failed, and deliver due wakes. A child is never re-dispatched after a restart,
+     * because the parent Run that asked for it has ended.
+     */
+    readonly recover: (ownerEpoch: number) => Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError>
   }
 >()('watchtower/core/application/DelegationCoordinator') {
   static readonly layer = Layer.effect(
@@ -220,6 +232,12 @@ export class DelegationCoordinator extends Context.Service<
         })
       })
 
+      const launchFailure = {
+        status: 'failed',
+        resultText: 'The delegated task could not start.',
+        resultTruncated: false,
+      } as const
+
       const settleLaunchFailure = Effect.fn('DelegationCoordinator.settleLaunchFailure')(function* (
         delegationId: DelegationId,
       ) {
@@ -229,11 +247,23 @@ export class DelegationCoordinator extends Context.Service<
             const current = yield* store.getDelegation(delegationId)
             if (!current) return yield* Effect.fail(notFound())
             if (current.settledAt !== null) return current
-            return yield* finish(delegationId, {
-              status: 'failed',
-              resultText: 'The delegated task could not start.',
-              resultTruncated: false,
-            })
+            return yield* finish(delegationId, launchFailure)
+          }),
+        )
+      })
+
+      const launch = Effect.fn('DelegationCoordinator.launch')(function* (
+        delegationId: DelegationId,
+        command: BeginRunCommand,
+      ) {
+        return yield* withLock(
+          delegationId,
+          Effect.gen(function* () {
+            const current = yield* store.getDelegation(delegationId)
+            if (!current) return yield* Effect.fail(notFound())
+            if (current.settledAt !== null || current.cancelRequestedAt !== null) return false
+            yield* execution.start(command)
+            return true
           }),
         )
       })
@@ -383,13 +413,32 @@ export class DelegationCoordinator extends Context.Service<
         } satisfies DelegationWatch
       })
 
-      const recover = Effect.fn('DelegationCoordinator.recover')(function* () {
+      const recover = Effect.fn('DelegationCoordinator.recover')(function* (ownerEpoch: number) {
         // Read before settling: a child settled below queues its own wake, so it must not also appear here.
         const due = yield* store.listDueDelegationWakes(RECOVERY_BATCH)
         const active = yield* store.listDelegations({ activeOnly: true, limit: RECOVERY_BATCH })
         for (const record of active.items) {
           const runStatus = yield* childRunStatus(record).pipe(Effect.catch(() => Effect.succeed(null)))
-          if (runStatus === null || !RUN_TERMINAL.has(runStatus)) continue
+          if (runStatus === null) continue
+          if (runStatus === 'queued') {
+            yield* withLock(
+              record.id,
+              Effect.gen(function* () {
+                const current = yield* store.getDelegation(record.id)
+                if (!current || current.settledAt !== null || !current.childRunId) return
+                if ((yield* childRunStatus(current)) !== 'queued') return
+                yield* store.failDispatch(current.childRunId, {
+                  ownerEpoch,
+                  occurredAt: yield* now,
+                  outcome: 'failed',
+                  reason: 'launch-failed',
+                })
+                yield* finish(current.id, launchFailure)
+              }),
+            ).pipe(Effect.catch(() => Effect.void))
+            continue
+          }
+          if (!RUN_TERMINAL.has(runStatus)) continue
           yield* withLock(
             record.id,
             Effect.gen(function* () {
@@ -406,6 +455,7 @@ export class DelegationCoordinator extends Context.Service<
         runFinished,
         watch,
         settleLaunchFailure,
+        launch,
         cancel: cancelRecord,
         recover,
       })
