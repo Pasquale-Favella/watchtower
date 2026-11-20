@@ -102,11 +102,6 @@ export function PullRequestActions(props: Props): React.JSX.Element {
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
-      {commands.error && (
-        <p role="alert" className="text-destructive text-xs">
-          {commands.error}
-        </p>
-      )}
       {editOpen && <EditPullRequest {...props} onClose={() => setEditOpen(false)} />}
       <AlertDialog open={mergeOpen} onOpenChange={setMergeOpen}>
         <AlertDialogContent>
@@ -250,11 +245,6 @@ function EditPullRequest(props: Props & { readonly onClose: () => void }): React
               </label>
             ))}
           </div>
-          {commands.error && (
-            <p role="alert" className="text-destructive text-xs">
-              {commands.error}
-            </p>
-          )}
           <Button type="submit" size="sm" disabled={commands.pending || !title.trim()}>
             Save changes
           </Button>
@@ -406,11 +396,6 @@ export function PullRequestReviewDialog(
             <option value="approve">Approve</option>
             <option value="request-changes">Request changes</option>
           </select>
-          {commands.error && (
-            <p role="alert" className="text-destructive text-xs">
-              {commands.error}
-            </p>
-          )}
           <Button
             size="sm"
             disabled={
@@ -528,11 +513,6 @@ export function CreatePullRequestDialog(props: {
             />
             Create as draft
           </label>
-          {commands.error && (
-            <p role="alert" className="text-destructive text-xs">
-              {commands.error}
-            </p>
-          )}
           <Button type="submit" size="sm" disabled={commands.pending || !title.trim() || !base.trim() || !head.trim()}>
             Create pull request
           </Button>

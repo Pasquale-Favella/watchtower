@@ -16,10 +16,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
+import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Input } from '@/renderer/components/ui/input'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import { HarnessIcon } from '@/renderer/features/coach-skills/harness-icon.js'
+import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectReadPage, WorkspaceTaskReadPage } from '@/shared/schemas/workspace-store.js'
 
@@ -31,6 +34,7 @@ import {
   isDelegatedChild,
 } from './delegation/sidebar-delegation.js'
 import { SidebarDelegateChildren, SidebarDelegateToggle } from './delegation/SidebarDelegates.js'
+import { showErrorToast } from './error-toast.js'
 import {
   useRenameTask,
   useSetTaskArchived,
@@ -409,9 +413,9 @@ export function WorkspaceProjects({
 
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
         {projectsQuery.status === 'loading' && projects.length === 0 ? (
-          <p role="status" className="text-sidebar-muted-foreground px-2 py-3 text-xs">
-            Loading chats…
-          </p>
+          <LoadingRegion label="Loading chats…" className="px-2 py-3">
+            <ChatRowsSkeleton rows={4} />
+          </LoadingRegion>
         ) : (
           <ul aria-label="Project chats" className="space-y-0.5">
             {regularProjects.map(project => (
@@ -754,9 +758,9 @@ function SidebarTaskGroup({
         ))}
       {query.error && <QueryErrorNotice error={query.error} hasData={tasks.length > 0} />}
       {query.status === 'loading' && tasks.length === 0 ? (
-        <p role="status" className="text-sidebar-muted-foreground px-2 py-2 text-xs">
-          Loading chats…
-        </p>
+        <LoadingRegion label="Loading chats…" className="px-2 py-2">
+          <ChatRowsSkeleton rows={3} />
+        </LoadingRegion>
       ) : visibleTasks.length === 0 ? (
         <p className="text-sidebar-muted-foreground px-2 py-2 text-xs">
           {searchTerm ? 'No loaded chats match Search' : 'No chats yet'}
@@ -883,7 +887,9 @@ function SidebarTaskRow({
       setError(null)
       setEditing(false)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not rename chat.')
+      const message = cause instanceof Error ? cause.message : 'Could not rename chat.'
+      setError(message)
+      showErrorToast(`workspace:rename:${task.id}`, "Couldn't rename chat", message)
       committing.current = false
       settled.current = false
       inputRef.current?.focus()
@@ -895,7 +901,11 @@ function SidebarTaskRow({
       await setTaskArchived.execute({ taskId: task.id, archived: task.status !== 'archived' })
       setError(null)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not update chat archive status.')
+      showErrorToast(
+        `workspace:archive:${task.id}`,
+        task.status === 'archived' ? "Couldn't unarchive chat" : "Couldn't archive chat",
+        cause instanceof Error ? cause.message : 'Could not update chat archive status.',
+      )
     }
   }
 
@@ -916,7 +926,6 @@ function SidebarTaskRow({
             aria-label={`Rename chat ${task.title}`}
             value={draft}
             aria-invalid={error ? true : undefined}
-            aria-describedby={error ? `${task.id}-rename-error` : undefined}
             onChange={event => setDraft(event.target.value)}
             onBlur={() => void commitRename()}
             onKeyDown={event => {
@@ -1036,11 +1045,6 @@ function SidebarTaskRow({
           onSelectTask={onSelectTask}
         />
       )}
-      {error && (
-        <p id={`${task.id}-rename-error`} role="status" className="text-destructive px-2.5 pb-1 text-[10px]">
-          {error}
-        </p>
-      )}
     </li>
   )
 }
@@ -1077,4 +1081,18 @@ function SidebarTaskPageRefresh({
   }, [onTasksPage, page, projectId, query.status, request])
 
   return null
+}
+
+/** Sidebar chat-list placeholder: icon-sized square + text-bar rows, sized to the sidebar's text-xs rows. */
+function ChatRowsSkeleton({ rows, className }: { rows: number; className?: string }) {
+  return (
+    <div className={cn('flex flex-col gap-2.5', className)}>
+      {Array.from({ length: rows }, (_, row) => (
+        <div key={row} className="flex items-center gap-2">
+          <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+          <Skeleton className={cn('h-3', row % 2 === 0 ? 'w-4/5' : 'w-3/5')} />
+        </div>
+      ))}
+    </div>
+  )
 }

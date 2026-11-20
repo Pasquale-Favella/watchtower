@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 
 import { openExternalAtom } from '@/renderer/shared/lib/native-capabilities.js'
 
+import { showErrorToast } from '../error-toast.js'
 import { useWorkspaceOperation } from '../use-workspace-operation.js'
 import type { WorkspaceOperation } from '../workspace-operation.js'
 import {
@@ -69,22 +70,25 @@ export const usePullRequestDiff = (request: PullRequestInput<'pull-requests:diff
 export const usePullRequestThreads = (request: PullRequestInput<'pull-requests:threads'> | null, revision: number) =>
   usePullRequestQuery(pullRequestThreadsAtom, request, revision)
 
+/** One toast slot for pull request commands, so a repeated failure updates the visible toast. */
+const PULL_REQUEST_COMMAND_TOAST_ID = 'workspace:pull-request:command'
+
 export function usePullRequestCommands() {
   const executeCommand = useWorkspaceOperation(pullRequestCommandAtom)
   const createCommand = useWorkspaceOperation(pullRequestCreateAtom)
   const openExternal = useAtomSet(openExternalAtom, { mode: 'promise' })
   const lock = useRef(false)
   const [pending, setPending] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   async function perform<A>(operation: () => Promise<A>): Promise<{ readonly value: A } | null> {
     if (lock.current) return null
     lock.current = true
     setPending(true)
-    setError(null)
     try {
       return { value: await operation() }
     } catch (cause) {
-      setError(
+      showErrorToast(
+        PULL_REQUEST_COMMAND_TOAST_ID,
+        'Pull request action failed',
         cause instanceof Error
           ? cause.message
           : 'The pull request operation could not be confirmed. Refresh before retrying.',
@@ -97,12 +101,13 @@ export function usePullRequestCommands() {
   }
   return {
     pending,
-    error,
     execute: async (command: PullRequestCommand) => (await perform(() => executeCommand(command))) !== null,
     create: async (request: PullRequestInput<'pull-requests:create'>) =>
       (await perform(() => createCommand(request)))?.value ?? null,
     openExternal: (url: string) => {
-      void openExternal(url).catch(() => setError('Could not open this link.'))
+      void openExternal(url).catch(() =>
+        showErrorToast(PULL_REQUEST_COMMAND_TOAST_ID, 'Could not open link', 'Could not open this link.'),
+      )
     },
   }
 }

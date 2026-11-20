@@ -1,6 +1,6 @@
 import { FileTree, useFileTree, useFileTreeSelector } from '@pierre/trees/react'
 import { ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import type { CheckoutScope, DiffFile } from '@/shared/schemas/checkout-inspection.js'
@@ -32,7 +32,6 @@ const TREE_CSS = `:host {
 
 export function DiffFileTree(props: Props): React.JSX.Element {
   const theme = useCodeTheme()
-  const [actionError, setActionError] = useState<string | null>(null)
   const presentation = useMemo(() => diffTreePresentation(props.files.map(file => file.path)), [props.files])
   const callbacks = useRef(props)
   const syncing = useRef(false)
@@ -101,11 +100,6 @@ export function DiffFileTree(props: Props): React.JSX.Element {
   )
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      {actionError && (
-        <p role="alert" className="text-destructive px-2 py-1 text-xs">
-          {actionError}
-        </p>
-      )}
       <div className="border-border flex h-9 shrink-0 items-center justify-end border-b px-1">
         <Button
           variant="ghost"
@@ -149,7 +143,6 @@ export function DiffFileTree(props: Props): React.JSX.Element {
             onOpenFile={props.onOpenFile}
             onReferencePath={props.onReferencePath}
             onSelectFile={props.onSelectFile}
-            onError={setActionError}
           />
         )}
       />
@@ -161,7 +154,6 @@ interface MenuProps extends Omit<Props, 'files' | 'selectedPath'> {
   readonly path: string
   readonly directory: boolean
   readonly onClose: () => void
-  readonly onError: (message: string) => void
 }
 
 function DiffFileMenu(props: MenuProps): React.JSX.Element {
@@ -234,9 +226,7 @@ function DiffFileMenu(props: MenuProps): React.JSX.Element {
         className={menuClass}
         onClick={() =>
           action(() => {
-            void navigation.open().then(ok => {
-              if (!ok) props.onError('Could not open this file in the editor. Try again.')
-            })
+            void navigation.open()
           })
         }
       >
@@ -247,9 +237,7 @@ function DiffFileMenu(props: MenuProps): React.JSX.Element {
         className={menuClass}
         onClick={() =>
           action(() => {
-            void navigation.reveal().then(ok => {
-              if (!ok) props.onError('Could not reveal this path. Try again.')
-            })
+            void navigation.reveal()
           })
         }
       >

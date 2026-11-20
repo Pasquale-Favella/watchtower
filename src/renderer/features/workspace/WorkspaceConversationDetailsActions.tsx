@@ -1,11 +1,14 @@
 import { ArrowUpRight, FileDiff, Folder, GitPullRequest, LoaderCircle, MessageSquare } from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 
+import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { DelegationDetails } from './delegation/DelegationDetails.js'
+import { useErrorToast } from './error-toast.js'
 import { useSwitchBranch, useWorkspaceBranches, useWorkspaceProject, useWorkspaceTaskSnapshot } from './hooks.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
@@ -112,9 +115,16 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
             </p>
           )}
           {sideChats.status === 'loading' && !sideChats.error && (
-            <p role="status" className="text-muted-foreground px-1 text-xs">
-              Loading side chats…
-            </p>
+            <LoadingRegion label="Loading side chats…" className="flex flex-col gap-2 px-1 py-1">
+              <div className="flex items-center gap-2">
+                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+                <Skeleton className="h-3 w-4/5" />
+              </div>
+              <div className="flex items-center gap-2">
+                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+                <Skeleton className="h-3 w-3/5" />
+              </div>
+            </LoadingRegion>
           )}
           {sideChats.status === 'ready' && !sideChats.error && sideChatItems.length === 0 && (
             <p className="text-muted-foreground px-1 text-xs">No side chats</p>
@@ -301,6 +311,7 @@ function TaskGitControls({
   const branches = useWorkspaceBranches({ projectId, checkoutId })
   const switchBranch = useSwitchBranch()
   const [error, setError] = useState<string | null>(null)
+  useErrorToast(`workspace:checkout:${checkoutId}:branch`, "Couldn't switch branch", error)
   const checkout = [project.data?.mainCheckout, ...(project.data?.otherCheckouts ?? [])].find(
     item => item?.id === checkoutId,
   )
@@ -312,9 +323,10 @@ function TaskGitControls({
         </p>
       )
     return (
-      <p role="status" className="text-muted-foreground px-2 py-1 text-xs">
-        Loading checkout…
-      </p>
+      <LoadingRegion label="Loading checkout…" className="flex items-center gap-2 px-2 py-1.5">
+        <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+        <Skeleton className="h-3 w-28" />
+      </LoadingRegion>
     )
   }
   if (checkout.kind === 'directory') return <></>
@@ -339,7 +351,7 @@ function TaskGitControls({
                 setError(cause instanceof Error ? cause.message : 'Could not switch branches.')
               })
             }}
-            error={error ?? branches.error}
+            error={branches.error}
           />
         </div>
       )}

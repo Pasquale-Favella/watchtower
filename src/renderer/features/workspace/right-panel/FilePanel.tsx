@@ -13,6 +13,7 @@ import {
 } from 'lucide-react'
 import { lazy, Suspense, useState } from 'react'
 
+import { LoadingRegion, SkeletonCode, SkeletonLines } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import {
   DropdownMenu,
@@ -270,7 +271,6 @@ export function FileViewer(props: ViewerProps): React.JSX.Element {
           </>
         )}
       </div>
-      {navigation.error && <InspectionNotice tone="error">{navigation.error}</InspectionNotice>}
       {props.renderContent ? (
         props.renderContent(
           <FileContentView
@@ -324,10 +324,21 @@ function FileContentView(props: ContentViewProps): React.JSX.Element {
   let body: React.ReactNode
   if (edit.dirty && path && (file.error || !file.data)) body = source
   else if (file.error) body = <InspectionNotice tone="error">{file.error.message}</InspectionNotice>
-  else if (!file.data || !path) body = <InspectionNotice>Loading file…</InspectionNotice>
+  else if (!file.data || !path)
+    body = (
+      <LoadingRegion label="Loading file…" className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
+        <SkeletonCode lines={20} />
+      </LoadingRegion>
+    )
   else if (extendedFilePreviewKind(path))
     body = (
-      <Suspense fallback={<InspectionNotice>Loading preview…</InspectionNotice>}>
+      <Suspense
+        fallback={
+          <LoadingRegion label="Loading preview…" className="flex min-h-0 flex-1 flex-col p-3">
+            <SkeletonLines lines={6} />
+          </LoadingRegion>
+        }
+      >
         <ExtendedFilePreview path={path} dataUrl={file.data.previewDataUrl} content={file.data.content} />
       </Suspense>
     )

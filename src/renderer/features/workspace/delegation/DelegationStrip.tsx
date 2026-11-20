@@ -7,6 +7,7 @@ import type { DelegationRecord, DelegationStatus } from '@/shared/schemas/delega
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceConnections } from '../connection-hooks.js'
+import { useErrorToast } from '../error-toast.js'
 import { formatRunDuration } from '../timeline/duration.js'
 import { useElapsedMs } from '../timeline/use-elapsed.js'
 import {
@@ -209,6 +210,7 @@ export function DelegationStrip({
     () => new Map(connections.data?.items.map(item => [item.connectionId, item.label] as const) ?? []),
     [connections.data?.items],
   )
+  useErrorToast(`workspace:delegation:${taskId}:stop`, "Couldn't stop delegated task", cancel.error)
   const records = stripDelegations(delegations.items, parentRunActive)
   return (
     <DelegationStripView
@@ -217,7 +219,7 @@ export function DelegationStrip({
       child={delegatedFrom ? { status: delegatedFrom.status } : null}
       connectionLabels={connectionLabels}
       isStopPending={cancel.isPending}
-      error={cancel.error ?? delegations.error}
+      error={delegations.error}
       onOpen={record => openTask(record.childTaskId)}
       onStop={record => {
         void cancel.stop(record)

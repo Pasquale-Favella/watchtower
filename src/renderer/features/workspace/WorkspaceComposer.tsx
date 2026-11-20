@@ -33,6 +33,7 @@ import {
 } from './connection-hooks.js'
 import { DelegationStrip } from './delegation/DelegationStrip.js'
 import { WORKSPACE_DRAFT_MAX_LENGTH } from './draft-storage.js'
+import { useErrorToast } from './error-toast.js'
 import {
   useCancelQueuedFollowUp,
   useCreateWorktree,
@@ -888,6 +889,9 @@ function WorkspaceComposerContent({
     void submit()
   }
 
+  const conversationKey = String(conversationId)
+  useErrorToast(`workspace:composer:${conversationKey}:branch`, "Couldn't switch branch", branchError)
+
   return (
     <section className="bg-background shrink-0 px-4 pt-2 pb-3" aria-label="Conversation composer">
       <div className="max-w-chat mx-auto w-full">
@@ -1147,7 +1151,7 @@ function WorkspaceComposerContent({
                       setBranchError(cause instanceof Error ? cause.message : 'Could not switch branches.'),
                     )
                 }}
-                error={branchError ?? branches.error ?? checkoutError}
+                error={branches.error ?? checkoutError}
               />
             ) : undefined
           }

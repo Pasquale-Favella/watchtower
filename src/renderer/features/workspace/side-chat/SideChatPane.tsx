@@ -1,6 +1,7 @@
 import { MessagesSquare, Trash2, X } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
+import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -12,9 +13,11 @@ import {
   AlertDialogTitle,
 } from '@/renderer/components/ui/alert-dialog'
 import { Button } from '@/renderer/components/ui/button'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import type { SideChatBinding } from '@/shared/schemas/workspace-side-chats.js'
 
 import { isRunActive } from '../composer-state.js'
+import { useErrorToast } from '../error-toast.js'
 import {
   useWorkspaceNativeAgentSessions,
   useWorkspacePendingRequests,
@@ -69,9 +72,10 @@ export function SideChatPane(props: SideChatPaneProps): React.JSX.Element {
     )
   if (!binding.data)
     return (
-      <p role="status" className="p-4 text-sm">
-        Loading side chat...
-      </p>
+      <LoadingRegion label="Loading side chat..." className="flex flex-col gap-3 p-4">
+        <Skeleton className="ml-auto h-9 w-3/5 rounded-lg" />
+        <SkeletonLines lines={4} />
+      </LoadingRegion>
     )
   return (
     <WorkspaceQueryScopeContext value={scope}>
@@ -105,6 +109,8 @@ function SideChatContent({
   const completed = snapshot.data?.runs.some(run => run.status === 'completed') ?? false
   const back = useBringBackSideChat(binding.id)
   const remove = useDeleteSideChat()
+  useErrorToast(`workspace:side-chat:${binding.id}:bring-back`, "Couldn't bring back side chat", back.error)
+  useErrorToast(`workspace:side-chat:${binding.id}:delete`, "Couldn't delete side chat", remove.error)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const runContext = snapshot.data?.runContexts?.find(context => context.conversationId === binding.conversationId)
   const promptCommands = useMemo(
@@ -171,16 +177,6 @@ function SideChatContent({
       {back.receipt && !back.error && (
         <p role="status" className="text-muted-foreground shrink-0 px-3 py-1.5 text-xs">
           Brought back. The main chat gets this side chat with your next message.
-        </p>
-      )}
-      {back.error && (
-        <p role="alert" className="text-destructive px-3 py-2 text-xs">
-          {back.error}
-        </p>
-      )}
-      {remove.error && (
-        <p role="alert" className="text-destructive px-3 py-2 text-xs">
-          {remove.error}
         </p>
       )}
       {detail.error && (

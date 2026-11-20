@@ -2,7 +2,10 @@ import { FileTree, useFileTree, useFileTreeSearch, useFileTreeSelector } from '@
 import { ChevronsDownUp, ChevronsUpDown, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { cn } from '@/renderer/shared/lib/utils'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 
 import { useCheckoutNavigation } from '../checkout-navigation/use-checkout-navigation.js'
@@ -22,6 +25,18 @@ const TREE_CSS = `
   button[data-type='item'] { border-radius: var(--radius-sm); }
 `
 const IGNORED = new Set(['node_modules', '.git', 'vendor', 'dist', 'out', 'build'])
+
+/** Placeholder rows for the first directory listing: indent and name width vary so the tree reads as nested folders. */
+const LOADING_TREE_ROWS = [
+  { indent: 'pl-0', name: 'w-24' },
+  { indent: 'pl-0', name: 'w-32' },
+  { indent: 'pl-3', name: 'w-20' },
+  { indent: 'pl-3', name: 'w-28' },
+  { indent: 'pl-6', name: 'w-36' },
+  { indent: 'pl-6', name: 'w-24' },
+  { indent: 'pl-3', name: 'w-32' },
+  { indent: 'pl-0', name: 'w-20' },
+]
 
 export interface FileExplorerProps {
   readonly scope: CheckoutScope
@@ -250,13 +265,22 @@ export function FileExplorer({ root = '', ...props }: FileExplorerProps): React.
           {expandAll || allExpanded ? <ChevronsDownUp /> : <ChevronsUpDown />}
         </Button>
       </div>
-      {(directory.error || search.error || navigation.error) && (
-        <InspectionNotice tone="error">{directory.error ?? search.error ?? navigation.error}</InspectionNotice>
+      {(directory.error || search.error) && (
+        <InspectionNotice tone="error">{directory.error ?? search.error}</InspectionNotice>
       )}
       {search.data?.truncated && query.trim() && (
         <InspectionNotice>More matches available. Refine your search.</InspectionNotice>
       )}
-      {directory.listings.size === 0 && directory.pending && <InspectionNotice>Loading files…</InspectionNotice>}
+      {directory.listings.size === 0 && directory.pending && (
+        <LoadingRegion label="Loading files…" className="flex flex-col px-2 py-1">
+          {LOADING_TREE_ROWS.map((row, index) => (
+            <div key={index} className={cn('flex h-6 items-center gap-2', row.indent)}>
+              <Skeleton className="size-3 shrink-0 rounded-sm" />
+              <Skeleton className={cn('h-2.5', row.name)} />
+            </div>
+          ))}
+        </LoadingRegion>
+      )}
       {noMatches && <InspectionNotice>No matching files.</InspectionNotice>}
       <FileTree
         model={model}

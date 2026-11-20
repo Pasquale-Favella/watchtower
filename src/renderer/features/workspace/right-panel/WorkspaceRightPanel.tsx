@@ -8,6 +8,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/u
 import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
+import { showErrorToast } from '../error-toast.js'
 import { isMac } from '../platform-labels.js'
 import { ReviewCommentsProvider } from '../review/ReviewCommentsProvider.js'
 import { isTerminalFocusTarget } from '../terminal/terminal-keys.js'
@@ -54,7 +55,6 @@ export interface WorkspaceRightPanelProps {
   readonly onAddDevice?: (() => void) | undefined
   readonly onAddPullRequests?: (() => void) | undefined
   readonly onAddSideChat?: (() => void) | undefined
-  readonly notice?: string | null | undefined
   /** Resource owners may confirm and release a tab before it is removed. Hiding the panel never calls it. */
   readonly beforeCloseSurface?: ((surface: RightPanelSurface) => boolean | Promise<boolean>) | undefined
   /** Releases the resource after every requested close has been confirmed. */
@@ -111,7 +111,6 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
   if (controls.open && activeSurface && !mountedSurfaces.has(activeSurface)) {
     setMountedSurfaces(previous => new Set([...previous, activeSurface]))
   }
-  const [closeError, setCloseError] = useState<string | null>(null)
   const closing = useRef(false)
   const closeProjectId = props.projectId
   const closeCheckoutId = props.checkoutId
@@ -132,7 +131,6 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
     async (surfaces: readonly RightPanelSurface[], activate?: RightPanelSurface) => {
       if (closing.current) return
       closing.current = true
-      setCloseError(null)
       try {
         const closed = await closePanelSurfaces(surfaces, {
           confirm: beforeCloseSurface,
@@ -141,7 +139,7 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
         })
         if (closed && activate) controls.activate(activate)
       } catch {
-        setCloseError('Could not close the panel tab. Try again.')
+        showErrorToast('workspace:panel:close', "Couldn't close tab", 'Could not close the panel tab. Try again.')
       } finally {
         closing.current = false
       }
@@ -229,16 +227,6 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
           </PanelButton>
         </div>
       </header>
-      {closeError && (
-        <p role="alert" className="text-destructive px-3 py-2 text-xs">
-          {closeError}
-        </p>
-      )}
-      {props.notice && (
-        <p role="alert" className="text-destructive px-3 py-2 text-xs">
-          {props.notice}
-        </p>
-      )}
       {controls.surfaces.length === 0 && <PanelLauncher {...launcher} />}
       {controls.surfaces
         .filter(surface => mountedSurfaces.has(surface))

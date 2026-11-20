@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
+import { LoadingRegion, SkeletonCard, SkeletonLines } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type {
@@ -84,17 +85,16 @@ export function PullRequestDiscussion(props: Props): React.JSX.Element {
         <Button type="submit" size="xs" disabled={commands.pending || !body.trim()}>
           Post comment
         </Button>
-        {commands.error && (
-          <p role="alert" className="text-destructive text-xs">
-            {commands.error}
-          </p>
-        )}
       </form>
       <h3 className="text-sm font-medium">Review threads</h3>
       {threads.loading && (
-        <p role="status" className="text-muted-foreground text-xs">
-          Loading review threads…
-        </p>
+        <LoadingRegion label="Loading review threads…" className="flex flex-col gap-2">
+          {[0, 1].map(index => (
+            <SkeletonCard key={index} className="p-2.5">
+              <SkeletonLines lines={2} />
+            </SkeletonCard>
+          ))}
+        </LoadingRegion>
       )}
       {threads.error && (
         <p role="alert" className="text-destructive text-xs">
@@ -204,11 +204,6 @@ function ReviewThread({
           </Button>
         </div>
       </form>
-      {commands.error && (
-        <p role="alert" className="text-destructive text-xs">
-          {commands.error}
-        </p>
-      )}
     </details>
   )
 }

@@ -266,11 +266,6 @@ function TerminalDrawer({
         </div>
       )}
 
-      {tabs.error && (
-        <p role="alert" className="text-destructive shrink-0 px-3 py-1 text-xs">
-          {tabs.error}
-        </p>
-      )}
       {tabs.terminals.length === 0 ? (
         <div className="text-muted-foreground flex min-h-0 flex-1 flex-col items-center justify-center gap-3 px-4 py-6 text-center text-sm">
           <span>No terminals open.</span>

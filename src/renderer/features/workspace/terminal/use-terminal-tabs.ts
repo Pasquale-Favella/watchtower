@@ -10,6 +10,7 @@ import {
   terminalTargetPayload,
 } from '@/shared/schemas/terminal.js'
 
+import { showErrorToast } from '../error-toast.js'
 import { closeTerminalAtom, sendTerminalCommand } from './terminal-atoms.js'
 import { takeTerminalCommand, useQueuedTerminalCommands } from './terminal-command-queue.js'
 import {
@@ -38,7 +39,6 @@ export function useTerminalTabs(owner: TerminalOwner, groupId = 'drawer') {
   const update = useAtomSet(updateTerminalLayoutAtom)
   const closeTerminal = useAtomSet(closeTerminalAtom, { mode: 'promise' })
   const [statuses, setStatuses] = useState<Partial<Record<TerminalId, TerminalPaneStatus>>>({})
-  const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<number | null>(null)
   useEffect(() => {
     hydrateTerminalLayouts(registry)
@@ -60,13 +60,17 @@ export function useTerminalTabs(owner: TerminalOwner, groupId = 'drawer') {
   }
   const close = async (id: TerminalId): Promise<void> => {
     if (!terminals.includes(id)) return
-    setError(null)
     try {
       await closeTerminal({ ...terminalTargetPayload(owner), terminalId: id })
       command({ kind: 'close', id })
     } catch (cause) {
       if (Schema.is(TerminalRpcError)(cause) && cause.code === 'not-found') command({ kind: 'close', id })
-      else setError('Could not close this terminal. Try again.')
+      else
+        showErrorToast(
+          'workspace:terminal:close',
+          "Couldn't close terminal",
+          'Could not close this terminal. Try again.',
+        )
     }
   }
   const reportStatus = useCallback((id: TerminalId, status: TerminalPaneStatus) => {
@@ -93,7 +97,6 @@ export function useTerminalTabs(owner: TerminalOwner, groupId = 'drawer') {
     active: layout.active,
     height: preview ?? entry?.height ?? TERMINAL_DRAWER_DEFAULT_HEIGHT,
     statuses,
-    error,
     select: (id: TerminalId) => command({ kind: 'select', id }),
     create,
     split,

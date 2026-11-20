@@ -364,11 +364,6 @@ function DiffReviewContent({ viewerRef, ...props }: Props): React.JSX.Element {
               if (file) props.onToggleFile(diffFileKey(file))
             }}
           >
-            {navigation.error && (
-              <p role="alert" className="text-destructive px-3 py-1 text-xs">
-                {navigation.error}
-              </p>
-            )}
             <CodeView<ReviewAnnotationGroup>
               ref={viewerRef}
               items={items}

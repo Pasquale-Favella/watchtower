@@ -1,11 +1,14 @@
 import { ArrowUpRight, CircleStopIcon, NetworkIcon } from 'lucide-react'
 
+import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { ConversationId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceConnections } from '../connection-hooks.js'
+import { useErrorToast } from '../error-toast.js'
 import { isLiveDelegation } from './delegation-status.js'
 import { delegationView } from './delegation-view.js'
 import { DelegationTooltip } from './DelegationTooltip.js'
@@ -18,7 +21,6 @@ export interface DelegationDetailsViewProps {
   readonly error: string | null
   readonly connectionLabels?: ReadonlyMap<string, string>
   readonly isStopPending: (delegationId: string) => boolean
-  readonly stopError?: string | null
   readonly onOpen: (taskId: TaskId) => void
   readonly onStop: (record: DelegationRecord) => void
 }
@@ -30,7 +32,6 @@ export function DelegationDetailsView({
   error,
   connectionLabels,
   isStopPending,
-  stopError = null,
   onOpen,
   onStop,
 }: DelegationDetailsViewProps): React.JSX.Element {
@@ -46,9 +47,14 @@ export function DelegationDetailsView({
         </p>
       )}
       {status === 'loading' && !error && (
-        <p role="status" className="text-muted-foreground px-1 text-xs">
-          Loading delegated tasks…
-        </p>
+        <LoadingRegion label="Loading delegated tasks…" className="flex flex-col gap-2 px-1 py-1">
+          {[0, 1].map(row => (
+            <div key={row} className="flex items-center gap-2">
+              <Skeleton className="h-3 w-3/5" />
+              <Skeleton className="ml-auto h-2.5 w-12" />
+            </div>
+          ))}
+        </LoadingRegion>
       )}
       {status === 'ready' && !error && records.length === 0 && (
         <p className="text-muted-foreground px-1 text-xs">No delegated tasks</p>
@@ -92,11 +98,6 @@ export function DelegationDetailsView({
           )
         })}
       </ul>
-      {stopError && (
-        <p role="alert" className="text-destructive px-1 text-xs">
-          {stopError}
-        </p>
-      )}
     </section>
   )
 }
@@ -114,6 +115,7 @@ export function DelegationDetails({
   const openTask = useOpenDelegatedTask()
   const connections = useWorkspaceConnections()
   const connectionLabels = new Map(connections.data?.items.map(item => [item.connectionId, item.label] as const) ?? [])
+  useErrorToast(`workspace:delegation:${taskId}:details-stop`, "Couldn't stop delegated task", cancel.error)
   const records = delegations.items.filter(item => !conversationId || item.parentConversationId === conversationId)
   return (
     <DelegationDetailsView
@@ -122,7 +124,6 @@ export function DelegationDetails({
       error={delegations.error}
       connectionLabels={connectionLabels}
       isStopPending={cancel.isPending}
-      stopError={cancel.error}
       onOpen={openTask}
       onStop={record => {
         void cancel.stop(record)

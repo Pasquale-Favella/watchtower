@@ -24,6 +24,7 @@ import type { CheckoutMode } from './checkout-strip-state.js'
 import { shouldSubmitComposerKey } from './composer-state.js'
 import { configOptionsForModel, configValuesForOptions } from './config-values.js'
 import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connection-hooks.js'
+import { useErrorToast } from './error-toast.js'
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
 import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChatProjects } from './new-chat-hooks.js'
@@ -444,6 +445,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     appendToDraft(image.annotation ? attachmentPromptToken(item) : `${image.text}\n\n${attachmentPromptToken(item)}`)
   }
 
+  useErrorToast('workspace:new-chat:branch', "Couldn't switch branch", branchError)
+
   return (
     <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
       <WorkspaceChatHeader
@@ -562,7 +565,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                         pending={switchBranch.pending}
                         disabled={creating || starting || switchBranch.pending}
                         onBranchSelect={selectBranch}
-                        error={branchError ?? branches.error}
+                        error={branches.error}
                         trailing={permissionsChip}
                       />
                     ) : (
@@ -662,7 +665,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                     pending={switchBranch.pending}
                     disabled={creating || starting || switchBranch.pending}
                     onBranchSelect={selectBranch}
-                    error={branchError ?? branches.error}
+                    error={branches.error}
                   />
                 ) : undefined
               }

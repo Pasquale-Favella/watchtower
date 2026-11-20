@@ -14,6 +14,7 @@ import {
 } from '@/shared/schemas/prompt-context.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
+import { useErrorToast } from './error-toast.js'
 import { usePromptAttachments, usePromptContextSearch, useResolvePromptReference } from './prompt-context-hooks.js'
 import {
   attachmentPromptToken,
@@ -156,6 +157,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   const dismissedRef = useRef<PromptTrigger | null>(null)
   const [dragging, setDragging] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  useErrorToast('workspace:prompt-input', "Couldn't update the prompt", error)
   const [stashes, setStashes] = useState<readonly PromptStashEntry[]>(() => {
     try {
       return typeof localStorage === 'undefined' ? [] : readPromptStash(localStorage, PROMPT_STASH_STORAGE_KEY)
@@ -1025,11 +1027,6 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
       {(working || props.hint) && (
         <p id={hintId} className="text-muted-foreground mt-2 px-0.5 text-[11px]">
           {working ? 'Preparing context…' : props.hint}
-        </p>
-      )}
-      {error && (
-        <p className="text-destructive mt-2 text-xs" role="alert">
-          {error}
         </p>
       )}
       <Dialog open={stashOpen} onOpenChange={setStashOpen}>

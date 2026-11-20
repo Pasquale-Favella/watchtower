@@ -28,6 +28,7 @@ import { Button } from '@/renderer/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import type { WorkspaceDeviceAction, WorkspaceDeviceScreenshot } from '@/shared/schemas/workspace-devices.js'
 
+import { useErrorToast } from '../error-toast.js'
 import { useWorkspaceDeviceFrame, useWorkspaceDevices } from './use-workspace-devices.js'
 
 export interface WorkspaceDevicePanelProps {
@@ -89,6 +90,8 @@ export function WorkspaceDevicePanel({
   const [rect, setRect] = useState<SelectionRect | null>(null)
   const [note, setNote] = useState('')
   const [captureError, setCaptureError] = useState<string | null>(null)
+  useErrorToast(`workspace:device:${tabId}:action`, 'Device action failed', devices.error)
+  useErrorToast(`workspace:device:${tabId}:capture`, "Couldn't add screenshot", captureError)
   const [powerOff, setPowerOff] = useState(false)
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('portrait')
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -247,9 +250,9 @@ export function WorkspaceDevicePanel({
           </Button>
         </form>
       )}
-      {devices.error && (
+      {devices.listError && (
         <p role="alert" className="text-destructive border-b px-3 py-2 text-xs">
-          {devices.error}
+          {devices.listError}
         </p>
       )}
       {!devices.listing && (
@@ -516,11 +519,6 @@ export function WorkspaceDevicePanel({
                 Add to chat
               </Button>
             </div>
-            {captureError && (
-              <p role="alert" className="text-destructive text-xs">
-                {captureError}
-              </p>
-            )}
           </div>
         </>
       )}

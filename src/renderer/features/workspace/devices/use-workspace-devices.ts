@@ -121,7 +121,9 @@ export function useWorkspaceDevices(ownerKey: string, tabId: string, visible: bo
     selected,
     selection,
     select,
-    error: error ?? listError,
+    /** The last failed device action. The device listing's own failure is `listError`. */
+    error,
+    listError,
     pending,
     refresh,
     connect: (address: string) => run(() => commands.current.connect({ address }), true),

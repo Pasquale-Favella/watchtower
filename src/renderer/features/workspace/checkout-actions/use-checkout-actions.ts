@@ -3,8 +3,12 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { CheckoutGitStatus } from '@/shared/schemas/workspace-checkout-actions.js'
 
+import { showErrorToast } from '../error-toast.js'
 import { useWorkspaceOperation } from '../use-workspace-operation.js'
 import { checkoutCommitAtom, checkoutStageAtom, checkoutStatusAtom, checkoutUnstageAtom } from './atoms.js'
+
+/** One toast slot for stage, unstage and commit, so a repeated failure updates the visible toast. */
+const CHECKOUT_ACTION_TOAST_ID = 'workspace:checkout:action'
 
 export function useCheckoutActions(scope: CheckoutScope, revision: number) {
   const readStatus = useWorkspaceOperation(checkoutStatusAtom)
@@ -47,7 +51,11 @@ export function useCheckoutActions(scope: CheckoutScope, revision: number) {
       setRefreshKey(key => key + 1)
       return true
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : 'Could not update the checkout.')
+      showErrorToast(
+        CHECKOUT_ACTION_TOAST_ID,
+        'Checkout update failed',
+        cause instanceof Error ? cause.message : 'Could not update the checkout.',
+      )
       return false
     } finally {
       setPending(false)

@@ -16,6 +16,7 @@ import type { WorkspacePreviewShortcut } from '@/shared/schemas/workspace-previe
 
 import { WorkspaceBrowserPreview } from './browser-preview/WorkspaceBrowserPreview.js'
 import { WorkspaceDevicePanel } from './devices/WorkspaceDevicePanel.js'
+import { showErrorToast, useErrorToast } from './error-toast.js'
 import { WorkspacePullRequestsPanel } from './pull-requests/WorkspacePullRequestsPanel.js'
 import { type RightPanelSurface, surfaceKind, surfaceLabel, surfaceResource } from './right-panel/right-panel-state.js'
 import type { RightPanelControls } from './right-panel/use-right-panel.js'
@@ -54,7 +55,7 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
   const groupContext = useTerminalGroupContext(props.terminalTarget, props.retainedTerminalTarget)
   const sideChat = useCreateSideChat()
   const deleteSideChat = useDeleteSideChat()
-  const [resourceError, setResourceError] = useState<string | null>(null)
+  useErrorToast('workspace:panel:side-chat', "Couldn't open side chat", sideChat.error)
   const [confirming, setConfirming] = useState(false)
   const decision = useRef<((confirmed: boolean) => void) | null>(null)
   useEffect(
@@ -125,7 +126,13 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
       case 'close-tab':
         void close(surface)
           .then(() => props.panel.closeSurface(surface))
-          .catch(() => setResourceError('Could not close the browser tab. Try again.'))
+          .catch(() =>
+            showErrorToast(
+              'workspace:panel:close',
+              "Couldn't close tab",
+              'Could not close the browser tab. Try again.',
+            ),
+          )
         break
       case 'next-tab':
       case 'previous-tab': {
@@ -223,7 +230,6 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
         onAddDevice={() => props.panel.addSurface('device')}
         onAddPullRequests={props.projectId ? () => props.panel.openSurface('pull-requests') : undefined}
         onAddSideChat={props.parent ? openSideChat : undefined}
-        notice={sideChat.error ?? resourceError}
         titleForSurface={titleForSurface}
         beforeCloseSurface={beforeClose}
         onCloseSurface={close}

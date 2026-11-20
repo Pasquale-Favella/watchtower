@@ -4,6 +4,8 @@ import { Button } from '@/renderer/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/renderer/components/ui/dialog'
 import type { PromptAnnotation } from '@/shared/schemas/prompt-context.js'
 
+import { useErrorToast } from './error-toast.js'
+
 export interface WorkspaceImageRegion {
   readonly x: number
   readonly y: number
@@ -44,6 +46,7 @@ export function WorkspaceImageAnnotation({ image, onClose, onAdd, onPickAnother 
   const [note, setNote] = useState('')
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  useErrorToast('workspace:image-annotation', "Couldn't add screenshot", error)
   const dragging = useRef(false)
   const [removedTargets, setRemovedTargets] = useState<readonly number[]>([])
   const previous = (image.previous ?? []).filter((_, index) => !removedTargets.includes(index))
@@ -220,11 +223,6 @@ export function WorkspaceImageAnnotation({ image, onClose, onAdd, onPickAnother 
           disabled={pending}
           className="bg-background focus-visible:ring-ring min-h-20 w-full rounded-md border px-3 py-2 text-sm outline-none focus-visible:ring-2"
         />
-        {error && (
-          <p role="alert" className="text-destructive text-xs">
-            {error}
-          </p>
-        )}
         <div className="flex justify-end gap-2">
           {onPickAnother && previous.length < 7 && (
             <Button variant="outline" disabled={pending} onClick={() => onPickAnother(annotatedTarget())}>
