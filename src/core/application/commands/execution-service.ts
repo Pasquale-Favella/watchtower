@@ -15,6 +15,7 @@ import * as Semaphore from 'effect/Semaphore'
 import { sideChatBringBackPrompt } from '@/core/application/commands/workspace-side-chats.js'
 import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
 import { captureConversationContext } from '@/core/application/execution/conversation-context.js'
+import { classifyConversationTransition } from '@/core/application/execution/conversation-transition.js'
 import type {
   AgentDriverError,
   AgentDriverSession,
@@ -138,6 +139,12 @@ const contextFor = (claim: DispatchClaim): AgentSessionContext => ({
 
 const isTerminalEvent = (event: AgentDriverEvent): boolean =>
   event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed'
+
+/** A Run whose dispatch already settled has nothing left to interrupt, so the store's refusal is not a stop failure. */
+const isSettledDispatchRefusal = (cause: Cause.Cause<unknown>): boolean => {
+  const error = cause.reasons.find(Cause.isFailReason)?.error
+  return error instanceof WorkspaceStoreError && error.code === 'invalid-transition'
+}
 
 export class ExecutionService extends Context.Service<
   ExecutionService,
@@ -390,7 +397,12 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
               .filter(run => contexts.get(run.id)?.conversationId === state.claim.conversationId)
               .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]
             const sourceContext = sourceRun ? contexts.get(sourceRun.id) : undefined
-            if (sourceRun && sourceContext && sourceContext.connectionId !== state.claim.connectionId) {
+            const transition = classifyConversationTransition({
+              source: sourceContext ? { connectionId: sourceContext.connectionId, modelId: sourceContext.modelId } : null,
+              target: { connectionId: state.claim.connectionId, modelId: state.claim.modelId },
+              resumesNativeSession: false,
+            })
+            if (sourceRun && sourceContext && transition.kind === 'handoff') {
               const handoff = yield* captureConversationContext(
                 store,
                 state.claim.conversationId,
@@ -1142,13 +1154,19 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         state =>
           forkOwnedControl(
             Effect.gen(function* () {
+              if (state.terminal) return
               const requested = yield* Effect.exit(
                 store.requestInterrupt(state.claim.runId, state.claim.ownerEpoch, yield* timestamp),
               )
               state.interruptRequested = true
-              if (Exit.isFailure(requested)) backgroundFailures.push(requested.cause)
+              if (Exit.isFailure(requested) && !isSettledDispatchRefusal(requested.cause))
+                backgroundFailures.push(requested.cause)
               yield* sendNativeInterrupt(state).pipe(
-                Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
+                Effect.catchCause(cause =>
+                  Effect.sync(() => {
+                    if (!state.terminal) backgroundFailures.push(cause)
+                  }),
+                ),
               )
             }),
           ),

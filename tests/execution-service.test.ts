@@ -998,6 +998,41 @@ describe('ExecutionService', () => {
     }
   })
 
+  it('stops without a failure when the stop lands after a Run completed and before its worker finishes settling', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    await setup(store, runStore)
+    const runtime = makeRuntime(
+      () =>
+        Effect.succeed(
+          makeConnection(
+            makeSession({
+              events: () =>
+                Stream.fromIterable([
+                  { kind: 'turnStarted' as const, nativeTurnId: 'native-turn' },
+                  { kind: 'turnCompleted' as const, nativeTurnId: 'native-turn' },
+                ]),
+            }),
+          ),
+        ),
+      { onRunFinished: () => Effect.sleep('300 millis') },
+      store,
+    )
+    try {
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start({ ...command, prompt: 'Finish quickly' }))
+      await expect
+        .poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs.find(item => item.id === command.runId))
+        .toMatchObject({ status: 'completed' })
+      await expect(run(service.stopAll())).resolves.toBeUndefined()
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
   it('bounds stopAll when a native interrupt ignores cancellation', async () => {
     const submitFinished = await Effect.runPromise(Deferred.make<undefined>())
     const requestCommitted = await Effect.runPromise(Deferred.make<undefined>())
