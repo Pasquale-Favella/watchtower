@@ -66,7 +66,7 @@ import {
   createElectronWorkspacePreviewManager,
   workspacePreviewWindow,
 } from '@/platform/electron/main/preview/electron-preview.js'
-import { closeMainResources, createQuitCoordinator } from '@/platform/electron/main/quit-coordinator.js'
+import { closeMainResources, createQuitCoordinator, settleWithin } from '@/platform/electron/main/quit-coordinator.js'
 import { checkoutActionsHandlers } from '@/platform/electron/main/rpc/checkout-actions-handlers.js'
 import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
 import { checkoutNavigationHandlers } from '@/platform/electron/main/rpc/checkout-navigation-handlers.js'
@@ -732,12 +732,18 @@ function showUpdateInstallError(): void {
   app.exit(1)
 }
 
+/** Renderer RPC requests in flight get this long to unwind before the data plane closes under them. */
+const RENDERER_RPC_DRAIN_MS = 1_500
+
 const quitCoordinator = createQuitCoordinator({
   markQuitting: () => backgroundShell?.markQuitting(),
   cleanup: async () => {
     disposeRendererRpc?.()
     workspacePreviewManager?.dispose()
-    await Promise.all(Array.from(rendererRpcFibers, fiber => mainRuntime.runPromise(Fiber.interrupt(fiber))))
+    await settleWithin(
+      Promise.all(Array.from(rendererRpcFibers, fiber => mainRuntime.runPromise(Fiber.interrupt(fiber)))),
+      RENDERER_RPC_DRAIN_MS,
+    )
     try {
       await closeMainResources({
         stopCoach: () =>
@@ -747,6 +753,12 @@ const quitCoordinator = createQuitCoordinator({
         stopWorker: () => dbClient?.shutdown() ?? Promise.resolve(),
         disposeRuntime: () => mainRuntime.dispose(),
       })
+    } catch (error) {
+      safeLogOperationalEvent('error', 'app.shutdown', {
+        outcome: 'failed',
+        code: logCodeFor(error, 'resources-unconfirmed'),
+      })
+      throw error
     } finally {
       try {
         closeOperationalLog()
