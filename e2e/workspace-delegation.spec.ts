@@ -107,7 +107,10 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
 
     expect(pageErrors).toEqual([])
   } finally {
-    if (launched) await launched.close()
-    rmSync(directory, { recursive: true, force: true })
+    try {
+      if (launched) await launched.close()
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   }
 })
