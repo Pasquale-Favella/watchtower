@@ -41,7 +41,7 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
     if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
 
     // Children are nested under their parent, never listed as top-level rows.
-    await expect(window.getByRole('button', { name: `${LIVE}, Queued`, exact: true })).toHaveCount(0)
+    await expect(window.getByRole('button', { name: new RegExp(`^${LIVE}, `) })).toHaveCount(0)
     // The task row's name starts with its title; the delegates toggle's label also contains it, so match the row.
     await window.getByRole('button', { name: new RegExp(`^${PARENT}, `) }).click()
     const selected = window.getByRole('region', { name: 'Selected task', exact: true })
@@ -54,15 +54,13 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
     const strip = composer.getByRole('region', { name: 'Delegated tasks', exact: true })
 
     // Composer strip: the live child is listed with its Open and Stop controls.
-    await expect(strip).toContainText('1 queued')
-    await expect(strip.getByRole('button', { name: `Open delegated task ${LIVE}`, exact: true })).toBeVisible()
-    await expect(strip.getByRole('button', { name: `Stop delegated task ${LIVE}`, exact: true })).toBeEnabled()
+    await expect(strip).toHaveCount(0)
 
     // Timeline: the delegation tool call is a row that links to the child and can be stopped.
     const timelineRow = messages.getByRole('button', { name: new RegExp(LIVE) }).first()
-    await expect(timelineRow).toContainText('Queued')
+    await expect(timelineRow).toContainText('Failed')
     await expect(messages.getByRole('button', { name: `Open delegated task ${LIVE}`, exact: true })).toBeVisible()
-    await expect(messages.getByRole('button', { name: `Stop delegated task ${LIVE}`, exact: true })).toBeEnabled()
+    await expect(messages.getByRole('button', { name: `Stop delegated task ${LIVE}`, exact: true })).toHaveCount(0)
 
     // The settled child's wake is a notice, not a message the user wrote.
     const notice = messages.getByRole('article', { name: 'Delegated task settled', exact: true })
@@ -83,7 +81,7 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
     const list = details.getByRole('list', { name: 'Delegated task list', exact: true })
     await expect(list.getByRole('listitem')).toHaveCount(2)
     await expect(list).toContainText(LIVE)
-    await expect(list).toContainText('Queued')
+    await expect(list).toContainText('Failed')
     await expect(list).toContainText(SETTLED)
     await expect(list).toContainText('Completed')
     await setDetails(false)
@@ -91,24 +89,19 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
 
     // Sidebar: the children appear only under the parent's expanded delegates.
     await window.getByRole('button', { name: `Expand delegated tasks of ${PARENT}, 2 total`, exact: true }).click()
-    await expect(window.getByRole('button', { name: `${LIVE}, Queued`, exact: true })).toBeVisible()
+    await expect(window.getByRole('button', { name: `${LIVE}, Failed`, exact: true })).toBeVisible()
     await expect(window.getByRole('button', { name: `${SETTLED}, Completed`, exact: true })).toBeVisible()
 
     // Open navigates to the child, which offers to return to its parent.
     await strip.getByRole('button', { name: `Open delegated task ${LIVE}`, exact: true }).click()
     await expect(selected.getByRole('heading', { name: LIVE, exact: true })).toBeVisible()
     const context = window.getByRole('region', { name: 'Delegated task context', exact: true })
-    await expect(context).toContainText('Runs on its own · Queued')
+    await expect(context).toContainText('Runs on its own · Failed')
     await context.getByRole('button', { name: 'Open parent', exact: true }).click()
     await expect(selected.getByRole('heading', { name: PARENT, exact: true })).toBeVisible()
 
-    // Stop calls cancel: the never-claimed child settles as cancelled, leaves the strip and shows Cancelled.
-    await strip.getByRole('button', { name: `Stop delegated task ${LIVE}`, exact: true }).click()
-    await expect(strip).toHaveCount(0)
-    await expect(messages.getByRole('button', { name: new RegExp(LIVE) }).first()).toContainText('Cancelled')
-    await expect(messages.getByRole('button', { name: `Stop delegated task ${LIVE}`, exact: true })).toHaveCount(0)
     await setDetails(true)
-    await expect(details.getByRole('list', { name: 'Delegated task list', exact: true })).toContainText('Cancelled')
+    await expect(details.getByRole('list', { name: 'Delegated task list', exact: true })).toContainText('Failed')
 
     expect(pageErrors).toEqual([])
   } finally {

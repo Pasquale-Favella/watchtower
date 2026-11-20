@@ -43,7 +43,7 @@ const wakeRunId = 'delegation-wake-run'
 
 /**
  * A parent Task with two Delegated Tasks, written through the production store before Electron starts. The live child
- * is queued and never claimed, so Stop settles it through the never-claimed cancel path. The settled child's wake was
+ * was never claimed when the app reopens, so recovery settles it as failed with a wake. The settled child's wake was
  * already delivered, so the parent's wake Run shows a wake notice.
  */
 export async function seedWorkspaceDelegation(profile: string, checkoutPath: string): Promise<void> {
