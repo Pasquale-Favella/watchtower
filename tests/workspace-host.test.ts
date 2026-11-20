@@ -28,6 +28,8 @@ import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import type { WorkspaceHostOptions } from '@/platform/electron/main/workspace/host.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import type { WorkspaceWorkerSupervisorOptions } from '@/platform/electron/main/workspace/supervisor.js'
+import type { DelegationRecord } from '@/shared/schemas/delegation.js'
+import type { BeginRunCommand, CreateDelegationCommand } from '@/shared/schemas/workspace-store.js'
 
 let directory = ''
 let workerPath = ''
@@ -775,4 +777,106 @@ describe('lazy application WorkspaceHost', () => {
       await runtime.dispose().catch(() => {})
     }
   }, 20_000)
+})
+
+describe('delegation recovery before the workspace opens', () => {
+  it('settles a delegated child that was never claimed before the workspace opens', async () => {
+    const suffix = 'recovery-before-open'
+    const input = workspace(suffix)
+    const delegationId = `dlg-${suffix}`
+    const parent = beginCommand(suffix)
+    const childRunId = `child-run-${suffix}`
+    const childCommand: BeginRunCommand = {
+      ...beginCommand(`${suffix}-child`),
+      runId: childRunId as never,
+      taskId: `child-task-${suffix}` as never,
+      conversationId: `child-conversation-${suffix}` as never,
+      checkoutId: input.checkout.id,
+      provisionalAgentSessionId: `child-session-${suffix}`,
+      origin: 'delegation',
+      delegationId: delegationId as never,
+    }
+    const record: DelegationRecord = {
+      id: delegationId as never,
+      commandId: `delegation:${delegationId}`,
+      projectId: input.project.id,
+      parentTaskId: input.task.id,
+      parentConversationId: input.conversation.id,
+      parentRunId: parent.runId,
+      childTaskId: childCommand.taskId,
+      childConversationId: childCommand.conversationId,
+      childRunId: childRunId as never,
+      checkoutId: input.checkout.id,
+      depth: 1,
+      title: 'Audit',
+      driverId: 'acp',
+      connectionId: 'test-connection',
+      modelId: null,
+      modeId: null,
+      accessMode: 'approval-required',
+      accessModeRequested: null,
+      accessModeSteppedDownFrom: null,
+      isolation: 'shared',
+      status: 'queued',
+      wake: 'always',
+      wakeState: 'notDue',
+      pendingRequest: null,
+      resultText: null,
+      resultTruncated: false,
+      cancelRequestedAt: null,
+      resultReadAt: null,
+      createdAt: input.task.createdAt,
+      settledAt: null,
+    }
+    const createCommand: CreateDelegationCommand = {
+      commandId: record.commandId,
+      issuedAt: input.task.createdAt,
+      parentRunId: parent.runId,
+      parentTaskId: input.task.id,
+      parentConversationId: input.conversation.id,
+      task: {
+        id: record.childTaskId,
+        projectId: input.project.id,
+        title: 'Audit',
+        description: '',
+        createdAt: input.task.createdAt,
+      },
+      conversation: { id: record.childConversationId, title: 'Audit', createdAt: input.task.createdAt },
+      record,
+      limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+    }
+    const first = fixture(suffix, undefined, AgentDriverRegistry.fromDrivers([]))
+    try {
+      const host = await first.runtime.runPromise(WorkspaceHost)
+      await first.runtime.runPromise(
+        host.store.registerProject({ project: input.project, mainCheckout: input.checkout }),
+      )
+      await first.runtime.runPromise(host.store.createTask({ task: input.task, conversation: input.conversation }))
+      await first.runtime.runPromise(host.store.beginRun(parent))
+      const owner = (await first.runtime.runPromise(SubscriptionRef.get(host.status))).ownerEpoch
+      if (owner === undefined) throw new Error('Worker owner missing')
+      await first.runtime.runPromise(host.store.claimDispatch(parent.runId, owner, input.task.createdAt))
+      await first.runtime.runPromise(
+        host.store.acknowledgeDispatch(parent.runId, {
+          ownerEpoch: owner,
+          nativeSessionId: `native-${suffix}`,
+          acknowledgedAt: input.task.createdAt,
+        }),
+      )
+      await first.runtime.runPromise(host.store.createDelegation(createCommand))
+      await first.runtime.runPromise(host.store.beginRun(childCommand))
+    } finally {
+      await first.runtime.dispose()
+    }
+
+    const second = fixture(suffix, undefined, AgentDriverRegistry.fromDrivers([]))
+    try {
+      const host = await second.runtime.runPromise(WorkspaceHost)
+      const settled = await second.runtime.runPromise(host.store.getDelegation(delegationId as never))
+      expect(settled).toMatchObject({ status: 'failed', wakeState: 'pending' })
+      expect(settled?.settledAt).not.toBeNull()
+    } finally {
+      await second.runtime.dispose()
+    }
+  })
 })

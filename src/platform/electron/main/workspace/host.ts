@@ -36,6 +36,7 @@ import {
   discoverWorkspacePromptCatalog,
   inspectWorkspaceConnection,
 } from '@/platform/electron/main/workspace/connection-inspection.js'
+import { withEventWatermark } from '@/platform/electron/main/workspace/event-watermark.js'
 import type { WorkspaceWorkerSupervisorOptions } from '@/platform/electron/main/workspace/supervisor.js'
 import {
   WorkspaceWorkerSupervisor,
@@ -150,6 +151,13 @@ function unavailableStore(message = 'Workspace storage is unavailable.'): Worksp
 const closedExecution = () =>
   new ExecutionServiceError({ reason: 'service-stopped', message: UNAVAILABLE, nativeCleanup: 'unconfirmed' })
 
+/** A Delegation still active, or a wake still pending, means the last app session ended before its recovery ran. */
+const delegationRecoveryDue = (store: WorkspaceStore['Service']) =>
+  Effect.all([store.listDelegations({ activeOnly: true, limit: 1 }), store.listDueDelegationWakes(1)]).pipe(
+    Effect.map(([active, wakes]) => active.items.length > 0 || wakes.length > 0),
+    Effect.catch(() => Effect.succeed(true)),
+  )
+
 /** The service itself is inert at acquisition. Its child application scope is opened on demand. */
 export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
   Layer.effect(
@@ -161,6 +169,12 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       const executionGate = yield* Semaphore.make(1)
       const eventHighWatermark = yield* SubscriptionRef.make(0)
       const status = yield* SubscriptionRef.make<WorkspaceHostStatus>({ state: 'not-started', ownerEpoch: undefined })
+      const advanceEventWatermark = (store: WorkspaceStore['Service']) =>
+        store.pageEvents(0, 1).pipe(
+          Effect.tap(page => SubscriptionRef.update(eventHighWatermark, value => Math.max(value, page.highWatermark))),
+          Effect.asVoid,
+          Effect.catchCause(() => Effect.void),
+        )
       let hostScope: Scope.Closeable | undefined
       let supervisor: WorkspaceWorkerSupervisor['Service'] | undefined
       let supervisorContext: SupervisorContext | undefined
@@ -221,8 +235,12 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
           yield* SubscriptionRef.set(status, { state: 'unavailable', ownerEpoch: undefined })
           return yield* unavailableStore()
         }
-        supervisorContext = context
         supervisor = current
+        // Recovery completes before the context is published, so no caller reads a Delegation that is still queued
+        // after its Run ended. Callers wait on the open until then.
+        if (yield* delegationRecoveryDue(current.store))
+          yield* executionGate.withPermit(executionFor(context).pipe(Effect.catch(() => Effect.void)))
+        supervisorContext = context
         const refreshStatus = Effect.gen(function* () {
           if (stopped) return
           const workerStatus = yield* SubscriptionRef.get(current.status)
@@ -233,11 +251,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             ownerEpoch,
           })
         })
-        const syncHighWatermark = current.store.pageEvents(0, 1).pipe(
-          Effect.tap(page => SubscriptionRef.update(eventHighWatermark, value => Math.max(value, page.highWatermark))),
-          Effect.asVoid,
-          Effect.catchCause(() => Effect.void),
-        )
+        const syncHighWatermark = advanceEventWatermark(current.store)
         yield* Effect.forkIn(
           Stream.runForEach(SubscriptionRef.changes(current.status), workerStatus =>
             workerStatus.state === 'ready' ? Effect.andThen(syncHighWatermark, refreshStatus) : refreshStatus,
@@ -415,7 +429,10 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
       })
 
       const getExecution = Effect.fn('WorkspaceHost.getExecution')(function* () {
-        const context = yield* getSupervisor()
+        return yield* executionFor(yield* getSupervisor())
+      })
+
+      const executionFor = Effect.fn('WorkspaceHost.executionFor')(function* (context: SupervisorContext) {
         const owner = Context.get(context, WorkspaceWorkerSupervisor)
         const isCurrent = (epoch: number) =>
           !stopped &&
@@ -465,7 +482,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         const { connections, rows: catalogRows } = yield* getConnectionCatalog
         if (!isCurrent(ownerEpoch)) return yield* closedExecution()
         const layers = Layer.mergeAll(
-          Layer.succeed(WorkspaceStore, owner.store),
+          Layer.succeed(WorkspaceStore, withEventWatermark(owner.store, advanceEventWatermark(owner.store))),
           Layer.succeed(CheckoutResolver, checkoutResolver),
           Layer.succeed(AgentDriverRegistry, driverRegistry),
           HarnessConnectionResolver.layer(connections, { runtimeExecutable: options.runtimeExecutable }),
@@ -553,11 +570,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         delegationBox.coordinator = Context.get(delegationContext, DelegationCoordinator)
         delegationBox.delegations = Context.get(delegationContext, DelegationService)
         // Settle children whose Runs ended while the app was closed, and deliver wakes that were due.
-        yield* Effect.forkIn(
-          delegationBox.coordinator.recover(ownerEpoch).pipe(Effect.catch(() => Effect.void)),
-          serviceScope,
-          { startImmediately: true },
-        )
+        yield* delegationBox.coordinator.recover(ownerEpoch).pipe(Effect.catch(() => Effect.void))
         execution = {
           ownerEpoch,
           service,
@@ -581,7 +594,10 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
               getSupervisor().pipe(
                 Effect.flatMap(context => {
                   const service = Context.get(context, WorkspaceWorkerSupervisor).store
-                  const operation: unknown = Reflect.get(service, key)
+                  const operation: unknown = Reflect.get(
+                    withEventWatermark(service, advanceEventWatermark(service)),
+                    key,
+                  )
                   if (typeof operation !== 'function')
                     return Effect.fail(
                       new WorkspaceStoreError({ code: 'invalid-data', message: 'Unknown workspace operation.' }),
