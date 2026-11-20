@@ -453,7 +453,7 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
       })
     return Effect.gen(function* () {
       const completed = yield* Deferred.make<undefined>()
-      const running: Fiber.Fiber<unknown, unknown> = yield* Effect.forkDetach(
+      const running = yield* Effect.forkDetach(
         startWithIdEffect(request, emit, runId).pipe(Effect.ensuring(finishStart(completed))),
       )
       inFlightStarts.set(runId, { completed, fiber: running })
