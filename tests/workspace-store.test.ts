@@ -1495,6 +1495,43 @@ describe('WorkspaceStore', () => {
     }
   })
 
+  it('repairs the side chat schema when another migration already holds version 15', async () => {
+    const directory = mkdtempSync(join(process.cwd(), '.workspace-side-chat-repair-'))
+    const filename = join(directory, 'workspace.db')
+    let runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      await runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
+      await runtime.dispose()
+
+      const writer = ManagedRuntime.make(Sqlite.SqliteClient.layer({ filename }))
+      try {
+        await writer.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`DROP INDEX index_side_chat_bring_back_pending`
+            yield* sql`DROP TABLE workspace_side_chat_bring_back`
+            yield* sql`DROP INDEX index_tasks_by_project_listed`
+            yield* sql`ALTER TABLE workspace_task DROP COLUMN side_chat`
+            yield* sql`UPDATE watchtower_sql_migrations SET name = 'index_dispatch_intents_by_conversation' WHERE migration_id = 15`
+            yield* sql`DELETE FROM watchtower_sql_migrations WHERE migration_id > 16`
+          }),
+        )
+      } finally {
+        await writer.dispose()
+      }
+
+      runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
+      const repaired = await runtime.runPromise(WorkspaceStore)
+      await runtime.runPromise(repaired.createTask({ task, conversation }))
+      const page = await runtime.runPromise(repaired.listTasks(project.id))
+      expect(page.items).toMatchObject([{ id: task.id }])
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
   it('refuses to claim a dispatch whose stored access mode fails validation', async () => {
     const directory = mkdtempSync(join(process.cwd(), '.workspace-access-invalid-'))
     const filename = join(directory, 'workspace.db')

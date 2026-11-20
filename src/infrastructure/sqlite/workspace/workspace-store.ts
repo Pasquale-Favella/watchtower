@@ -368,6 +368,35 @@ const migrations = [
       ALTER TABLE workspace_message ADD COLUMN delegation_id TEXT;
     `),
   },
+  {
+    version: 17,
+    name: 'repair_side_chat_schema',
+    // Development builds recorded a different migration as version 15, so the side chat schema may be missing.
+    up: Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const columns = (yield* sql.unsafe('PRAGMA table_info(workspace_task)')) as readonly { readonly name: string }[]
+      if (!columns.some(column => column.name === 'side_chat')) {
+        yield* executeSqliteScript(`
+          ALTER TABLE workspace_task ADD COLUMN side_chat INTEGER NOT NULL DEFAULT 0 CHECK (side_chat IN (0, 1));
+          UPDATE workspace_task SET side_chat = 1 WHERE id LIKE 'side-task:%';
+        `)
+      }
+      yield* executeSqliteScript(`
+        CREATE INDEX IF NOT EXISTS index_tasks_by_project_listed ON workspace_task (project_id, archived, side_chat);
+        CREATE TABLE IF NOT EXISTS workspace_side_chat_bring_back (
+          id TEXT PRIMARY KEY,
+          parent_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+          side_chat_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'superseded', 'cancelled')),
+          payload TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          consumed_run_id TEXT REFERENCES workspace_agent_run(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS index_side_chat_bring_back_pending
+          ON workspace_side_chat_bring_back (parent_conversation_id) WHERE status = 'pending';
+      `)
+    }),
+  },
 ] as const
 
 const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
