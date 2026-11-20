@@ -53,8 +53,9 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
     const composer = main.getByRole('region', { name: 'Conversation composer', exact: true })
     const strip = composer.getByRole('region', { name: 'Delegated tasks', exact: true })
 
-    // Composer strip: the live child is listed with its Open and Stop controls.
-    await expect(strip).toHaveCount(0)
+    // Composer strip: the child settled at reopen has no harness to wake the parent here, so its result is held.
+    await expect(strip).toContainText('Result held until you send a message.')
+    await expect(strip.getByRole('button', { name: new RegExp(`^Stop delegated task`) })).toHaveCount(0)
 
     // Timeline: the delegation tool call is a row that links to the child and can be stopped.
     const timelineRow = messages.getByRole('button', { name: new RegExp(LIVE) }).first()
@@ -63,8 +64,9 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
     await expect(messages.getByRole('button', { name: `Stop delegated task ${LIVE}`, exact: true })).toHaveCount(0)
 
     // The settled child's wake is a notice, not a message the user wrote.
-    const notice = messages.getByRole('article', { name: 'Delegated task settled', exact: true })
-    await expect(notice).toContainText(`Delegated task ${SETTLED} settled as completed`)
+    const notices = messages.getByRole('article', { name: 'Delegated task settled', exact: true })
+    await expect(notices.filter({ hasText: `Delegated task ${SETTLED} settled as completed` })).toHaveCount(1)
+    await expect(notices.filter({ hasText: `Delegated task ${LIVE} settled as failed` })).toHaveCount(1)
     await expect(
       messages.getByRole('article', { name: 'User message', exact: true }).filter({ hasText: 'settled as completed' }),
     ).toHaveCount(0)
