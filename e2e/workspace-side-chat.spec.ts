@@ -1,11 +1,9 @@
-import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join, resolve, sep } from 'node:path'
+import { readFileSync } from 'node:fs'
 
 import { expect, type Locator, test } from '@playwright/test'
 
-import { dismissOnboarding, launchApp } from './app'
+import { dismissOnboarding, launchApp, type LaunchedApp } from './app'
+import { addProjectAndSelectAgent, createSideChatFixture, removeSideChatFixture } from './side-chat-fixture'
 
 async function expectPromptValue(prompt: Locator, expected: string | RegExp): Promise<void> {
   const value = () =>
@@ -18,62 +16,16 @@ async function expectPromptValue(prompt: Locator, expected: string | RegExp): Pr
   else await expect.poll(value).toMatch(expected)
 }
 
-function removeTestDirectory(directory: string): void {
-  const absolute = resolve(directory)
-  const expectedPrefix = `${resolve(tmpdir())}${sep}watchtower-side-chat-`
-  if (!absolute.startsWith(expectedPrefix)) throw new Error('Unexpected side chat test directory')
-  rmSync(absolute, { recursive: true, force: true })
-}
-
 test('side chats use the parent snapshot, share its checkout, and bring replies back to the next main run', async () => {
-  const directory = mkdtempSync(join(tmpdir(), 'watchtower-side-chat-'))
-  const repository = join(directory, 'repository')
-  const harness = join(directory, 'bin')
-  const protocolLog = join(directory, 'protocol.jsonl')
-  let launched: Awaited<ReturnType<typeof launchApp>> | undefined
+  const fixture = createSideChatFixture()
+  const { repository, harness, protocolLog } = fixture
+  let launched: LaunchedApp | undefined
   try {
-    mkdirSync(harness)
-    execFileSync('git', ['init', repository], { windowsHide: true, stdio: 'pipe' })
-    writeFileSync(join(repository, 'README.md'), 'Side chat fixture\n')
-    execFileSync('git', ['add', 'README.md'], { cwd: repository, windowsHide: true, stdio: 'pipe' })
-    execFileSync(
-      'git',
-      [
-        '-c',
-        'user.name=Side chat test',
-        '-c',
-        'user.email=side@example.invalid',
-        '-c',
-        'commit.gpgsign=false',
-        'commit',
-        '-m',
-        'Initial fixture',
-      ],
-      { cwd: repository, windowsHide: true, stdio: 'pipe' },
-    )
-    const script = resolve('e2e/fixtures/workspace-agent.mjs')
-    const shim = join(harness, process.platform === 'win32' ? 'gemini.cmd' : 'gemini')
-    writeFileSync(
-      shim,
-      process.platform === 'win32'
-        ? `@echo off\r\n"${process.execPath}" "${script}" "${protocolLog}" %*\r\n`
-        : `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' '${script.replaceAll("'", "'\\''")}' '${protocolLog.replaceAll("'", "'\\''")}' "$@"\n`,
-    )
-    if (process.platform !== 'win32') chmodSync(shim, 0o755)
-    launched = await launchApp(directory, undefined, harness)
+    launched = await launchApp(fixture.directory, undefined, harness)
     const { window, pageErrors } = launched
     await dismissOnboarding(window)
-    await window.getByRole('combobox', { name: 'Project', exact: true }).click()
-    await window.getByRole('option', { name: 'Add project', exact: true }).click()
-    const dialog = window.getByRole('dialog', { name: 'Add project', exact: true })
-    await dialog.getByRole('option', { name: /^Local folder/ }).click()
-    await dialog.getByRole('combobox', { name: 'Project folder', exact: true }).fill(repository)
-    await dialog.getByRole('button', { name: /^Add \(/ }).click()
+    await addProjectAndSelectAgent(window, repository)
     const newChat = window.getByRole('region', { name: 'New chat', exact: true })
-    await newChat.getByRole('button', { name: 'Agent and model', exact: true }).click()
-    await window.getByRole('button', { name: 'Gemini CLI', exact: true }).click()
-    await window.getByRole('option', { name: /^Default/ }).click()
-    await window.keyboard.press('Escape')
     await newChat.getByRole('textbox', { name: 'Prompt', exact: true }).fill('Parent snapshot marker')
     await newChat.getByRole('textbox', { name: 'Prompt', exact: true }).press('Enter')
     const main = window.getByRole('region', { name: 'Main conversation', exact: true })
@@ -99,13 +51,15 @@ test('side chats use the parent snapshot, share its checkout, and bring replies 
     const sideRequests = side.getByRole('region', { name: 'Approvals and questions', exact: true })
     await expect(sideRequests.getByRole('button', { name: 'Skip inspection', exact: true })).toBeEnabled()
     // The tab reports the approval the side chat waits for, and the main chat announces it.
-    await expect(panel.getByRole('tab', { name: 'Side chat, needs approval', exact: true })).toBeVisible()
+    await expect(
+      panel.getByRole('tab', { name: 'Ask independently in the side chat, needs approval', exact: true }),
+    ).toBeVisible()
     await expect(window.getByRole('status').filter({ hasText: 'Side chat waiting' })).toBeVisible()
     const detailsTrigger = header.getByRole('button', { name: 'Conversation details', exact: true })
     await detailsTrigger.click()
     const details = window.getByRole('dialog', { name: 'Conversation details', exact: true })
     const sideChats = details.getByRole('region', { name: 'Side chats', exact: true })
-    const sideChatRow = sideChats.getByRole('button', { name: 'Side chat', exact: true })
+    const sideChatRow = sideChats.getByRole('button', { name: 'Ask independently in the side chat', exact: true })
     await expect(sideChatRow).toBeVisible()
     await expect(sideChatRow.getByRole('status')).toHaveText('Waiting')
     await detailsTrigger.click()
@@ -136,7 +90,7 @@ test('side chats use the parent snapshot, share its checkout, and bring replies 
     if ((await detailsTrigger.getAttribute('aria-pressed')) !== 'true') await detailsTrigger.click()
     await window
       .getByRole('region', { name: 'Side chats', exact: true })
-      .getByRole('button', { name: 'Side chat', exact: true })
+      .getByRole('button', { name: 'Ask independently in the side chat', exact: true })
       .click()
     await expect(side).toBeVisible()
     await expectPromptValue(sidePrompt, '')
@@ -183,6 +137,6 @@ test('side chats use the parent snapshot, share its checkout, and bring replies 
     await window.screenshot({ path: test.info().outputPath('workspace-side-chat.png'), fullPage: true })
   } finally {
     await launched?.close()
-    removeTestDirectory(directory)
+    removeSideChatFixture(fixture.directory)
   }
 })
