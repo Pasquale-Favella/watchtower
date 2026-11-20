@@ -2,6 +2,7 @@ import { CheckIcon, CopyIcon } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { formatMessageTime } from './message-time.js'
@@ -30,9 +31,7 @@ export function MessageActions({
         className,
       )}
     >
-      <time dateTime={timestamp} title={timestamp}>
-        {formatMessageTime(timestamp)}
-      </time>
+      <TextTooltip label={timestamp} trigger={<time dateTime={timestamp}>{formatMessageTime(timestamp)}</time>} />
       {copyText !== null && <CopyTextButton text={copyText} label={copyLabel} />}
       {children}
     </div>
@@ -64,20 +63,24 @@ export function CopyTextButton({ text, label }: { readonly text: string; readonl
     }
   }
   return (
-    <Button
-      type="button"
-      variant="ghost"
-      size="icon-xs"
-      aria-label={copied ? `${label} copied` : label}
-      title={status === 'failed' ? 'Could not copy to clipboard' : label}
-      onClick={() => void copy()}
-    >
-      {copied ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
-      {status === 'failed' && (
-        <span role="status" className="sr-only">
-          Could not copy to clipboard
-        </span>
-      )}
-    </Button>
+    <TextTooltip
+      label={status === 'failed' ? 'Could not copy to clipboard' : label}
+      trigger={
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-xs"
+          aria-label={copied ? `${label} copied` : label}
+          onClick={() => void copy()}
+        >
+          {copied ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
+          {status === 'failed' && (
+            <span role="status" className="sr-only">
+              Could not copy to clipboard
+            </span>
+          )}
+        </Button>
+      }
+    />
   )
 }

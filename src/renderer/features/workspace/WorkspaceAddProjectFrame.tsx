@@ -2,6 +2,7 @@ import { ArrowDown, ArrowLeft, ArrowUp } from 'lucide-react'
 import { type ReactNode, useId, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { isMac, submitModifier } from './platform-labels.js'
@@ -216,33 +217,37 @@ export function WorkspaceAddProjectFrame({
               {groupLabel && <div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{groupLabel}</div>}
               <div role="listbox" id={listId} aria-label={groupLabel ?? inputLabel}>
                 {rows.map(row => (
-                  <div
+                  <TextTooltip
                     key={row.id}
-                    id={optionId(row)}
-                    role="option"
-                    aria-selected={row === active}
-                    aria-disabled={row.disabled || undefined}
-                    title={row.description}
-                    onMouseMove={() => !row.disabled && highlightRow(row)}
-                    onMouseDown={event => event.preventDefault()}
-                    onClick={() => !row.disabled && row.onActivate()}
-                    className={cn(
-                      'flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm select-none [&_svg]:size-4 [&_svg]:shrink-0',
-                      row === active && 'bg-muted text-foreground',
-                      row.disabled && 'cursor-default opacity-50',
-                    )}
-                  >
-                    <span aria-hidden="true" className="text-muted-foreground flex">
-                      {row.icon}
-                    </span>
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate">{row.title}</span>
-                      {row.description && (
-                        <span className="text-muted-foreground truncate text-xs">{row.description}</span>
-                      )}
-                    </span>
-                    {row.trailing}
-                  </div>
+                    label={row.description}
+                    trigger={
+                      <div
+                        id={optionId(row)}
+                        role="option"
+                        aria-selected={row === active}
+                        aria-disabled={row.disabled || undefined}
+                        onMouseMove={() => !row.disabled && highlightRow(row)}
+                        onMouseDown={event => event.preventDefault()}
+                        onClick={() => !row.disabled && row.onActivate()}
+                        className={cn(
+                          'flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm select-none [&_svg]:size-4 [&_svg]:shrink-0',
+                          row === active && 'bg-muted text-foreground',
+                          row.disabled && 'cursor-default opacity-50',
+                        )}
+                      >
+                        <span aria-hidden="true" className="text-muted-foreground flex">
+                          {row.icon}
+                        </span>
+                        <span className="flex min-w-0 flex-1 flex-col">
+                          <span className="truncate">{row.title}</span>
+                          {row.description && (
+                            <span className="text-muted-foreground truncate text-xs">{row.description}</span>
+                          )}
+                        </span>
+                        {row.trailing}
+                      </div>
+                    }
+                  />
                 ))}
               </div>
             </>

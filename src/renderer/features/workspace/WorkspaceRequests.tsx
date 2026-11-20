@@ -8,6 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { AgentRequest, AgentRequestDecision } from '@/shared/schemas/execution.js'
 import type { ConversationId, TaskId } from '@/shared/schemas/workspace.js'
@@ -486,17 +487,21 @@ function QuestionPanel({
         delivery={delivery}
       >
         {request.cancelDecision && (
-          <Button
-            type="button"
-            size="icon-xs"
-            variant="ghost"
-            aria-label="Dismiss question without answering"
-            title="Dismiss question without answering"
-            disabled={disabled}
-            onClick={() => request.cancelDecision && onRespond(request.cancelDecision)}
-          >
-            <X className="size-3" />
-          </Button>
+          <TextTooltip
+            label="Dismiss question without answering"
+            trigger={
+              <Button
+                type="button"
+                size="icon-xs"
+                variant="ghost"
+                aria-label="Dismiss question without answering"
+                disabled={disabled}
+                onClick={() => request.cancelDecision && onRespond(request.cancelDecision)}
+              >
+                <X className="size-3" />
+              </Button>
+            }
+          />
         )}
       </PanelHeader>
       <QuestionForm request={request} disabled={disabled} delivery={delivery} onRespond={onRespond} />
@@ -513,9 +518,15 @@ function StaleRequests({ items }: { readonly items: readonly PendingRequest[] })
       <p className="mt-1">These belong to a stale or settled Run and cannot be answered from this view.</p>
       <ul className="mt-1 space-y-1">
         {items.map(item => (
-          <li key={requestKey(item.request)} className="truncate" title={item.request.prompt}>
-            {item.request.kind === 'approval' ? 'Approval' : 'Question'} · {item.request.prompt}
-          </li>
+          <TextTooltip
+            key={requestKey(item.request)}
+            label={item.request.prompt}
+            trigger={
+              <li className="truncate">
+                {item.request.kind === 'approval' ? 'Approval' : 'Question'} · {item.request.prompt}
+              </li>
+            }
+          />
         ))}
       </ul>
     </details>

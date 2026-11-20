@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 
 import { useCheckoutActions } from '../checkout-actions/use-checkout-actions.js'
@@ -56,9 +57,10 @@ export function CheckoutChangeActions({ scope, revision, selectedPath, onChanged
       </div>
       {selected && (
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate font-mono" title={selected.path}>
-            {selected.path}
-          </span>
+          <TextTooltip
+            label={selected.path}
+            trigger={<span className="min-w-0 flex-1 truncate font-mono">{selected.path}</span>}
+          />
           <Button
             variant="outline"
             size="xs"

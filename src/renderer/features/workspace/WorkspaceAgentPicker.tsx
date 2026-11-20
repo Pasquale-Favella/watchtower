@@ -2,6 +2,7 @@ import { LoaderCircle } from 'lucide-react'
 import { type Ref, useEffect, useImperativeHandle, useRef, useState } from 'react'
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { HarnessIcon } from '@/renderer/features/coach-skills/harness-icon.js'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
@@ -227,21 +228,25 @@ export function WorkspaceAgentPicker(props: Props): React.JSX.Element {
         openTarget.current = null
       }}
     >
-      <PopoverTrigger
-        aria-label="Agent and model"
-        title={triggerTitle}
-        disabled={props.disabled}
-        className={composerControlClass('max-w-64 min-w-0 shrink justify-start')}
-      >
-        {selectedConnection && <HarnessIcon kind={selectedConnection.harnessKind} className="size-4 shrink-0" />}
-        <span className="min-w-0 truncate">{triggerLabel}</span>
-        {selectedConnection && triggerEffort && (
-          <span className="text-muted-foreground max-w-24 shrink-0 truncate font-normal">{triggerEffort}</span>
-        )}
-        {selectedConnection && activeCatalog.pending && (
-          <LoaderCircle aria-hidden className={cn('text-muted-foreground size-3 shrink-0 animate-spin')} />
-        )}
-      </PopoverTrigger>
+      <TextTooltip
+        label={triggerTitle}
+        trigger={
+          <PopoverTrigger
+            aria-label="Agent and model"
+            disabled={props.disabled}
+            className={composerControlClass('max-w-64 min-w-0 shrink justify-start')}
+          >
+            {selectedConnection && <HarnessIcon kind={selectedConnection.harnessKind} className="size-4 shrink-0" />}
+            <span className="min-w-0 truncate">{triggerLabel}</span>
+            {selectedConnection && triggerEffort && (
+              <span className="text-muted-foreground max-w-24 shrink-0 truncate font-normal">{triggerEffort}</span>
+            )}
+            {selectedConnection && activeCatalog.pending && (
+              <LoaderCircle aria-hidden className={cn('text-muted-foreground size-3 shrink-0 animate-spin')} />
+            )}
+          </PopoverTrigger>
+        }
+      />
       <PopoverContent
         ref={popupRef}
         side="top"

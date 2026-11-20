@@ -107,6 +107,8 @@ test('Markdown holds completed blocks while streaming and renders safe rich cont
       .poll(() => electronApp.evaluate(() => Reflect.get(globalThis, 'markdownDownload')))
       .toMatchObject({ filename: expect.stringMatching(/\.ts$/), mime: 'text/plain' })
     const wrap = message.getByRole('button', { name: 'Wrap code', exact: true })
+    await wrap.hover()
+    await expect(page.getByRole('tooltip').filter({ hasText: /^Wrap code$/ })).toBeVisible()
     await wrap.click()
     await expect(wrap).toHaveAttribute('aria-pressed', 'true')
     await expect(message.locator('.markdown-code pre')).toHaveCSS('white-space', 'pre-wrap')

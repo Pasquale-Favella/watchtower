@@ -2,6 +2,7 @@ import { ArrowUpRight, CircleStopIcon, NetworkIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { DelegationRecord, DelegationStatus } from '@/shared/schemas/delegation.js'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
@@ -176,17 +177,21 @@ function DelegationStripRow({
         Open
       </Button>
       {live && (
-        <Button
-          type="button"
-          size="icon-xs"
-          variant="ghost"
-          aria-label={`Stop delegated task ${record.title}`}
-          title="Stop delegated task"
-          disabled={stopPending || record.cancelRequestedAt !== null}
-          onClick={() => onStop(record)}
-        >
-          <CircleStopIcon />
-        </Button>
+        <TextTooltip
+          label="Stop delegated task"
+          trigger={
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              aria-label={`Stop delegated task ${record.title}`}
+              disabled={stopPending || record.cancelRequestedAt !== null}
+              onClick={() => onStop(record)}
+            >
+              <CircleStopIcon />
+            </Button>
+          }
+        />
       )}
     </li>
   )

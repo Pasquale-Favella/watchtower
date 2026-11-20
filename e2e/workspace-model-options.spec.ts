@@ -47,6 +47,7 @@ test('scratch chat keeps native model, effort, mode, and permission choices exac
       .getByRole('group', { name: 'Agents', exact: true })
       .getByRole('button', { name: 'Gemini CLI', exact: true })
       .click()
+    await expect(picker.getByText('Agent options', { exact: true })).toBeVisible()
     await expect(picker.getByRole('radiogroup', { name: 'Effort', exact: true })).toBeVisible()
     const previewWidths = await picker.locator('[data-effort-column]').evaluate(column => ({
       picker: column.closest('[role="dialog"]')?.getBoundingClientRect().width,
@@ -89,7 +90,8 @@ test('scratch chat keeps native model, effort, mode, and permission choices exac
     await expect(picker).toHaveCount(0)
     const trigger = newChat.getByRole('button', { name: 'Agent and model', exact: true })
     await expect(trigger).toHaveText('Fixture modelHigh')
-    await expect(trigger).toHaveAttribute('title', 'Fixture model \u00b7 High')
+    await trigger.hover()
+    await expect(window.getByRole('tooltip', { name: 'Fixture model \u00b7 High', exact: true })).toBeVisible()
 
     await prompt.fill('Check this scratch workspace')
     await prompt.press('Enter')

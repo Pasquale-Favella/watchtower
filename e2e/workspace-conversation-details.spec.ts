@@ -15,6 +15,11 @@ test('conversation details remember inline visibility and keep popovers transien
     // Wide inline details open by default and remain alongside the right panel.
     await expect(details).toHaveAttribute('data-conversation-details-panel', 'inline')
     await expect(toggle).toHaveAttribute('aria-pressed', 'true')
+    await toggle.hover()
+    await expect(window.getByRole('tooltip', { name: 'Conversation details', exact: true })).toHaveAttribute(
+      'data-side',
+      'left',
+    )
     await details.getByRole('button', { name: 'Customize conversation details', exact: true }).click()
     const branchItem = window.getByRole('menu').getByRole('menuitemcheckbox', { name: 'Branch', exact: true })
     await expect(window.getByRole('menuitemcheckbox', { name: 'Agent runs', exact: true })).toHaveCount(0)

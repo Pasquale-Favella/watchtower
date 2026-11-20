@@ -4,6 +4,7 @@ import { type ReactNode, useCallback, useEffect, useState } from 'react'
 import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
@@ -64,9 +65,11 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
         <section aria-label="Workspace">
           <div className="flex min-w-0 items-center gap-2 px-2.5 py-2">
             <Folder aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-xs" title={workspacePath}>
-              {workspaceName}
-            </span>
+            <TextTooltip
+              label={workspacePath}
+              side="left"
+              trigger={<span className="min-w-0 flex-1 truncate text-xs">{workspaceName}</span>}
+            />
           </div>
           {scope && props.onOpenFiles && (
             <ActionRow icon={<Folder aria-hidden="true" />} label="Files" onClick={props.onOpenFiles} />
@@ -201,18 +204,23 @@ function SideChatRelationshipStatus({
         ? 'text-destructive'
         : 'text-muted-foreground'
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      className="hover:bg-muted flex w-full min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-xs disabled:cursor-default disabled:opacity-70"
-      title={`${item.title} · ${status}`}
-      onClick={onOpen}
-    >
-      <span className="min-w-0 flex-1 truncate">{item.title}</span>
-      <span className={`shrink-0 text-[10px] ${statusClass}`} role="status">
-        {status}
-      </span>
-    </button>
+    <TextTooltip
+      label={`${item.title} · ${status}`}
+      side="left"
+      trigger={
+        <button
+          type="button"
+          disabled={disabled}
+          className="hover:bg-muted flex w-full min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-xs disabled:cursor-default disabled:opacity-70"
+          onClick={onOpen}
+        >
+          <span className="min-w-0 flex-1 truncate">{item.title}</span>
+          <span className={`shrink-0 text-[10px] ${statusClass}`} role="status">
+            {status}
+          </span>
+        </button>
+      }
+    />
   )
 }
 
@@ -261,21 +269,26 @@ function ConversationDiffRow({
   )
   return (
     <>
-      <Button
-        type="button"
-        variant="ghost"
-        aria-label="Diff"
-        title="Open the Diff tab. Totals show uncommitted changes."
-        className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-[13px]"
-        onClick={onOpen}
-      >
-        <FileDiff aria-hidden="true" className="text-muted-foreground size-4" />
-        <span className="min-w-0 flex-1 text-left">Diff</span>
-        {totals && <ChangeStats additions={totals.additions} deletions={totals.deletions} />}
-        {preview.loading && (
-          <LoaderCircle aria-label="Loading diff totals" className="text-muted-foreground size-3.5 animate-spin" />
-        )}
-      </Button>
+      <TextTooltip
+        label="Open the Diff tab. Totals show uncommitted changes."
+        side="left"
+        trigger={
+          <Button
+            type="button"
+            variant="ghost"
+            aria-label="Diff"
+            className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-[13px]"
+            onClick={onOpen}
+          >
+            <FileDiff aria-hidden="true" className="text-muted-foreground size-4" />
+            <span className="min-w-0 flex-1 text-left">Diff</span>
+            {totals && <ChangeStats additions={totals.additions} deletions={totals.deletions} />}
+            {preview.loading && (
+              <LoaderCircle aria-label="Loading diff totals" className="text-muted-foreground size-3.5 animate-spin" />
+            )}
+          </Button>
+        }
+      />
       {preview.data?.truncated && (
         <p className="text-muted-foreground px-2.5 text-xs">
           Totals cover the loaded files. More changes are available in Diff.

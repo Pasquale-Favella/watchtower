@@ -3,6 +3,7 @@ import { ChevronUp } from 'lucide-react'
 import { useId, useState } from 'react'
 
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/renderer/components/ui/dropdown-menu'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 
@@ -92,14 +93,20 @@ export function PermissionsChip({
   const { icon: Icon, label, description } = accessModeConfig[props.mode]
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={`Permissions: ${label}`}
-        title={`Permissions: ${label}. ${description}`}
-        className={composerControlClass(cn(size === 'xs' && 'text-muted-foreground h-6 px-1.5 text-[11px]', className))}
-      >
-        <Icon aria-hidden className={size === 'xs' ? 'size-3' : 'size-3.5'} />
-        <span>{label}</span>
-      </DropdownMenuTrigger>
+      <TextTooltip
+        label={`Permissions: ${label}. ${description}`}
+        trigger={
+          <DropdownMenuTrigger
+            aria-label={`Permissions: ${label}`}
+            className={composerControlClass(
+              cn(size === 'xs' && 'text-muted-foreground h-6 px-1.5 text-[11px]', className),
+            )}
+          >
+            <Icon aria-hidden className={size === 'xs' ? 'size-3' : 'size-3.5'} />
+            <span>{label}</span>
+          </DropdownMenuTrigger>
+        }
+      />
       <DropdownMenuContent side="top" align="end" sideOffset={6} className="w-auto">
         <PermissionsSection {...props} />
       </DropdownMenuContent>

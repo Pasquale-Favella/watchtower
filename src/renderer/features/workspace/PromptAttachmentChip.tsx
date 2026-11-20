@@ -1,6 +1,7 @@
 import { ImageIcon, X } from 'lucide-react'
 import { useState } from 'react'
 
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
 import { AttachmentPreview } from './attachment-preview.js'
@@ -36,27 +37,31 @@ export function PromptAttachmentChip({ attachment, onRemove, card = false }: Pro
           : promptReferenceChipClass('file')
       }
     >
-      <button
-        type="button"
-        className={`inline-flex max-w-full items-center gap-[0.33em] align-baseline focus-visible:outline-2 focus-visible:outline-offset-2 ${image ? 'cursor-zoom-in' : 'cursor-pointer'}`}
-        aria-label={`${image ? 'Image' : 'File'} attachment, ${attachment.name}, ${size}`}
-        title={`${attachment.name}\n${size}`}
-        onClick={() => setOpen(true)}
-      >
-        <span aria-hidden="true" className="inline-flex shrink-0 [&_svg]:size-[1em]">
-          {icon}
-        </span>
-        <span
-          className={
-            card ? 'flex min-w-0 flex-col items-start gap-1' : 'inline-flex min-w-0 items-baseline gap-[0.33em]'
-          }
-        >
-          <span className="max-w-72 min-w-0 truncate underline decoration-transparent underline-offset-[0.2em] group-hover/prompt-reference:decoration-current">
-            {attachment.name}
-          </span>
-          <span className="shrink-0 text-[0.8em] opacity-75">{size}</span>
-        </span>
-      </button>
+      <TextTooltip
+        label={`${attachment.name}\n${size}`}
+        trigger={
+          <button
+            type="button"
+            className={`inline-flex max-w-full items-center gap-[0.33em] align-baseline focus-visible:outline-2 focus-visible:outline-offset-2 ${image ? 'cursor-zoom-in' : 'cursor-pointer'}`}
+            aria-label={`${image ? 'Image' : 'File'} attachment, ${attachment.name}, ${size}`}
+            onClick={() => setOpen(true)}
+          >
+            <span aria-hidden="true" className="inline-flex shrink-0 [&_svg]:size-[1em]">
+              {icon}
+            </span>
+            <span
+              className={
+                card ? 'flex min-w-0 flex-col items-start gap-1' : 'inline-flex min-w-0 items-baseline gap-[0.33em]'
+              }
+            >
+              <span className="max-w-72 min-w-0 truncate underline decoration-transparent underline-offset-[0.2em] group-hover/prompt-reference:decoration-current">
+                {attachment.name}
+              </span>
+              <span className="shrink-0 text-[0.8em] opacity-75">{size}</span>
+            </span>
+          </button>
+        }
+      />
       {onRemove && (
         <button
           type="button"

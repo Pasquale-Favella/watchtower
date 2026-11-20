@@ -34,6 +34,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope, DiffSourceSelector } from '@/shared/schemas/checkout-inspection.js'
 
 import type { ReviewAnnotationGroup } from '../review/AnnotationComment.js'
@@ -248,18 +249,22 @@ export function DiffTab(props: DiffTabProps): React.JSX.Element {
               <DropdownMenuSubContent className="max-h-80 w-80">
                 <DropdownMenuLabel>Recent commits</DropdownMenuLabel>
                 {commits?.data?.items.map(item => (
-                  <DropdownMenuItem
+                  <TextTooltip
                     key={item.hash}
-                    title={item.subject}
-                    onClick={() => {
-                      setScopeKind('commit')
-                      setCommit(item.hash)
-                      setSelectedPath(null)
-                    }}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{item.subject}</span>
-                    <span className="text-muted-foreground font-mono text-[10px]">{item.hash.slice(0, 7)}</span>
-                  </DropdownMenuItem>
+                    label={item.subject}
+                    trigger={
+                      <DropdownMenuItem
+                        onClick={() => {
+                          setScopeKind('commit')
+                          setCommit(item.hash)
+                          setSelectedPath(null)
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{item.subject}</span>
+                        <span className="text-muted-foreground font-mono text-[10px]">{item.hash.slice(0, 7)}</span>
+                      </DropdownMenuItem>
+                    }
+                  />
                 ))}
                 {commits?.error && <DropdownMenuItem disabled>{commits.error}</DropdownMenuItem>}
                 {!commits && <DropdownMenuItem disabled>Loading commits...</DropdownMenuItem>}

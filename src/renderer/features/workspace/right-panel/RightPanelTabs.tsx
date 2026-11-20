@@ -23,6 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { useSideChatTabs } from '../side-chat/hooks.js'
@@ -64,17 +65,21 @@ export function PanelLauncher(props: PanelLauncherProps): React.JSX.Element {
       <p className="text-muted-foreground text-sm">Open a panel</p>
       <div className="grid w-full max-w-64 grid-cols-2 gap-2">
         {items.map(item => (
-          <Button
+          <TextTooltip
             key={item.label}
-            variant="outline"
-            className="h-16 flex-col gap-2 text-xs"
-            disabled={!item.action}
-            onClick={item.action}
-            title={item.hint}
-          >
-            {item.icon}
-            {item.label}
-          </Button>
+            label={item.hint}
+            trigger={
+              <Button
+                variant="outline"
+                className="h-16 flex-col gap-2 text-xs"
+                disabled={!item.action}
+                onClick={item.action}
+              >
+                {item.icon}
+                {item.label}
+              </Button>
+            }
+          />
         ))}
       </div>
     </div>
@@ -253,46 +258,50 @@ export function RightPanelTabs(props: Props): React.JSX.Element {
                   dragged.current = null
                 }}
               >
-                <button
-                  type="button"
-                  role="tab"
-                  id={`${props.idPrefix}-tab-${encodeURIComponent(surface)}`}
-                  aria-controls={`${props.idPrefix}-panel-${encodeURIComponent(surface)}`}
-                  aria-selected={selected}
-                  tabIndex={selected ? 0 : -1}
-                  ref={element => {
-                    if (element) buttons.current.set(surface, element)
-                    else buttons.current.delete(surface)
-                  }}
-                  onClick={() => controls.activate(surface)}
-                  onKeyDown={event => keyDown(event, surface)}
-                  title={title}
-                  aria-label={
-                    surfaceKind(surface) === 'side-chat'
-                      ? sideChatTabName(
-                          sideChatTabs[surfaceResource(surface)]?.title ?? title,
-                          sideChatTabs[surfaceResource(surface)]?.state ?? null,
-                        )
-                      : undefined
+                <TextTooltip
+                  label={title}
+                  trigger={
+                    <button
+                      type="button"
+                      role="tab"
+                      id={`${props.idPrefix}-tab-${encodeURIComponent(surface)}`}
+                      aria-controls={`${props.idPrefix}-panel-${encodeURIComponent(surface)}`}
+                      aria-selected={selected}
+                      tabIndex={selected ? 0 : -1}
+                      ref={element => {
+                        if (element) buttons.current.set(surface, element)
+                        else buttons.current.delete(surface)
+                      }}
+                      onClick={() => controls.activate(surface)}
+                      onKeyDown={event => keyDown(event, surface)}
+                      aria-label={
+                        surfaceKind(surface) === 'side-chat'
+                          ? sideChatTabName(
+                              sideChatTabs[surfaceResource(surface)]?.title ?? title,
+                              sideChatTabs[surfaceResource(surface)]?.state ?? null,
+                            )
+                          : undefined
+                      }
+                      onMouseDown={event => {
+                        if (event.button === 1) event.preventDefault()
+                      }}
+                      onAuxClick={event => {
+                        if (event.button === 1) {
+                          event.preventDefault()
+                          props.onCloseSurface(surface)
+                        }
+                      }}
+                      className="focus-visible:ring-ring flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-sm px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset"
+                    >
+                      <SurfaceIcon surface={surface} />
+                      {surfaceKind(surface) === 'side-chat' ? (
+                        <SideChatTabLabel id={surfaceResource(surface)} fallback={title} />
+                      ) : (
+                        <span className="truncate">{title}</span>
+                      )}
+                    </button>
                   }
-                  onMouseDown={event => {
-                    if (event.button === 1) event.preventDefault()
-                  }}
-                  onAuxClick={event => {
-                    if (event.button === 1) {
-                      event.preventDefault()
-                      props.onCloseSurface(surface)
-                    }
-                  }}
-                  className="focus-visible:ring-ring flex h-full min-w-0 flex-1 items-center gap-1.5 rounded-sm px-2 text-xs outline-none focus-visible:ring-2 focus-visible:ring-inset"
-                >
-                  <SurfaceIcon surface={surface} />
-                  {surfaceKind(surface) === 'side-chat' ? (
-                    <SideChatTabLabel id={surfaceResource(surface)} fallback={title} />
-                  ) : (
-                    <span className="truncate">{title}</span>
-                  )}
-                </button>
+                />
                 <button
                   type="button"
                   aria-label={`Close ${title}`}
@@ -364,10 +373,16 @@ export function RightPanelTabs(props: Props): React.JSX.Element {
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-64">
           {launcherItems(props).map(item => (
-            <DropdownMenuItem key={item.label} disabled={!item.action} onClick={item.action} title={item.hint}>
-              {item.icon}
-              {item.label}
-            </DropdownMenuItem>
+            <TextTooltip
+              key={item.label}
+              label={item.hint}
+              trigger={
+                <DropdownMenuItem disabled={!item.action} onClick={item.action}>
+                  {item.icon}
+                  {item.label}
+                </DropdownMenuItem>
+              }
+            />
           ))}
         </DropdownMenuContent>
       </DropdownMenu>

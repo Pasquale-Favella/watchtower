@@ -6,6 +6,7 @@ import { createRoot } from 'react-dom/client'
 
 import { Markdown } from '@/renderer/components/Markdown'
 import { handleTimelinePageKey } from '@/renderer/features/workspace/timeline/scroll-keys'
+import { TooltipProvider } from '@/renderer/components/ui/tooltip'
 import { TimelineScroller } from '@/renderer/features/workspace/timeline/TimelineScroller'
 
 function message(index) {
@@ -86,6 +87,8 @@ function Fixture() {
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Fixture />
+    <TooltipProvider>
+      <Fixture />
+    </TooltipProvider>
   </StrictMode>,
 )

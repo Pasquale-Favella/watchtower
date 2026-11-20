@@ -3,6 +3,7 @@ import { ArrowUpRight, CircleStopIcon, NetworkIcon } from 'lucide-react'
 import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { ConversationId, TaskId } from '@/shared/schemas/workspace.js'
@@ -82,17 +83,22 @@ export function DelegationDetailsView({
                 <ArrowUpRight aria-hidden="true" />
               </Button>
               {live && (
-                <Button
-                  type="button"
-                  size="icon-xs"
-                  variant="ghost"
-                  aria-label={`Stop delegated task ${record.title}`}
-                  title="Stop delegated task"
-                  disabled={isStopPending(record.id) || record.cancelRequestedAt !== null}
-                  onClick={() => onStop(record)}
-                >
-                  <CircleStopIcon />
-                </Button>
+                <TextTooltip
+                  label="Stop delegated task"
+                  side="left"
+                  trigger={
+                    <Button
+                      type="button"
+                      size="icon-xs"
+                      variant="ghost"
+                      aria-label={`Stop delegated task ${record.title}`}
+                      disabled={isStopPending(record.id) || record.cancelRequestedAt !== null}
+                      onClick={() => onStop(record)}
+                    >
+                      <CircleStopIcon />
+                    </Button>
+                  }
+                />
               )}
             </li>
           )

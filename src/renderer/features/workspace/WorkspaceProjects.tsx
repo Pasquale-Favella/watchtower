@@ -21,6 +21,7 @@ import { Button } from '@/renderer/components/ui/button'
 import { Input } from '@/renderer/components/ui/input'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { HarnessIcon } from '@/renderer/features/coach-skills/harness-icon.js'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
@@ -363,40 +364,46 @@ export function WorkspaceProjects({
             className="bg-sidebar-accent/50 focus-visible:border-sidebar-border focus-visible:bg-sidebar h-8 rounded-md border-transparent pr-8 pl-8 text-xs shadow-none"
           />
           {search && (
-            <Button
-              type="button"
-              size="icon-xs"
-              variant="ghost"
-              aria-label="Clear search"
-              title="Clear search"
-              className="absolute top-1/2 right-1 -translate-y-1/2"
-              onClick={() => setSearch('')}
-            >
-              <X className="size-3.5" />
-            </Button>
+            <TextTooltip
+              label="Clear search"
+              trigger={
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label="Clear search"
+                  className="absolute top-1/2 right-1 -translate-y-1/2"
+                  onClick={() => setSearch('')}
+                >
+                  <X className="size-3.5" />
+                </Button>
+              }
+            />
           )}
         </div>
-        <Button
-          type="button"
-          size="icon-sm"
-          variant="ghost"
-          aria-label="New chat"
-          title="New chat"
-          disabled={!onNewChat}
-          onClick={() => newChat(null)}
-        >
-          <SquarePen className="size-4" />
-        </Button>
-        <Button
-          type="button"
-          size="icon-sm"
-          variant="ghost"
-          aria-label="Open Project"
-          title="Open Project"
-          onClick={projectDialog.open}
-        >
-          <FolderPlus className="size-4" />
-        </Button>
+        <TextTooltip
+          label="New chat"
+          trigger={
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="New chat"
+              disabled={!onNewChat}
+              onClick={() => newChat(null)}
+            >
+              <SquarePen className="size-4" />
+            </Button>
+          }
+        />
+        <TextTooltip
+          label="Open Project"
+          trigger={
+            <Button type="button" size="icon-sm" variant="ghost" aria-label="Open Project" onClick={projectDialog.open}>
+              <FolderPlus className="size-4" />
+            </Button>
+          }
+        />
       </header>
 
       {projectDialog.notice && (
@@ -564,17 +571,21 @@ function ProjectFolder({
           <Folder className="text-sidebar-muted-foreground size-4 shrink-0" />
           <span className="text-sidebar-foreground/90 min-w-0 flex-1 truncate font-medium">{project.name}</span>
         </button>
-        <Button
-          type="button"
-          size="icon-xs"
-          variant="ghost"
-          className="mr-0.5 opacity-0 group-focus-within/project:opacity-100 group-hover/project:opacity-100 pointer-coarse:opacity-100"
-          aria-label={`New chat in ${project.name}`}
-          title={`New chat in ${project.name}`}
-          onClick={onNewChat}
-        >
-          <Plus className="size-3.5" />
-        </Button>
+        <TextTooltip
+          label={`New chat in ${project.name}`}
+          trigger={
+            <Button
+              type="button"
+              size="icon-xs"
+              variant="ghost"
+              className="mr-0.5 opacity-0 group-focus-within/project:opacity-100 group-hover/project:opacity-100 pointer-coarse:opacity-100"
+              aria-label={`New chat in ${project.name}`}
+              onClick={onNewChat}
+            >
+              <Plus className="size-3.5" />
+            </Button>
+          }
+        />
         {runtimeSummary && (
           <Tooltip>
             <TooltipTrigger

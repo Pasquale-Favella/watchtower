@@ -7,6 +7,7 @@ import { createRoot } from 'react-dom/client'
 import { Markdown } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { Button } from '@/renderer/components/ui/button'
+import { TooltipProvider } from '@/renderer/components/ui/tooltip'
 
 const initial = `A stable paragraph with [Reference](https://example.invalid/reference), **bold** and \`inline code\`.
 
@@ -101,6 +102,8 @@ Second paragraph. [Source file](src/app.ts:12), [Root source](README.md:12) and 
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Fixture />
+    <TooltipProvider>
+      <Fixture />
+    </TooltipProvider>
   </StrictMode>,
 )

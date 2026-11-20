@@ -16,6 +16,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/renderer/components/ui/button'
 import { ContextMenu, ContextMenuTrigger } from '@/renderer/components/ui/context-menu'
 import { DropdownMenuContent, DropdownMenuItem } from '@/renderer/components/ui/dropdown-menu'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope, DiffFile } from '@/shared/schemas/checkout-inspection.js'
 
 import { useCheckoutNavigation } from '../checkout-navigation/use-checkout-navigation.js'
@@ -419,14 +420,18 @@ function DiffReviewContent({ viewerRef, ...props }: Props): React.JSX.Element {
                 return (
                   <>
                     {state?.error && (
-                      <button
-                        type="button"
-                        title={state.error.message}
-                        onClick={() => props.onRetryFile(file)}
-                        className="text-destructive ml-1 text-[10px]"
-                      >
-                        Retry
-                      </button>
+                      <TextTooltip
+                        label={state.error.message}
+                        trigger={
+                          <button
+                            type="button"
+                            onClick={() => props.onRetryFile(file)}
+                            className="text-destructive ml-1 text-[10px]"
+                          >
+                            Retry
+                          </button>
+                        }
+                      />
                     )}
                     {state?.data?.truncated && <span className="text-warning ml-1 text-[10px]">Truncated</span>}
                     {state?.data &&
@@ -434,12 +439,10 @@ function DiffReviewContent({ viewerRef, ...props }: Props): React.JSX.Element {
                       state.data.patch &&
                       !state.data.truncated &&
                       (state.data.oldContent === undefined || state.data.newContent === undefined) && (
-                        <span
-                          className="text-muted-foreground ml-1 text-[10px]"
-                          title="Unchanged context exceeds the preview limit. Open the file in an editor to inspect it."
-                        >
-                          Context limited
-                        </span>
+                        <TextTooltip
+                          label="Unchanged context exceeds the preview limit. Open the file in an editor to inspect it."
+                          trigger={<span className="text-muted-foreground ml-1 text-[10px]">Context limited</span>}
+                        />
                       )}
                     {(file.binary || state?.data?.binary) && (
                       <span className="text-muted-foreground ml-1 text-[10px]">Binary</span>

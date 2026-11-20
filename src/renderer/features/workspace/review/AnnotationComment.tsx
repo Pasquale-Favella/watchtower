@@ -2,6 +2,7 @@ import { MessageSquare, Trash2 } from 'lucide-react'
 import { useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 
 import { formatRange } from './review-comments.js'
 
@@ -85,17 +86,21 @@ export function AnnotationComment({
       ) : (
         <div className="flex items-start gap-2">
           <MessageSquare className="text-primary mt-0.5 size-3.5 shrink-0" />
-          <button
-            type="button"
-            title="Edit comment"
-            onClick={() => {
-              setText(entry.text)
-              setEditing(true)
-            }}
-            className="min-w-0 flex-1 text-left whitespace-pre-wrap"
-          >
-            {entry.text}
-          </button>
+          <TextTooltip
+            label="Edit comment"
+            trigger={
+              <button
+                type="button"
+                onClick={() => {
+                  setText(entry.text)
+                  setEditing(true)
+                }}
+                className="min-w-0 flex-1 text-left whitespace-pre-wrap"
+              >
+                {entry.text}
+              </button>
+            }
+          />
           <Button variant="ghost" size="icon-xs" aria-label="Delete comment" onClick={onDelete}>
             <Trash2 />
           </Button>

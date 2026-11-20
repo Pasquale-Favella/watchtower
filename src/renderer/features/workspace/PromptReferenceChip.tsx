@@ -1,5 +1,7 @@
 import { Box, Terminal } from 'lucide-react'
 
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
+
 import { WorkspaceFileIcon } from './WorkspaceFileIcon.js'
 
 export type PromptReferenceKind = 'file' | 'skill' | 'command'
@@ -43,13 +45,18 @@ export function PromptReferenceChip({
       break
   }
   return (
-    <span className={promptReferenceChipClass(kind)} title={title}>
-      <span aria-hidden="true" className="inline-flex shrink-0 self-center [&_svg]:size-[1em]">
-        {icon}
-      </span>
-      <span className="min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] transition-colors group-hover/prompt-reference:decoration-current">
-        {label}
-      </span>
-    </span>
+    <TextTooltip
+      label={title}
+      trigger={
+        <span className={promptReferenceChipClass(kind)}>
+          <span aria-hidden="true" className="inline-flex shrink-0 self-center [&_svg]:size-[1em]">
+            {icon}
+          </span>
+          <span className="min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] transition-colors group-hover/prompt-reference:decoration-current">
+            {label}
+          </span>
+        </span>
+      }
+    />
   )
 }

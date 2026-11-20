@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Popover } from '@/renderer/components/ui/popover'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   useCreateTask,
   useCreateWorktree,
@@ -573,28 +574,32 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                     )
                   }
                   actions={
-                    <Button
-                      type="button"
-                      size="icon-sm"
-                      className="rounded-full"
-                      aria-label="Send"
-                      title="Send"
-                      disabled={
-                        !promptWithReviewComments(
-                          promptWithAttachments(draft, attachments.items),
-                          reviewComments.items,
-                        ) ||
-                        attachmentBlocked ||
-                        !canSubmit ||
-                        creating ||
-                        starting ||
-                        !projectReady ||
-                        Boolean(intent)
+                    <TextTooltip
+                      label="Send"
+                      trigger={
+                        <Button
+                          type="button"
+                          size="icon-sm"
+                          className="rounded-full"
+                          aria-label="Send"
+                          disabled={
+                            !promptWithReviewComments(
+                              promptWithAttachments(draft, attachments.items),
+                              reviewComments.items,
+                            ) ||
+                            attachmentBlocked ||
+                            !canSubmit ||
+                            creating ||
+                            starting ||
+                            !projectReady ||
+                            Boolean(intent)
+                          }
+                          onClick={submit}
+                        >
+                          <ArrowUp />
+                        </Button>
                       }
-                      onClick={submit}
-                    >
-                      <ArrowUp />
-                    </Button>
+                    />
                   }
                 />
                 {attachmentBlocked && (

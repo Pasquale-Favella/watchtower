@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { SegTabs } from '@/renderer/components/SegTabs'
 import { LoadingRegion, SkeletonCode } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { WorkspacePullRequestDetail } from '@/shared/schemas/workspace-pull-requests.js'
@@ -97,30 +98,38 @@ export function PullRequestCode(props: Props): React.JSX.Element {
                           line.kind === 'deletion' && 'bg-destructive/15',
                         )}
                       >
-                        <button
-                          type="button"
-                          className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums hover:underline"
-                          title="Add review comment"
-                          aria-label={`Review old line ${line.oldNumber ?? ''}`}
-                          disabled={!line.oldNumber || !path}
-                          onClick={() =>
-                            path && line.oldNumber && props.onAddReviewComment(path, line.oldNumber, 'LEFT')
+                        <TextTooltip
+                          label="Add review comment"
+                          trigger={
+                            <button
+                              type="button"
+                              className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums hover:underline"
+                              aria-label={`Review old line ${line.oldNumber ?? ''}`}
+                              disabled={!line.oldNumber || !path}
+                              onClick={() =>
+                                path && line.oldNumber && props.onAddReviewComment(path, line.oldNumber, 'LEFT')
+                              }
+                            >
+                              {line.oldNumber ?? ''}
+                            </button>
                           }
-                        >
-                          {line.oldNumber ?? ''}
-                        </button>
-                        <button
-                          type="button"
-                          className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums hover:underline"
-                          title="Add review comment"
-                          aria-label={`Review new line ${line.newNumber ?? ''}`}
-                          disabled={!line.newNumber || !path}
-                          onClick={() =>
-                            path && line.newNumber && props.onAddReviewComment(path, line.newNumber, 'RIGHT')
+                        />
+                        <TextTooltip
+                          label="Add review comment"
+                          trigger={
+                            <button
+                              type="button"
+                              className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums hover:underline"
+                              aria-label={`Review new line ${line.newNumber ?? ''}`}
+                              disabled={!line.newNumber || !path}
+                              onClick={() =>
+                                path && line.newNumber && props.onAddReviewComment(path, line.newNumber, 'RIGHT')
+                              }
+                            >
+                              {line.newNumber ?? ''}
+                            </button>
                           }
-                        >
-                          {line.newNumber ?? ''}
-                        </button>
+                        />
                         <span
                           className={cn(
                             'min-w-0 flex-1 pr-2',
@@ -154,19 +163,23 @@ export function PullRequestCode(props: Props): React.JSX.Element {
                               line?.kind === 'deletion' && 'bg-destructive/15',
                             )}
                           >
-                            <button
-                              type="button"
-                              className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums hover:underline"
-                              title="Add review comment"
-                              disabled={!number || !path}
-                              onClick={() =>
-                                path &&
-                                number &&
-                                props.onAddReviewComment(path, number, side === 'before' ? 'LEFT' : 'RIGHT')
+                            <TextTooltip
+                              label="Add review comment"
+                              trigger={
+                                <button
+                                  type="button"
+                                  className="text-muted-foreground w-10 shrink-0 px-1 text-right tabular-nums hover:underline"
+                                  disabled={!number || !path}
+                                  onClick={() =>
+                                    path &&
+                                    number &&
+                                    props.onAddReviewComment(path, number, side === 'before' ? 'LEFT' : 'RIGHT')
+                                  }
+                                >
+                                  {number ?? ''}
+                                </button>
                               }
-                            >
-                              {number ?? ''}
-                            </button>
+                            />
                             <span
                               className={cn(
                                 'min-w-0 flex-1 pr-2',

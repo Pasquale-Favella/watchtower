@@ -95,7 +95,23 @@ test('chat virtualizes variable heights and holds the reader through streaming, 
     const rail = page.getByRole('button', { name: /^Jump to message:/ })
     await expect(rail).toBeVisible()
     const beforeJump = (await readingAnchor(messages)).id
-    await page.getByRole('button', { name: 'Previous message', exact: true }).click()
+    const previous = page.getByRole('button', { name: 'Previous message', exact: true })
+    const next = page.getByRole('button', { name: 'Next message', exact: true })
+    const pressWithoutShifting = async (control: Locator) => {
+      await control.hover()
+      const positions = () =>
+        control.evaluate(button => ({
+          button: button.getBoundingClientRect().top,
+          icon: button.querySelector('svg')?.getBoundingClientRect().top,
+        }))
+      const before = await positions()
+      await page.mouse.down()
+      const pressed = await positions()
+      await page.mouse.up()
+      expect(pressed).toEqual(before)
+      expect(await positions()).toEqual(before)
+    }
+    await pressWithoutShifting(previous)
     await expect.poll(async () => (await readingAnchor(messages)).id).not.toBe(beforeJump)
     // The target user message lands at the jump inset near the top of the viewport.
     await expect
@@ -109,8 +125,26 @@ test('chat virtualizes variable heights and holds the reader through streaming, 
         }),
       )
       .toBe(true)
+    await messages.hover()
+    await page.mouse.wheel(0, -3500)
+    await expect(next).toBeEnabled()
+    await pressWithoutShifting(next)
     await rail.hover()
+    const preview = page.getByRole('tooltip', { name: /A reply preview\./ })
+    await expect(preview).toBeVisible()
     await page.screenshot({ path: test.info().outputPath('workspace-timeline-minimap.png') })
+    await messages.hover()
+    await previous.focus()
+    await page.keyboard.press('Tab')
+    await expect(rail).toBeFocused()
+    await rail.press('Home')
+    await expect(preview).toContainText('Message -80')
+    const firstPreviewY = (await preview.boundingBox())?.y ?? 0
+    await rail.press('End')
+    await expect(preview).toContainText('Message 295')
+    await expect.poll(async () => (await preview.boundingBox())?.y ?? 0).toBeGreaterThan(firstPreviewY + 24)
+    await rail.press('Escape')
+    await expect(preview).toBeHidden()
     expect(errors).toEqual([])
     await page.screenshot({ path: test.info().outputPath('workspace-timeline.png') })
   } finally {

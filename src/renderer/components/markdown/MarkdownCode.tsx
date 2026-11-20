@@ -10,6 +10,7 @@ import {
 } from 'streamdown'
 
 import { Button, buttonVariants } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 
 type CodeProps = HTMLAttributes<HTMLElement> & ExtraProps
 
@@ -28,26 +29,44 @@ export function MarkdownCode(props: CodeProps): React.JSX.Element {
   return (
     <div className="not-typeset markdown-code" data-wrap={wrap}>
       <CodeBlock code={String(children ?? '')} language={language} isIncomplete={incomplete}>
-        <Button
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Wrap code"
-          title="Wrap code"
-          aria-pressed={wrap}
-          onClick={() => setWrap(value => !value)}
-        >
-          <WrapTextIcon />
-        </Button>
-        <CodeBlockCopyButton
-          aria-label="Copy code"
-          title="Copy code"
-          className={buttonVariants({ variant: 'ghost', size: 'icon-xs' })}
+        <TextTooltip
+          label="Wrap code"
+          trigger={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Wrap code"
+              aria-pressed={wrap}
+              onClick={() => setWrap(value => !value)}
+            >
+              <WrapTextIcon />
+            </Button>
+          }
         />
-        <CodeBlockDownloadButton
-          language={language}
-          aria-label="Download code"
-          title="Download code"
-          className={buttonVariants({ variant: 'ghost', size: 'icon-xs' })}
+        <TextTooltip
+          label="Copy code"
+          trigger={
+            <span className="inline-flex">
+              <CodeBlockCopyButton
+                aria-label="Copy code"
+                title={undefined}
+                className={buttonVariants({ variant: 'ghost', size: 'icon-xs' })}
+              />
+            </span>
+          }
+        />
+        <TextTooltip
+          label="Download code"
+          trigger={
+            <span className="inline-flex">
+              <CodeBlockDownloadButton
+                language={language}
+                aria-label="Download code"
+                title={undefined}
+                className={buttonVariants({ variant: 'ghost', size: 'icon-xs' })}
+              />
+            </span>
+          }
         />
       </CodeBlock>
     </div>

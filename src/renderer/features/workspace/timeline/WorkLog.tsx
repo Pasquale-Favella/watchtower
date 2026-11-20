@@ -19,6 +19,7 @@ import {
 import { useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   Trace,
   TraceCollapsible,
@@ -105,12 +106,14 @@ export function ToolRow({
           </TraceIcon>
           <TraceTitle className="font-medium">{presentation.label}</TraceTitle>
           {presentation.detail && (
-            <span
-              className="text-muted-foreground/70 min-w-0 truncate font-mono text-[11px]"
-              title={presentation.detail}
-            >
-              {presentation.detail}
-            </span>
+            <TextTooltip
+              label={presentation.detail}
+              trigger={
+                <span className="text-muted-foreground/70 min-w-0 truncate font-mono text-[11px]">
+                  {presentation.detail}
+                </span>
+              }
+            />
           )}
           {tool.status !== 'running' && tool.durationMs !== undefined && (
             <TraceDescription className="text-[11px]">{formatRunDuration(tool.durationMs)}</TraceDescription>

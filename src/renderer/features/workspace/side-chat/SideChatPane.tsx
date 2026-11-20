@@ -14,6 +14,7 @@ import {
 } from '@/renderer/components/ui/alert-dialog'
 import { Button } from '@/renderer/components/ui/button'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { SideChatBinding } from '@/shared/schemas/workspace-side-chats.js'
 
 import { isRunActive } from '../composer-state.js'
@@ -151,18 +152,22 @@ function SideChatContent({
     >
       <header className="flex h-10 shrink-0 items-center gap-1 border-b px-2">
         <span className="min-w-0 flex-1 truncate text-xs font-medium">{title}</span>
-        <Button
-          variant="ghost"
-          size="xs"
-          aria-disabled={bringBackReason !== null}
-          disabled={back.pending}
-          onClick={() => {
-            if (bringBackReason === null) void back.bringBack()
-          }}
-          title={bringBackReason ?? "Adds this side chat to the main chat's next message."}
-        >
-          Bring back
-        </Button>
+        <TextTooltip
+          label={bringBackReason ?? "Adds this side chat to the main chat's next message."}
+          trigger={
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-disabled={bringBackReason !== null}
+              disabled={back.pending}
+              onClick={() => {
+                if (bringBackReason === null) void back.bringBack()
+              }}
+            >
+              Bring back
+            </Button>
+          }
+        />
         <Button
           variant="ghost"
           size="icon-xs"

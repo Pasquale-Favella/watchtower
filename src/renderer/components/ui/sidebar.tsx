@@ -10,7 +10,7 @@ import { Input } from '@/renderer/components/ui/input'
 import { Separator } from '@/renderer/components/ui/separator'
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/renderer/components/ui/sheet'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { TextTooltip, Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import { PanelLeftIcon } from 'lucide-react'
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state'
@@ -243,23 +243,28 @@ function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
   const { toggleSidebar } = useSidebar()
 
   return (
-    <button
-      data-sidebar="rail"
-      data-slot="sidebar-rail"
-      aria-label="Toggle Sidebar"
-      tabIndex={-1}
-      onClick={toggleSidebar}
-      title="Toggle Sidebar"
-      className={cn(
-        'hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:start-1/2 after:w-[2px] sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2',
-        'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',
-        '[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize',
-        'hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full',
-        '[[data-side=left][data-collapsible=offcanvas]_&]:-right-2',
-        '[[data-side=right][data-collapsible=offcanvas]_&]:-left-2',
-        className,
-      )}
-      {...props}
+    <TextTooltip
+      label="Toggle Sidebar"
+      side="right"
+      trigger={
+        <button
+          data-sidebar="rail"
+          data-slot="sidebar-rail"
+          aria-label="Toggle Sidebar"
+          tabIndex={-1}
+          onClick={toggleSidebar}
+          className={cn(
+            'hover:after:bg-sidebar-border absolute inset-y-0 z-20 hidden w-4 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:start-1/2 after:w-[2px] sm:flex ltr:-translate-x-1/2 rtl:-translate-x-1/2',
+            'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',
+            '[[data-side=left][data-state=collapsed]_&]:cursor-e-resize [[data-side=right][data-state=collapsed]_&]:cursor-w-resize',
+            'hover:group-data-[collapsible=offcanvas]:bg-sidebar group-data-[collapsible=offcanvas]:translate-x-0 group-data-[collapsible=offcanvas]:after:left-full',
+            '[[data-side=left][data-collapsible=offcanvas]_&]:-right-2',
+            '[[data-side=right][data-collapsible=offcanvas]_&]:-left-2',
+            className,
+          )}
+          {...props}
+        />
+      }
     />
   )
 }

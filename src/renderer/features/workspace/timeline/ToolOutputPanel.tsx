@@ -2,6 +2,7 @@ import { WrapTextIcon } from 'lucide-react'
 import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { CopyTextButton } from './MessageActions.js'
@@ -38,17 +39,21 @@ export function ToolOutputPanel({
     <section className="overflow-hidden rounded-md border" aria-label={label}>
       <div className="bg-muted/40 flex min-h-8 items-center gap-2 border-b px-2.5">
         <h4 className={cn('mr-auto text-[11px] font-medium', error && 'text-destructive')}>{label}</h4>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label={`Wrap ${label.toLowerCase()}`}
-          title="Toggle line wrapping"
-          aria-pressed={wrapped}
-          onClick={() => setWrapped(current => !current)}
-        >
-          <WrapTextIcon aria-hidden />
-        </Button>
+        <TextTooltip
+          label="Toggle line wrapping"
+          trigger={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label={`Wrap ${label.toLowerCase()}`}
+              aria-pressed={wrapped}
+              onClick={() => setWrapped(current => !current)}
+            >
+              <WrapTextIcon aria-hidden />
+            </Button>
+          }
+        />
         <CopyTextButton text={copyText} label={`Copy ${label.toLowerCase()}`} />
       </div>
       <pre

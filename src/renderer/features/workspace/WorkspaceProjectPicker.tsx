@@ -4,6 +4,7 @@ import { useState } from 'react'
 
 import { Command, CommandEmpty, CommandItem, CommandList } from '@/renderer/components/ui/command.js'
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover.js'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { ProjectId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectReadPage } from '@/shared/schemas/workspace-store.js'
 
@@ -49,19 +50,23 @@ export function WorkspaceProjectPicker({
         if (next) onRefresh()
       }}
     >
-      <PopoverTrigger
-        render={
-          <button
-            type="button"
-            role="combobox"
-            aria-label="Project"
-            aria-expanded={open}
-            disabled={disabled}
-            title={label}
-            className="text-foreground focus-visible:outline-ring inline-flex max-w-full min-w-0 cursor-pointer items-baseline font-medium decoration-from-font underline-offset-4 hover:underline focus-visible:outline-2 disabled:pointer-events-none disabled:opacity-50 data-popup-open:underline"
-          >
-            <span className="max-w-[min(50vw,24rem)] truncate">{label}</span>
-          </button>
+      <TextTooltip
+        label={label}
+        trigger={
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                role="combobox"
+                aria-label="Project"
+                aria-expanded={open}
+                disabled={disabled}
+                className="text-foreground focus-visible:outline-ring inline-flex max-w-full min-w-0 cursor-pointer items-baseline font-medium decoration-from-font underline-offset-4 hover:underline focus-visible:outline-2 disabled:pointer-events-none disabled:opacity-50 data-popup-open:underline"
+              >
+                <span className="max-w-[min(50vw,24rem)] truncate">{label}</span>
+              </button>
+            }
+          />
         }
       />
       <PopoverContent align="center" className="w-72 gap-0 overflow-hidden p-0">
@@ -101,9 +106,10 @@ export function WorkspaceProjectPicker({
                 onSelect={() => select(project.id)}
               >
                 <Folder className="text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate" title={project.name}>
-                  {project.name}
-                </span>
+                <TextTooltip
+                  label={project.name}
+                  trigger={<span className="min-w-0 flex-1 truncate">{project.name}</span>}
+                />
               </CommandItem>
             ))}
             {hasMore && (

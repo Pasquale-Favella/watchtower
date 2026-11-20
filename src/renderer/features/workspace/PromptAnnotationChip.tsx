@@ -9,6 +9,7 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from '@/renderer/components/ui/popover.js'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { promptAnnotationLabel } from '@/shared/prompt-annotations.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
@@ -75,16 +76,20 @@ export function PromptAnnotationChip({ attachment, onRemove }: Props): React.JSX
           if (open) void load()
         }}
       >
-        <PopoverTrigger
-          className="inline-flex max-w-full cursor-pointer items-baseline gap-[0.2em] rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
-          aria-label={`Page annotation ${label}. Show details`}
-          title={`${annotation.pageTitle || annotation.pageUrl}\n${annotation.comment}\n${summary}`}
-        >
-          <MousePointerClick className="size-[1em] shrink-0 self-center" />
-          <span className="max-w-64 min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] group-hover/prompt-reference:decoration-current">
-            {label}
-          </span>
-        </PopoverTrigger>
+        <TextTooltip
+          label={`${annotation.pageTitle || annotation.pageUrl}\n${annotation.comment}\n${summary}`}
+          trigger={
+            <PopoverTrigger
+              className="inline-flex max-w-full cursor-pointer items-baseline gap-[0.2em] rounded-sm focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current"
+              aria-label={`Page annotation ${label}. Show details`}
+            >
+              <MousePointerClick className="size-[1em] shrink-0 self-center" />
+              <span className="max-w-64 min-w-0 truncate whitespace-nowrap underline decoration-transparent underline-offset-[0.2em] group-hover/prompt-reference:decoration-current">
+                {label}
+              </span>
+            </PopoverTrigger>
+          }
+        />
         <PopoverContent
           side="top"
           align="start"
@@ -94,9 +99,10 @@ export function PromptAnnotationChip({ attachment, onRemove }: Props): React.JSX
           <PopoverTitle className="sr-only">Page annotation</PopoverTitle>
           {screenshot}
           <div className="space-y-2 px-3 py-2.5">
-            <p className="truncate text-xs font-medium" title={annotation.pageUrl}>
-              {annotation.pageTitle || annotation.pageUrl}
-            </p>
+            <TextTooltip
+              label={annotation.pageUrl}
+              trigger={<p className="truncate text-xs font-medium">{annotation.pageTitle || annotation.pageUrl}</p>}
+            />
             <PopoverDescription className="text-foreground break-words whitespace-pre-wrap">
               {annotation.comment || 'Page annotation'}
             </PopoverDescription>

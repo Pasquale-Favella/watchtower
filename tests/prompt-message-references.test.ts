@@ -61,7 +61,7 @@ describe('sent prompt references', () => {
     expect(markup).toContain('Skill review. Show details')
     expect(markup).toContain('Skill repair. Show details')
     expect(markup).toContain('$5')
-    expect(markup).toContain('title="other file.ts"')
+    expect(markup).toContain('>other file.ts</span>')
     expect(markup).toContain('@literal.ts')
     expect(markup).not.toContain('File reference literal.ts')
   })

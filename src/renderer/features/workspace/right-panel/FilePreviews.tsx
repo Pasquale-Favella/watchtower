@@ -29,6 +29,7 @@ import {
 } from './csv-preview-protocol.js'
 import { renderedFileKind } from './file-preview-kind.js'
 import { resolvePreviewReference } from './file-preview-reference.js'
+import { TableWithCellTooltips } from './file-previews/TableWithCellTooltips.js'
 import { usePreviewWorker } from './file-previews/use-preview-worker.js'
 import { InspectionNotice } from './inspection-ui.js'
 
@@ -209,7 +210,7 @@ function TablePreview({
         </InspectionNotice>
       )}
       <div className="min-h-0 flex-1 overflow-auto">
-        <table className="w-full border-collapse text-left font-mono text-xs">
+        <TableWithCellTooltips key={page.offset} className="w-full border-collapse text-left font-mono text-xs">
           <thead className="bg-background sticky top-0">
             <tr>
               <th className="border-border border px-2 py-1">#</th>
@@ -225,14 +226,14 @@ function TablePreview({
               <tr key={page.offset + index}>
                 <td className="text-muted-foreground border-border border px-2 py-1">{page.offset + index + 1}</td>
                 {row.map((value, column) => (
-                  <td key={column} className="border-border max-w-80 truncate border px-2 py-1" title={value}>
+                  <td key={column} data-cell-preview className="border-border max-w-80 truncate border px-2 py-1">
                     {value}
                   </td>
                 ))}
               </tr>
             ))}
           </tbody>
-        </table>
+        </TableWithCellTooltips>
       </div>
     </div>
   )

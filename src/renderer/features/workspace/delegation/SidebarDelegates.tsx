@@ -2,6 +2,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 
@@ -22,16 +23,20 @@ export function SidebarDelegateToggle({
   readonly onToggle: () => void
 }): React.JSX.Element {
   return (
-    <button
-      type="button"
-      aria-expanded={expanded}
-      aria-label={`${expanded ? 'Collapse' : 'Expand'} delegated tasks of ${title}, ${total} total`}
-      title={`${total} delegated ${total === 1 ? 'task' : 'tasks'}`}
-      onClick={onToggle}
-      className="text-sidebar-muted-foreground hover:text-sidebar-foreground focus-visible:ring-ring flex size-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2"
-    >
-      {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
-    </button>
+    <TextTooltip
+      label={`${total} delegated ${total === 1 ? 'task' : 'tasks'}`}
+      trigger={
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-label={`${expanded ? 'Collapse' : 'Expand'} delegated tasks of ${title}, ${total} total`}
+          onClick={onToggle}
+          className="text-sidebar-muted-foreground hover:text-sidebar-foreground focus-visible:ring-ring flex size-6 shrink-0 items-center justify-center rounded outline-none focus-visible:ring-2"
+        >
+          {expanded ? <ChevronDown className="size-3.5" /> : <ChevronRight className="size-3.5" />}
+        </button>
+      }
+    />
   )
 }
 

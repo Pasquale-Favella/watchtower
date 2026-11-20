@@ -3,9 +3,11 @@ import { useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 
 import { InspectionNotice } from '../inspection-ui.js'
 import { PAGE_ROWS, type PreviewDocument } from './preview-types.js'
+import { TableWithCellTooltips } from './TableWithCellTooltips.js'
 
 const DOCUMENT_POLICY = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:"
 
@@ -147,20 +149,24 @@ export function PreviewContent({ document, path, onSelect, pending }: Props): Re
       <div className="flex min-h-0 min-w-0 flex-1">
         <div className="border-border w-56 shrink-0 overflow-auto border-r p-1" aria-label="Archive entries">
           {document.entries.map(entry => (
-            <button
-              type="button"
+            <TextTooltip
               key={entry.name}
-              disabled={entry.directory || pending}
-              aria-pressed={document.selected === entry.name}
-              onClick={() => onSelect(entry.name)}
-              title={entry.name}
-              className="hover:bg-muted disabled:text-muted-foreground flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs"
-            >
-              <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-              <span className="text-muted-foreground shrink-0 text-[10px]">
-                {entry.directory ? '/' : entry.size.toLocaleString()}
-              </span>
-            </button>
+              label={entry.name}
+              trigger={
+                <button
+                  type="button"
+                  disabled={entry.directory || pending}
+                  aria-pressed={document.selected === entry.name}
+                  onClick={() => onSelect(entry.name)}
+                  className="hover:bg-muted disabled:text-muted-foreground flex w-full items-center gap-2 rounded px-2 py-1 text-left text-xs"
+                >
+                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
+                  <span className="text-muted-foreground shrink-0 text-[10px]">
+                    {entry.directory ? '/' : entry.size.toLocaleString()}
+                  </span>
+                </button>
+              }
+            />
           ))}
         </div>
         <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
@@ -220,7 +226,7 @@ function PreviewTable({
       className="min-h-0 min-w-0 flex-1 overflow-auto"
       onScroll={event => setScrollTop(event.currentTarget.scrollTop)}
     >
-      <table
+      <TableWithCellTooltips
         className="min-w-full table-fixed border-collapse text-left font-mono text-xs"
         style={{ width: document.columns.length * 160 + 52 }}
       >
@@ -234,7 +240,7 @@ function PreviewTable({
           <tr>
             <th className="border-border border px-2 leading-6">#</th>
             {document.columns.map((column, index) => (
-              <th key={index} className="border-border truncate border px-2 leading-6" title={column}>
+              <th key={index} data-cell-preview className="border-border truncate border px-2 leading-6">
                 {column}
               </th>
             ))}
@@ -254,7 +260,7 @@ function PreviewTable({
               {document.columns.map((_, column) => (
                 <td
                   key={column}
-                  title={row[column] ?? ''}
+                  data-cell-preview
                   className="border-border h-[26px] truncate border px-2 leading-6 whitespace-pre"
                 >
                   {row[column] ?? ''}
@@ -271,7 +277,7 @@ function PreviewTable({
             </tr>
           )}
         </tbody>
-      </table>
+      </TableWithCellTooltips>
     </div>
   )
 }

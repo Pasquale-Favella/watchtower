@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { Badge } from '@/renderer/components/ui/badge'
 import { Button } from '@/renderer/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { TaskId } from '@/shared/schemas/workspace.js'
@@ -95,9 +96,10 @@ export function DelegationRowView({
             <span className="block truncate font-medium">{view.title}</span>
           </DelegationTooltip>
           {view.model && (
-            <span className="text-muted-foreground hidden max-w-24 truncate sm:inline" title={view.model}>
-              {view.model}
-            </span>
+            <TextTooltip
+              label={view.model}
+              trigger={<span className="text-muted-foreground hidden max-w-24 truncate sm:inline">{view.model}</span>}
+            />
           )}
           <Badge variant="ghost" className="gap-1 px-1.5 text-[10px]">
             {view.tone === 'failure' ? <CircleAlertIcon aria-hidden className="text-destructive size-3" /> : null}
@@ -117,17 +119,21 @@ export function DelegationRowView({
             </Button>
           )}
           {delegation && live && (
-            <Button
-              type="button"
-              size="icon-xs"
-              variant="ghost"
-              aria-label={`Stop delegated task ${view.title}`}
-              title="Stop delegated task"
-              disabled={stopPending || delegation.cancelRequestedAt !== null}
-              onClick={() => onStop(delegation)}
-            >
-              <CircleStopIcon />
-            </Button>
+            <TextTooltip
+              label="Stop delegated task"
+              trigger={
+                <Button
+                  type="button"
+                  size="icon-xs"
+                  variant="ghost"
+                  aria-label={`Stop delegated task ${view.title}`}
+                  disabled={stopPending || delegation.cancelRequestedAt !== null}
+                  onClick={() => onStop(delegation)}
+                >
+                  <CircleStopIcon />
+                </Button>
+              }
+            />
           )}
         </div>
       </div>

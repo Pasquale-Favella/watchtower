@@ -1,6 +1,7 @@
 'use client'
 
 import { Tooltip as TooltipPrimitive } from '@base-ui/react/tooltip'
+import type { ReactElement } from 'react'
 
 import { cn } from '@/renderer/shared/lib/utils'
 
@@ -18,6 +19,7 @@ function TooltipTrigger({ ...props }: TooltipPrimitive.Trigger.Props) {
 
 function TooltipContent({
   className,
+  anchor,
   side = 'top',
   sideOffset = 4,
   align = 'center',
@@ -25,10 +27,11 @@ function TooltipContent({
   children,
   ...props
 }: TooltipPrimitive.Popup.Props &
-  Pick<TooltipPrimitive.Positioner.Props, 'align' | 'alignOffset' | 'side' | 'sideOffset'>) {
+  Pick<TooltipPrimitive.Positioner.Props, 'anchor' | 'align' | 'alignOffset' | 'side' | 'sideOffset'>) {
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Positioner
+        anchor={anchor}
         align={align}
         alignOffset={alignOffset}
         side={side}
@@ -52,4 +55,23 @@ function TooltipContent({
   )
 }
 
-export { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider }
+interface TextTooltipProps {
+  readonly label: string | null | undefined
+  readonly trigger: ReactElement
+  readonly side?: TooltipPrimitive.Positioner.Props['side']
+}
+
+function TextTooltip({ label, trigger, side }: TextTooltipProps): ReactElement {
+  if (!label) return trigger
+
+  return (
+    <Tooltip>
+      <TooltipTrigger render={trigger} />
+      <TooltipContent side={side} className="wrap-anywhere whitespace-pre-wrap">
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+export { TextTooltip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger }

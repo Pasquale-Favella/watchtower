@@ -100,7 +100,6 @@ function PromptMentionView({ node, selected }: NodeViewProps): React.JSX.Element
       contentEditable={false}
       spellCheck={false}
       dir="ltr"
-      title={path}
       aria-label={openFile ? undefined : `File reference ${path}`}
       className="data-[selected=true]:bg-accent data-[selected=true]:ring-ring/50 data-[selected=true]:ring-1"
     >

@@ -7,6 +7,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 
 import { WorkspaceFileIcon } from '../WorkspaceFileIcon.js'
@@ -64,14 +65,18 @@ export function FileBreadcrumbs(props: Props): React.JSX.Element {
         return (
           <span key={directory} className="flex shrink-0 items-center">
             {index > 0 && (
-              <button
-                type="button"
-                title={directory}
-                className="max-w-40 truncate px-0.5 hover:underline"
-                onClick={() => (isFile ? props.onOpenFile(directory) : props.onNavigateFolder(directory))}
-              >
-                {segment}
-              </button>
+              <TextTooltip
+                label={directory}
+                trigger={
+                  <button
+                    type="button"
+                    className="max-w-40 truncate px-0.5 hover:underline"
+                    onClick={() => (isFile ? props.onOpenFile(directory) : props.onNavigateFolder(directory))}
+                  >
+                    {segment}
+                  </button>
+                }
+              />
             )}
             {!isFile && (
               <DropdownMenu>

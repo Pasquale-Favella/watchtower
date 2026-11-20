@@ -3,6 +3,7 @@ import { ArrowDownIcon } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 
 import { readScrollAnchor, type TimelineScrollAnchor, writeScrollAnchor } from './conversation-memory.js'
 import { initialTimelineFollow, reduceTimelineFollow, SCROLL_PILL_SHOW_DELAY_MS } from './follow-state.js'
@@ -205,26 +206,30 @@ export function TimelineScroller<Row extends { readonly id: string }>({
           Restoring reading position…
         </p>
       )}
-      <Button
-        type="button"
-        variant="secondary"
-        size="icon-sm"
-        data-active={follow.pill === 'visible'}
-        aria-label="Scroll to end"
-        aria-hidden={follow.pill !== 'visible'}
-        tabIndex={follow.pill === 'visible' ? 0 : -1}
-        title="Scroll to end"
-        className="border-border bg-background text-foreground hover:bg-muted hover:text-foreground absolute bottom-4 left-1/2 z-10 -translate-x-1/2 transition-[translate,scale,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)]"
-        onClick={() => {
-          restoredRef.current = true
-          setRestorationPending(false)
-          writeScrollAnchor(conversationId, null)
-          dispatch({ type: 'resume' })
-          void listRef.current?.scrollToEnd({ animated: !prefersReducedMotion() })
-        }}
-      >
-        <ArrowDownIcon aria-hidden />
-      </Button>
+      <TextTooltip
+        label="Scroll to end"
+        trigger={
+          <Button
+            type="button"
+            variant="secondary"
+            size="icon-sm"
+            data-active={follow.pill === 'visible'}
+            aria-label="Scroll to end"
+            aria-hidden={follow.pill !== 'visible'}
+            tabIndex={follow.pill === 'visible' ? 0 : -1}
+            className="border-border bg-background text-foreground hover:bg-muted hover:text-foreground absolute bottom-4 left-1/2 z-10 -translate-x-1/2 transition-[translate,scale,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)]"
+            onClick={() => {
+              restoredRef.current = true
+              setRestorationPending(false)
+              writeScrollAnchor(conversationId, null)
+              dispatch({ type: 'resume' })
+              void listRef.current?.scrollToEnd({ animated: !prefersReducedMotion() })
+            }}
+          >
+            <ArrowDownIcon aria-hidden />
+          </Button>
+        }
+      />
     </div>
   )
 }

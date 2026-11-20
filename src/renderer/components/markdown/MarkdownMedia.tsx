@@ -4,6 +4,7 @@ import type { ExtraProps } from 'streamdown'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle, DialogTrigger } from '@/renderer/components/ui/dialog'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { useNativeStore } from '@/renderer/shared/hooks/use-native-store'
 
 import { isEmbeddedMarkdownImage, isExternalMarkdownUrl, markdownFilePath, markdownImagePath } from './markdown-url'
@@ -12,6 +13,7 @@ import { MarkdownNavigationContext } from './MarkdownNavigation'
 export function MarkdownLink({
   children,
   href,
+  title,
   node: _node,
   ...props
 }: AnchorHTMLAttributes<HTMLAnchorElement> & ExtraProps): React.JSX.Element {
@@ -23,32 +25,37 @@ export function MarkdownLink({
   if (!href || (!href.startsWith('#') && !isExternalMarkdownUrl(href) && !fileLink)) return <span>{children}</span>
 
   return (
-    <a
-      {...props}
-      href={href}
-      onClick={event => {
-        event.preventDefault()
-        event.stopPropagation()
-        if (fileLink) {
-          navigation.openFile?.(filePath)
-        } else if (isExternalMarkdownUrl(href)) {
-          openExternal(href)
-        } else {
-          event.currentTarget
-            .closest('.watchtower-markdown')
-            ?.querySelector(`#${CSS.escape(href.slice(1))}`)
-            ?.scrollIntoView({ block: 'nearest' })
-        }
-      }}
-      onAuxClick={event => {
-        event.preventDefault()
-        event.stopPropagation()
-        if (event.button === 1 && isExternalMarkdownUrl(href)) openExternal(href)
-        if (event.button === 1 && fileLink) navigation.openFile?.(filePath)
-      }}
-    >
-      {children}
-    </a>
+    <TextTooltip
+      label={title}
+      trigger={
+        <a
+          {...props}
+          href={href}
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (fileLink) {
+              navigation.openFile?.(filePath)
+            } else if (isExternalMarkdownUrl(href)) {
+              openExternal(href)
+            } else {
+              event.currentTarget
+                .closest('.watchtower-markdown')
+                ?.querySelector(`#${CSS.escape(href.slice(1))}`)
+                ?.scrollIntoView({ block: 'nearest' })
+            }
+          }}
+          onAuxClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            if (event.button === 1 && isExternalMarkdownUrl(href)) openExternal(href)
+            if (event.button === 1 && fileLink) navigation.openFile?.(filePath)
+          }}
+        >
+          {children}
+        </a>
+      }
+    />
   )
 }
 
@@ -102,15 +109,19 @@ export function MarkdownImage({
           )}
           {localPreview?.error && <span role="status">Image preview unavailable.</span>}
           {external && (
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              title="Open image in browser"
-              aria-label={`Open ${label} in browser`}
-              onClick={() => openExternal(source)}
-            >
-              <ExternalLinkIcon />
-            </Button>
+            <TextTooltip
+              label="Open image in browser"
+              trigger={
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  aria-label={`Open ${label} in browser`}
+                  onClick={() => openExternal(source)}
+                >
+                  <ExternalLinkIcon />
+                </Button>
+              }
+            />
           )}
         </span>
       </Dialog>
@@ -119,26 +130,30 @@ export function MarkdownImage({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger
-        render={
-          <button
-            type="button"
-            className="not-typeset focus-visible:ring-ring inline-flex min-h-8 max-w-full min-w-8 cursor-zoom-in items-center justify-center rounded-lg outline-none focus-visible:ring-2"
-          />
+      <TextTooltip
+        label={title}
+        trigger={
+          <DialogTrigger
+            render={
+              <button
+                type="button"
+                className="not-typeset focus-visible:ring-ring inline-flex min-h-8 max-w-full min-w-8 cursor-zoom-in items-center justify-center rounded-lg outline-none focus-visible:ring-2"
+              />
+            }
+            aria-label={`Preview ${label}`}
+            onClick={() => setOpen(true)}
+          >
+            <img
+              src={resolvedSource}
+              alt={label}
+              loading="lazy"
+              decoding="async"
+              className="max-h-96 max-w-full rounded-lg object-contain"
+              onError={() => setFailedSource(resolvedSource)}
+            />
+          </DialogTrigger>
         }
-        aria-label={`Preview ${label}`}
-        onClick={() => setOpen(true)}
-      >
-        <img
-          src={resolvedSource}
-          alt={label}
-          title={title}
-          loading="lazy"
-          decoding="async"
-          className="max-h-96 max-w-full rounded-lg object-contain"
-          onError={() => setFailedSource(resolvedSource)}
-        />
-      </DialogTrigger>
+      />
       <DialogContent className="sm:max-w-5xl">
         <DialogTitle className="pr-8">{label}</DialogTitle>
         <DialogDescription className="sr-only">Image preview</DialogDescription>

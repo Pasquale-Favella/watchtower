@@ -9,6 +9,7 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { AgentConfigOption } from '@/shared/schemas/execution.js'
 
@@ -84,13 +85,15 @@ export function ConfigOptionsColumn({
               {isEffortOption(option) ? (
                 <>
                   <div className="px-2 pb-1">
-                    <p className="truncate text-[11px] font-medium" title={option.description ?? option.label}>
-                      {option.label}
-                    </p>
+                    <TextTooltip
+                      label={option.description ?? option.label}
+                      trigger={<p className="truncate text-[11px] font-medium">{option.label}</p>}
+                    />
                     {option.description && (
-                      <p className="text-muted-foreground truncate text-[10px]" title={option.description}>
-                        {option.description}
-                      </p>
+                      <TextTooltip
+                        label={option.description}
+                        trigger={<p className="text-muted-foreground truncate text-[10px]">{option.description}</p>}
+                      />
                     )}
                   </div>
                   <div role="radiogroup" aria-label={option.label}>
@@ -108,9 +111,10 @@ export function ConfigOptionsColumn({
                           className={cn(ROW, checked && 'bg-foreground/5')}
                           onClick={() => onPick(option.id, choice.id)}
                         >
-                          <span className="min-w-0 flex-1 truncate" title={choice.description ?? choice.label}>
-                            {choice.label}
-                          </span>
+                          <TextTooltip
+                            label={choice.description ?? choice.label}
+                            trigger={<span className="min-w-0 flex-1 truncate">{choice.label}</span>}
+                          />
                           {checked && <Check aria-hidden className="size-3.5" />}
                         </button>
                       )

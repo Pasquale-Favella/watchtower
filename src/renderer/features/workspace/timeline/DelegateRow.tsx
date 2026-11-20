@@ -1,6 +1,7 @@
 import { BotIcon, CheckIcon, CircleAlertIcon, CircleHelpIcon, LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   TraceCollapsible,
   TraceCollapsibleContent,
@@ -78,14 +79,16 @@ export function DelegateRow({ tool }: { readonly tool: ToolBlock }): React.JSX.E
           </DelegationTooltip>
           {tool.name && <span className="text-muted-foreground/70 truncate font-mono text-[10px]">{tool.name}</span>}
           {model && (
-            <TraceDescription className="hidden max-w-24 truncate sm:inline" title={model}>
-              {model}
-            </TraceDescription>
+            <TextTooltip
+              label={model}
+              trigger={<TraceDescription className="hidden max-w-24 truncate sm:inline">{model}</TraceDescription>}
+            />
           )}
           {childrenSummary && (
-            <TraceDescription className="max-w-32 truncate text-[10px]" title={childrenSummary}>
-              {childrenSummary}
-            </TraceDescription>
+            <TextTooltip
+              label={childrenSummary}
+              trigger={<TraceDescription className="max-w-32 truncate text-[10px]">{childrenSummary}</TraceDescription>}
+            />
           )}
           <span className="inline-flex shrink-0 items-center gap-1 text-[10px]">
             <StatusIcon aria-hidden className={cn('size-3', status.className)} />

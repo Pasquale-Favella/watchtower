@@ -5,6 +5,7 @@ import { type ReactNode, type RefObject, useCallback, useEffect, useId, useMemo,
 import { Badge } from '@/renderer/components/ui/badge'
 import { Button } from '@/renderer/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/renderer/components/ui/dialog'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   PROMPT_ATTACHMENT_MAX_BYTES,
   PROMPT_ATTACHMENT_MAX_COUNT,
@@ -995,17 +996,21 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
               event.target.value = ''
             }}
           />
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Attach files"
-            title="Attach files or paste an image"
-            disabled={working}
-            onClick={() => fileRef.current?.click()}
-          >
-            {working ? <LoaderCircle className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
-          </Button>
+          <TextTooltip
+            label="Attach files or paste an image"
+            trigger={
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Attach files"
+                disabled={working}
+                onClick={() => fileRef.current?.click()}
+              >
+                {working ? <LoaderCircle className="size-4 animate-spin" /> : <Paperclip className="size-4" />}
+              </Button>
+            }
+          />
           {props.controls}
           <div
             className="ml-auto flex items-center gap-2"

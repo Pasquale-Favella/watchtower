@@ -3,6 +3,7 @@ import { ChevronDownIcon, ChevronUpIcon } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip, Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import {
@@ -18,12 +19,19 @@ import {
 } from './timeline-minimap.js'
 
 const LINE_HEIGHT_PX = 16
+const STEP_BUTTON_CLASS =
+  'absolute left-0 opacity-0 transition-opacity duration-150 group-hover/minimap:opacity-100 focus-visible:opacity-100 active:not-aria-[haspopup]:translate-y-0'
 
 interface Metrics {
   readonly gutter: number
   readonly currentIndex: number
   readonly previousIndex: number
   readonly nextIndex: number
+}
+
+interface ActiveMark {
+  readonly index: number
+  readonly anchor: HTMLSpanElement | null
 }
 
 /**
@@ -42,8 +50,8 @@ export function TimelineMinimap({
   const marks = useRef(new Map<number, HTMLSpanElement>())
   const rail = useRef<HTMLButtonElement | null>(null)
   const [metrics, setMetrics] = useState<Metrics>({ gutter: 0, currentIndex: -1, previousIndex: -1, nextIndex: -1 })
-  const [hovered, setHovered] = useState<number | null>(null)
-  const [focusedIndex, setFocusedIndex] = useState<number | null>(null)
+  const [hovered, setHovered] = useState<ActiveMark | null>(null)
+  const [focused, setFocused] = useState<ActiveMark | null>(null)
   const [dragging, setDragging] = useState(false)
   const enabled = items.length >= TIMELINE_MINIMAP_MIN_ITEMS
 
@@ -129,13 +137,22 @@ export function TimelineMinimap({
   const alwaysVisible = metrics.gutter >= TIMELINE_MINIMAP_ALWAYS_VISIBLE_GUTTER_PX
   // The rail is interactive only when it fits in the gutter; otherwise it would cover transcript text.
   const interactive = hitWidth >= 24
-  const activeIndex = hovered ?? focusedIndex
-  const active = activeIndex === null ? null : items[activeIndex]
+  const activeMark = hovered ?? focused
+  const activeIndex = activeMark?.index ?? null
+  const active = activeMark ? items[activeMark.index] : null
   const railHeight = `min(${(count - 1) * TIMELINE_MINIMAP_MARK_GAP_PX}px, max(4rem, calc(100% - 14.75rem)))`
 
   const indexAtPointer = (clientY: number): number => {
     const box = rail.current?.getBoundingClientRect()
     return box ? minimapIndexAt(clientY, box.top, box.height, count) : 0
+  }
+  function markAtIndex(index: number): ActiveMark {
+    return { index, anchor: marks.current.get(index) ?? null }
+  }
+
+  function hoverAtPointer(clientY: number): void {
+    const mark = markAtIndex(indexAtPointer(clientY))
+    setHovered(previous => (previous?.anchor === mark.anchor && previous.index === mark.index ? previous : mark))
   }
   const select = (index: number) => {
     const item = items[index]
@@ -159,101 +176,117 @@ export function TimelineMinimap({
       }}
     >
       <div className="group/minimap absolute top-1/2 left-3 -translate-y-1/2" style={{ height: railHeight }}>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Previous message"
-          title="Previous message"
-          disabled={metrics.previousIndex < 0}
-          className={cn(
-            'absolute -top-1.5 left-0 -translate-y-full opacity-0 group-hover/minimap:opacity-100 focus-visible:opacity-100',
-            interactive ? 'pointer-events-auto' : 'pointer-events-none',
-          )}
-          onClick={() => select(metrics.previousIndex)}
-        >
-          <ChevronUpIcon aria-hidden />
-        </Button>
-        <button
-          ref={rail}
-          type="button"
-          aria-label={`Jump to message: ${(active ?? items[Math.max(0, metrics.currentIndex)])?.userText || 'User message'}`}
-          className={cn(
-            'focus-visible:ring-ring/70 relative block h-full rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset',
-            interactive && !dragging ? 'pointer-events-auto cursor-pointer' : 'pointer-events-none',
-          )}
-          style={{ width: Math.max(hitWidth, 24) }}
-          tabIndex={interactive ? 0 : -1}
-          onMouseDown={event => event.preventDefault()}
-          onPointerEnter={event => {
-            if (event.buttons !== 0) setDragging(true)
-          }}
-          onPointerMove={event => setHovered(indexAtPointer(event.clientY))}
-          onPointerLeave={() => setHovered(null)}
-          onFocus={() => setFocusedIndex(Math.max(0, metrics.currentIndex))}
-          onBlur={() => setFocusedIndex(null)}
-          onClick={event => {
-            const index = event.detail === 0 ? (focusedIndex ?? 0) : indexAtPointer(event.clientY)
-            select(index)
-            if (event.detail !== 0) event.currentTarget.blur()
-          }}
-          onKeyDown={event => {
-            const current = focusedIndex ?? Math.max(0, metrics.currentIndex)
-            let next: number | null = null
-            if (event.key === 'ArrowUp') next = current - 1
-            else if (event.key === 'ArrowDown') next = current + 1
-            else if (event.key === 'Home') next = 0
-            else if (event.key === 'End') next = count - 1
-            if (next === null) return
-            event.preventDefault()
-            setFocusedIndex(Math.min(count - 1, Math.max(0, next)))
-          }}
-        >
-          {items.map((item, index) => (
-            <span
-              key={item.id}
-              ref={element => {
-                if (element) marks.current.set(index, element)
-                else marks.current.delete(index)
-              }}
-              aria-hidden
-              data-in-view="false"
-              data-active={activeIndex === index}
-              className="bg-muted-foreground/25 data-[active=true]:bg-muted-foreground/60 after:bg-foreground/55 absolute left-0 block h-0.5 w-6 origin-left -translate-y-1/2 rounded-full transition-[transform,opacity] duration-150 after:absolute after:inset-0 after:rounded-full after:opacity-0 after:transition-opacity after:duration-150 data-[in-view=true]:after:opacity-100"
-              style={{
-                top: `${minimapMarkOffset(index, count)}%`,
-                transform: `translateY(-50%) scaleX(${minimapMarkScale(activeIndex === null ? null : Math.abs(activeIndex - index))})`,
-              }}
-            />
-          ))}
-        </button>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-xs"
-          aria-label="Next message"
-          title="Next message"
-          disabled={metrics.nextIndex < 0}
-          className={cn(
-            'absolute -bottom-1.5 left-0 translate-y-full opacity-0 group-hover/minimap:opacity-100 focus-visible:opacity-100',
-            interactive ? 'pointer-events-auto' : 'pointer-events-none',
-          )}
-          onClick={() => select(metrics.nextIndex)}
-        >
-          <ChevronDownIcon aria-hidden />
-        </Button>
-        {active && activeIndex !== null && (
-          <div
-            aria-hidden
-            className="bg-popover text-popover-foreground pointer-events-none absolute left-8 w-80 -translate-y-1/2 rounded-xl border p-3 shadow-xl shadow-black/25"
-            style={{ top: `${minimapMarkOffset(activeIndex, count)}%` }}
-          >
-            <p className="truncate text-sm font-medium">{active.userText || 'User message'}</p>
-            {active.assistantText && (
-              <p className="text-muted-foreground mt-1 line-clamp-3 text-sm">{active.assistantText}</p>
+        <TextTooltip
+          label="Previous message"
+          side="right"
+          trigger={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Previous message"
+              disabled={metrics.previousIndex < 0}
+              className={cn(
+                STEP_BUTTON_CLASS,
+                'bottom-full mb-1.5',
+                interactive ? 'pointer-events-auto' : 'pointer-events-none',
+              )}
+              onClick={() => select(metrics.previousIndex)}
+            >
+              <ChevronUpIcon aria-hidden />
+            </Button>
+          }
+        />
+        <Tooltip disableHoverablePopup disabled={!interactive || dragging}>
+          <TooltipTrigger
+            render={<button />}
+            closeOnClick={false}
+            ref={rail}
+            type="button"
+            aria-label={`Jump to message: ${(active ?? items[Math.max(0, metrics.currentIndex)])?.userText || 'User message'}`}
+            className={cn(
+              'focus-visible:ring-ring/70 relative block h-full rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-inset',
+              interactive && !dragging ? 'pointer-events-auto cursor-pointer' : 'pointer-events-none',
             )}
-          </div>
-        )}
+            style={{ width: Math.max(hitWidth, 24) }}
+            tabIndex={interactive ? 0 : -1}
+            onMouseDown={event => event.preventDefault()}
+            onPointerEnter={event => {
+              if (event.buttons !== 0) setDragging(true)
+              else hoverAtPointer(event.clientY)
+            }}
+            onPointerMove={event => hoverAtPointer(event.clientY)}
+            onPointerLeave={() => setHovered(null)}
+            onFocus={() => setFocused(markAtIndex(Math.max(0, metrics.currentIndex)))}
+            onBlur={() => setFocused(null)}
+            onClick={event => {
+              const index = event.detail === 0 ? (focused?.index ?? 0) : indexAtPointer(event.clientY)
+              select(index)
+              if (event.detail !== 0) event.currentTarget.blur()
+            }}
+            onKeyDown={event => {
+              const current = focused?.index ?? Math.max(0, metrics.currentIndex)
+              let next: number | null = null
+              if (event.key === 'ArrowUp') next = current - 1
+              else if (event.key === 'ArrowDown') next = current + 1
+              else if (event.key === 'Home') next = 0
+              else if (event.key === 'End') next = count - 1
+              if (next === null) return
+              event.preventDefault()
+              setFocused(markAtIndex(Math.min(count - 1, Math.max(0, next))))
+            }}
+          >
+            {items.map((item, index) => (
+              <span
+                key={item.id}
+                ref={element => {
+                  if (element) marks.current.set(index, element)
+                  else marks.current.delete(index)
+                }}
+                aria-hidden
+                data-in-view="false"
+                data-active={activeIndex === index}
+                className="bg-muted-foreground/25 data-[active=true]:bg-muted-foreground/60 after:bg-foreground/55 absolute left-0 block h-0.5 w-6 origin-left -translate-y-1/2 rounded-full transition-[transform,opacity] duration-150 after:absolute after:inset-0 after:rounded-full after:opacity-0 after:transition-opacity after:duration-150 data-[in-view=true]:after:opacity-100"
+                style={{
+                  top: `${minimapMarkOffset(index, count)}%`,
+                  transform: `translateY(-50%) scaleX(${minimapMarkScale(activeIndex === null ? null : Math.abs(activeIndex - index))})`,
+                }}
+              />
+            ))}
+          </TooltipTrigger>
+          {active && activeMark && (
+            <TooltipContent
+              anchor={activeMark.anchor}
+              side="right"
+              sideOffset={10}
+              className="pointer-events-none block w-80 max-w-[calc(100vw-1rem)]"
+            >
+              <p className="truncate font-medium">{active.userText || 'User message'}</p>
+              {active.assistantText && <p className="mt-1 line-clamp-3 opacity-80">{active.assistantText}</p>}
+            </TooltipContent>
+          )}
+        </Tooltip>
+        <TextTooltip
+          label="Next message"
+          side="right"
+          trigger={
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-xs"
+              aria-label="Next message"
+              disabled={metrics.nextIndex < 0}
+              className={cn(
+                STEP_BUTTON_CLASS,
+                'top-full mt-1.5',
+                interactive ? 'pointer-events-auto' : 'pointer-events-none',
+              )}
+              onClick={() => select(metrics.nextIndex)}
+            >
+              <ChevronDownIcon aria-hidden />
+            </Button>
+          }
+        />
       </div>
     </div>
   )

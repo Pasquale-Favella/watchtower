@@ -20,7 +20,7 @@ import {
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover.js'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip.js'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { CheckoutBranches } from '@/shared/schemas/checkout.js'
 
@@ -88,52 +88,51 @@ function CheckoutControl({
     if (lockedKind === 'worktree' || (!lockedKind && mode === 'worktree')) Icon = GitBranchPlus
     else if (lockedKind === 'directory') Icon = FolderOpen
 
-    const row = (
-      <span
-        className={
-          layout === 'details'
-            ? 'text-foreground/80 flex h-8 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium'
-            : cn(composerControlClass(STRIP_CONTROL), 'pointer-events-none')
-        }
-        aria-label={`Checkout: ${label}`}
-        title={workspacePath ? `${label} · ${workspacePath}` : label}
-      >
-        <Icon aria-hidden className={layout === 'details' ? 'text-muted-foreground size-4 shrink-0' : undefined} />
-        <span className={layout === 'details' ? 'min-w-0 flex-1 truncate' : undefined}>{label}</span>
-      </span>
-    )
-
-    if (layout !== 'details' || !workspacePath) return row
     return (
-      <Tooltip>
-        <TooltipTrigger render={<span className="block w-full min-w-0" />}>{row}</TooltipTrigger>
-        <TooltipContent side="left">
-          {label} · {workspacePath}
-        </TooltipContent>
-      </Tooltip>
+      <TextTooltip
+        label={workspacePath ? `${label} · ${workspacePath}` : label}
+        side={layout === 'details' ? 'left' : 'top'}
+        trigger={
+          <span
+            className={
+              layout === 'details'
+                ? 'text-foreground/80 flex h-8 w-full min-w-0 items-center gap-2.5 rounded-lg px-2.5 text-[13px] font-medium'
+                : composerControlClass(STRIP_CONTROL)
+            }
+            aria-label={`Checkout: ${label}`}
+          >
+            <Icon aria-hidden className={layout === 'details' ? 'text-muted-foreground size-4 shrink-0' : undefined} />
+            <span className={layout === 'details' ? 'min-w-0 flex-1 truncate' : undefined}>{label}</span>
+          </span>
+        }
+      />
     )
   }
 
   const Icon = mode === 'worktree' ? GitBranchPlus : FolderGit2
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        aria-label={layout === 'details' ? 'Checkout' : `Checkout: ${MODE_LABELS[mode]}`}
-        title={layout === 'details' ? undefined : MODE_DESCRIPTIONS[mode]}
-        disabled={disabled}
-        className={
-          layout === 'details'
-            ? buttonVariants({ variant: 'ghost', className: DETAILS_ROW_CLASS })
-            : composerControlClass(STRIP_CONTROL)
+      <TextTooltip
+        label={layout === 'details' ? undefined : MODE_DESCRIPTIONS[mode]}
+        trigger={
+          <DropdownMenuTrigger
+            aria-label={layout === 'details' ? 'Checkout' : `Checkout: ${MODE_LABELS[mode]}`}
+            disabled={disabled}
+            className={
+              layout === 'details'
+                ? buttonVariants({ variant: 'ghost', className: DETAILS_ROW_CLASS })
+                : composerControlClass(STRIP_CONTROL)
+            }
+          >
+            <Icon aria-hidden className={layout === 'details' ? 'text-muted-foreground size-4 shrink-0' : undefined} />
+            <span className={layout === 'details' ? 'min-w-0 flex-1 truncate' : undefined}>{MODE_LABELS[mode]}</span>
+            <ChevronDown
+              aria-hidden
+              className={layout === 'details' ? 'text-muted-foreground ms-auto size-4 shrink-0' : 'opacity-60'}
+            />
+          </DropdownMenuTrigger>
         }
-      >
-        <Icon aria-hidden className={layout === 'details' ? 'text-muted-foreground size-4 shrink-0' : undefined} />
-        <span className={layout === 'details' ? 'min-w-0 flex-1 truncate' : undefined}>{MODE_LABELS[mode]}</span>
-        <ChevronDown
-          aria-hidden
-          className={layout === 'details' ? 'text-muted-foreground ms-auto size-4 shrink-0' : 'opacity-60'}
-        />
-      </DropdownMenuTrigger>
+      />
       <DropdownMenuContent
         side="bottom"
         align="start"
@@ -221,7 +220,6 @@ function BranchControl({
       aria-expanded={open}
       aria-haspopup="listbox"
       disabled={disabled || !branches}
-      title={label}
       className={
         layout === 'details'
           ? buttonVariants({ variant: 'ghost', className: DETAILS_ROW_CLASS })
@@ -240,7 +238,11 @@ function BranchControl({
         if (!next) setQuery('')
       }}
     >
-      <PopoverTrigger render={trigger} />
+      <TextTooltip
+        label={label}
+        side={layout === 'details' ? 'left' : 'top'}
+        trigger={<PopoverTrigger render={trigger} />}
+      />
       <PopoverContent
         side="bottom"
         align="start"
@@ -268,26 +270,31 @@ function BranchControl({
                   const selectedLabel =
                     allowCheckedOutElsewhere && !branch.current ? 'selected base branch' : 'current branch'
                   return (
-                    <CommandItem
+                    <TextTooltip
                       key={branch.name}
-                      value={`${branch.name} ${branch.isDefault ? 'default' : ''} ${elsewhere ? 'worktree' : ''}`}
-                      disabled={elsewhere || disabled}
-                      data-checked={isSelected}
-                      aria-label={`${branch.name}${isSelected ? `, ${selectedLabel}` : ''}${branch.isDefault ? ', default branch' : ''}${branch.worktreePath ? `, checked out in ${branch.worktreePath}` : ''}`}
-                      title={branch.worktreePath ? `Checked out in ${branch.worktreePath}` : branch.name}
-                      className={layout === 'composer' ? 'min-h-7 cursor-pointer text-[12px]' : undefined}
-                      onSelect={() => {
-                        setOpen(false)
-                        setQuery('')
-                        if (!isSelected) onSelect(branch.name)
-                      }}
-                    >
-                      {layout === 'composer' && <GitBranch className="text-muted-foreground" />}
-                      <span className="min-w-0 flex-1 truncate">{branch.name}</span>
-                      {branch.isDefault && <span className="text-muted-foreground text-[11px]">default</span>}
-                      {branch.worktreePath && <span className="text-muted-foreground text-[11px]">worktree</span>}
-                      {isSelected && <span className="sr-only">{selectedLabel}</span>}
-                    </CommandItem>
+                      label={branch.worktreePath ? `Checked out in ${branch.worktreePath}` : branch.name}
+                      side={layout === 'details' ? 'left' : 'top'}
+                      trigger={
+                        <CommandItem
+                          value={`${branch.name} ${branch.isDefault ? 'default' : ''} ${elsewhere ? 'worktree' : ''}`}
+                          disabled={elsewhere || disabled}
+                          data-checked={isSelected}
+                          aria-label={`${branch.name}${isSelected ? `, ${selectedLabel}` : ''}${branch.isDefault ? ', default branch' : ''}${branch.worktreePath ? `, checked out in ${branch.worktreePath}` : ''}`}
+                          className={layout === 'composer' ? 'min-h-7 cursor-pointer text-[12px]' : undefined}
+                          onSelect={() => {
+                            setOpen(false)
+                            setQuery('')
+                            if (!isSelected) onSelect(branch.name)
+                          }}
+                        >
+                          {layout === 'composer' && <GitBranch className="text-muted-foreground" />}
+                          <span className="min-w-0 flex-1 truncate">{branch.name}</span>
+                          {branch.isDefault && <span className="text-muted-foreground text-[11px]">default</span>}
+                          {branch.worktreePath && <span className="text-muted-foreground text-[11px]">worktree</span>}
+                          {isSelected && <span className="sr-only">{selectedLabel}</span>}
+                        </CommandItem>
+                      }
+                    />
                   )
                 })}
               </CommandGroup>

@@ -2,6 +2,7 @@ import { ChevronRightIcon, FileMinusIcon, FilePenLineIcon, FilePlusIcon } from '
 
 import { Button } from '@/renderer/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { useTimelineRoutes } from './timeline-routes.js'
@@ -49,9 +50,10 @@ export function FileChangesBlock({ changes }: { readonly changes: readonly ToolF
                     )}
                   />
                   <Icon aria-hidden className={cn('size-3.5 shrink-0', className)} />
-                  <span className="min-w-0 flex-1 truncate font-mono" title={change.path}>
-                    {change.path}
-                  </span>
+                  <TextTooltip
+                    label={change.path}
+                    trigger={<span className="min-w-0 flex-1 truncate font-mono">{change.path}</span>}
+                  />
                   <span className={cn('shrink-0 text-[11px]', className)}>{label}</span>
                 </CollapsibleTrigger>
                 {change.diff && (

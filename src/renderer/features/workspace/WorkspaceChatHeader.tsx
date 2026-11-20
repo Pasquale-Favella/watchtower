@@ -1,10 +1,10 @@
 import { Folder, PanelRight, SquareMenu, SquareTerminal } from 'lucide-react'
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { PopoverTrigger } from '@/renderer/components/ui/popover'
 import { SidebarTrigger } from '@/renderer/components/ui/sidebar'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { TextTooltip, Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 
 import { submitModifier } from './platform-labels.js'
 import type { ConversationDetailsMode } from './use-conversation-details-layout.js'
@@ -34,13 +34,12 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
         <span aria-hidden="true" className="text-muted-foreground/50">
           /
         </span>
-        <h1 className="min-w-0 truncate font-medium" title={props.title}>
-          {props.title}
-        </h1>
+        <TextTooltip label={props.title} trigger={<h1 className="min-w-0 truncate font-medium">{props.title}</h1>} />
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
         <HeaderToggle
           label="Conversation details"
+          tooltipSide="left"
           pressed={props.detailsOpen}
           onClick={props.onToggleDetails}
           popoverTrigger={props.detailsMode === 'popover'}
@@ -77,6 +76,7 @@ function HeaderToggle({
   pressed,
   onClick,
   popoverTrigger = false,
+  tooltipSide,
   controls,
   count,
   countLabel,
@@ -87,6 +87,7 @@ function HeaderToggle({
   readonly pressed: boolean
   readonly onClick: (() => void) | undefined
   readonly popoverTrigger?: boolean
+  readonly tooltipSide?: ComponentProps<typeof TooltipContent>['side']
   readonly controls?: string
   readonly count?: number | undefined
   readonly countLabel?: string | undefined
@@ -119,7 +120,7 @@ function HeaderToggle({
       <TooltipTrigger render={<span className="inline-flex" />}>
         {popoverTrigger ? <PopoverTrigger render={button} /> : button}
       </TooltipTrigger>
-      <TooltipContent>
+      <TooltipContent side={tooltipSide}>
         {label}
         {(countLabel || hint) && <span className="text-muted-foreground ml-2">{countLabel ?? hint}</span>}
       </TooltipContent>

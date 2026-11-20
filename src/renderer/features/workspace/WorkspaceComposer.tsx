@@ -2,6 +2,7 @@ import { ArrowUp, ListPlus, Square } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId, Task, WorkspaceCheckout } from '@/shared/schemas/workspace.js'
@@ -1077,9 +1078,10 @@ function WorkspaceComposerContent({
               {latestGoal.tokenBudget && <span>Budget {latestGoal.tokenBudget.toLocaleString()}</span>}
               <span>{latestGoal.timeUsedSeconds.toLocaleString()} seconds</span>
             </div>
-            <p className="text-muted-foreground mt-1 line-clamp-2" title={latestGoal.objective}>
-              {latestGoal.objective}
-            </p>
+            <TextTooltip
+              label={latestGoal.objective}
+              trigger={<p className="text-muted-foreground mt-1 line-clamp-2">{latestGoal.objective}</p>}
+            />
           </section>
         )}
         {submissionHint && !busy && (
@@ -1220,50 +1222,58 @@ function WorkspaceComposerContent({
           actions={
             <>
               {canStop && activeRun && (
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  variant={stopPrimary ? 'default' : 'outline'}
-                  className="rounded-full"
-                  aria-label="Stop Run"
-                  title="Stop Run"
-                  disabled={interrupt.pending || activeRun.status === 'interruptRequested'}
-                  onClick={() => void stopRun()}
-                >
-                  <Square className="size-3 fill-current" />
-                </Button>
+                <TextTooltip
+                  label="Stop Run"
+                  trigger={
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      variant={stopPrimary ? 'default' : 'outline'}
+                      className="rounded-full"
+                      aria-label="Stop Run"
+                      disabled={interrupt.pending || activeRun.status === 'interruptRequested'}
+                      onClick={() => void stopRun()}
+                    >
+                      <Square className="size-3 fill-current" />
+                    </Button>
+                  }
+                />
               )}
               {!stopPrimary && (
-                <Button
-                  type="button"
-                  size="icon-sm"
-                  className="rounded-full"
-                  aria-label={busy ? 'Queue follow-up' : 'Send'}
-                  title={
+                <TextTooltip
+                  label={
                     busy
                       ? steerAvailable
                         ? 'Queue follow-up · Ctrl/⌘+click or Ctrl/⌘+Enter to steer the running turn'
                         : 'Queue follow-up'
                       : 'Send'
                   }
-                  disabled={
-                    !hasContent ||
-                    attachmentBlocked ||
-                    !actionStateReady ||
-                    blocked ||
-                    Boolean(pendingStart) ||
-                    Boolean(pendingStarts.store.error) ||
-                    Boolean(intent) ||
-                    Boolean(checkoutError) ||
-                    preparingCheckout ||
-                    (busy
-                      ? freshSessionRequested || (!queueExhaustive && (!steerAvailable || steerRun.pending))
-                      : !submitAvailable || (resumeMode && !validatedSession))
+                  trigger={
+                    <Button
+                      type="button"
+                      size="icon-sm"
+                      className="rounded-full"
+                      aria-label={busy ? 'Queue follow-up' : 'Send'}
+                      disabled={
+                        !hasContent ||
+                        attachmentBlocked ||
+                        !actionStateReady ||
+                        blocked ||
+                        Boolean(pendingStart) ||
+                        Boolean(pendingStarts.store.error) ||
+                        Boolean(intent) ||
+                        Boolean(checkoutError) ||
+                        preparingCheckout ||
+                        (busy
+                          ? freshSessionRequested || (!queueExhaustive && (!steerAvailable || steerRun.pending))
+                          : !submitAvailable || (resumeMode && !validatedSession))
+                      }
+                      onClick={event => dispatchPrompt(event.metaKey || event.ctrlKey)}
+                    >
+                      {busy ? <ListPlus className="size-4" /> : <ArrowUp className="size-4" />}
+                    </Button>
                   }
-                  onClick={event => dispatchPrompt(event.metaKey || event.ctrlKey)}
-                >
-                  {busy ? <ListPlus className="size-4" /> : <ArrowUp className="size-4" />}
-                </Button>
+                />
               )}
             </>
           }
