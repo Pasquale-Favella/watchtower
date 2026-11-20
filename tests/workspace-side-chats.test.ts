@@ -66,6 +66,7 @@ function harness() {
   const created: CreateTaskCommand[] = []
   const bringBacks: SideChatBringBackRecord[] = []
   const deletedTasks = new Set<string>()
+  const renames: Array<{ taskId: string; title: string }> = []
   let parentItems = [item(1, 'first reply', true), item(2, ' continues')]
   let sideItems = [
     item(3, 'old reply', true, 'side-run-a'),
@@ -166,6 +167,15 @@ function harness() {
         replayed: created.length > 1,
       })
     },
+    renameTask: (command: { commandId: string; taskId: string; title: string; updatedAt: string }) => {
+      renames.push({ taskId: command.taskId, title: command.title })
+      return Effect.succeed({
+        commandId: command.commandId,
+        taskId: command.taskId,
+        updatedAt: command.updatedAt,
+        replayed: false,
+      })
+    },
     recordSideChatBringBack: (record: SideChatBringBackRecord) => {
       if (busy) return Effect.succeed({ _tag: 'parent-busy' as const })
       const index = pendingIndexFor(record.parentConversationId)
@@ -203,6 +213,7 @@ function harness() {
   )
   return {
     created,
+    renames,
     records,
     payloads,
     payloadReads,
@@ -472,6 +483,34 @@ describe('side chat context and independent identity', () => {
         const binding = yield* service.create(request)
         expect(binding.checkoutId).toBe(otherCheckoutId)
         expect(h.records.get(binding.id)?.request).toEqual(request)
+      }),
+    )
+  })
+})
+
+describe('side chat title', () => {
+  it('stays Side chat until the first message, seeds the title from it, and never retitles it afterwards', async () => {
+    const h = harness()
+    await h.run(service =>
+      Effect.gen(function* () {
+        const binding = yield* service.create(request)
+        expect(binding.title).toBe('Side chat')
+        yield* service.enrichPrompt(binding.taskId, '  Trace the parser\nwith details  ', null)
+        expect(h.renames).toEqual([{ taskId: binding.taskId, title: 'Trace the parser' }])
+        expect(yield* service.get(binding.id)).toMatchObject({ title: 'Trace the parser' })
+        yield* service.enrichPrompt(binding.taskId, 'A later question', null)
+        expect(h.renames).toHaveLength(1)
+        expect(yield* service.get(binding.id)).toMatchObject({ title: 'Trace the parser' })
+      }),
+    )
+  })
+  it('limits a seeded title to the Task title length', async () => {
+    const h = harness()
+    await h.run(service =>
+      Effect.gen(function* () {
+        const binding = yield* service.create(request)
+        yield* service.enrichPrompt(binding.taskId, 'x'.repeat(150), null)
+        expect(h.renames).toEqual([{ taskId: binding.taskId, title: 'x'.repeat(100) }])
       }),
     )
   })

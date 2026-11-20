@@ -440,7 +440,10 @@ function WorkspaceComposerContent({
   } else {
     freshSessionMessage = 'The next message starts a fresh agent session. Earlier messages remain in this Conversation.'
   }
-  const requestedConnectionId = resumeMode && selectedSession ? selectedSession.connectionId : selectedConnectionId || preferences?.connectionId || ''
+  const requestedConnectionId =
+    resumeMode && selectedSession
+      ? selectedSession.connectionId
+      : selectedConnectionId || preferences?.connectionId || ''
   const targetError = targetSelectionError({
     connectionId: requestedConnectionId,
     detectedConnectionIds,
@@ -593,11 +596,7 @@ function WorkspaceComposerContent({
       let created: SideChatBinding | null = null
       let captured: { readonly commandId: string } | null = null
       try {
-        created = await createSideChat.create({
-          parentTaskId: task.id,
-          parentConversationId: conversationId,
-          ...(prompt ? { title: prompt.slice(0, 200) } : {}),
-        })
+        created = await createSideChat.create({ parentTaskId: task.id, parentConversationId: conversationId })
         if (!created) return
         const binding = created
         if (prompt) {

@@ -279,7 +279,7 @@ describe('ExecutionService', () => {
         checkoutId: checkout.id,
         parentHighWatermark: 8,
         contextTruncated: false,
-        title: 'Side chat',
+        title: 'Parent decision',
         createdAt: command.issuedAt,
       },
       request: { commandId: 'execution-test', parentTaskId: task.id, parentConversationId: conversation.id },

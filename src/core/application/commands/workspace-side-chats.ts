@@ -7,6 +7,7 @@ import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { taskTitleFromPrompt } from '@/shared/lib/task-title.js'
 import { agentDriverEventSchema, type AgentRun } from '@/shared/schemas/execution.js'
 import { type ConversationId, conversationIdSchema, type TaskId, taskIdSchema } from '@/shared/schemas/workspace.js'
 import {
@@ -57,6 +58,7 @@ export class WorkspaceSideChats extends Context.Service<
 >()('watchtower/core/WorkspaceSideChats') {}
 
 const SIDE_TASK_PREFIX = 'side-task:'
+const SIDE_CHAT_DEFAULT_TITLE = 'Side chat'
 /** Bounds the backward reads that build a bring-back digest; each page holds up to 100 events. */
 const BRING_BACK_PAGE_BUDGET = 400
 const FORK_DELTA_PAGE_BUDGET = 20
@@ -177,6 +179,8 @@ export const enrichSideChatPrompt = Effect.fnUntraced(function* (
   const store = yield* WorkspaceStore
   const record = yield* persistence.get(`side-chat:${taskId.slice(SIDE_TASK_PREFIX.length)}`)
   if (!record) return prompt
+  if (record.binding.title === SIDE_CHAT_DEFAULT_TITLE && prompt.trim())
+    yield* seedSideChatTitle(store, persistence, record, prompt)
   const delta = yield* readAfterWatermark(
     store,
     record.binding.parentConversationId,
@@ -195,6 +199,28 @@ export const enrichSideChatPrompt = Effect.fnUntraced(function* (
   ]
     .filter(Boolean)
     .join('\n')
+})
+
+/**
+ * The first message seeds an untitled side chat's title, with the same rule as a Task title. The title is cosmetic,
+ * so a failed rename leaves it untitled for the next message rather than failing the Run.
+ */
+const seedSideChatTitle = Effect.fnUntraced(function* (
+  store: WorkspaceStore['Service'],
+  persistence: SideChatPersistence['Service'],
+  record: SideChatRecord,
+  prompt: string,
+) {
+  const title = taskTitleFromPrompt(prompt)
+  const renamed = yield* store
+    .renameTask({
+      commandId: `side-chat-title:${record.binding.id}`,
+      taskId: record.binding.taskId,
+      title,
+      updatedAt: DateTime.formatIso(yield* DateTime.now),
+    })
+    .pipe(Effect.option)
+  if (Option.isSome(renamed)) yield* persistence.put({ ...record, binding: { ...record.binding, title } })
 })
 
 const readAfterWatermark = Effect.fnUntraced(function* (
@@ -397,7 +423,7 @@ export const WorkspaceSideChatsLive = Layer.effect(
             if (
               record.request.parentTaskId !== request.parentTaskId ||
               record.request.parentConversationId !== request.parentConversationId ||
-              (record.request.title ?? 'Side chat') !== (request.title ?? 'Side chat')
+              (record.request.title ?? SIDE_CHAT_DEFAULT_TITLE) !== (request.title ?? SIDE_CHAT_DEFAULT_TITLE)
             )
               return yield* new SideChatError({
                 code: 'conflict',
@@ -445,7 +471,7 @@ export const WorkspaceSideChatsLive = Layer.effect(
               checkoutId,
               parentHighWatermark: parent.highWatermark,
               contextTruncated: parent.truncated,
-              title: request.title ?? 'Side chat',
+              title: request.title ?? SIDE_CHAT_DEFAULT_TITLE,
               createdAt: at,
             }
             record = { binding, context: parent.context, request }
