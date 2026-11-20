@@ -8,7 +8,6 @@
 //
 // Vendored `.agents/` content and hand-authored root configuration files stay
 // excluded from lint and formatting as listed below.
-import { existsSync, readFileSync } from 'node:fs'
 import { builtinModules } from 'node:module'
 import js from '@eslint/js'
 import globals from 'globals'
@@ -81,22 +80,9 @@ const processBoundaryZones = [
     message: 'Preload uses shared contracts rather than engine implementations (ADR 0038).',
   },
 ]
-
-// Directories a developer excludes locally through git (such as reference checkouts) are not app source.
-const localExcludes = existsSync('.git/info/exclude')
-  ? readFileSync('.git/info/exclude', 'utf8')
-      .split(/\r?\n/)
-      .map(line => line.trim())
-      .filter(line => line.endsWith('/') && !line.startsWith('#') && !line.startsWith('!'))
-      .map(line => `${line.replace(/^\//, '')}**`)
-  : []
-
 export default tseslint.config(
   {
     ignores: [
-      ...localExcludes,
-      '.claude/**',
-      '.watchtower-*/**',
       'node_modules/**',
       'out/**',
       'dist/**',

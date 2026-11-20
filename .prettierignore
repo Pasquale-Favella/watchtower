@@ -12,10 +12,6 @@ assets/
 # Vendored agent skills: the upstream library owns their formatting, so a
 # local `prettier --write .` only produces diff churn against upstream.
 .agents/
-.claude/
-
-# Scratch directories left by e2e runs.
-.watchtower-*/
 
 # Root config and docs files kept at their hand-authored layout: the one-time
 # Prettier pass (#136) reflowed them (markdown tables, trailing commas,
