@@ -3661,6 +3661,7 @@ describe('WorkspaceStore', () => {
           driverId: activeTwo.driverId,
           connectionId: activeTwo.connectionId,
           workspacePath: 'C:/repo/co-2',
+          accessMode: 'approval-required',
         },
         {
           runId: activeOne.runId,
@@ -3669,6 +3670,7 @@ describe('WorkspaceStore', () => {
           driverId: activeOne.driverId,
           connectionId: activeOne.connectionId,
           workspacePath: checkout.path,
+          accessMode: 'approval-required',
         },
       ])
       expect(limited.runs.every(run => run.sessionId == null)).toBe(true)

@@ -797,16 +797,22 @@ export const workspaceRunContextSchema = Schema.Struct({
   connectionId: text,
   modelId: Schema.optional(Schema.NullOr(Schema.String)),
   workspacePath: Schema.optional(text),
+  accessMode: Schema.optional(agentAccessModeSchema),
 })
 export type WorkspaceRunContext = Schema.Schema.Type<typeof workspaceRunContextSchema>
 export const conversationHandoffDataSchema = Schema.Struct({
   sourceRunId: agentRunIdSchema,
   sourceConnectionId: text,
+  /** Absent on records written before the source was checked; `unavailable` means the connection no longer resolves. */
+  sourceConnectionStatus: Schema.optional(Schema.Literals(['available', 'unavailable'])),
   sourceModelId: Schema.optional(Schema.NullOr(Schema.String)),
   targetConnectionId: text,
   targetModelId: Schema.optional(Schema.NullOr(Schema.String)),
   highWatermark: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   truncated: Schema.Boolean,
+  /** The character budget the handoff context was sized to, and what that budget was derived from. */
+  budgetChars: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
+  budgetSource: Schema.optional(Schema.Literals(['reported-context-window', 'default'])),
 })
 export type ConversationHandoffData = Schema.Schema.Type<typeof conversationHandoffDataSchema>
 export const recordConversationHandoffCommandSchema = Schema.Struct({

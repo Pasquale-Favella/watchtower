@@ -2876,3 +2876,277 @@ describe('ExecutionService', () => {
     }
   })
 })
+
+describe('ExecutionService access and handoff transitions', () => {
+  const runCommand = (suffix: string, overrides: Partial<BeginRunCommand> = {}): BeginRunCommand => ({
+    ...command,
+    commandId: `command-${suffix}`,
+    runId: `run-${suffix}` as never,
+    provisionalAgentSessionId: `session-${suffix}`,
+    ...overrides,
+  })
+
+  const accessDriver = (connection: (connectionId: string) => AgentDriverConnection) =>
+    AgentDriver.of({
+      driverId: 'access-driver',
+      accessModes: ['approval-required', 'auto-accept-edits', 'full-access'],
+      connect: options => Effect.succeed(connection(options.connectionId)),
+    })
+
+  const accessConnection = (session: AgentDriverSession) => (connectionId: string) =>
+    makeConnection(session, {
+      identity: { id: connectionId, driverId: 'access-driver', authentication: 'authenticated' },
+    })
+
+  const acceptingSession = (
+    nativeSessionId: string,
+    submitted: string[],
+    overrides: Partial<AgentDriverSession> = {},
+  ): AgentDriverSession => {
+    const submittedSignal = Effect.runSync(Deferred.make<undefined>())
+    return makeSession({
+      identity: { nativeSessionId, generation: 1 },
+      events: () =>
+        Stream.fromEffect(Deferred.await(submittedSignal)).pipe(
+          Stream.flatMap(() =>
+            Stream.fromIterable([
+              { kind: 'turnStarted' as const, nativeTurnId: 'native-turn' },
+              { kind: 'textDelta' as const, text: 'Earlier assistant answer.' },
+              { kind: 'turnCompleted' as const, nativeTurnId: 'native-turn' },
+            ]),
+          ),
+        ),
+      submit: input =>
+        Effect.as(Deferred.succeed(submittedSignal, undefined), {
+          nativeSessionId,
+          nativeTurnId: 'native-turn',
+          generation: 1,
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              submitted.push(input.messages[0]?.content ?? '')
+            }),
+          ),
+        ),
+      ...overrides,
+    })
+  }
+
+  const withConversation = async (
+    options: {
+      readonly drivers?: ReadonlyArray<AgentDriver['Service']>
+      readonly execution?: Partial<ExecutionServiceOptions>
+      readonly resolver?: Layer.Layer<HarnessConnectionResolver>
+    },
+    body: (input: {
+      readonly store: WorkspaceStore['Service']
+      readonly run: RunEffect
+      readonly service: ExecutionService['Service']
+    }) => Promise<void>,
+  ) => {
+    const runtime = makeRuntime(
+      () => Effect.die(new Error('test-driver is not used by this test')),
+      options.execution,
+      undefined,
+      options.drivers ?? [],
+      options.resolver,
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await body({ store, run, service })
+      await run(service.stopAll())
+    } finally {
+      await runtime.dispose()
+    }
+  }
+
+  const awaitStatus = async (store: WorkspaceStore['Service'], run: RunEffect, runId: string, status: string) => {
+    await expect
+      .poll(async () => (await run(store.readTaskSnapshot(task.id, 50))).runs.find(item => item.id === runId)?.status)
+      .toBe(status)
+  }
+
+  const driverEventsFor = async (store: WorkspaceStore['Service'], run: RunEffect, runId: string) => {
+    const page = await run(store.readConversationPage(conversation.id, 0, 200))
+    return page.items
+      .filter(item => item.event.runId === runId && item.event.kind === 'driverEvent')
+      .map(item => item.event.data['event'] as Record<string, unknown>)
+  }
+
+  it('refuses to start a Run when the agent reports a different access mode, and records why', async () => {
+    const submitted: string[] = []
+    const session = acceptingSession('native-mismatch', submitted, {
+      accessReport: { status: 'different', reported: 'auto-accept-edits' },
+    })
+    await withConversation({ drivers: [accessDriver(accessConnection(session))] }, async ({ store, run, service }) => {
+      await run(service.start(runCommand('mismatch', { driverId: 'access-driver', accessMode: 'full-access' })))
+      await awaitStatus(store, run, 'run-mismatch', 'failed')
+      expect(submitted).toEqual([])
+      expect(await driverEventsFor(store, run, 'run-mismatch')).toContainEqual(
+        expect.objectContaining({ kind: 'nativeNotice', message: expect.stringContaining('auto-accept-edits') }),
+      )
+    })
+  })
+
+  it('records an unconfirmed access notice when a resumed native session changes access mode', async () => {
+    const submitted: string[] = []
+    const session = acceptingSession('native-access', submitted)
+    await withConversation({ drivers: [accessDriver(accessConnection(session))] }, async ({ store, run, service }) => {
+      await run(service.start(runCommand('first', { driverId: 'access-driver' })))
+      await awaitStatus(store, run, 'run-first', 'completed')
+      await run(
+        service.start(
+          runCommand('second', {
+            driverId: 'access-driver',
+            accessMode: 'full-access',
+            nativeSessionId: 'native-access',
+          }),
+        ),
+      )
+      await awaitStatus(store, run, 'run-second', 'completed')
+      expect(await driverEventsFor(store, run, 'run-second')).toContainEqual(
+        expect.objectContaining({ kind: 'nativeNotice', accessStatus: 'unconfirmed', accessMode: 'full-access' }),
+      )
+      expect(await driverEventsFor(store, run, 'run-first')).not.toContainEqual(
+        expect.objectContaining({ accessStatus: 'unconfirmed' }),
+      )
+    })
+  })
+
+  it('does not record an unconfirmed notice when the agent confirms the resumed access mode', async () => {
+    const submitted: string[] = []
+    const session = acceptingSession('native-confirmed', submitted, { accessReport: { status: 'confirmed' } })
+    await withConversation({ drivers: [accessDriver(accessConnection(session))] }, async ({ store, run, service }) => {
+      await run(service.start(runCommand('first', { driverId: 'access-driver' })))
+      await awaitStatus(store, run, 'run-first', 'completed')
+      await run(
+        service.start(
+          runCommand('second', {
+            driverId: 'access-driver',
+            accessMode: 'full-access',
+            nativeSessionId: 'native-confirmed',
+          }),
+        ),
+      )
+      await awaitStatus(store, run, 'run-second', 'completed')
+      expect(await driverEventsFor(store, run, 'run-second')).not.toContainEqual(
+        expect.objectContaining({ accessStatus: 'unconfirmed' }),
+      )
+    })
+  })
+
+  it('sizes the handoff from the target model reported context window and stores the budget on the handoff', async () => {
+    const submitted: string[] = []
+    const runtime = makeRuntime(
+      options =>
+        Effect.succeed(
+          makeConnection(acceptingSession(`native-${options.connectionId}`, submitted), {
+            identity: { id: options.connectionId, driverId: 'test-driver', authentication: 'authenticated' },
+          }),
+        ),
+      {
+        modelContextWindowTokens: (connectionId, modelId) =>
+          connectionId === 'connection-2' && modelId === 'model-2' ? 10 : undefined,
+      },
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(runCommand('first')))
+      await awaitStatus(store, run, 'run-first', 'completed')
+      await run(service.start(runCommand('second', { connectionId: 'connection-2', modelId: 'model-2' })))
+      await awaitStatus(store, run, 'run-second', 'completed')
+      const page = await run(store.readConversationPage(conversation.id, 0, 100))
+      expect(page.items.find(item => item.event.kind === 'contextHandoff')?.event.data).toMatchObject({
+        budgetChars: 10,
+        budgetSource: 'reported-context-window',
+        truncated: true,
+      })
+      expect(submitted[1]).not.toContain('Earlier assistant answer.')
+      await run(service.stopAll())
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('keeps the default handoff budget and records its source when no context window is reported', async () => {
+    const submitted: string[] = []
+    const runtime = makeRuntime(options =>
+      Effect.succeed(
+        makeConnection(acceptingSession(`native-${options.connectionId}`, submitted), {
+          identity: { id: options.connectionId, driverId: 'test-driver', authentication: 'authenticated' },
+        }),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(runCommand('first')))
+      await awaitStatus(store, run, 'run-first', 'completed')
+      await run(service.start(runCommand('second', { connectionId: 'connection-2' })))
+      await awaitStatus(store, run, 'run-second', 'completed')
+      const page = await run(store.readConversationPage(conversation.id, 0, 100))
+      expect(page.items.find(item => item.event.kind === 'contextHandoff')?.event.data).toMatchObject({
+        budgetChars: 131072,
+        budgetSource: 'default',
+      })
+      await run(service.stopAll())
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('records the handoff source as unavailable when its harness connection no longer resolves', async () => {
+    const submitted: string[] = []
+    let sourceRemoved = false
+    const resolver = fakeResolverLayer(
+      HarnessConnectionResolver.of({
+        resolve: connectionId =>
+          sourceRemoved && connectionId === 'connection-1'
+            ? Effect.fail(
+                new HarnessConnectionResolutionError({ code: 'not-found', message: 'Connection was removed.' }),
+              )
+            : Effect.succeed({ connectionId }),
+      }),
+    )
+    const runtime = makeRuntime(
+      options =>
+        Effect.succeed(
+          makeConnection(acceptingSession(`native-${options.connectionId}`, submitted), {
+            identity: { id: options.connectionId, driverId: 'test-driver', authentication: 'authenticated' },
+          }),
+        ),
+      {},
+      undefined,
+      [],
+      resolver,
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(runCommand('first')))
+      await awaitStatus(store, run, 'run-first', 'completed')
+      sourceRemoved = true
+      await run(service.start(runCommand('second', { connectionId: 'connection-2' })))
+      await awaitStatus(store, run, 'run-second', 'completed')
+      const page = await run(store.readConversationPage(conversation.id, 0, 100))
+      expect(page.items.find(item => item.event.kind === 'contextHandoff')?.event.data).toMatchObject({
+        sourceConnectionStatus: 'unavailable',
+        targetConnectionId: 'connection-2',
+      })
+      expect(submitted[1]).toContain('Earlier assistant answer.')
+      await run(service.stopAll())
+    } finally {
+      await runtime.dispose()
+    }
+  })
+})

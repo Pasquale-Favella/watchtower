@@ -14,7 +14,7 @@ import * as Semaphore from 'effect/Semaphore'
 
 import { sideChatBringBackPrompt } from '@/core/application/commands/workspace-side-chats.js'
 import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
-import { captureConversationContext } from '@/core/application/execution/conversation-context.js'
+import { captureConversationContext, handoffBudget } from '@/core/application/execution/conversation-context.js'
 import { classifyConversationTransition } from '@/core/application/execution/conversation-transition.js'
 import type {
   AgentDriverError,
@@ -68,7 +68,13 @@ const nativeTurnAcceptanceSchema = Schema.Struct({
 })
 
 export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceError>()('ExecutionServiceError', {
-  reason: Schema.Literals(['invalid-options', 'service-stopped', 'background-failure', 'unsupported-access-mode']),
+  reason: Schema.Literals([
+    'invalid-options',
+    'service-stopped',
+    'background-failure',
+    'unsupported-access-mode',
+    'access-not-applied',
+  ]),
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
   /** Every stopAll failure distinguishes native cleanup from durable settlement. */
@@ -91,6 +97,8 @@ export interface ExecutionServiceOptions {
   readonly closeDeadlineMs?: number | undefined
   readonly maxConcurrentRuns?: number | undefined
   readonly maxQueuedRuns?: number | undefined
+  /** The target model's context window in tokens, when the connection catalog reports it. Absent keeps the default budget. */
+  readonly modelContextWindowTokens?: ((connectionId: string, modelId: string) => number | undefined) | undefined
   readonly publishCommittedEvent?: ((event: WorkspaceExecutionEvent) => Effect.Effect<void, unknown>) | undefined
   /**
    * Runs once when a worker finishes, whatever the outcome, before queued follow-ups are pumped. Delegations use it to
@@ -378,8 +386,55 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           yield* revalidateCheckout(state.claim)
           const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
           let prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim, store) : state.claim.prompt
-          if (!state.claim.nativeSessionId) {
-            const snapshot = yield* store.readTaskSnapshot(state.claim.taskId, 500).pipe(
+          const snapshot = yield* store.readTaskSnapshot(state.claim.taskId, 500).pipe(
+            Effect.mapError(
+              error =>
+                new ExecutionServiceError({
+                  reason: 'background-failure',
+                  message: 'Conversation context handoff could not be prepared.',
+                  cause: error,
+                }),
+            ),
+          )
+          const contexts = new Map((snapshot.runContexts ?? []).map(context => [context.runId, context]))
+          const sourceRun = snapshot.runs
+            .filter(run => run.id !== state.claim.runId)
+            .filter(run => run.sessionId != null)
+            .filter(run => contexts.get(run.id)?.conversationId === state.claim.conversationId)
+            .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]
+          const sourceContext = sourceRun ? contexts.get(sourceRun.id) : undefined
+          const transition = classifyConversationTransition({
+            source: sourceContext
+              ? {
+                  connectionId: sourceContext.connectionId,
+                  modelId: sourceContext.modelId,
+                  accessMode: sourceContext.accessMode,
+                }
+              : null,
+            target: {
+              connectionId: state.claim.connectionId,
+              modelId: state.claim.modelId,
+              accessMode: state.claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+            },
+            resumesNativeSession: !!state.claim.nativeSessionId,
+          })
+          const nativeAccessChanged =
+            transition.kind === 'native-session' && sourceContext !== undefined && transition.accessChanged
+          if (sourceRun && sourceContext && transition.kind === 'handoff') {
+            const sourceAvailable = yield* connections.resolve(sourceContext.connectionId, sourceContext.driverId).pipe(
+              Effect.as(true),
+              Effect.catch(() => Effect.succeed(false)),
+            )
+            const contextWindowTokens = state.claim.modelId
+              ? input.modelContextWindowTokens?.(state.claim.connectionId, state.claim.modelId)
+              : undefined
+            const budget = handoffBudget(contextWindowTokens)
+            const handoff = yield* captureConversationContext(
+              store,
+              state.claim.conversationId,
+              state.claim.runId,
+              budget.chars,
+            ).pipe(
               Effect.mapError(
                 error =>
                   new ExecutionServiceError({
@@ -389,68 +444,43 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                   }),
               ),
             )
-            const contexts = new Map((snapshot.runContexts ?? []).map(context => [context.runId, context]))
-            const sourceRun = snapshot.runs
-              .filter(run => run.id !== state.claim.runId)
-              .filter(run => run.sessionId != null)
-              .filter(run => contexts.get(run.id)?.conversationId === state.claim.conversationId)
-              .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]
-            const sourceContext = sourceRun ? contexts.get(sourceRun.id) : undefined
-            const transition = classifyConversationTransition({
-              source: sourceContext ? { connectionId: sourceContext.connectionId, modelId: sourceContext.modelId } : null,
-              target: { connectionId: state.claim.connectionId, modelId: state.claim.modelId },
-              resumesNativeSession: false,
-            })
-            if (sourceRun && sourceContext && transition.kind === 'handoff') {
-              const handoff = yield* captureConversationContext(
-                store,
-                state.claim.conversationId,
-                state.claim.runId,
-              ).pipe(
-                Effect.mapError(
-                  error =>
-                    new ExecutionServiceError({
-                      reason: 'background-failure',
-                      message: 'Conversation context handoff could not be prepared.',
-                      cause: error,
-                    }),
-                ),
-              )
-              if (handoff.context.trim()) {
-                yield* store
-                  .recordConversationHandoff(state.claim.runId, {
-                    ownerEpoch: state.claim.ownerEpoch,
-                    occurredAt: yield* timestamp,
-                    handoff: {
-                      sourceRunId: sourceRun.id,
-                      sourceConnectionId: sourceContext.connectionId,
-                      ...(sourceContext.modelId !== undefined ? { sourceModelId: sourceContext.modelId } : {}),
-                      targetConnectionId: state.claim.connectionId,
-                      ...(state.claim.modelId !== undefined ? { targetModelId: state.claim.modelId } : {}),
-                      highWatermark: handoff.highWatermark,
-                      truncated: handoff.truncated,
-                    },
-                  })
-                  .pipe(
-                    Effect.mapError(
-                      error =>
-                        new ExecutionServiceError({
-                          reason: 'background-failure',
-                          message: 'Conversation context handoff could not be recorded.',
-                          cause: error,
-                        }),
-                    ),
-                  )
-                prompt = [
-                  'Conversation context handoff from earlier messages. Continue the discussion using this snapshot as context.',
-                  handoff.context,
-                  handoff.truncated ? '[Earlier conversation context was truncated.]' : '',
-                  '---',
-                  `Current request: ${prompt}`,
-                ]
-                  .filter(Boolean)
-                  .join('\n\n')
-              }
+            if (handoff.context.trim()) {
+              yield* store
+                .recordConversationHandoff(state.claim.runId, {
+                  ownerEpoch: state.claim.ownerEpoch,
+                  occurredAt: yield* timestamp,
+                  handoff: {
+                    sourceRunId: sourceRun.id,
+                    sourceConnectionId: sourceContext.connectionId,
+                    sourceConnectionStatus: sourceAvailable ? 'available' : 'unavailable',
+                    ...(sourceContext.modelId !== undefined ? { sourceModelId: sourceContext.modelId } : {}),
+                    targetConnectionId: state.claim.connectionId,
+                    ...(state.claim.modelId !== undefined ? { targetModelId: state.claim.modelId } : {}),
+                    highWatermark: handoff.highWatermark,
+                    truncated: handoff.truncated,
+                    budgetChars: budget.chars,
+                    budgetSource: budget.source,
+                  },
+                })
+                .pipe(
+                  Effect.mapError(
+                    error =>
+                      new ExecutionServiceError({
+                        reason: 'background-failure',
+                        message: 'Conversation context handoff could not be recorded.',
+                        cause: error,
+                      }),
+                  ),
+                )
+              prompt = [
+                'Conversation context handoff from earlier messages. Continue the discussion using this snapshot as context.',
+                handoff.context,
+                handoff.truncated ? '[Earlier conversation context was truncated.]' : '',
+                '---',
+                `Current request: ${prompt}`,
+              ]
+                .filter(Boolean)
+                .join('\n\n')
             }
           }
           // Side chat bring-back: consumed once by this Run; a retry of the same dispatch returns the same record.
@@ -559,9 +589,29 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             recordedAt: yield* timestamp,
             capabilities: session.capabilities,
           })
+          const requestedAccess = state.claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE
+          const accessReport = session.accessReport ?? { status: 'unconfirmed' as const }
+          if (accessReport.status === 'different') {
+            yield* handleCommittedEvent(state, {
+              kind: 'nativeNotice',
+              message: `The agent reported "${accessReport.reported}" instead of ${requestedAccess} access, so the Run was not started.`,
+            })
+            return yield* new ExecutionServiceError({
+              reason: 'access-not-applied',
+              message: `The agent reported "${accessReport.reported}" instead of ${requestedAccess} access.`,
+            })
+          }
           const eventFiber = yield* Effect.forkChild(
             consumeCoalescedAgentEvents(session.events(state.claim.runId), event => handleCommittedEvent(state, event)),
           )
+          if (nativeAccessChanged && accessReport.status === 'unconfirmed') {
+            yield* handleCommittedEvent(state, {
+              kind: 'nativeNotice',
+              accessStatus: 'unconfirmed',
+              accessMode: requestedAccess,
+              message: `Access mode ${requestedAccess} could not be confirmed on this native session. The agent may keep its earlier access.`,
+            })
+          }
           state.submitEntered = true
           const accepted = yield* Effect.raceFirst(
             Effect.gen(function* () {

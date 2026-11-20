@@ -14,10 +14,7 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
-import {
-  DelegationService,
-  type DelegationServiceOptions,
-} from '@/core/application/commands/delegation-service.js'
+import { DelegationService, type DelegationServiceOptions } from '@/core/application/commands/delegation-service.js'
 import { ExecutionService, ExecutionServiceError } from '@/core/application/commands/execution-service.js'
 import { DelegationCoordinator } from '@/core/application/execution/delegation-coordinator.js'
 import type { AgentMcpEndpoint, AgentSessionContext } from '@/core/ports/agent-driver.js'
@@ -66,7 +63,10 @@ export interface WorkspaceHostOptions extends WorkspaceWorkerSupervisorOptions {
   readonly loadCheckoutResolver?: () => Effect.Effect<CheckoutResolver['Service'], unknown>
   readonly runtimeExecutable?: string
   /** Builds the stdio launch for the orchestrator endpoint, for harnesses that accept only stdio servers. */
-  readonly orchestratorStdio?: (endpoint: { readonly url: string; readonly token: string }) => NonNullable<AgentMcpEndpoint['stdio']>
+  readonly orchestratorStdio?: (endpoint: {
+    readonly url: string
+    readonly token: string
+  }) => NonNullable<AgentMcpEndpoint['stdio']>
   /** Creates an isolated checkout for `isolation: 'worktree'` delegations. Absent means worktrees are unavailable. */
   readonly createWorktree?: DelegationServiceOptions['createWorktree']
   /** Runs orchestration tool Effects on the composition root's runtime. Absent means no orchestrator endpoint is attached. */
@@ -516,10 +516,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             const stdio = options.orchestratorStdio?.(endpoint)
             return {
               ...prepared,
-              mcpEndpoints: [
-                ...(prepared.mcpEndpoints ?? []),
-                stdio ? { ...endpoint, stdio } : endpoint,
-              ],
+              mcpEndpoints: [...(prepared.mcpEndpoints ?? []), stdio ? { ...endpoint, stdio } : endpoint],
             }
           })
         const serviceContext = yield* Layer.buildWithScope(
@@ -527,6 +524,9 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
             enrichPrompt: options.enrichPrompt,
             prepareSession: composeSession,
             resolveAttachments: options.resolveAttachments,
+            modelContextWindowTokens: (connectionId, modelId) =>
+              observedInspections.get(connectionId)?.capabilities.models.items.find(model => model.id === modelId)
+                ?.contextWindowTokens,
             ownerEpoch,
             closeDeadlineMs: options.closeDeadlineMs,
             publishCommittedEvent: event =>

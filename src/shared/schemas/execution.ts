@@ -98,6 +98,8 @@ export const agentModelChoiceSchema = Schema.Struct({
   /** What the model is for, shown under its name. */
   description: Schema.optional(Schema.String.check(Schema.isMaxLength(256))),
   modes: Schema.optional(Schema.Array(Schema.Struct({ id: text, label: Schema.String }))),
+  /** The model's context window in tokens, only when the agent reports it. Absent means unknown. */
+  contextWindowTokens: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
 })
 export const agentSlashCommandSchema = Schema.Struct({
   name: text,
@@ -348,7 +350,13 @@ export const agentDriverEventSchema = Schema.Union([
     cost: Schema.optional(nonNegative),
     currency: optionalText,
   }),
-  Schema.Struct({ kind: Schema.Literal('nativeNotice'), message: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal('nativeNotice'),
+    message: Schema.String,
+    /** Set when the Run's access mode change could not be confirmed on the native session. */
+    accessStatus: Schema.optional(Schema.Literal('unconfirmed')),
+    accessMode: Schema.optional(agentAccessModeSchema),
+  }),
 ])
 export type AgentDriverEvent = Schema.Schema.Type<typeof agentDriverEventSchema>
 

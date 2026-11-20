@@ -14,6 +14,30 @@ import {
 /** Maximum prior context sent when a Conversation starts on a fresh native session. */
 export const CONVERSATION_HANDOFF_MAX_CHARS = 131072
 
+/**
+ * Policy for sizing a handoff from a reported context window: a quarter of the window, at roughly four characters per
+ * token. Both factors are estimates; only the window itself is a reported limit.
+ */
+const HANDOFF_CHARS_PER_TOKEN = 4
+const HANDOFF_WINDOW_SHARE = 0.25
+
+export interface HandoffBudget {
+  readonly chars: number
+  readonly source: 'reported-context-window' | 'default'
+}
+
+/** The character budget for a handoff to a target model. Absent or invalid windows keep the default. */
+export function handoffBudget(contextWindowTokens: number | undefined): HandoffBudget {
+  if (contextWindowTokens === undefined || !Number.isInteger(contextWindowTokens) || contextWindowTokens <= 0) {
+    return { chars: CONVERSATION_HANDOFF_MAX_CHARS, source: 'default' }
+  }
+  const sized = Math.floor(contextWindowTokens * HANDOFF_CHARS_PER_TOKEN * HANDOFF_WINDOW_SHARE)
+  return {
+    chars: Math.min(CONVERSATION_HANDOFF_MAX_CHARS, sized),
+    source: 'reported-context-window',
+  }
+}
+
 export interface ConversationContextSnapshot {
   readonly context: string
   readonly highWatermark: number
@@ -27,6 +51,7 @@ export const captureConversationContext = Effect.fnUntraced(function* (
   store: WorkspaceStore['Service'],
   conversationId: ConversationId,
   excludeRunId: AgentRunId,
+  budget: number = CONVERSATION_HANDOFF_MAX_CHARS,
 ): Effect.fn.Return<ConversationContextSnapshot, Error> {
   let before: number | undefined
   let through: number | undefined
@@ -49,7 +74,7 @@ export const captureConversationContext = Effect.fnUntraced(function* (
     const nextBefore = page.nextBeforeSequence
     if (nextBefore === undefined || nextBefore === null || nextBefore >= (before ?? through + 1))
       return yield* Effect.fail(contextUnavailable())
-    if (windowCharacters >= CONVERSATION_HANDOFF_MAX_CHARS * 2) {
+    if (windowCharacters >= budget * 2) {
       truncated = true
       break
     }
@@ -68,13 +93,13 @@ export const captureConversationContext = Effect.fnUntraced(function* (
       const part = yield* store
         .readWorkspacePayload(reference, offset, 65536)
         .pipe(Effect.mapError(() => contextUnavailable()))
-      if (part.total > CONVERSATION_HANDOFF_MAX_CHARS * 2 - payloadCharacters) {
+      if (part.total > budget * 2 - payloadCharacters) {
         truncated = true
         payloads.set(key, undefined)
         return undefined
       }
       json += part.json
-      if (json.length + payloadCharacters > CONVERSATION_HANDOFF_MAX_CHARS * 2) {
+      if (json.length + payloadCharacters > budget * 2) {
         truncated = true
         payloads.set(key, undefined)
         return undefined
@@ -95,7 +120,7 @@ export const captureConversationContext = Effect.fnUntraced(function* (
   const tools = new Map<string, { output: string; chunkIndex: number }>()
   let activeTextRun: string | undefined
   const boundedToolText = (text: string) => {
-    const limit = CONVERSATION_HANDOFF_MAX_CHARS / 4
+    const limit = budget / 4
     if (text.length <= limit) return text
     truncated = true
     return `${text.slice(0, limit)}\n[Tool content truncated]`
@@ -153,8 +178,8 @@ export const captureConversationContext = Effect.fnUntraced(function* (
   }
   for (const { output, chunkIndex } of tools.values()) chunks[chunkIndex] = `\n[Tool output] ${output}\n`
   let context = chunks.join('')
-  if (context.length > CONVERSATION_HANDOFF_MAX_CHARS) {
-    context = context.slice(-CONVERSATION_HANDOFF_MAX_CHARS)
+  if (context.length > budget) {
+    context = context.slice(-budget)
     truncated = true
   }
   return { context, highWatermark: through ?? 0, truncated }

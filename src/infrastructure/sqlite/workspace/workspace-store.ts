@@ -3451,7 +3451,7 @@ const makeService = Effect.gen(function* () {
             const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
             const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
             const runRows = yield* sql`
-              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, json_extract(c.payload, '$.path') AS workspace_path
+              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, i.access_mode, json_extract(c.payload, '$.path') AS workspace_path
               FROM workspace_agent_run r
               LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
               LEFT JOIN workspace_checkout c ON c.id = i.checkout_id
@@ -3482,6 +3482,7 @@ const makeService = Effect.gen(function* () {
                       connectionId: row.connection_id,
                       ...(row.model_id != null ? { modelId: row.model_id } : {}),
                       ...(row.workspace_path != null ? { workspacePath: row.workspace_path } : {}),
+                      ...(row.access_mode != null ? { accessMode: row.access_mode } : {}),
                     }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Run context failed validation')))
                   : undefined
               const bytes = Buffer.byteLength(encode([run, context ?? null]), 'utf8')

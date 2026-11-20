@@ -25,6 +25,26 @@ import {
 
 import type { WorkspaceRequest } from './lib.js'
 
+/** Source and target labels for a handoff notice. An unavailable source never shows its stale connection. */
+export function handoffEndpointLabels(
+  handoff: ConversationHandoffData,
+  connectionLabels: ReadonlyMap<string, string>,
+): { readonly source: string; readonly target: string } {
+  const endpoint = (connection: string, model: string | null | undefined) => {
+    const name = model?.trim()
+    return name ? `${connection} · ${name}` : connection
+  }
+  const source =
+    handoff.sourceConnectionStatus === 'unavailable'
+      ? 'Unavailable connection'
+      : endpoint(connectionLabels.get(handoff.sourceConnectionId) ?? handoff.sourceConnectionId, handoff.sourceModelId)
+  const target = endpoint(
+    connectionLabels.get(handoff.targetConnectionId) ?? handoff.targetConnectionId,
+    handoff.targetModelId,
+  )
+  return { source, target }
+}
+
 /** Merge durable pages by event sequence, keeping the earliest user-message association. */
 export function mergeConversationItems(
   current: readonly WorkspaceConversationPageItem[],

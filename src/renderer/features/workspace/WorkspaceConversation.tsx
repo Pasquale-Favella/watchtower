@@ -30,6 +30,7 @@ import {
   decodeConversationPayload,
   driverEventSummary,
   eventSummary,
+  handoffEndpointLabels,
   isActiveRunStatus,
   mergeConversationItems,
   messagePayloadReference,
@@ -799,17 +800,12 @@ function ConversationStatusEntry({
   if (entry.notice === 'delegationWake') return <DelegationWakeNotice delegation={entry.delegation} />
   if (entry.notice === 'contextHandoff' && entry.handoff) {
     const handoff = entry.handoff
-    const source = connectionLabels.get(handoff.sourceConnectionId) ?? handoff.sourceConnectionId
-    const target = connectionLabels.get(handoff.targetConnectionId) ?? handoff.targetConnectionId
-    const sourceModel = handoff.sourceModelId?.trim()
-    const targetModel = handoff.targetModelId?.trim()
-    const endpoint = (connection: string, model: string | undefined) =>
-      model ? `${connection} · ${model}` : connection
+    const labels = handoffEndpointLabels(handoff, connectionLabels)
     return (
       <article className="text-muted-foreground py-2 text-center text-xs" aria-label="Context handoff prepared">
         <p>Context handoff prepared for the next agent attempt</p>
         <p className="mt-0.5 break-words">
-          {endpoint(source, sourceModel)} → {endpoint(target, targetModel)}
+          {labels.source} → {labels.target}
         </p>
         <p className="mt-0.5">
           Includes conversation through event {handoff.highWatermark}
