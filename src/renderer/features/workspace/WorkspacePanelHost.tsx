@@ -45,7 +45,7 @@ interface Props {
   readonly parent?: { readonly taskId: TaskId; readonly conversationId: ConversationId } | undefined
   readonly parentTitle?: string | undefined
   readonly parentBusy?: boolean | undefined
-  readonly onOpenTerminal?: (() => void) | undefined
+  readonly onRunShellCommand?: ((command: string) => void) | undefined
   readonly onReferenceText?: ((text: string) => void) | undefined
 }
 
@@ -185,7 +185,7 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
             parentTitle={props.parentTitle ?? ''}
             parentBusy={props.parentBusy ?? false}
             onOpenDiff={() => props.panel.openSurface('diff')}
-            onOpenTerminal={props.onOpenTerminal}
+            onRunShellCommand={props.onRunShellCommand}
             onClose={() => void close(surface).then(() => props.panel.closeSurface(surface))}
             onDeleted={() => props.panel.closeSurface(surface)}
             onOpenFile={props.panel.openFile}

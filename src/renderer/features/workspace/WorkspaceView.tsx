@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Popover } from '@/renderer/components/ui/popover'
-import type { DraftTerminalTarget, TerminalTarget } from '@/shared/schemas/terminal.js'
+import { type DraftTerminalTarget, terminalOwnerKey, type TerminalTarget } from '@/shared/schemas/terminal.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { currentConversationRuns, isRunActive } from './composer-state.js'
@@ -18,6 +18,7 @@ import { attachmentPromptToken } from './prompt-editor.js'
 import { surfaceKind, surfaceResource } from './right-panel/right-panel-state.js'
 import { type RightPanelControls, useRightPanel } from './right-panel/use-right-panel.js'
 import { useSideChatTabs } from './side-chat/hooks.js'
+import { queueTerminalCommand } from './terminal/terminal-command-queue.js'
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
@@ -341,8 +342,10 @@ function TaskConversation({
           }
           parentTitle={task.title}
           parentBusy={parentBusy}
-          onOpenTerminal={() => {
-            if (!terminal.open) terminal.toggle()
+          onRunShellCommand={command => {
+            if (panel.maximized) panel.toggleMaximized()
+            queueTerminalCommand(terminalOwnerKey(terminalTarget), command)
+            if (!terminal.open) terminal.setOpen(true)
           }}
         />
       </div>
@@ -371,7 +374,7 @@ function TaskRightPanel({
   readonly parent?: React.ComponentProps<typeof WorkspacePanelHost>['parent']
   readonly parentTitle?: string | undefined
   readonly parentBusy?: boolean | undefined
-  readonly onOpenTerminal?: (() => void) | undefined
+  readonly onRunShellCommand?: ((command: string) => void) | undefined
 }) {
   const [refreshKey, setRefreshKey] = useState(0)
   const referenceInDraft = useDraftReference()

@@ -10,7 +10,8 @@ import {
   terminalTargetPayload,
 } from '@/shared/schemas/terminal.js'
 
-import { closeTerminalAtom } from './terminal-atoms.js'
+import { closeTerminalAtom, sendTerminalCommand } from './terminal-atoms.js'
+import { takeTerminalCommand, useQueuedTerminalCommands } from './terminal-command-queue.js'
 import {
   hydrateTerminalLayouts,
   type LayoutAction,
@@ -71,6 +72,20 @@ export function useTerminalTabs(owner: TerminalOwner, groupId = 'drawer') {
   const reportStatus = useCallback((id: TerminalId, status: TerminalPaneStatus) => {
     setStatuses(previous => (previous[id] === status ? previous : { ...previous, [id]: status }))
   }, [])
+  const queuedCommands = useQueuedTerminalCommands(ownerKey)
+  useEffect(() => {
+    const next = groupId === 'drawer' ? queuedCommands[0] : undefined
+    if (next === undefined) return
+    const target = layout.active === null ? null : statuses[layout.active]
+    if (terminals.length === 0 || target === 'exited') {
+      if (nextTerminalId(ownerTerminalIds(entries, ownerKey)) !== null) create()
+      return
+    }
+    if (layout.active === null || target !== 'running') return
+    const data = next.replace(/\r?\n/g, '\r') + '\r'
+    if (sendTerminalCommand(owner, layout.active, { _tag: 'write', data })) takeTerminalCommand(ownerKey)
+  }, [create, entries, groupId, layout.active, owner, ownerKey, queuedCommands, statuses, terminals])
+
   return {
     terminals,
     canCreate: nextTerminalId(ownerTerminalIds(entries, ownerKey)) !== null,

@@ -141,9 +141,14 @@ export function ToolRow({
           </p>
         )}
         {presentation.command && <ToolOutputPanel text={presentation.command} label="Command" terminal />}
-        {presentation.category === 'command' && routes.openTerminal && (
+        {presentation.category === 'command' && presentation.command && routes.runShellCommand && (
           <div className="flex justify-end">
-            <Button type="button" variant="link" size="xs" onClick={routes.openTerminal}>
+            <Button
+              type="button"
+              variant="link"
+              size="xs"
+              onClick={() => routes.runShellCommand?.(presentation.command ?? '')}
+            >
               Open in terminal
             </Button>
           </div>

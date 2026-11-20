@@ -48,8 +48,8 @@ export interface SideChatPaneProps {
   readonly onOpenFile?: ((path: string) => void) | undefined
   /** Tool diffs open the main chat's diff panel, since a side chat shares its checkout. */
   readonly onOpenDiff?: (() => void) | undefined
-  /** Command rows open the main chat's terminal drawer. */
-  readonly onOpenTerminal?: (() => void) | undefined
+  /** Command rows run in the main chat's terminal drawer. */
+  readonly onRunShellCommand?: ((command: string) => void) | undefined
 }
 export function SideChatPane(props: SideChatPaneProps): React.JSX.Element {
   const binding = useSideChatBinding(props.id)
@@ -85,7 +85,7 @@ function SideChatContent({
   visible = true,
   onOpenFile,
   onOpenDiff,
-  onOpenTerminal,
+  onRunShellCommand,
   parentTitle,
   parentBusy = false,
 }: SideChatPaneProps & { readonly binding: SideChatBinding }): React.JSX.Element {
@@ -187,7 +187,7 @@ function SideChatContent({
         </p>
       )}
       <div className="min-h-0 flex-1 overflow-hidden [&>section]:h-full">
-        <TimelineRoutesContext value={{ openDiff: onOpenDiff, openTerminal: onOpenTerminal }}>
+        <TimelineRoutesContext value={{ openDiff: onOpenDiff, runShellCommand: onRunShellCommand }}>
           <WorkspaceConversation
             conversationId={binding.conversationId}
             sessionIdsByRunId={sessionIdsByRunId}
