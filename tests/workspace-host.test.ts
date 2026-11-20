@@ -376,10 +376,8 @@ describe('lazy application WorkspaceHost', () => {
       expect((await runtime.runPromise(host.store.readTaskSnapshot(registered.task.id, 10))).runs).toEqual([
         expect.objectContaining({ id: 'run-deleted-checkout', status: 'failed', failure: 'launch-failed' }),
       ])
-      await expect(runtime.dispose()).rejects.toMatchObject({
-        _tag: 'ExecutionServiceError',
-        nativeCleanup: 'confirmed',
-      })
+      // The refused Run already settled, so closing the host reports no cleanup failure.
+      await expect(runtime.dispose()).resolves.toBeUndefined()
     } finally {
       await runtime.dispose().catch(() => {})
     }

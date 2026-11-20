@@ -468,21 +468,12 @@ describe('ExecutionService', () => {
       const service = await runtime.runPromise(ExecutionService)
       await run(service.start(command))
       await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('failed')
-      const stopped = await run(Effect.flip(service.stopAll()))
-      expect(stopped).toMatchObject({ _tag: 'ExecutionServiceError', nativeCleanup: 'confirmed' })
-      expect(stopped.cause).toMatchObject({
-        reasons: [
-          expect.objectContaining({
-            error: expect.objectContaining({
-              _tag: 'ExecutionServiceError',
-              message: 'Registered checkout could not be verified for execution.',
-            }),
-          }),
-        ],
-      })
-      expect(JSON.stringify(stopped)).not.toContain('Sensitive')
+      // The refusal settled the Run as a launch failure, so shutdown reports nothing for it.
+      await expect(run(service.stopAll())).resolves.toBeUndefined()
+      const snapshot = await run(store.readTaskSnapshot(task.id, 10))
+      expect(JSON.stringify(snapshot)).not.toContain('Sensitive')
       expect(nativeCalls).toEqual([])
-      expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toEqual([
+      expect(snapshot.runs).toEqual([
         expect.objectContaining({ id: command.runId, status: 'failed', failure: 'launch-failed' }),
       ])
       expect(await run(store.recoverWorker(7, '2026-10-29T10:00:02Z'))).toBe(0)
@@ -641,12 +632,9 @@ describe('ExecutionService', () => {
       await expect.poll(async () => (await run(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('failed')
       expect(nativeCalls).toEqual([])
       expect(await run(store.recoverWorker(7, '2026-10-29T10:00:02Z'))).toBe(0)
-      const stopped = await run(Effect.exit(service.stopAll()))
-      expect(Exit.isFailure(stopped)).toBe(true)
-      if (Exit.isFailure(stopped)) {
-        expect(Cause.squash(stopped.cause)).toMatchObject({ _tag: 'ExecutionServiceError', nativeCleanup: 'confirmed' })
-        expect(String(Cause.squash(stopped.cause))).not.toContain('Sensitive filesystem path')
-      }
+      // The Run already settled as a launch failure, so shutdown has no native cleanup to report.
+      await expect(run(service.stopAll())).resolves.toBeUndefined()
+      expect(JSON.stringify(await run(store.readTaskSnapshot(task.id, 10)))).not.toContain('Sensitive filesystem path')
     } finally {
       await runtime.dispose()
     }
@@ -746,10 +734,7 @@ describe('ExecutionService', () => {
           await expect
             .poll(async () => (await storeRuntime.runPromise(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
             .toBe('failed')
-          expect(await runtime.runPromise(Effect.flip(service.stopAll()))).toMatchObject({
-            _tag: 'ExecutionServiceError',
-            nativeCleanup: 'confirmed',
-          })
+          await expect(runtime.runPromise(service.stopAll())).resolves.toBeUndefined()
           expect(nativeCalls).toEqual([])
           expect((await storeRuntime.runPromise(store.readTaskSnapshot(task.id, 10))).runs[0]).toMatchObject({
             status: 'failed',

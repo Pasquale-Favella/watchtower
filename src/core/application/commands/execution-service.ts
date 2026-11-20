@@ -374,9 +374,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             state.shuttingDown = true
             return
           }
-          yield* revalidateCheckout(state.claim).pipe(
-            Effect.tapError(error => Effect.sync(() => backgroundFailures.push(Cause.fail(error)))),
-          )
+          // A failed verification settles this Run as a launch failure in supervise; it is not a shutdown failure.
+          yield* revalidateCheckout(state.claim)
           const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
           let prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim, store) : state.claim.prompt
           if (!state.claim.nativeSessionId) {
@@ -649,7 +648,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         yield* runPermits.withPermit(
           Effect.gen(function* () {
             const result = yield* Effect.exit(supervise(state))
-            if (Exit.isFailure(result)) backgroundFailures.push(result.cause)
+            if (Exit.isFailure(result) && !state.settled) backgroundFailures.push(result.cause)
             if (state.settled && !state.terminal && state.cleanupConfirmed) {
               const released = yield* Effect.exit(
                 store.releaseDispatchAfterCleanup(state.claim.runId, state.claim.ownerEpoch),
