@@ -5,13 +5,13 @@ import { join, resolve } from 'node:path'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
-import { build } from 'esbuild'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
+import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import {
@@ -23,8 +23,8 @@ import { DelegationCoordinator } from '@/core/application/execution/delegation-c
 import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
-import { acquireOrchestratorMcp } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
+import { acquireOrchestratorMcp } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
 import {
   delegationToolCancelInputSchema,
   delegationToolListInputSchema,
@@ -264,7 +264,8 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
   it('wakes the parent with the captured result when the child settles', async () => {
     const result = await callTool(parentClient, 'delegation_start', { task: 'Audit the lexer', title: 'Lexer' })
     settledDelegationId = (result.structuredContent as { id: string }).id
-    const child = starts[1]!
+    const child = starts[1]
+    if (!child) throw new Error('The second delegation did not launch a child Run')
     await runtime.runPromise(settleChild(child, 'turnCompleted'))
 
     const status = await callTool(parentClient, 'delegation_status', { id: settledDelegationId })
@@ -301,7 +302,9 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
     expect(missing.isError).toBe(true)
     expect(errorCodeOf(missing)).toBe('not-found')
 
-    const childEndpoint = await bindEndpoint(childCallerOf(starts[2]!))
+    const waitingChild = starts[2]
+    if (!waitingChild) throw new Error('The wait-mode delegation did not launch a child Run')
+    const childEndpoint = await bindEndpoint(childCallerOf(waitingChild))
     const childClient = await connect(childEndpoint)
     const depth = await callTool(childClient, 'delegation_start', { task: 'Nested audit' })
     expect(depth.isError).toBe(true)

@@ -11,25 +11,8 @@ import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
-import {
-  type CoachEvent,
-  coachInspectRequestSchema,
-  type CoachInspectResult,
-  type CoachRunRequest,
-  coachRunRequestSchema,
-  type CoachRunResult,
-} from '@/shared/schemas/agents.js'
-import type { OverviewScope } from '@/shared/schemas/overview.js'
-import type { MainRuntime, MainServices } from '@/platform/electron/main/main-runtime.js'
-import { logCodeFor, safeLogOperationalEvent } from '@/infrastructure/logging/operational-log.js'
 import { CoachSdkFailure, coachSdkFailureMessage } from '@/infrastructure/agent-harnesses/coach-errors.js'
 import { coachProtocolError } from '@/infrastructure/agent-harnesses/coach-protocol-errors.js'
-import type {
-  CoachRunner,
-  LedgerMcpAttachment,
-  NativeCoachRunnerCapabilities,
-  NativeHarnessSource,
-} from '@/platform/electron/main/coach/ipc.js'
 import { buildCoachPrompt, buildLedgerBriefing, buildScopeUpdate } from '@/infrastructure/agent-harnesses/prompts.js'
 import { decodeResumeCursor } from '@/infrastructure/agent-harnesses/resume-cursor.js'
 import {
@@ -40,6 +23,23 @@ import {
   type NativeHarnessInspection,
   type NativeHarnessRun,
 } from '@/infrastructure/agent-harnesses/runtime.js'
+import { logCodeFor, safeLogOperationalEvent } from '@/infrastructure/logging/operational-log.js'
+import type {
+  CoachRunner,
+  LedgerMcpAttachment,
+  NativeCoachRunnerCapabilities,
+  NativeHarnessSource,
+} from '@/platform/electron/main/coach/ipc.js'
+import type { MainRuntime, MainServices } from '@/platform/electron/main/main-runtime.js'
+import {
+  type CoachEvent,
+  coachInspectRequestSchema,
+  type CoachInspectResult,
+  type CoachRunRequest,
+  coachRunRequestSchema,
+  type CoachRunResult,
+} from '@/shared/schemas/agents.js'
+import type { OverviewScope } from '@/shared/schemas/overview.js'
 
 export interface CoachCoordinatorDeps {
   readonly runtime: MainRuntime
