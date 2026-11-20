@@ -1,8 +1,15 @@
-import { BrainIcon, ChevronRightIcon, LoaderCircleIcon } from 'lucide-react'
+import { BrainIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
+import {
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from '@/renderer/components/ui/trace'
 
 import { CopyTextButton } from './MessageActions.js'
 
@@ -18,34 +25,33 @@ export function ReasoningBlock({
     text
       .split('\n')
       .find(line => line.trim())
-      ?.trim() ?? ''
+      ?.replace(/[*_`#>]+/g, '')
+      .trim() ?? ''
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={setOpen}
-      className="text-muted-foreground bg-muted/20 overflow-hidden rounded-lg border text-xs"
-    >
-      <div className="flex min-w-0 items-center gap-1 pr-1.5">
-        <CollapsibleTrigger className="group/disclosure flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left">
-          <ChevronRightIcon
-            aria-hidden
-            className="size-3 shrink-0 transition-transform group-data-[panel-open]/disclosure:rotate-90"
-          />
-          {streaming ? (
-            <LoaderCircleIcon aria-hidden className="size-3.5 shrink-0 motion-safe:animate-spin" />
-          ) : (
-            <BrainIcon aria-hidden className="size-3.5 shrink-0" />
-          )}
-          <span className="shrink-0 font-medium">{streaming ? 'Thinking…' : 'Reasoning'}</span>
-          {!open && preview && <span className="min-w-0 truncate">{preview}</span>}
-        </CollapsibleTrigger>
-        {text && <CopyTextButton text={text} label="Copy reasoning" />}
+    <TraceCollapsible open={open} onOpenChange={setOpen} className="group/reasoning text-xs">
+      <div className="flex min-w-0 items-center gap-1">
+        <TraceCollapsibleTrigger className="min-w-0">
+          <TraceLine status={streaming ? 'running' : undefined} className="text-xs">
+            <TraceIcon>
+              <BrainIcon />
+            </TraceIcon>
+            <TraceTitle className="shrink-0 overflow-visible font-medium">
+              {streaming ? 'Thinking…' : 'Reasoning'}
+            </TraceTitle>
+            {!open && preview && <span className="text-muted-foreground/70 min-w-0 truncate">{preview}</span>}
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        {text && (
+          <span className="opacity-0 transition-opacity group-hover/reasoning:opacity-100 focus-within:opacity-100">
+            <CopyTextButton text={text} label="Copy reasoning" />
+          </span>
+        )}
       </div>
-      <CollapsibleContent className="border-t px-3 py-2.5">
+      <TraceCollapsibleContent>
         <div className="typeset max-h-96 overflow-auto text-xs break-words">
           <Markdown streaming={streaming}>{text}</Markdown>
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }

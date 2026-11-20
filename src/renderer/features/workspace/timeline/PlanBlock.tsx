@@ -1,9 +1,16 @@
-import { CheckIcon, ChevronRightIcon, CircleIcon, ClipboardListIcon, LoaderCircleIcon } from 'lucide-react'
+import { CheckIcon, CircleIcon, ClipboardListIcon, LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
-import { Badge } from '@/renderer/components/ui/badge'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
+import {
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from '@/renderer/components/ui/trace'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { CopyTextButton } from './MessageActions.js'
@@ -25,23 +32,28 @@ export function PlanBlock({
   const done = entries.length > 0 && completed === entries.length
   const active = !done && (streaming || entries.some(entry => entry.status === 'inProgress'))
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="bg-card overflow-hidden rounded-lg border text-xs">
-      <div className="flex min-w-0 items-center gap-1 pr-1.5">
-        <CollapsibleTrigger className="group/disclosure flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left">
-          <ChevronRightIcon
-            aria-hidden
-            className="text-muted-foreground size-3 shrink-0 transition-transform group-data-[panel-open]/disclosure:rotate-90"
-          />
-          <ClipboardListIcon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
-          <span className="min-w-0 flex-1 font-medium">Plan</span>
-          <Badge variant="secondary" className="gap-1 text-[10px]">
-            {active && <LoaderCircleIcon aria-hidden className="size-3 motion-safe:animate-spin" />}
-            {done ? 'Completed' : `${completed}/${entries.length} completed`}
-          </Badge>
-        </CollapsibleTrigger>
-        <CopyTextButton text={planCopyText(entries, explanation)} label="Copy plan" />
+    <TraceCollapsible open={open} onOpenChange={setOpen} className="group/plan text-xs">
+      <div className="flex min-w-0 items-center gap-1">
+        <TraceCollapsibleTrigger className="min-w-0">
+          <TraceLine status={active ? 'running' : undefined} className="text-xs">
+            <TraceIcon>
+              {active ? (
+                <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" />
+              ) : (
+                <ClipboardListIcon className="size-3.5" />
+              )}
+            </TraceIcon>
+            <TraceTitle className="font-medium">Plan</TraceTitle>
+            <TraceDescription className={cn(done && 'text-success')}>
+              {done ? 'Completed' : `${completed}/${entries.length} completed`}
+            </TraceDescription>
+          </TraceLine>
+        </TraceCollapsibleTrigger>
+        <span className="opacity-0 transition-opacity group-hover/plan:opacity-100 focus-within:opacity-100">
+          <CopyTextButton text={planCopyText(entries, explanation)} label="Copy plan" />
+        </span>
       </div>
-      <CollapsibleContent className="space-y-3 border-t px-3 py-2.5">
+      <TraceCollapsibleContent className="space-y-3">
         {explanation && (
           <div className="typeset text-muted-foreground text-xs break-words">
             <Markdown>{explanation}</Markdown>
@@ -85,7 +97,7 @@ export function PlanBlock({
         ) : (
           <p className="text-muted-foreground">{streaming ? 'Preparing the plan…' : 'No plan steps were provided.'}</p>
         )}
-      </CollapsibleContent>
-    </Collapsible>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }

@@ -1,7 +1,6 @@
 import {
   BotIcon,
   CheckIcon,
-  ChevronRightIcon,
   CircleAlertIcon,
   CircleHelpIcon,
   Clock3Icon,
@@ -9,6 +8,7 @@ import {
   FilePenLineIcon,
   FileTextIcon,
   GlobeIcon,
+  ListChecksIcon,
   LoaderCircleIcon,
   NetworkIcon,
   PlugIcon,
@@ -18,9 +18,17 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 
-import { Badge } from '@/renderer/components/ui/badge'
 import { Button } from '@/renderer/components/ui/button'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
+import {
+  Trace,
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from '@/renderer/components/ui/trace'
 import { useNativeStore } from '@/renderer/shared/hooks/use-native-store'
 import { cn } from '@/renderer/shared/lib/utils'
 
@@ -35,10 +43,10 @@ import { toolDisclosureKey, workDisclosureKey } from './turn-segments.js'
 import type { ToolBlock, ToolCategory, WorkSummary } from './work-log.js'
 
 const toolStatus = {
-  running: { label: 'Running', Icon: LoaderCircleIcon, className: 'text-primary motion-safe:animate-spin' },
-  completed: { label: 'Completed', Icon: CheckIcon, className: 'text-success' },
-  failed: { label: 'Failed', Icon: CircleAlertIcon, className: 'text-destructive' },
-  unknown: { label: 'Status unavailable', Icon: CircleHelpIcon, className: 'text-muted-foreground' },
+  running: { label: 'Running', Icon: LoaderCircleIcon, className: 'motion-safe:animate-spin', trace: 'running' },
+  completed: { label: 'Completed', Icon: CheckIcon, className: 'text-success', trace: undefined },
+  failed: { label: 'Failed', Icon: CircleAlertIcon, className: 'text-destructive', trace: 'error' },
+  unknown: { label: 'Status unavailable', Icon: CircleHelpIcon, className: 'text-muted-foreground', trace: 'pending' },
 } as const
 
 const categoryIcons: Record<ToolCategory, typeof TerminalIcon> = {
@@ -53,12 +61,10 @@ const categoryIcons: Record<ToolCategory, typeof TerminalIcon> = {
   other: WrenchIcon,
 }
 
-const logItemClass = 'bg-muted/30 overflow-hidden rounded-lg border text-xs'
-
 function FailureMarker({ count }: { readonly count: number }): React.JSX.Element | null {
   if (count === 0) return null
   return (
-    <span className="text-destructive inline-flex items-center gap-1">
+    <span className="text-destructive inline-flex shrink-0 items-center gap-1">
       <CircleAlertIcon aria-hidden className="size-3" />
       {count} failed
     </span>
@@ -88,37 +94,35 @@ export function ToolRow({
   const { openExternal } = useNativeStore()
   const presentation = toolPresentation(tool)
   const CategoryIcon = categoryIcons[presentation.category]
-  const { label: statusLabel, Icon: StatusIcon, className: statusClass } = toolStatus[tool.status]
+  const { label: statusLabel, Icon: StatusIcon, className: statusClass, trace: traceStatus } = toolStatus[tool.status]
   const url = safeToolUrl(presentation.url)
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={changeOpen}
-      className={cn(logItemClass, tool.status === 'failed' && 'border-destructive/40')}
-    >
-      <CollapsibleTrigger
-        className="group/disclosure flex w-full min-w-0 items-center gap-2 px-2.5 py-2 text-left"
-        aria-label={`${tool.name}: ${statusLabel}`}
-      >
-        <ChevronRightIcon
-          aria-hidden
-          className="text-muted-foreground size-3 shrink-0 transition-transform group-data-[panel-open]/disclosure:rotate-90"
-        />
-        <CategoryIcon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium">{presentation.label}</span>
+    <TraceCollapsible open={open} onOpenChange={changeOpen} className="text-xs">
+      <TraceCollapsibleTrigger className="max-w-full" aria-label={`${tool.name}: ${statusLabel}`}>
+        <TraceLine status={traceStatus} className="text-xs">
+          <TraceIcon>
+            <CategoryIcon className="size-3.5" />
+          </TraceIcon>
+          <TraceTitle className="font-medium">{presentation.label}</TraceTitle>
           {presentation.detail && (
-            <span className="text-muted-foreground block truncate font-mono text-[11px]" title={presentation.detail}>
+            <span
+              className="text-muted-foreground/70 min-w-0 truncate font-mono text-[11px]"
+              title={presentation.detail}
+            >
               {presentation.detail}
             </span>
           )}
-        </span>
-        <Badge variant="ghost" className="gap-1 px-1.5 text-[10px]">
-          <StatusIcon aria-hidden className={cn('size-3', statusClass)} />
-          {statusLabel}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-2 border-t px-2.5 py-2.5">
+          {tool.status !== 'running' && tool.durationMs !== undefined && (
+            <TraceDescription className="text-[11px]">{formatRunDuration(tool.durationMs)}</TraceDescription>
+          )}
+          {tool.status !== 'completed' && (
+            <TraceIcon>
+              <StatusIcon className={cn('size-3', statusClass)} />
+            </TraceIcon>
+          )}
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="space-y-2">
         <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
           <span>{tool.name}</span>
           {tool.continued && <span>Continued from earlier activity</span>}
@@ -192,8 +196,8 @@ export function ToolRow({
           <summary className="cursor-pointer">Tool details</summary>
           <code className="break-all">{tool.toolCallId}</code>
         </details>
-      </CollapsibleContent>
-    </Collapsible>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }
 
@@ -229,7 +233,6 @@ export function WorkGroupRow({
   return (
     <WorkLogCollapsible
       summary={group.summary}
-      className={logItemClass}
       open={open}
       onOpenChange={next => {
         if (groupKey && turnId) onDisclosureChange?.(groupKey, next, turnId, withinFold)
@@ -254,7 +257,6 @@ export function WorkGroupRow({
 function WorkLogCollapsible({
   summary,
   children,
-  className,
   open,
   onOpenChange,
   label,
@@ -262,7 +264,6 @@ function WorkLogCollapsible({
 }: {
   readonly summary: WorkSummary
   readonly children: React.ReactNode
-  readonly className?: string
   readonly open?: boolean
   readonly onOpenChange?: (open: boolean) => void
   readonly label?: string
@@ -271,30 +272,32 @@ function WorkLogCollapsible({
   const [localOpen, setLocalOpen] = useState(false)
   const isControlled = open !== undefined
   return (
-    <Collapsible
+    <TraceCollapsible
       open={open ?? localOpen}
       onOpenChange={next => {
         if (isControlled) onOpenChange?.(next)
         else setLocalOpen(next)
       }}
-      className={className}
+      className="text-xs"
     >
-      <CollapsibleTrigger className="group/disclosure flex w-full min-w-0 items-center gap-2 px-2.5 py-2 text-left">
-        <ChevronRightIcon
-          aria-hidden
-          className="text-muted-foreground size-3 shrink-0 transition-transform group-data-[panel-open]/disclosure:rotate-90"
-        />
-        {active && <LoaderCircleIcon aria-hidden className="text-primary size-3 shrink-0 motion-safe:animate-spin" />}
-        <span className="min-w-0 flex-1 truncate">{label ?? summary.label}</span>
-        <span className="text-muted-foreground ml-auto flex shrink-0 items-center gap-2">
-          {label !== undefined && <span>{summary.toolCount} tool calls</span>}
+      <TraceCollapsibleTrigger className="max-w-full">
+        <TraceLine status={active ? 'running' : undefined} className="text-xs">
+          <TraceIcon>
+            {active ? (
+              <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" />
+            ) : (
+              <ListChecksIcon className="size-3.5" />
+            )}
+          </TraceIcon>
+          <TraceTitle>{label ?? summary.label}</TraceTitle>
+          {label !== undefined && <TraceDescription>{summary.toolCount} tool calls</TraceDescription>}
           <FailureMarker count={summary.failedCount} />
-        </span>
-      </CollapsibleTrigger>
-      <CollapsibleContent>
-        <div className="max-h-[min(24rem,60vh)] space-y-1.5 overflow-y-auto border-t p-2">{children}</div>
-      </CollapsibleContent>
-    </Collapsible>
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="max-h-[min(24rem,60vh)] overflow-y-auto">
+        <Trace>{children}</Trace>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }
 
@@ -318,13 +321,7 @@ export function TurnFoldRow({
   readonly onOpenChange: (open: boolean) => void
 }): React.JSX.Element {
   return (
-    <WorkLogCollapsible
-      summary={summary}
-      label={label}
-      open={open}
-      onOpenChange={onOpenChange}
-      className={logItemClass}
-    >
+    <WorkLogCollapsible summary={summary} label={label} open={open} onOpenChange={onOpenChange}>
       {groups.map(group => (
         <WorkGroupRow
           key={group.key}

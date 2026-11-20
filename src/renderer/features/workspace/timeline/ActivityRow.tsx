@@ -1,5 +1,7 @@
 import { BrainIcon, LoaderCircleIcon, MessageCircleQuestionIcon, ShieldQuestionIcon } from 'lucide-react'
 
+import { Trace, TraceDescription, TraceIcon, TraceLine, TraceTitle } from '@/renderer/components/ui/trace'
+
 import type { ConversationActivity } from '../conversation-view.js'
 import { formatRunDuration } from './duration.js'
 import { useElapsedMs } from './use-elapsed.js'
@@ -24,19 +26,20 @@ export function ActivityRow({ activity }: { readonly activity: ConversationActiv
   const elapsed = useElapsedMs(activity.since, !waiting)
   const Icon = activityIcons[activity.label]
   return (
-    <div className="text-muted-foreground flex items-center gap-2 px-1 text-sm">
-      <Icon
-        aria-hidden
-        className={waiting ? 'text-warning size-3.5' : 'text-primary size-3.5 motion-safe:animate-pulse'}
-      />
-      <span role="status" aria-live="polite">
-        {activityLabels[activity.label]}
-      </span>
-      {elapsed !== null && (
-        <span aria-label="Elapsed time" className="text-xs tabular-nums">
-          {formatRunDuration(elapsed)}
-        </span>
-      )}
-    </div>
+    <Trace className="px-1">
+      <TraceLine status={waiting ? undefined : 'running'}>
+        <TraceIcon className={waiting ? 'text-warning' : undefined}>
+          <Icon className={activity.label === 'working' ? 'size-3.5 motion-safe:animate-spin' : 'size-3.5'} />
+        </TraceIcon>
+        <TraceTitle role="status" aria-live="polite">
+          {activityLabels[activity.label]}
+        </TraceTitle>
+        {elapsed !== null && (
+          <TraceDescription aria-label="Elapsed time" className="text-xs">
+            {formatRunDuration(elapsed)}
+          </TraceDescription>
+        )}
+      </TraceLine>
+    </Trace>
   )
 }

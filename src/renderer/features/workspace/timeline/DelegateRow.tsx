@@ -1,8 +1,15 @@
-import { BotIcon, CheckIcon, ChevronRightIcon, CircleAlertIcon, CircleHelpIcon, LoaderCircleIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, CircleAlertIcon, CircleHelpIcon, LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 
-import { Badge } from '@/renderer/components/ui/badge'
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
+import {
+  TraceCollapsible,
+  TraceCollapsibleContent,
+  TraceCollapsibleTrigger,
+  TraceDescription,
+  TraceIcon,
+  TraceLine,
+  TraceTitle,
+} from '@/renderer/components/ui/trace'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import { nativeDelegateView } from '../delegation/delegation-view.js'
@@ -53,51 +60,40 @@ export function DelegateRow({ tool }: { readonly tool: ToolBlock }): React.JSX.E
   const model = tool.delegate?.model?.trim()
   const childrenSummary = delegateChildrenSummary(tool)
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={setOpen}
-      className={cn(
-        'bg-muted/30 overflow-hidden rounded-lg border text-xs',
-        effectiveStatus === 'failed' && 'border-destructive/40',
-      )}
-    >
-      <CollapsibleTrigger className="group/disclosure flex w-full min-w-0 items-center gap-2 px-2.5 py-2 text-left">
-        <ChevronRightIcon
-          aria-hidden
-          className="text-muted-foreground size-3 shrink-0 transition-transform group-data-[panel-open]/disclosure:rotate-90"
-        />
-        {effectiveStatus === 'running' ? (
-          <LoaderCircleIcon aria-hidden className="text-primary size-3.5 shrink-0 motion-safe:animate-spin" />
-        ) : (
-          <BotIcon aria-hidden className="text-muted-foreground size-3.5 shrink-0" />
-        )}
-        <DelegationTooltip view={nativeDelegateView(tool)} className="block min-w-0 flex-1">
-          <span className="block min-w-0">
-            <span className="block truncate font-medium">{label ?? 'Delegated task'}</span>
-            {tool.name && (
-              <span className="text-muted-foreground block truncate font-mono text-[10px]">{tool.name}</span>
+    <TraceCollapsible open={open} onOpenChange={setOpen} className="text-xs">
+      <TraceCollapsibleTrigger className="max-w-full">
+        <TraceLine
+          status={effectiveStatus === 'running' ? 'running' : effectiveStatus === 'failed' ? 'error' : undefined}
+          className="text-xs"
+        >
+          <TraceIcon>
+            {effectiveStatus === 'running' ? (
+              <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" />
+            ) : (
+              <BotIcon className="size-3.5" />
             )}
+          </TraceIcon>
+          <DelegationTooltip view={nativeDelegateView(tool)} className="block min-w-0">
+            <TraceTitle className="block font-medium">{label ?? 'Delegated task'}</TraceTitle>
+          </DelegationTooltip>
+          {tool.name && <span className="text-muted-foreground/70 truncate font-mono text-[10px]">{tool.name}</span>}
+          {model && (
+            <TraceDescription className="hidden max-w-24 truncate sm:inline" title={model}>
+              {model}
+            </TraceDescription>
+          )}
+          {childrenSummary && (
+            <TraceDescription className="max-w-32 truncate text-[10px]" title={childrenSummary}>
+              {childrenSummary}
+            </TraceDescription>
+          )}
+          <span className="inline-flex shrink-0 items-center gap-1 text-[10px]">
+            <StatusIcon aria-hidden className={cn('size-3', status.className)} />
+            {status.label}
           </span>
-        </DelegationTooltip>
-        {model && (
-          <span className="text-muted-foreground hidden max-w-24 truncate sm:inline" title={model}>
-            {model}
-          </span>
-        )}
-        {childrenSummary && (
-          <span className="text-muted-foreground max-w-32 truncate text-[10px]" title={childrenSummary}>
-            {childrenSummary}
-          </span>
-        )}
-        <Badge variant="ghost" className="gap-1 px-1.5 text-[10px]">
-          <StatusIcon
-            aria-hidden
-            className={cn('size-3', status.className, effectiveStatus === 'running' && 'motion-safe:animate-spin')}
-          />
-          {status.label}
-        </Badge>
-      </CollapsibleTrigger>
-      <CollapsibleContent className="space-y-2 border-t px-2.5 py-2.5">
+        </TraceLine>
+      </TraceCollapsibleTrigger>
+      <TraceCollapsibleContent className="space-y-2">
         {tool.delegate?.reasoningEffort && (
           <p className="text-muted-foreground">Reasoning: {tool.delegate.reasoningEffort}</p>
         )}
@@ -142,7 +138,7 @@ export function DelegateRow({ tool }: { readonly tool: ToolBlock }): React.JSX.E
           <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]">{tool.toolCallId}</span>
           {tool.output && <CopyTextButton text={tool.output} label="Copy delegate result" />}
         </div>
-      </CollapsibleContent>
-    </Collapsible>
+      </TraceCollapsibleContent>
+    </TraceCollapsible>
   )
 }
