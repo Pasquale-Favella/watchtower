@@ -1707,8 +1707,12 @@ const makeService = Effect.gen(function* () {
             const tasks = yield* sql`SELECT id FROM workspace_task WHERE id = ${id} AND side_chat = 1`
             if (tasks[0]) {
               if (decoded.onlyIfUnused) {
-                const runs = yield* sql`SELECT 1 FROM workspace_agent_run WHERE task_id = ${id} LIMIT 1`
-                if (runs[0]) return false
+                // A Run that failed before its driver opened a native session did no agent work.
+                const active =
+                  yield* sql`SELECT 1 FROM workspace_agent_run WHERE task_id = ${id} AND status <> 'failed' LIMIT 1`
+                const native =
+                  yield* sql`SELECT 1 FROM workspace_agent_session WHERE task_id = ${id} AND native_session_id IS NOT NULL LIMIT 1`
+                if (active[0] || native[0]) return false
               }
               yield* sql`DELETE FROM workspace_driver_event_identity WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
               yield* sql`DELETE FROM workspace_driver_request_state WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`

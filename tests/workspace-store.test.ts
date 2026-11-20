@@ -3960,6 +3960,29 @@ describe('side chat storage', () => {
     })
   })
 
+  it('deletes a side chat whose first launch failed before the driver, since no agent work happened', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createSideTask(store, run)
+      await run(store.beginRun(sideCommand))
+      await run(
+        store.failDispatch(sideCommand.runId, {
+          ownerEpoch: 7,
+          occurredAt: '2026-10-29T10:00:02Z',
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      await expect(run(store.readTaskSnapshot(sideTaskId, 10))).resolves.toMatchObject({
+        runs: [{ id: 'side-run-1', status: 'failed' }],
+      })
+      await expect(
+        run(store.deleteSideChatTask({ sideChatId: 'side-chat:side-1', sideTaskId, onlyIfUnused: true })),
+      ).resolves.toBe(true)
+      await expect(run(store.readTaskSnapshot(sideTaskId, 10))).rejects.toMatchObject({ code: 'not-found' })
+    })
+  })
+
   it('never deletes a Task that is not a side chat', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
