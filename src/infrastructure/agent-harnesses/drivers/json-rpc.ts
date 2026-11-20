@@ -1,11 +1,13 @@
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import { ChildProcess, ChildProcessSpawner } from 'effect/process'
+import type { ChildProcessHandle } from 'effect/process/ChildProcessSpawner'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
+import { killProcessTree } from '@/infrastructure/agent-harnesses/process-tree.js'
 import { platformSpawnCommand, which } from '@/infrastructure/process/executable.js'
 
 const MAX_LINE_BYTES = 1024 * 1024
@@ -76,6 +78,13 @@ export const closeChildProcess = Effect.fn('closeChildProcess')(function* (
     return yield* new JsonRpcFailure({ reason: 'cleanup-unconfirmed' })
 })
 
+/** Windows harness launchers are `cmd.exe` shims, so the direct child alone would leave its node and agent grandchildren running. */
+const killHarnessProcess = (handle: ChildProcessHandle): Effect.Effect<void, unknown> =>
+  Effect.gen(function* () {
+    if (process.platform === 'win32') yield* Effect.promise(() => killProcessTree(handle.pid))
+    yield* handle.kill()
+  })
+
 /** Spawn a long-lived stdio peer using Effect's managed process handle. stderr is drained and discarded. */
 export const spawnJsonRpcStdio = Effect.fn('spawnJsonRpcStdio')(function* (
   command: string,
@@ -111,7 +120,7 @@ export const spawnJsonRpcStdio = Effect.fn('spawnJsonRpcStdio')(function* (
       Effect.gen(function* () {
         yield* Queue.shutdown(input)
         yield* closeChildProcess(
-          () => handle.kill(),
+          () => killHarnessProcess(handle),
           () => handle.exitCode,
           deadlineMs,
         )
