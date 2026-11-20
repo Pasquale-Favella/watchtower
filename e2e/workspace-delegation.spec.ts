@@ -86,6 +86,20 @@ test('a parent Task shows its delegated tasks, which open, nest in the sidebar a
     await expect(list).toContainText('Failed')
     await expect(list).toContainText(SETTLED)
     await expect(list).toContainText('Completed')
+    const delegate = list.getByRole('listitem').filter({ hasText: SETTLED }).locator('[data-slot="tooltip-trigger"]')
+    await delegate.hover()
+    const tooltip = window.getByRole('tooltip', { name: /Review the docs.*Status: Completed/ })
+    await expect(tooltip).toHaveAttribute('data-side', 'left')
+    await expect
+      .poll(async () => {
+        const row = await delegate.boundingBox()
+        const arrow = await tooltip.locator('[aria-hidden="true"]').boundingBox()
+        if (!row || !arrow) return Number.POSITIVE_INFINITY
+        return Math.abs(row.y + row.height / 2 - (arrow.y + arrow.height / 2))
+      })
+      .toBeLessThan(2)
+    await expect(tooltip).toHaveCSS('opacity', '1')
+    await window.screenshot({ path: test.info().outputPath('delegation-details-tooltip.png') })
     await setDetails(false)
     await expect(details).toBeHidden()
 

@@ -65,7 +65,7 @@ export function DelegationDetailsView({
           const live = isLiveDelegation(record)
           return (
             <li key={record.id} className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 text-xs">
-              <DelegationTooltip view={view} className="block min-w-0 flex-1">
+              <DelegationTooltip view={view} side="left" className="block min-w-0 flex-1">
                 <span className="flex min-w-0 items-center gap-2">
                   <span className="min-w-0 flex-1 truncate">{record.title}</span>
                   <span className={cn('shrink-0 text-[10px]', toneTextClass[view.tone])}>{view.statusLabel}</span>

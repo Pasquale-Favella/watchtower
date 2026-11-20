@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 
@@ -11,15 +11,21 @@ export function DelegationTooltip({
   view,
   children,
   className = 'block min-w-0',
+  side = 'top',
 }: {
   readonly view: DelegateView
   readonly children: ReactNode
   readonly className?: string
+  readonly side?: ComponentProps<typeof TooltipContent>['side']
 }): React.JSX.Element {
   return (
     <Tooltip>
       <TooltipTrigger render={<span className={className} tabIndex={0} />}>{children}</TooltipTrigger>
-      <TooltipContent side="top" align="start" className="max-w-72 flex-col items-start gap-0.5 text-left">
+      <TooltipContent
+        side={side}
+        align={side === 'top' ? 'start' : 'center'}
+        className="max-w-72 flex-col items-start gap-0.5 text-left"
+      >
         <DelegationTooltipBody view={view} />
       </TooltipContent>
     </Tooltip>
