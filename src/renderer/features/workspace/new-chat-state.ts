@@ -11,11 +11,6 @@ export type StoredNewChatDraft = Schema.Schema.Type<typeof storedDraftSchema>
 
 export type NewChatDraftStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
 
-export function newChatTaskTitle(prompt: string): string {
-  const firstLine = prompt.trim().split(/\r?\n/, 1)[0]?.trim() ?? ''
-  return firstLine.slice(0, 100) || 'New Task'
-}
-
 export function readNewChatDraft(
   storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null,
   now = Date.now(),

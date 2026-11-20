@@ -11,6 +11,7 @@ import {
   useWorkspaceBranches,
 } from '@/renderer/features/workspace/hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
+import { taskTitleFromPrompt } from '@/shared/lib/task-title.js'
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 import type { DraftTerminalTarget } from '@/shared/schemas/terminal.js'
@@ -26,7 +27,7 @@ import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connec
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
 import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChatProjects } from './new-chat-hooks.js'
-import { NEW_CHAT_DRAFT_MAX_LENGTH, newChatTaskTitle } from './new-chat-state.js'
+import { NEW_CHAT_DRAFT_MAX_LENGTH } from './new-chat-state.js'
 import { parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
 import { attachmentPromptToken, filePromptToken, promptWithAttachments } from './prompt-editor.js'
@@ -381,7 +382,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
         projectId && checkout.mode === 'worktree'
           ? { commandId: crypto.randomUUID(), baseBranch: shownBranch ?? 'HEAD' }
           : null,
-      title: newChatTaskTitle(prompt),
+      title: taskTitleFromPrompt(prompt),
       prompt,
       draftValue: draft,
       attachments: [...attachments.items],

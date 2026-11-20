@@ -8,10 +8,10 @@ import {
 } from '@/renderer/features/workspace/new-chat-atoms.js'
 import {
   NEW_CHAT_DRAFT_MAX_LENGTH,
-  newChatTaskTitle,
   readNewChatDraft,
   writeNewChatDraft,
 } from '@/renderer/features/workspace/new-chat-state.js'
+import { taskTitleFromPrompt } from '@/shared/lib/task-title.js'
 
 const storageKey = 'watchtower.workspace.new-chat-draft.v1'
 
@@ -56,8 +56,8 @@ describe('new chat state', () => {
   })
 
   it('derives a short title from the first prompt line', () => {
-    expect(newChatTaskTitle('Fix the parser\nThen update tests')).toBe('Fix the parser')
-    expect(newChatTaskTitle('x'.repeat(120))).toHaveLength(100)
-    expect(newChatTaskTitle('  \nsecond line')).toBe('second line')
+    expect(taskTitleFromPrompt('Fix the parser\nThen update tests')).toBe('Fix the parser')
+    expect(taskTitleFromPrompt('x'.repeat(120))).toHaveLength(100)
+    expect(taskTitleFromPrompt('  \nsecond line')).toBe('second line')
   })
 })
