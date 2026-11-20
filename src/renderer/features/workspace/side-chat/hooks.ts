@@ -21,16 +21,24 @@ import {
 } from './side-chat-atoms.js'
 import type { SideChatTabState } from './status.js'
 
+const SIDE_CHAT_BINDING_POLL_MS = 3000
+
+function isSideChatNotFound(cause: unknown): boolean {
+  return typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'not-found'
+}
+
 export function useSideChatBinding(id: string) {
+  const registry = useContext(RegistryContext)
   const result = useAtomValue(sideChatBindingAtom(id))
   const failure = AsyncResult.error(result)
   // A deleted side chat fails its lookup with `not-found`; any other failure stays an error message.
-  const deleted =
-    Option.isSome(failure) &&
-    typeof failure.value === 'object' &&
-    failure.value !== null &&
-    'code' in failure.value &&
-    failure.value.code === 'not-found'
+  const deleted = Option.isSome(failure) && isSideChatNotFound(failure.value)
+  useEffect(() => {
+    if (deleted) return
+    // The binding is not a workspace query, so an open pane polls it to notice a side chat deleted elsewhere.
+    const timer = setInterval(() => registry.refresh(sideChatBindingAtom(id)), SIDE_CHAT_BINDING_POLL_MS)
+    return () => clearInterval(timer)
+  }, [deleted, id, registry])
   return { ...querySnapshot(result), deleted }
 }
 export function useSideChats(parentTaskId: TaskId | null) {
@@ -93,12 +101,14 @@ export function useDeleteSideChat() {
       setError(null)
       try {
         const receipt = await command({ id: input.id, ...(input.onlyIfUnused ? { onlyIfUnused: true } : {}) })
-        if (input.parentTaskId) registry.refresh(sideChatListAtom(input.parentTaskId))
         return receipt.deleted
       } catch (cause) {
+        // A side chat that is already gone has nothing left to remove.
+        if (isSideChatNotFound(cause)) return true
         setError(cause instanceof Error ? cause.message : 'Could not delete this side chat.')
         return false
       } finally {
+        if (input.parentTaskId) registry.refresh(sideChatListAtom(input.parentTaskId))
         setPending(false)
       }
     },
@@ -131,6 +141,17 @@ export function useBringBackSideChat(id: string) {
     },
   }
 }
+/** The parent's side chat list shows each side chat's title, so it reloads when a side chat's live title changes. */
+export function useSideChatTitleRefresh(parentTaskId: TaskId, title: string): void {
+  const registry = useContext(RegistryContext)
+  const shown = useRef(title)
+  useEffect(() => {
+    if (shown.current === title) return
+    shown.current = title
+    registry.refresh(sideChatListAtom(parentTaskId))
+  }, [parentTaskId, registry, title])
+}
+
 /** The side draft starts with the main chat's composer preferences, on the side chat's shared checkout. */
 export function useSideChatPreferences(
   parentConversationId: ConversationId,

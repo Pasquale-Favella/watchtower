@@ -31,6 +31,7 @@ import {
   usePublishSideChatTab,
   useSideChatBinding,
   useSideChatPreferences,
+  useSideChatTitleRefresh,
 } from './hooks.js'
 import { WorkspaceQueryScopeContext } from './scope-context.js'
 import { sideChatTabState } from './status.js'
@@ -129,6 +130,7 @@ function SideChatContent({
   const tabState = sideChatTabState({ runs: snapshot.data?.runs ?? [], pendingRequestKind })
   // The pane publishes its tab title and state, so the tab strip and the main chat read them without a query of their own.
   usePublishSideChatTab(binding.id, title, tabState)
+  useSideChatTitleRefresh(binding.parentTaskId, title)
   useSideChatPreferences(binding.parentConversationId, binding.conversationId, binding.checkoutId)
   return (
     <section
