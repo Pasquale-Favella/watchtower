@@ -1,9 +1,11 @@
-import { Check, Loader2, TriangleAlert } from 'lucide-react'
+import { Check, TriangleAlert } from 'lucide-react'
 import type { KeyboardEvent, Ref } from 'react'
 import { useId } from 'react'
 
+import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Input } from '@/renderer/components/ui/input'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { cn } from '@/renderer/shared/lib/utils'
 
 import type { CatalogView } from './catalog.js'
@@ -122,10 +124,15 @@ export function ModelList({
           </p>
         )}
         {view.kind === 'loading' ? (
-          <p role="status" className="text-muted-foreground flex items-center justify-center gap-1.5 py-6 text-[12px]">
-            <Loader2 className="size-3.5 animate-spin" />
-            Loading models…
-          </p>
+          <LoadingRegion label="Loading models…" className="flex flex-col gap-1 p-2">
+            {Array.from({ length: 4 }, (_, row) => (
+              <div key={row} className="flex items-center gap-2 px-2 py-1.5">
+                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+                <Skeleton className="h-3 w-2/5" />
+                <Skeleton className="ml-auto h-3 w-12" />
+              </div>
+            ))}
+          </LoadingRegion>
         ) : (
           <>
             {view.kind === 'failed' && (

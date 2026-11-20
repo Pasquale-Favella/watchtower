@@ -1,5 +1,7 @@
 import { ChevronDown, ChevronRight } from 'lucide-react'
 
+import { LoadingRegion } from '@/renderer/components/skeletons'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 
@@ -50,9 +52,10 @@ export function SidebarDelegateChildren({
   return (
     <div className="border-sidebar-border mt-0.5 ml-3.5 border-l pl-2" aria-label="Delegated tasks">
       {delegations.status === 'loading' && !delegations.error && (
-        <p role="status" className="text-sidebar-muted-foreground px-2 py-1 text-[10px]">
-          Loading delegated tasks…
-        </p>
+        <LoadingRegion label="Loading delegated tasks…" className="flex flex-col gap-2 px-2 py-1">
+          <Skeleton className="h-2.5 w-4/5" />
+          <Skeleton className="h-2.5 w-3/5" />
+        </LoadingRegion>
       )}
       {delegations.error && (
         <p role="status" className="text-destructive px-2 py-1 text-[10px]">

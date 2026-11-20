@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 
 import { SegTabs } from '@/renderer/components/SegTabs'
+import { LoadingRegion, SkeletonCode } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
@@ -70,9 +71,12 @@ export function PullRequestCode(props: Props): React.JSX.Element {
         </p>
       )}
       {diff.loading && (
-        <p role="status" className="text-muted-foreground text-xs">
-          Loading pull request diff…
-        </p>
+        <LoadingRegion
+          label="Loading pull request diff…"
+          className="border-border overflow-hidden rounded-md border p-2.5"
+        >
+          <SkeletonCode lines={12} />
+        </LoadingRegion>
       )}
       {diff.data && !diff.data.available && (
         <p className="text-muted-foreground text-xs">GitHub did not return a textual patch for this file.</p>

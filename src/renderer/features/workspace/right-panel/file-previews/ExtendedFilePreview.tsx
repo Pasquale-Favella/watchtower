@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 
+import { LoadingRegion, SkeletonLines, SkeletonPage } from '@/renderer/components/skeletons'
+
 import { InspectionNotice } from '../inspection-ui.js'
 import { extendedFilePreviewKind } from './preview-types.js'
 import { PreviewContent } from './PreviewContent.js'
@@ -17,10 +19,21 @@ interface Props {
 export function ExtendedFilePreview(props: Props): React.JSX.Element {
   const kind = extendedFilePreviewKind(props.path)
   const source = usePreviewSource(props.dataUrl, props.content)
-  if (!source) return <InspectionNotice>Loading preview…</InspectionNotice>
+  if (!source)
+    return (
+      <LoadingRegion label="Loading preview…" className="flex min-h-0 flex-1 flex-col p-3">
+        <SkeletonLines lines={6} />
+      </LoadingRegion>
+    )
   if (kind === 'pdf')
     return (
-      <Suspense fallback={<InspectionNotice>Loading PDF…</InspectionNotice>}>
+      <Suspense
+        fallback={
+          <LoadingRegion label="Loading PDF…" className="bg-muted/30 min-h-0 flex-1 overflow-auto p-4">
+            <SkeletonPage />
+          </LoadingRegion>
+        }
+      >
         <PdfPreview key={source} source={source} path={props.path} />
       </Suspense>
     )
@@ -33,7 +46,11 @@ function DocumentPreview({ path, source }: { readonly path: string; readonly sou
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col" aria-busy={preview.pending}>
       {preview.error && <InspectionNotice tone="error">{preview.error}</InspectionNotice>}
-      {!preview.document && !preview.error && <InspectionNotice>Loading preview…</InspectionNotice>}
+      {!preview.document && !preview.error && (
+        <LoadingRegion label="Loading preview…" className="min-h-0 flex-1 p-3">
+          <SkeletonLines lines={8} />
+        </LoadingRegion>
+      )}
       {preview.document?.truncated && (
         <p role="status" className="text-muted-foreground border-border border-b px-3 py-1 text-xs">
           This preview reached its content limit.

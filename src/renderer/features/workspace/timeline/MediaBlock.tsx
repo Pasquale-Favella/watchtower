@@ -2,6 +2,8 @@ import { FileIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { MarkdownImage, MarkdownLink } from '@/renderer/components/markdown/MarkdownMedia'
+import { LoadingRegion } from '@/renderer/components/skeletons'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context'
 
 import { AttachmentPreview } from '../attachment-preview.js'
@@ -55,10 +57,14 @@ function AttachmentImage({
               single ? 'max-h-48 w-auto max-w-full min-w-24 object-contain' : 'aspect-[4/3] w-full object-cover'
             }
           />
-        ) : (
+        ) : preview.error ? (
           <span className="text-muted-foreground flex min-h-24 items-center justify-center p-3 text-xs">
-            {preview.error ?? 'Loading image…'}
+            {preview.error}
           </span>
+        ) : (
+          <LoadingRegion label="Loading image…" className="flex p-3">
+            <Skeleton className="bg-background/60 h-24 w-40 max-w-full" />
+          </LoadingRegion>
         )}
       </button>
     </>

@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { LoadingRegion, SkeletonCode } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/renderer/components/ui/command'
 import {
@@ -31,6 +32,7 @@ import {
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope, DiffSourceSelector } from '@/shared/schemas/checkout-inspection.js'
 
@@ -361,7 +363,13 @@ export function DiffTab(props: DiffTabProps): React.JSX.Element {
       {preview.error ? (
         <InspectionNotice tone="error">{preview.error.message}</InspectionNotice>
       ) : preview.loading || !source ? (
-        <InspectionNotice>Loading changes...</InspectionNotice>
+        <LoadingRegion label="Loading changes..." className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
+          <div className="flex items-center justify-between gap-3">
+            <Skeleton className="h-3.5 w-2/5" />
+            <Skeleton className="h-3 w-12" />
+          </div>
+          <SkeletonCode lines={18} />
+        </LoadingRegion>
       ) : source.files.length === 0 ? (
         <InspectionNotice>No changes in this selection.</InspectionNotice>
       ) : (

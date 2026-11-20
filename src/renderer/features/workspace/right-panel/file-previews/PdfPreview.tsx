@@ -5,6 +5,7 @@ import { getDocument, GlobalWorkerOptions, type PDFDocumentProxy, type RenderTas
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { useEffect, useRef, useState } from 'react'
 
+import { LoadingRegion, SkeletonPage } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 
 import { InspectionNotice } from '../inspection-ui.js'
@@ -275,9 +276,13 @@ export default function PdfPreview({ source, path }: Props): React.JSX.Element {
         </Button>
       </form>
       {error && <InspectionNotice tone="error">{error}</InspectionNotice>}
-      {!document && !error && <InspectionNotice>Loading PDF…</InspectionNotice>}
       <div ref={root} className="bg-muted/30 min-h-0 flex-1 overflow-auto p-4">
-        <div className="relative mx-auto bg-white shadow-sm">
+        {!document && !error && (
+          <LoadingRegion label="Loading PDF…">
+            <SkeletonPage />
+          </LoadingRegion>
+        )}
+        <div hidden={!document} className="relative mx-auto bg-white shadow-sm">
           <canvas ref={canvas} aria-label={`${path}, page ${pageNumber}`} className="block" />
           <div ref={textContainer} className="textLayer" />
         </div>

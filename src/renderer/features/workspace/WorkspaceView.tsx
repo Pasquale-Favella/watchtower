@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Popover } from '@/renderer/components/ui/popover'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { type DraftTerminalTarget, terminalOwnerKey, type TerminalTarget } from '@/shared/schemas/terminal.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
@@ -172,9 +174,10 @@ function TaskConversation({
     return (
       <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
         {header}
-        <p role="status" className="p-4">
-          Loading Task…
-        </p>
+        <LoadingRegion label="Loading Task…" className="flex flex-col gap-4 p-4">
+          <Skeleton className="h-4 w-2/5" />
+          <SkeletonLines lines={4} />
+        </LoadingRegion>
       </Popover>
     )
 

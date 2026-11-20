@@ -1,8 +1,10 @@
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 
+import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/renderer/components/ui/dialog'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import type { PromptAttachment } from '@/shared/schemas/prompt-context.js'
 
 import { attachmentSize } from './prompt-editor.js'
@@ -30,7 +32,11 @@ export function AttachmentPreview({
     readonly next: () => void
   }
 }): React.JSX.Element {
-  let content: React.JSX.Element = <p role="status">Loading preview…</p>
+  let content: React.JSX.Element = (
+    <LoadingRegion label="Loading preview…" className="flex w-full">
+      <Skeleton className="h-[50vh] w-full rounded-md" />
+    </LoadingRegion>
+  )
   if (error) {
     content = (
       <div role="status">
@@ -45,7 +51,14 @@ export function AttachmentPreview({
   } else if (source && attachment.mediaType === 'application/pdf') {
     content = (
       <div className="flex h-[70vh] min-h-0 overflow-hidden rounded-md border">
-        <Suspense fallback={<p role="status">Loading PDF…</p>}>
+        <Suspense
+          fallback={
+            <LoadingRegion label="Loading PDF…" className="flex w-full flex-col gap-3 p-6">
+              <Skeleton className="h-4 w-2/5" />
+              <SkeletonLines lines={8} />
+            </LoadingRegion>
+          }
+        >
           <PdfPreview source={source} path={attachment.name} />
         </Suspense>
       </div>

@@ -3,7 +3,9 @@ import { useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
 import { SegTabs } from '@/renderer/components/SegTabs'
+import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { WorkspacePullRequestDetail } from '@/shared/schemas/workspace-pull-requests.js'
 
@@ -154,9 +156,18 @@ function PullRequestList(
       </div>
       <div className="min-h-0 flex-1 overflow-auto p-2">
         {list.loading && (
-          <p role="status" className="text-muted-foreground p-2 text-sm">
-            Loading pull requests…
-          </p>
+          <LoadingRegion label="Loading pull requests…" className="flex flex-col">
+            {Array.from({ length: 6 }, (_, index) => (
+              <div key={index} className="flex flex-col gap-1 px-2 py-2.5">
+                <div className="flex items-center gap-2">
+                  <Skeleton className="h-3.5 flex-1" />
+                  <Skeleton className="h-3 w-8 shrink-0" />
+                </div>
+                <Skeleton className="h-3 w-3/5" />
+                <Skeleton className="h-3 w-16" />
+              </div>
+            ))}
+          </LoadingRegion>
         )}
         {list.error && (
           <p role="alert" className="text-destructive p-2 text-sm">
@@ -299,9 +310,13 @@ function PullRequestDetail(
       </header>
       <div className="min-h-0 flex-1 overflow-auto p-3">
         {detail.loading && (
-          <p role="status" className="text-muted-foreground text-sm">
-            Loading pull request…
-          </p>
+          <LoadingRegion label="Loading pull request…" className="flex flex-col gap-4">
+            <SkeletonLines lines={5} />
+            <div className="flex flex-col gap-2">
+              <Skeleton className="h-3 w-40" />
+              <Skeleton className="h-3 w-56" />
+            </div>
+          </LoadingRegion>
         )}
         {detail.error && (
           <p role="alert" className="text-destructive text-sm">
@@ -374,9 +389,14 @@ function PullRequestDetail(
         {data && tab === 'checks' && (
           <div className="space-y-2" aria-label="Pull request checks">
             {checks.loading && (
-              <p role="status" className="text-muted-foreground text-xs">
-                Loading checks…
-              </p>
+              <LoadingRegion label="Loading checks…" className="flex flex-col gap-2">
+                {[0, 1, 2].map(index => (
+                  <div key={index} className="flex items-center gap-2 rounded-md border px-2 py-2">
+                    <Skeleton className="h-3 flex-1" />
+                    <Skeleton className="h-3 w-14" />
+                  </div>
+                ))}
+              </LoadingRegion>
             )}
             {checks.error && (
               <p role="alert" className="text-destructive text-xs">

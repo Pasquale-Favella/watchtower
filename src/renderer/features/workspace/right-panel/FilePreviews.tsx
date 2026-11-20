@@ -14,8 +14,10 @@ import {
   type MarkdownNavigation,
   MarkdownNavigationContext,
 } from '@/renderer/components/markdown/MarkdownNavigation.js'
+import { LoadingRegion, SkeletonRows } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Dialog, DialogContent, DialogTitle } from '@/renderer/components/ui/dialog'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
 
 import { WorkspaceImageAnnotation, type WorkspaceImageContext } from '../WorkspaceImageAnnotation.js'
 import {
@@ -162,7 +164,17 @@ function TablePreview({
 
   if (current?.error || worker.error)
     return <InspectionNotice tone="error">{current?.error ?? worker.error}</InspectionNotice>
-  if (!page) return <InspectionNotice>Loading table…</InspectionNotice>
+  if (!page)
+    return (
+      <LoadingRegion label="Loading table…" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="border-border flex h-9 shrink-0 items-center gap-2 border-b px-2">
+          <Skeleton className="mr-auto h-3 w-28" />
+          <Skeleton className="size-5 rounded-md" />
+          <Skeleton className="size-5 rounded-md" />
+        </div>
+        <SkeletonRows rows={12} className="px-3" />
+      </LoadingRegion>
+    )
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="border-border text-muted-foreground flex h-9 shrink-0 items-center gap-2 border-b px-2 text-xs">
