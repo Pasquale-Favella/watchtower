@@ -11,6 +11,7 @@ import * as Semaphore from 'effect/Semaphore'
 import * as Stream from 'effect/Stream'
 
 import {
+  type AgentAccessReport,
   AgentDriver,
   type AgentDriverConnection,
   AgentDriverError,
@@ -429,6 +430,41 @@ const codexAccessPolicy = (accessMode: AgentAccessMode): CodexAccessPolicy => {
   }
 }
 
+const ThreadPolicyResponse = Schema.Struct({
+  approvalPolicy: Schema.optional(Schema.String),
+  sandbox: Schema.optional(Schema.Unknown),
+})
+const CODEX_SANDBOX_TYPES: Readonly<Record<string, string>> = {
+  'read-only': 'readOnly',
+  'workspace-write': 'workspaceWrite',
+  'danger-full-access': 'dangerFullAccess',
+}
+
+/** Compares the approval policy and sandbox the thread response reports with the requested policy. */
+const codexAccessReport = (policy: CodexAccessPolicy, response: unknown): AgentAccessReport => {
+  const reported = decode(ThreadPolicyResponse, response)
+  const sandbox = reported?.sandbox
+  const rawSandbox =
+    typeof sandbox === 'string'
+      ? sandbox
+      : typeof sandbox === 'object' && sandbox !== null && 'type' in sandbox && typeof sandbox.type === 'string'
+        ? sandbox.type
+        : undefined
+  const sandboxType = rawSandbox === undefined ? undefined : (CODEX_SANDBOX_TYPES[rawSandbox] ?? rawSandbox)
+  const approval = reported?.approvalPolicy
+  if (
+    (approval !== undefined && approval !== policy.approvalPolicy) ||
+    (sandboxType !== undefined && sandboxType !== policy.sandboxPolicy.type)
+  ) {
+    return {
+      status: 'different',
+      reported: `${sandboxType ?? 'unknown'} sandbox with ${approval ?? 'unknown'} approvals`,
+    }
+  }
+  if (approval === undefined || sandboxType === undefined) return { status: 'unconfirmed' }
+  return { status: 'confirmed' }
+}
+
 const failure = (code: ConstructorParameters<typeof AgentDriverError>[0]['code'], message: string) =>
   new AgentDriverError({ code, message })
 const decode = <A>(schema: Schema.Decoder<A>, value: unknown): A | undefined => {
@@ -685,6 +721,7 @@ function openSession(
     const session: AgentDriverSession = {
       identity: sessionIdentity,
       capabilities,
+      accessReport: codexAccessReport(policy, response),
       events: (runId, afterCursor) => {
         if (afterCursor)
           return Stream.fail(failure('invalid-state', 'Codex live events cannot resume from an unrecognized cursor.'))
@@ -707,11 +744,10 @@ function openSession(
 }
 
 /** One override entry per loopback endpoint. Overrides a server of the same name rather than the user's whole table. */
-function codexMcpConfig(endpoints: ReadonlyArray<AgentMcpEndpoint>): Readonly<
-  Record<
-    `mcp_servers.${string}`,
-    { readonly url: string; readonly http_headers: Readonly<Record<string, string>> }
-  >
+function codexMcpConfig(
+  endpoints: ReadonlyArray<AgentMcpEndpoint>,
+): Readonly<
+  Record<`mcp_servers.${string}`, { readonly url: string; readonly http_headers: Readonly<Record<string, string>> }>
 > {
   return Object.fromEntries(
     endpoints.map(endpoint => [

@@ -105,6 +105,16 @@ export interface InterruptAcknowledgement {
   readonly termination: 'interrupted' | 'stillRunning' | 'unknown'
 }
 
+/**
+ * What the native agent reported about the access it applied when a session was opened or loaded. `confirmed` means
+ * the native policy matches the requested mode; `different` means it does not, and the Run must not start; absent or
+ * `unconfirmed` means the driver cannot observe the native policy.
+ */
+export type AgentAccessReport =
+  | { readonly status: 'confirmed' }
+  | { readonly status: 'different'; readonly reported: string }
+  | { readonly status: 'unconfirmed' }
+
 export interface DeliveryOutcome {
   /** Acceptance by the local handler/transport does not confirm native execution. */
   readonly outcome: 'accepted' | 'failed' | 'uncertain'
@@ -122,6 +132,8 @@ export interface NativeSessionSnapshot {
 export interface AgentDriverSession {
   readonly identity: AgentSessionIdentity
   readonly capabilities: AgentCapabilities
+  /** Absent is treated as unconfirmed. */
+  readonly accessReport?: AgentAccessReport | undefined
   /** One application-owned ingestor consumes each active run stream. */
   readonly events: (
     runId: AgentRunId,

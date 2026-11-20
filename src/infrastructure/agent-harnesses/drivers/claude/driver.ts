@@ -20,6 +20,7 @@ import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
 import {
+  type AgentAccessReport,
   type AgentCatalogProbe,
   AgentDriver,
   type AgentDriverConnection,
@@ -337,7 +338,11 @@ function toolMetadata(name: string, input: unknown): AgentToolMetadata {
     Agent: 'subagent',
   }
   let result: AgentToolMetadata = {
-    category: isClaudeOrchestratorTool(name) ? 'delegation' : name.startsWith('mcp__') ? 'mcp' : (categories[name] ?? 'other'),
+    category: isClaudeOrchestratorTool(name)
+      ? 'delegation'
+      : name.startsWith('mcp__')
+        ? 'mcp'
+        : (categories[name] ?? 'other'),
   }
   function add(fields: AgentToolMetadata): void {
     const next = { ...result, ...fields }
@@ -504,6 +509,22 @@ const claudePermissionOptions = (
       }
   }
 }
+
+const CLAUDE_ACCESS_CONFIRMATION_DEADLINE = '10 seconds'
+
+/** The SDK accepts the native permission mode on the live query. A rejected or unanswered change stays unconfirmed. */
+const confirmClaudeAccess = (
+  query: Query,
+  permissionMode: Options['permissionMode'],
+): Effect.Effect<AgentAccessReport, never> =>
+  Effect.tryPromise({
+    try: () => query.setPermissionMode(permissionMode ?? 'default'),
+    catch: () => undefined,
+  }).pipe(
+    Effect.timeout(CLAUDE_ACCESS_CONFIRMATION_DEADLINE),
+    Effect.map((): AgentAccessReport => ({ status: 'confirmed' })),
+    Effect.catch(() => Effect.succeed<AgentAccessReport>({ status: 'unconfirmed' })),
+  )
 
 /** A streaming prompt that sends nothing, so a probe query never starts a turn. It ends when the probe aborts. */
 const idlePrompt = (signal: AbortSignal): AsyncIterable<SDKUserMessage> => ({
@@ -1365,9 +1386,11 @@ const makeSession = (
         }
       })
 
+    const accessReport = yield* confirmClaudeAccess(query, queryOptions.permissionMode)
     const activeSession = {
       identity: { nativeSessionId, generation },
       capabilities,
+      accessReport,
       events: (runId: AgentRunId, afterCursor?: string) => {
         if (afterCursor !== undefined)
           return Stream.fail(makeError('protocol-error', 'Claude Agent SDK does not expose replay cursors.'))

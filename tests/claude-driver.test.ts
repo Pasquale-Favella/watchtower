@@ -51,8 +51,12 @@ const requiredRequestId = (requestId: string | undefined): string => {
   return requestId
 }
 
-const fakeSdk = (init: (sessionId: string) => SDKMessage = initMessage) => {
+const fakeSdk = (
+  init: (sessionId: string) => SDKMessage = initMessage,
+  permissionChange: 'accept' | 'reject' = 'accept',
+) => {
   const calls: FakeCall[] = []
+  const permissionModes: string[] = []
   const sdk: ClaudeAgentSdk = {
     query({ prompt, options = {} }) {
       if (typeof options.canUseTool !== 'function') {
@@ -103,12 +107,16 @@ const fakeSdk = (init: (sessionId: string) => SDKMessage = initMessage) => {
           return undefined
         },
         close: call.close,
+        setPermissionMode: async (mode: string) => {
+          permissionModes.push(mode)
+          if (permissionChange === 'reject') throw new Error('The permission mode change was rejected.')
+        },
       }) as unknown as Query
       calls.push(call)
       return query
     },
   }
-  return { sdk, calls }
+  return { sdk, calls, permissionModes }
 }
 
 const initMessage = (sessionId: string): SDKSystemMessage =>
@@ -1470,4 +1478,43 @@ it('uses the workspace Claude initialization result for provider slash commands'
     else process.env.CLAUDE_CODE_PLUGIN_CACHE_DIR = previousPluginDirectory
     await rm(configDirectory, { recursive: true, force: true })
   }
+})
+
+describe('Claude native access confirmation', () => {
+  it.each([
+    { accessMode: 'approval-required' as const, native: 'default' },
+    { accessMode: 'auto-accept-edits' as const, native: 'acceptEdits' },
+    { accessMode: 'full-access' as const, native: 'bypassPermissions' },
+  ])('confirms $accessMode once the SDK accepts the native $native mode', async ({ accessMode, native }) => {
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          const session = yield* connection.openSession({ ...context, accessMode })
+          expect(fake.permissionModes).toEqual([native])
+          expect(session.accessReport).toEqual({ status: 'confirmed' })
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+  })
+
+  it('reports the access mode as unconfirmed, without failing the session, when the SDK rejects the change', async () => {
+    const fake = fakeSdk(undefined, 'reject')
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          const session = yield* connection.openSession({ ...context, accessMode: 'full-access' })
+          expect(session.accessReport).toEqual({ status: 'unconfirmed' })
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+  })
 })

@@ -2067,3 +2067,47 @@ it('performs an installed Codex App Server handshake without starting inference'
   )
   expect(identity.driverId).toBe('codex-app-server')
 })
+
+describe('Codex native access confirmation', () => {
+  it.each([
+    {
+      name: 'confirms full-access when the thread reports the same approval policy and sandbox',
+      accessMode: 'full-access' as const,
+      reported: { approvalPolicy: 'never', sandbox: { type: 'dangerFullAccess' } },
+      expected: { status: 'confirmed' },
+    },
+    {
+      name: 'confirms approval-required from a sandbox reported as a plain mode string',
+      accessMode: 'approval-required' as const,
+      reported: { approvalPolicy: 'untrusted', sandbox: 'read-only' },
+      expected: { status: 'confirmed' },
+    },
+    {
+      name: 'reports a different access when the thread applied a broader sandbox',
+      accessMode: 'approval-required' as const,
+      reported: { approvalPolicy: 'never', sandbox: { type: 'dangerFullAccess' } },
+      expected: { status: 'different', reported: 'dangerFullAccess sandbox with never approvals' },
+    },
+    {
+      name: 'reports unconfirmed when the thread response does not state its policy',
+      accessMode: 'full-access' as const,
+      reported: {},
+      expected: { status: 'unconfirmed' },
+    },
+  ])('$name', async ({ accessMode, reported, expected }) => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(connection.openSession({ ...context, accessMode }))
+          const start = yield* server.read
+          expect(start.method).toBe('thread/start')
+          yield* server.send({ id: start.id, result: { thread: { id: 'thread-report' }, ...reported } })
+          const session = yield* Fiber.join(opening)
+          expect(session.accessReport).toEqual(expected)
+        }),
+      ),
+    )
+  })
+})
