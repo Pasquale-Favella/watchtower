@@ -66,15 +66,91 @@ export async function killProcessTree(
   return { status: 'confirmed' }
 }
 
-/** win32 tree kill that returns only once the tree is gone — for callers that
- *  kill the root right after (a dead root orphans its descendants). Stays
- *  sync on purpose: the caller kills the root immediately after, so an async
- *  tree kill would race the root kill and orphan descendants. No Effect here
- *  — `run*` would defer the kill past the root kill. */
-export function killProcessTreeSync(pid: number, run: typeof execFileSync = execFileSync): void {
+/** Tree kill that returns only once the tree is gone — for callers that kill the
+ *  root right after (a dead root orphans its descendants). Stays sync on
+ *  purpose: the caller kills the root immediately after, so an async tree kill
+ *  would race the root kill and orphan descendants. No Effect here — `run*`
+ *  would defer the kill past the root kill. On POSIX the root leads its own
+ *  process group (spawned detached), so the group id is the tree. */
+export function killProcessTreeSync(
+  pid: number,
+  run: typeof execFileSync = execFileSync,
+  platform: NodeJS.Platform = process.platform,
+  kill: (target: number, signal: NodeJS.Signals) => void = process.kill,
+): void {
+  if (platform !== 'win32') {
+    try {
+      kill(-pid, 'SIGKILL')
+      return
+    } catch {
+      // No group led by this pid (already exited, or not detached): signal the root alone.
+    }
+    try {
+      kill(pid, 'SIGKILL')
+    } catch {
+      // Already exited — nothing left to kill.
+    }
+    return
+  }
   try {
     run('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore', timeout: 3000 })
   } catch {
     // Already exited, or taskkill unavailable — the root kill still follows.
   }
+}
+
+export interface ProcessGroupSignals {
+  readonly kill: (target: number, signal: NodeJS.Signals) => void
+  /** Whether any member of the group (`-pgid`) is still alive. */
+  readonly isAlive: (target: number) => boolean
+  readonly now: () => number
+  readonly sleep: (ms: number) => Promise<void>
+}
+
+const defaultProcessGroupSignals: ProcessGroupSignals = {
+  kill: (target, signal) => {
+    process.kill(target, signal)
+  },
+  isAlive: target => {
+    try {
+      process.kill(target, 0)
+      return true
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+    }
+  },
+  now: () => performance.now(),
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+}
+
+/** POSIX: SIGTERM the whole process group, wait up to `graceMs` for it to empty, then SIGKILL it. */
+export async function terminateProcessGroup(
+  pid: number,
+  graceMs: number,
+  signals: ProcessGroupSignals = defaultProcessGroupSignals,
+): Promise<ProcessTreeTermination> {
+  const group = -pid
+  try {
+    signals.kill(group, 'SIGTERM')
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return { status: 'confirmed' }
+    return { status: 'unconfirmed', reason: 'failed' }
+  }
+  const graceDeadline = signals.now() + graceMs
+  while (signals.isAlive(group)) {
+    if (signals.now() >= graceDeadline) break
+    await signals.sleep(10)
+  }
+  if (!signals.isAlive(group)) return { status: 'confirmed' }
+  try {
+    signals.kill(group, 'SIGKILL')
+  } catch {
+    return { status: 'unconfirmed', reason: 'failed' }
+  }
+  const killDeadline = signals.now() + PROBE_TEARDOWN_TIMEOUT_MS
+  while (signals.isAlive(group)) {
+    if (signals.now() >= killDeadline) return { status: 'unconfirmed', reason: 'deadline' }
+    await signals.sleep(10)
+  }
+  return { status: 'confirmed' }
 }

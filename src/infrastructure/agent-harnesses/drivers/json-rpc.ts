@@ -7,7 +7,7 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 
-import { killProcessTree } from '@/infrastructure/agent-harnesses/process-tree.js'
+import { killProcessTree, terminateProcessGroup } from '@/infrastructure/agent-harnesses/process-tree.js'
 import { platformSpawnCommand, which } from '@/infrastructure/process/executable.js'
 
 const MAX_LINE_BYTES = 1024 * 1024
@@ -78,10 +78,15 @@ export const closeChildProcess = Effect.fn('closeChildProcess')(function* (
     return yield* new JsonRpcFailure({ reason: 'cleanup-unconfirmed' })
 })
 
-/** Windows harness launchers are `cmd.exe` shims, so the direct child alone would leave its node and agent grandchildren running. */
+/** SIGTERM grace before the POSIX group is force-killed. Shorter than the close deadline so the escalation fits in it. */
+const HARNESS_GROUP_GRACE_MS = 500
+
+/** Windows harness launchers are `cmd.exe` shims, so the direct child alone would leave its node and agent grandchildren running.
+ *  POSIX harnesses are spawned detached, so their group id is the tree: SIGTERM the group, then SIGKILL it after the grace period. */
 const killHarnessProcess = (handle: ChildProcessHandle): Effect.Effect<void, unknown> =>
   Effect.gen(function* () {
     if (process.platform === 'win32') yield* Effect.promise(() => killProcessTree(handle.pid))
+    else yield* Effect.promise(() => terminateProcessGroup(handle.pid, HARNESS_GROUP_GRACE_MS))
     yield* handle.kill()
   })
 
@@ -104,6 +109,8 @@ export const spawnJsonRpcStdio = Effect.fn('spawnJsonRpcStdio')(function* (
         stdout: 'pipe',
         stderr: 'pipe',
         windowsHide: true,
+        // Own process group on POSIX, so killHarnessProcess can signal every descendant at once.
+        detached: process.platform !== 'win32',
         forceKillAfter: '1 second',
       }),
     )
