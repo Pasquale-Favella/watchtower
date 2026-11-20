@@ -602,7 +602,7 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
     expect(input.prompt).toBe('Summarise my spend')
   })
 
-  it('releases a late attachment safely when reset wins during acquisition', async () => {
+  it('abandons an attachment that resolves after reset interrupted its acquisition', async () => {
     let resolveAttachment!: (attachment: LedgerMcpAttachment) => void
     const release = vi.fn(() => {
       throw new Error('release failed')
@@ -615,15 +615,17 @@ describe('Coach IPC runner (ticket 21, map 53) — ack, stream, cancel over the 
 
     const pending = runner.start(request, () => {})
     await vi.waitFor(() => expect(resolveAttachment).toBeTypeOf('function'))
-    const reset = runner.reset()
+    await runner.reset()
     resolveAttachment({
       server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js'], env: [] },
       release,
     })
 
-    await expect(pending).resolves.toEqual({ ok: false, error: 'conversation reset' })
-    await reset
-    expect(release).toHaveBeenCalledOnce()
+    await pending.then(
+      result => expect(result).toEqual({ ok: false, error: 'conversation reset' }),
+      () => undefined,
+    )
+    expect(release).not.toHaveBeenCalled()
   })
 
   it('drains a run acquired during interrupted startup and releases its attachment', async () => {
@@ -1843,5 +1845,26 @@ describe('Harness lifecycle records (#130) — kind only, never prompts', () => 
       expect(readRecords().filter(r => r['event'] === 'harness.cancel')).toHaveLength(1)
     })
     expect(readRecords().filter(r => r['event'] === 'harness.finish')).toHaveLength(0)
+  })
+})
+
+describe('Coach reset teardown (quit path)', () => {
+  it('interrupts a start stuck acquiring its ledger attachment so reset completes at once', async () => {
+    const runner = ownRunner({
+      getRuntime: async () => scriptedRuntime([]),
+      harnesses: harnessSource,
+      ledgerMcpServer: () => new Promise<LedgerMcpAttachment | null>(() => {}),
+    })
+
+    const pending = runner.start(request, () => {})
+    await flush()
+    const started = performance.now()
+    await runner.reset()
+
+    expect(performance.now() - started).toBeLessThan(500)
+    await pending.then(
+      result => expect(result).toEqual({ ok: false, error: 'conversation reset' }),
+      () => undefined,
+    )
   })
 })

@@ -57,6 +57,11 @@ interface ActiveRun {
   readonly kind: string
 }
 
+interface InFlightStart {
+  readonly completed: Deferred.Deferred<undefined>
+  readonly fiber: Fiber.Fiber<unknown, unknown>
+}
+
 interface ProbeRequest {
   readonly kind: string
   readonly allowApiKeyEnv: boolean
@@ -92,7 +97,7 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
   // it in activeRuns. Keep that handle visible to the start finalizer during
   // this short admission window so interruption cannot orphan it.
   const startingRuns = new Map<string, NativeHarnessRun>()
-  const inFlightStarts = new Map<string, Deferred.Deferred<undefined>>()
+  const inFlightStarts = new Map<string, InFlightStart>()
   const cancelWaiters = new Map<string, Deferred.Deferred<undefined>>()
   const cancelPromises = new Map<string, Promise<void>>()
   const attachments = new Map<string, { readonly attachment: LedgerMcpAttachment; readonly generation: number }>()
@@ -226,10 +231,15 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
       if (current) yield* Deferred.succeed(current.reply, Exit.succeed(cancelledProbeResult))
       if (probe) {
         yield* Deferred.succeed(probe.reply, Exit.succeed(cancelledProbeResult))
-        yield* probe.inspection.stop.pipe(Effect.catchCause(() => Effect.void))
-        yield* Fiber.interrupt(probe.fiber).pipe(
-          Effect.asVoid,
-          Effect.catchCause(() => Effect.void),
+        yield* Effect.all(
+          [
+            probe.inspection.stop.pipe(Effect.catchCause(() => Effect.void)),
+            Fiber.interrupt(probe.fiber).pipe(
+              Effect.asVoid,
+              Effect.catchCause(() => Effect.void),
+            ),
+          ],
+          { concurrency: 'unbounded', discard: true },
         )
       }
       yield* Effect.forEach(toStop, ([runId, owned]) => stopRun(runId, owned), {
@@ -258,7 +268,11 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
           ),
         { concurrency: 'unbounded', discard: true },
       )
-      yield* Effect.forEach(pendingStarts, Deferred.await, { concurrency: 'unbounded', discard: true })
+      yield* Effect.forEach(
+        pendingStarts,
+        start => Fiber.interrupt(start.fiber).pipe(Effect.andThen(Deferred.await(start.completed))),
+        { concurrency: 'unbounded', discard: true },
+      )
       if (priorWorkspace) yield* Effect.sync(() => deleteWorkspace(priorWorkspace))
     }),
   )
@@ -290,8 +304,9 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
     if (runGeneration !== generation || closed) return { ok: false as const, error: 'conversation reset' }
     if (!instance?.info) return { ok: false as const, error: `harness not detected: ${req.harnessKind}` }
     const harness = instance.info
-    const attachment = yield* Effect.uninterruptibleMask(() =>
-      deps.ledgerMcpServer(req.harnessKind).pipe(
+    // The acquisition itself stays interruptible so reset can stop a start that is still waiting on it.
+    const attachment = yield* Effect.uninterruptibleMask(restore =>
+      restore(deps.ledgerMcpServer(req.harnessKind)).pipe(
         Effect.catch(() => Effect.succeed(null)),
         Effect.tap(acquired =>
           acquired
@@ -418,31 +433,32 @@ export function createCoachCoordinator(deps: CoachCoordinatorDeps): CoachRunner 
   ) => {
     const runId = randomUUID()
     onRunId?.(runId)
-    let completed: Deferred.Deferred<undefined> | undefined
+    // The start runs in its own daemon fiber, so reset can interrupt it while the RPC caller is still waiting.
+    const finishStart = (completed: Deferred.Deferred<undefined>) =>
+      Effect.suspend(() => {
+        inFlightStarts.delete(runId)
+        const finish = Deferred.succeed(completed, undefined)
+        if (!activeRuns.has(runId)) {
+          const starting = startingRuns.get(runId)
+          startingRuns.delete(runId)
+          if (starting)
+            return starting.stop.pipe(
+              Effect.catchCause(() => Effect.void),
+              Effect.andThen(Effect.sync(() => releaseAttachment(runId))),
+              Effect.andThen(finish),
+            )
+          releaseAttachment(runId)
+        }
+        return finish
+      })
     return Effect.gen(function* () {
-      completed = yield* Deferred.make<undefined>()
-      inFlightStarts.set(runId, completed)
-      return yield* startWithIdEffect(request, emit, runId)
-    }).pipe(
-      Effect.ensuring(
-        Effect.suspend(() => {
-          inFlightStarts.delete(runId)
-          const finish = completed ? Deferred.succeed(completed, undefined) : Effect.void
-          if (!activeRuns.has(runId)) {
-            const starting = startingRuns.get(runId)
-            startingRuns.delete(runId)
-            if (starting)
-              return starting.stop.pipe(
-                Effect.catchCause(() => Effect.void),
-                Effect.andThen(Effect.sync(() => releaseAttachment(runId))),
-                Effect.andThen(finish),
-              )
-            releaseAttachment(runId)
-          }
-          return finish
-        }),
-      ),
-    )
+      const completed = yield* Deferred.make<undefined>()
+      const running: Fiber.Fiber<unknown, unknown> = yield* Effect.forkDetach(
+        startWithIdEffect(request, emit, runId).pipe(Effect.ensuring(finishStart(completed))),
+      )
+      inFlightStarts.set(runId, { completed, fiber: running })
+      return yield* Fiber.join(running).pipe(Effect.onInterrupt(() => Fiber.interrupt(running)))
+    })
   }
 
   const native: NativeCoachRunnerCapabilities = {
