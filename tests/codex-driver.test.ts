@@ -7,6 +7,7 @@ import {
   codexAgentDriverFromTransport,
 } from '@/infrastructure/agent-harnesses/drivers/codex/driver.js'
 import type { JsonRpcTransport } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { ORCHESTRATION_INSTRUCTIONS } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import { projectConversationView } from '@/renderer/features/workspace/conversation-view.js'
 import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
 
@@ -691,6 +692,7 @@ describe('Codex native App Server driver', () => {
           expect(start.params).not.toHaveProperty('config.mcp_servers')
           expect(start.params).toMatchObject(thread)
           expect(start.params).not.toHaveProperty('config')
+          expect(start.params).not.toHaveProperty('developerInstructions')
           yield* server.send({ id: start.id, result: { thread: { id: 'thread-policy' } } })
           const session = yield* Fiber.join(opening)
           const runId = 'run-policy' as Parameters<typeof session.submit>[0]['runId']
@@ -756,7 +758,10 @@ describe('Codex native App Server driver', () => {
           const opening = yield* Effect.forkScoped(connection.openSession(browserContext))
           const start = yield* freshServer.read
           expect(start.method).toBe('thread/start')
-          expect(start.params).toMatchObject({ config: endpointConfig })
+          expect(start.params).toMatchObject({
+            config: endpointConfig,
+            developerInstructions: ORCHESTRATION_INSTRUCTIONS,
+          })
           yield* freshServer.send({ id: start.id, result: { thread: { id: 'thread-browser' } } })
           yield* Fiber.join(opening)
           yield* connection.close(100)
@@ -777,7 +782,10 @@ describe('Codex native App Server driver', () => {
           )
           const resume = yield* resumedServer.read
           expect(resume.method).toBe('thread/resume')
-          expect(resume.params).toMatchObject({ config: endpointConfig })
+          expect(resume.params).toMatchObject({
+            config: endpointConfig,
+            developerInstructions: ORCHESTRATION_INSTRUCTIONS,
+          })
           yield* resumedServer.send({
             id: resume.id,
             result: { cwd: context.workspacePath, thread: { id: 'thread-browser-resume', turns: [] } },
@@ -841,12 +849,18 @@ describe('Codex native App Server driver', () => {
       ),
     )
     expect(events).toContainEqual(
-      expect.objectContaining({ kind: 'toolStarted', toolCallId: 'orch', category: 'delegation' }),
+      expect.objectContaining({
+        kind: 'toolStarted',
+        toolCallId: 'orch',
+        name: 'delegation_start',
+        category: 'delegation',
+      }),
     )
     expect(events).toContainEqual(
       expect.objectContaining({
         kind: 'toolCompleted',
         toolCallId: 'orch',
+        name: 'delegation_start',
         orchestration: { delegationId: 'dlg-1', childTaskId: 'task-child' },
       }),
     )

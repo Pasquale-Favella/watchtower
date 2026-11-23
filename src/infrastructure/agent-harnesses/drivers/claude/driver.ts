@@ -39,6 +39,10 @@ import {
   orchestrationReference,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
 import {
+  hasOrchestratorEndpoint,
+  ORCHESTRATION_INSTRUCTIONS,
+} from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
+import {
   discoverClaudePromptCatalog,
   normalizeAgentPromptCatalog,
 } from '@/infrastructure/agent-harnesses/prompt-catalog.js'
@@ -677,6 +681,15 @@ const modeOptions = (
     ...claudePermissionOptions(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE),
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
+    ...(hasOrchestratorEndpoint(context.mcpEndpoints)
+      ? {
+          systemPrompt: {
+            type: 'preset' as const,
+            preset: 'claude_code' as const,
+            append: ORCHESTRATION_INSTRUCTIONS,
+          },
+        }
+      : {}),
     includePartialMessages: true,
     ...(context.mcpEndpoints?.length
       ? {

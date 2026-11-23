@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { type ClaudeAgentSdk, makeClaudeAgentDriver } from '@/infrastructure/agent-harnesses/drivers/claude/driver.js'
 import { resolveInstalledClaudeExecutable } from '@/infrastructure/agent-harnesses/drivers/claude/executable.js'
+import { ORCHESTRATION_INSTRUCTIONS } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
@@ -945,6 +946,8 @@ describe('Claude Agent SDK native driver', () => {
       ),
     )
     expect(fakeCall(resumed).options.mcpServers).toEqual(fakeCall(fresh).options.mcpServers)
+    expect(fakeCall(fresh).options.systemPrompt).toBeUndefined()
+    expect(fakeCall(resumed).options.systemPrompt).toBeUndefined()
   })
 
   it('attaches the orchestrator endpoint and classifies its delegation tools with their Delegation on completion', async () => {
@@ -1016,6 +1019,11 @@ describe('Claude Agent SDK native driver', () => {
         url: 'http://127.0.0.1:43124/mcp',
         headers: { Authorization: 'Bearer orchestrator-token' },
       },
+    })
+    expect(fakeCall(fake).options.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: ORCHESTRATION_INSTRUCTIONS,
     })
     expect(events).toContainEqual(
       expect.objectContaining({ kind: 'toolStarted', toolCallId: 'orch', category: 'delegation' }),

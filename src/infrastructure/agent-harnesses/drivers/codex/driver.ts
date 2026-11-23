@@ -31,6 +31,10 @@ import {
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import { isCodexOrchestratorTool, orchestrationReference } from '@/infrastructure/agent-harnesses/orchestration.js'
+import {
+  hasOrchestratorEndpoint,
+  ORCHESTRATION_INSTRUCTIONS,
+} from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type {
   AgentAccessMode,
   AgentCapabilities,
@@ -626,6 +630,9 @@ function openSession(
     if (native && native.generation !== context.generation)
       return yield* failure('invalid-state', 'Native session generation does not match the requested generation.')
     const policy = codexAccessPolicy(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
+    const instructions = hasOrchestratorEndpoint(context.mcpEndpoints)
+      ? { developerInstructions: ORCHESTRATION_INSTRUCTIONS }
+      : {}
     const response = yield* client
       .request(
         native ? 'thread/resume' : 'thread/start',
@@ -636,6 +643,7 @@ function openSession(
               excludeTurns: false,
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
+              ...instructions,
               ...(context.mcpEndpoints?.length ? { config: codexMcpConfig(context.mcpEndpoints) } : {}),
             }
           : {
@@ -643,6 +651,7 @@ function openSession(
               ...(context.modelId ? { model: context.modelId } : {}),
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
+              ...instructions,
               ...(context.mcpEndpoints?.length ? { config: codexMcpConfig(context.mcpEndpoints) } : {}),
             },
       )
@@ -1944,7 +1953,7 @@ function notificationEvent(method: string, params: unknown, turnId: string | und
     return {
       kind: 'toolStarted',
       toolCallId: item.item.id,
-      name: item.item.name?.trim() || item.item.type,
+      name: codexToolName(item.item),
       ...codexToolDetails(item.item),
     }
   }
@@ -1964,7 +1973,7 @@ function notificationEvent(method: string, params: unknown, turnId: string | und
     return {
       kind: 'toolCompleted',
       toolCallId: item.item.id,
-      name: completed.name?.trim() || item.item.type,
+      name: codexToolName(completed),
       ...codexToolDetails(completed),
       ...(orchestration ? { orchestration } : {}),
       ...(output !== undefined ? { output: boundedNativeText(output, MAX_TOOL_OUTPUT_BYTES) } : {}),
@@ -1986,6 +1995,12 @@ function boundedNativeText(value: string, limit = 8000): string {
   let end = Math.min(value.length, limit)
   while (new TextEncoder().encode(value.slice(0, end)).byteLength > limit - 32) end -= Math.max(1, Math.floor(end / 8))
   return `${value.slice(0, end)}\n… [truncated]`
+}
+
+/** An orchestration call keeps its tool name, so the timeline can tell a start from a status read. */
+function codexToolName(item: Schema.Schema.Type<typeof ItemNotification>['item']): string {
+  if (item.type === 'mcpToolCall' && item.tool && isCodexOrchestratorTool(item.server, item.tool)) return item.tool
+  return item.name?.trim() || item.type || 'tool'
 }
 
 function codexToolDetails(

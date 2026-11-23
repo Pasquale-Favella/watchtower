@@ -24,6 +24,7 @@ import {
   makeAcpDriver,
 } from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
 import type { JsonRpcTransport } from '../src/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { ORCHESTRATION_INSTRUCTIONS } from '../src/infrastructure/agent-harnesses/orchestration-instructions.js'
 import { agentConfigOptionSchema } from '../src/shared/schemas/execution.js'
 import type { AgentRunId } from '../src/shared/schemas/workspace.js'
 import {
@@ -1099,6 +1100,7 @@ describe('generic ACP driver', () => {
     )
 
     expect(fake.promptCalls).toHaveLength(1)
+    expect(fake.promptCalls[0]?.prompt).not.toContain('watchtower_instructions')
     expect(result.accepted).toEqual({ nativeSessionId: 'native-1', generation: 3 })
     expect(result.events.map(event => event.kind)).toEqual([
       'turnStarted',
@@ -1462,6 +1464,73 @@ describe('generic ACP driver', () => {
       url: 'http://127.0.0.1:43124/mcp',
       headers: [{ name: 'Authorization', value: 'Bearer orchestrator-token' }],
     })
+  })
+
+  it('sends the orchestration block with the first prompt of a fresh orchestrated session only', async () => {
+    const endpoints = [
+      {
+        name: 'watchtower-orchestrator' as const,
+        url: 'http://127.0.0.1:43124/mcp',
+        token: 'orchestrator-token',
+        stdio: { command: 'electron.exe', args: ['orchestrator-mcp-proxy.js'], env: [] },
+      },
+    ]
+    const wrap = (request: string) =>
+      '<watchtower_instructions>\n' +
+      ORCHESTRATION_INSTRUCTIONS +
+      '\n</watchtower_instructions>\n\n<user_request>\n' +
+      request +
+      '\n</user_request>'
+    const fresh = makeFakeAcp()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* fresh.driver.connect({ connectionId: 'acp-orchestrated-fresh' })
+          const session = yield* connection.openSession({ ...context, mcpEndpoints: endpoints })
+          for (const [index, content] of ['/compact', 'first request', 'second request'].entries()) {
+            const turnRunId = runId('run-orchestrated-' + index)
+            const submitting = yield* Effect.forkScoped(
+              session.submit({ runId: turnRunId, messages: [{ role: 'user', content }], attachmentIds: [] }),
+            )
+            yield* Stream.runCollect(session.events(turnRunId))
+            yield* Fiber.join(submitting)
+          }
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(fresh.promptCalls.map(call => JSON.parse(call.prompt))).toEqual([
+      [{ type: 'text', text: '/compact' }],
+      [{ type: 'text', text: wrap('first request') }],
+      [{ type: 'text', text: 'second request' }],
+    ])
+
+    const resumed = makeFakeAcp('events', true)
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* resumed.driver.connect({ connectionId: 'acp-orchestrated-resume' })
+          const session = yield* connection.loadSession(
+            { ...context, mcpEndpoints: endpoints },
+            { nativeSessionId: 'native-existing', generation: 3 },
+          )
+          const turnRunId = runId('run-orchestrated-resumed')
+          const submitting = yield* Effect.forkScoped(
+            session.submit({
+              runId: turnRunId,
+              messages: [{ role: 'user', content: 'resumed request' }],
+              attachmentIds: [],
+            }),
+          )
+          yield* Stream.runCollect(session.events(turnRunId))
+          yield* Fiber.join(submitting)
+          yield* connection.close(1000)
+        }),
+      ),
+    )
+    expect(resumed.promptCalls.map(call => JSON.parse(call.prompt))).toEqual([
+      [{ type: 'text', text: 'resumed request' }],
+    ])
   })
 
   it('closes scoped transports once and uses typed unsupported steering', async () => {

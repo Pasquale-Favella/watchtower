@@ -49,6 +49,10 @@ import {
   isOrchestratorToolTitle,
   orchestrationReferenceFromRaw,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
+import {
+  isSlashCommandPrompt,
+  withAcpOrchestrationInstructions,
+} from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type {
   AgentAccessMode,
   AgentCapabilities,
@@ -227,6 +231,8 @@ interface AcpSessionState {
   readonly queues: Map<AgentRunId, RunChannel>
   /** Open tool calls that are orchestration tools. Their later updates usually omit the title that names them. */
   readonly orchestrationToolCalls: Set<string>
+  /** The orchestration block rides ahead of the next prompt of a fresh native session that has the orchestrator attached. */
+  orchestrationInstructionsPending: boolean
   readonly completedRuns: Array<AgentRunId>
   readonly permissions: Map<string, PendingRequest>
   readonly replay: Array<ReplayRecord>
@@ -1533,6 +1539,7 @@ function makeSessionState(
     browserMcpUnavailable,
     queues: new Map(),
     orchestrationToolCalls: new Set(),
+    orchestrationInstructionsPending: false,
     completedRuns: [],
     permissions: new Map(),
     replay: [],
@@ -1692,6 +1699,9 @@ function sessionInterface(
             message: 'An ACP Run ID cannot be submitted twice.',
           })
         const content = yield* mapPromptContent(input, state.liveCapabilities.promptContent?.images === true)
+        const prompt = input.messages[0]?.content ?? ''
+        const instructed = state.orchestrationInstructionsPending && !isSlashCommandPrompt(prompt)
+        if (instructed) content[0] = { type: 'text', text: withAcpOrchestrationInstructions(prompt) }
         if (!channel) channel = yield* emptyEventChannel(input.runId)
         channel.submitted = true
         const completed = yield* Effect.sync(() => {
@@ -1712,6 +1722,7 @@ function sessionInterface(
         state.activeRun = active
         state.queues.set(input.runId, channel)
         yield* emitEventEffect(state, { kind: 'turnStarted' })
+        if (instructed) state.orchestrationInstructionsPending = false
         promptPromise = client.prompt({ sessionId: state.nativeSessionId as never, prompt: content })
         void promptPromise.then(
           result => {
@@ -2081,6 +2092,11 @@ function createConnection(
           browserMcpUnavailable(context, connectionState.browserMcpHttpSupported),
           false,
         )
+        state.orchestrationInstructionsPending =
+          !restore &&
+          sessionMcpServers(context, connectionState.browserMcpHttpSupported).some(
+            server => server.name === 'watchtower-orchestrator',
+          )
         state.liveCapabilities = {
           ...state.liveCapabilities,
           promptContent: { images: initialized.agentCapabilities?.promptCapabilities?.image === true, files: true },
