@@ -35,6 +35,7 @@ import type {
   RegisterCheckoutCommand,
   RegisterProjectCommand,
   RenameTaskCommand,
+  ReopenDelegationCommand,
   RequestResponsePage,
   SetDelegationPendingRequestCommand,
   SetDelegationWakeCommand,
@@ -248,6 +249,10 @@ export class WorkspaceStore extends Context.Service<
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
     readonly setDelegationPendingRequest: (
       command: SetDelegationPendingRequestCommand,
+    ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    /** Re-opens a settled Delegation for the parent's follow-up Run; a replay with the same child Run is a no-op. */
+    readonly reopenDelegation: (
+      command: ReopenDelegationCommand,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
     readonly markDelegationRead: (
       delegationId: string,

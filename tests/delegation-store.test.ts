@@ -83,7 +83,11 @@ const withStore = async (use: (store: WorkspaceStore['Service']) => Promise<void
     await runtime.runPromise(store.beginRun(parentRun))
     await runtime.runPromise(store.claimDispatch(parentRun.runId, 7, ts))
     await runtime.runPromise(
-      store.acknowledgeDispatch(parentRun.runId, { ownerEpoch: 7, nativeSessionId: 'native-parent', acknowledgedAt: ts }),
+      store.acknowledgeDispatch(parentRun.runId, {
+        ownerEpoch: 7,
+        nativeSessionId: 'native-parent',
+        acknowledgedAt: ts,
+      }),
     )
     await use(store)
   } finally {
@@ -125,12 +129,97 @@ describe('delegation store', () => {
       await run(store.createDelegation(createCommand), store)
       const visible = await run(store.listTasks(project.id), store)
       expect(visible.items.map(item => item.id)).toEqual([parentTask.id])
-      expect(visible.items[0]?.runtime?.delegatedChildren).toEqual({ total: 1, active: 1, attention: 0 })
+      expect(visible.items[0]?.runtime?.delegatedChildren).toEqual({
+        total: 1,
+        active: 1,
+        attention: 0,
+        approvals: 0,
+        questions: 0,
+      })
       const withChildren = await run(store.listTasks(project.id, { includeDelegated: true }), store)
       const child = withChildren.items.find(item => item.id === childTask.id)
       expect(child?.runtime?.delegatedFrom).toMatchObject({ delegationId: 'dlg-1', parentTaskId: parentTask.id })
       const detail = await run(store.readTaskDetail(childTask.id), store)
       expect(detail.delegatedFrom).toMatchObject({ delegationId: 'dlg-1', parentTaskId: parentTask.id })
+    })
+  })
+
+  it('lists a Delegated Task separately when its parent is archived', async () => {
+    await withStore(async store => {
+      await run(store.createDelegation(createCommand), store)
+      await run(
+        store.recordDriverEvent(parentRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'parent-interrupted',
+          occurredAt: ts,
+          event: { kind: 'turnInterrupted' },
+        }),
+        store,
+      )
+      await run(
+        store.setTaskArchived({
+          commandId: 'archive-parent',
+          taskId: parentTask.id,
+          archived: true,
+          updatedAt: ts,
+        }),
+        store,
+      )
+
+      const visible = await run(store.listTasks(project.id), store)
+      expect(visible.total).toBe(1)
+      expect(visible.items.map(item => item.id)).toEqual([childTask.id])
+      const withArchived = await run(store.listTasks(project.id, { includeArchived: true, limit: 1 }), store)
+      expect(withArchived.total).toBe(2)
+      expect(withArchived.items.map(item => item.id)).toEqual([childTask.id])
+      expect(withArchived.nextAfterId).toBe(childTask.id)
+      const next = await run(
+        store.listTasks(project.id, {
+          includeArchived: true,
+          afterId: childTask.id,
+          limit: 1,
+        }),
+        store,
+      )
+      expect(next.items.map(item => item.id)).toEqual([parentTask.id])
+    })
+  })
+
+  it('counts pending approvals and questions only while their Delegation is unsettled', async () => {
+    await withStore(async store => {
+      await run(store.createDelegation(createCommand), store)
+      async function setRequest(kind: 'approval' | 'question'): Promise<void> {
+        await run(
+          store.setDelegationPendingRequest({
+            commandId: `pending-${kind}`,
+            delegationId: record.id,
+            pendingRequest: { requestId: kind, kind },
+            occurredAt: ts,
+          }),
+          store,
+        )
+      }
+      async function children() {
+        return (await run(store.listTasks(project.id), store)).items[0]?.runtime.delegatedChildren
+      }
+
+      await setRequest('approval')
+      expect(await children()).toEqual({ total: 1, active: 1, attention: 1, approvals: 1, questions: 0 })
+      await setRequest('question')
+      expect(await children()).toEqual({ total: 1, active: 1, attention: 1, approvals: 0, questions: 1 })
+      await run(
+        store.settleDelegation({
+          commandId: 'settle-question',
+          delegationId: record.id,
+          status: 'completed',
+          resultText: null,
+          resultTruncated: false,
+          occurredAt: ts,
+        }),
+        store,
+      )
+      expect(await children()).toEqual({ total: 1, active: 0, attention: 0, approvals: 0, questions: 0 })
     })
   })
 
@@ -161,7 +250,12 @@ describe('delegation store', () => {
       )
       expect(again).toMatchObject({ status: 'completed', resultText: 'Audit done' })
       await run(
-        store.setDelegationWake({ commandId: 'wake-1', delegationId: 'dlg-1' as never, wakeState: 'pending', occurredAt: ts }),
+        store.setDelegationWake({
+          commandId: 'wake-1',
+          delegationId: 'dlg-1' as never,
+          wakeState: 'pending',
+          occurredAt: ts,
+        }),
         store,
       )
       expect((await run(store.listDueDelegationWakes(10), store)).map(item => item.id)).toEqual(['dlg-1'])

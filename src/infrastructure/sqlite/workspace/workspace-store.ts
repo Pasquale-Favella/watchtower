@@ -43,6 +43,8 @@ import {
   createDelegationCommandSchema,
   delegationQuerySchema,
   delegationReceiptSchema,
+  type ReopenDelegationCommand,
+  reopenDelegationCommandSchema,
   type SetDelegationPendingRequestCommand,
   setDelegationPendingRequestCommandSchema,
   type SetDelegationWakeCommand,
@@ -2888,8 +2890,12 @@ const makeService = Effect.gen(function* () {
           Effect.mapError(() => safeError('invalid-data', 'Workspace task cursor or limit is invalid')),
         )
         const includeArchivedFlag = includeArchived ? 1 : 0
-        // Delegated child Tasks are listed only on request; the sidebar shows them nested under their parent.
         const includeDelegatedFlag = includeDelegated ? 1 : 0
+        const delegatedFilter = sql`(${includeDelegatedFlag} = 1 OR NOT EXISTS (
+          SELECT 1 FROM workspace_delegation d
+          JOIN workspace_task parent ON parent.id = d.parent_task_id AND parent.archived = 0
+          WHERE d.child_task_id = task.id
+        ))`
         return yield* sql.withTransaction(
           Effect.gen(function* () {
             const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${projectId}`
@@ -2897,8 +2903,11 @@ const makeService = Effect.gen(function* () {
             const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
             if (project.id !== projectId)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
-            const counts =
-              yield* sql`SELECT COUNT(*) AS total FROM workspace_task WHERE project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR archived = 0) AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = workspace_task.id)) AND side_chat = 0`
+            const counts = yield* sql`
+              SELECT COUNT(*) AS total FROM workspace_task task
+              WHERE task.project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR task.archived = 0)
+                AND ${delegatedFilter} AND task.side_chat = 0
+            `
             const total = Number(counts[0]?.total ?? 0)
             const items: Array<Task> = []
             let cursor = afterId
@@ -2926,7 +2935,7 @@ const makeService = Effect.gen(function* () {
                   FROM workspace_task task
                   WHERE task.project_id = ${projectId}
                     AND (${includeArchivedFlag} = 1 OR task.archived = 0)
-                    AND (${includeDelegatedFlag} = 1 OR NOT EXISTS (SELECT 1 FROM workspace_delegation d WHERE d.child_task_id = task.id))
+                    AND ${delegatedFilter}
                     AND task.side_chat = 0
                 ), task_page AS (
                   SELECT t.id, t.activity_at
@@ -3023,8 +3032,10 @@ const makeService = Effect.gen(function* () {
                 yield* sql`SELECT id, parent_task_id, status FROM workspace_delegation WHERE child_task_id = ${row.id}`
               const delegatedChildRows = yield* sql`
                 SELECT COUNT(*) AS total,
-                  COALESCE(SUM(CASE WHEN settled_at IS NULL THEN 1 ELSE 0 END), 0) AS active,
-                  COALESCE(SUM(CASE WHEN settled_at IS NULL AND json_extract(payload, '$.pendingRequest') IS NOT NULL THEN 1 ELSE 0 END), 0) AS attention
+                  COUNT(*) FILTER (WHERE settled_at IS NULL) AS active,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL AND json_extract(payload, '$.pendingRequest') IS NOT NULL) AS attention,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL AND json_extract(payload, '$.pendingRequest.kind') = 'approval') AS approvals,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL AND json_extract(payload, '$.pendingRequest.kind') = 'question') AS questions
                 FROM workspace_delegation WHERE parent_task_id = ${row.id}
               `
               const delegatedFrom = delegatedFromRows[0]
@@ -3042,6 +3053,8 @@ const makeService = Effect.gen(function* () {
                       total: delegatedChildTotal,
                       active: Number(delegatedChildRows[0]?.active ?? 0),
                       attention: Number(delegatedChildRows[0]?.attention ?? 0),
+                      approvals: Number(delegatedChildRows[0]?.approvals ?? 0),
+                      questions: Number(delegatedChildRows[0]?.questions ?? 0),
                     }
               const task = {
                 ...decodedTask,
@@ -3798,6 +3811,53 @@ const makeService = Effect.gen(function* () {
       ),
     )
 
+  const reopenDelegation: WorkspaceStore['Service']['reopenDelegation'] = (command: ReopenDelegationCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(reopenDelegationCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation reopen command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            if (current.childRunId === command.childRunId) return current
+            if (current.settledAt === null)
+              return yield* Effect.fail(safeError('invalid-transition', 'Delegation is still running'))
+            // Admission is checked in the same transaction as the write, as creation does, so a parent that stops or
+            // reaches its limit meanwhile cannot gain a resumed child.
+            const parents = yield* sql`SELECT status, task_id FROM workspace_agent_run WHERE id = ${command.parentRunId}`
+            const parent = parents[0]
+            if (!parent || String(parent.task_id) !== current.parentTaskId)
+              return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))
+            if (!ACTIVE_PARENT_STATUSES.includes(String(parent.status)))
+              return yield* Effect.fail(safeError('invalid-transition', 'Parent Run is not active'))
+            const active =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_delegation WHERE parent_run_id = ${command.parentRunId} AND settled_at IS NULL`
+            if (Number(active[0]?.total ?? 0) >= command.maxActivePerParentRun)
+              return yield* Effect.fail(safeError('admission-conflict', 'Parent Run has too many active delegations'))
+            const next: DelegationRecord = {
+              ...current,
+              parentRunId: command.parentRunId,
+              childRunId: command.childRunId,
+              accessMode: command.accessMode,
+              status: 'queued',
+              wake: 'always',
+              wakeState: 'notDue',
+              pendingRequest: null,
+              resultText: null,
+              resultTruncated: false,
+              cancelRequestedAt: null,
+              resultReadAt: null,
+              settledAt: null,
+            }
+            yield* sql`UPDATE workspace_delegation SET parent_run_id = ${next.parentRunId}, status = ${next.status}, wake_state = ${next.wakeState}, settled_at = NULL, payload = ${encode(next)} WHERE id = ${next.id}`
+            return next
+          }),
+        )
+      }),
+    )
+
   const markDelegationRead: WorkspaceStore['Service']['markDelegationRead'] = (delegationId, readAt) =>
     guard(
       sql.withTransaction(
@@ -3874,6 +3934,7 @@ const makeService = Effect.gen(function* () {
     setDelegationWake,
     setDelegationPendingRequest,
     markDelegationRead,
+    reopenDelegation,
     requestDelegationCancel,
     listDueDelegationWakes,
   })

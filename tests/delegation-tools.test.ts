@@ -3,7 +3,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   delegationToolCancelInputSchema,
-  delegationToolListInputSchema,
+  delegationToolReadInputSchema,
+  delegationToolSendInputSchema,
   delegationToolStartInputSchema,
   delegationToolStatusInputSchema,
 } from '@/shared/schemas/delegation-tools.js'
@@ -50,7 +51,14 @@ describe('orchestration tool inputs', () => {
     expect(
       Schema.decodeUnknownResult(delegationToolCancelInputSchema)({ id: 'dlg-1', reason: 'x'.repeat(501) })._tag,
     ).toBe('Failure')
-    expect(Schema.decodeUnknownResult(delegationToolListInputSchema)({ limit: 51 })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(delegationToolStatusInputSchema)({ limit: 51 })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(delegationToolStatusInputSchema)({})._tag).toBe('Success')
+    expect(Schema.decodeUnknownResult(delegationToolReadInputSchema)({ id: 'dlg-1', limit: 21 })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(delegationToolSendInputSchema)({ id: 'dlg-1', message: ' ' })._tag).toBe('Failure')
+    expect(
+      Schema.decodeUnknownResult(delegationToolSendInputSchema)({ id: 'dlg-1', message: 'Use v2', answers: { q1: 'yes' } })
+        ._tag,
+    ).toBe('Success')
   })
 
   it('advertises the same contract as its decoder', () => {

@@ -8,7 +8,12 @@ export const ORCHESTRATOR_MCP_SERVER = 'watchtower-orchestrator'
 const TOOL_PREFIX = 'delegation_'
 
 /** Tools that only read delegation state. Drivers may allow them without an approval prompt. */
-const READ_ONLY_TOOLS: ReadonlySet<string> = new Set(['delegation_capabilities', 'delegation_status', 'delegation_list'])
+const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
+  'delegation_capabilities',
+  'delegation_status',
+  'delegation_read',
+  'delegation_list',
+])
 
 /** Claude names MCP tools `mcp__<server>__<tool>`. */
 const claudePrefix = `mcp__${ORCHESTRATOR_MCP_SERVER}__`
@@ -76,8 +81,11 @@ const ORCHESTRATOR_TOOLS = [
   'delegation_capabilities',
   'delegation_start',
   'delegation_status',
-  'delegation_list',
+  'delegation_read',
+  'delegation_send',
   'delegation_cancel',
+  // Kept so a call recorded before status absorbed the listing still reads as an orchestration call.
+  'delegation_list',
 ] as const
 
 /**

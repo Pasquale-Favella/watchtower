@@ -549,6 +549,7 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         )
         const service = Context.get(serviceContext, ExecutionService)
         const delegationLayer = DelegationService.layer({
+          ownerEpoch,
           // Models come from the last inspection the picker already ran. Delegation never probes a connection itself.
           loadConnections: () =>
             Effect.sync(() =>

@@ -182,7 +182,7 @@ describe('DelegationCoordinator settlement', () => {
       const record = await h.runtime.runPromise(childTerminal(h, { kind: 'turnCompleted', nativeTurnId: 'native-turn' }))
       expect(record).toMatchObject({ status: 'completed', resultText: 'Audit done', wakeState: 'pending' })
       expect(record?.settledAt).not.toBeNull()
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
     } finally {
       await h.runtime.dispose()
     }
@@ -195,7 +195,7 @@ describe('DelegationCoordinator settlement', () => {
         childTerminal(h, { kind: 'turnFailed', nativeTurnId: 'native-turn', message: 'Tool crashed' }),
       )
       expect(record).toMatchObject({ status: 'failed', wakeState: 'pending' })
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
     } finally {
       await h.runtime.dispose()
     }
@@ -208,7 +208,7 @@ describe('DelegationCoordinator settlement', () => {
         childTerminal(h, { kind: 'turnInterrupted', nativeTurnId: 'native-turn' }),
       )
       expect(record).toMatchObject({ status: 'interrupted', wakeState: 'pending' })
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
     } finally {
       await h.runtime.dispose()
     }
@@ -320,7 +320,7 @@ describe('DelegationCoordinator settlement', () => {
       expect(outcome.timedOut).toBeNull()
       expect(outcome.upgraded).toMatchObject({ wake: 'always', wakeState: 'notDue' })
       expect(outcome.record).toMatchObject({ status: 'completed', wake: 'always', wakeState: 'pending' })
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
     } finally {
       await h.runtime.dispose()
     }
@@ -383,7 +383,7 @@ describe('DelegationCoordinator settlement', () => {
       )
       const record = await h.runtime.runPromise(h.store.getDelegation('dlg-1'))
       expect(record).toMatchObject({ status: 'completed', resultText: 'Recovered answer', wakeState: 'pending' })
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
     } finally {
       await h.runtime.dispose()
     }
@@ -398,7 +398,23 @@ describe('DelegationCoordinator settlement', () => {
       expect(record?.settledAt).not.toBeNull()
       const snapshot = await h.runtime.runPromise(h.store.readTaskSnapshot(childTask.id, 20))
       expect(snapshot.runs.find(run => run.id === childRunId)?.status).toBe('failed')
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+
+  it('settles a Delegation whose child Run was never written as a failed launch on recovery', async () => {
+    const h = await harness('always', false)
+    try {
+      await h.runtime.runPromise(h.store.registerProject({ project, mainCheckout: checkout }))
+      await h.runtime.runPromise(h.store.createTask({ task: parentTask, conversation: parentConversation }))
+      await h.runtime.runPromise(acceptRun(h.store, parentCommand))
+      await h.runtime.runPromise(h.store.createDelegation(createCommand('always')))
+      await h.runtime.runPromise(h.coordinator.recover(8))
+      const record = await h.runtime.runPromise(h.store.getDelegation('dlg-1'))
+      expect(record).toMatchObject({ status: 'failed', resultText: 'The delegated task could not start.' })
+      expect(record?.settledAt).not.toBeNull()
     } finally {
       await h.runtime.dispose()
     }
@@ -426,7 +442,7 @@ describe('DelegationCoordinator settlement', () => {
           yield* h.coordinator.recover(8)
         }),
       )
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1'])
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
     } finally {
       await h.runtime.dispose()
     }

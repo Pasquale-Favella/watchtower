@@ -52,6 +52,17 @@ export type DelegationSettledStatus = Schema.Schema.Type<typeof delegationSettle
 export const delegationIsolationSchema = Schema.Literals(['shared', 'worktree'])
 export type DelegationIsolation = Schema.Schema.Type<typeof delegationIsolationSchema>
 
+/** The role a parent names for a child. Anything but `general` frames the child's task with it. */
+export const delegationRoleSchema = Schema.Literals([
+  'implementation',
+  'research',
+  'review',
+  'design',
+  'test',
+  'general',
+])
+export type DelegationRole = Schema.Schema.Type<typeof delegationRoleSchema>
+
 export const delegationWakeSchema = Schema.Literals(['always', 'settledOnly'])
 export type DelegationWake = Schema.Schema.Type<typeof delegationWakeSchema>
 export const delegationWakeStateSchema = Schema.Literals(['notDue', 'pending', 'queued', 'delivered', 'disposed'])

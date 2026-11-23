@@ -429,6 +429,8 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.requestDelegationCancel(delegationId, requestedAt),
         true,
       ),
+    'workspace-worker:reopenDelegation': command =>
+      execute('workspace-worker:reopenDelegation', command, () => options.store.reopenDelegation(command), true),
     'workspace-worker:markDelegationRead': ({ delegationId, readAt }) =>
       execute(
         'workspace-worker:markDelegationRead',

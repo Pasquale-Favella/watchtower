@@ -111,7 +111,7 @@ describe('watchtower-orchestrator endpoint', () => {
     expect(status).toBeGreaterThanOrEqual(400)
   })
 
-  it('advertises delegation_start only while depth remains', async () => {
+  it('advertises the tools only while delegation depth remains', async () => {
     const roomy = fakeDelegations(1)
     const names = await withEndpoint(roomy.service, async (url, token) => {
       const client = await connect(url, token)
@@ -122,7 +122,8 @@ describe('watchtower-orchestrator endpoint', () => {
     expect(names.sort()).toEqual([
       'delegation_cancel',
       'delegation_capabilities',
-      'delegation_list',
+      'delegation_read',
+      'delegation_send',
       'delegation_start',
       'delegation_status',
     ])
@@ -134,7 +135,7 @@ describe('watchtower-orchestrator endpoint', () => {
       await client.close()
       return listed.tools.map(tool => tool.name)
     })
-    expect(withoutStart).not.toContain('delegation_start')
+    expect(withoutStart).toEqual([])
   })
 
   it('binds the caller from the endpoint, so arguments cannot name another task', async () => {

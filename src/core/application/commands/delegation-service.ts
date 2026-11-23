@@ -5,12 +5,13 @@ import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as Schema from 'effect/Schema'
 
 import { ExecutionService } from '@/core/application/commands/execution-service.js'
 import { DelegationCoordinator } from '@/core/application/execution/delegation-coordinator.js'
-import { narrowChildAccessMode } from '@/core/domain/delegation/access-narrowing.js'
+import { ACCESS_MODE_RANK, narrowChildAccessMode } from '@/core/domain/delegation/access-narrowing.js'
 import { delegationStatusFromRun, isSettledDelegationStatus } from '@/core/domain/delegation/status.js'
-import { agentDriverAccessModes } from '@/core/ports/agent-driver.js'
+import { agentDriverAccessModes, UnsupportedAgentOperation } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import {
@@ -24,11 +25,12 @@ import {
   type DelegationList,
   type DelegationModelChoice,
   type DelegationRecord,
+  type DelegationRole,
   type DelegationSummary,
   type DelegationTargetChoice,
 } from '@/shared/schemas/delegation.js'
 import type { AgentAccessMode, AgentRunStatus } from '@/shared/schemas/execution.js'
-import { DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
+import { agentDriverEventSchema, DEFAULT_AGENT_ACCESS_MODE } from '@/shared/schemas/execution.js'
 import type {
   AgentRunId,
   ConversationId,
@@ -37,7 +39,7 @@ import type {
   WorkspaceCheckout,
   WorkspaceCheckoutId,
 } from '@/shared/schemas/workspace.js'
-import type { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 /** The Run that makes a call. Built by the platform layer from the endpoint, never from tool arguments. */
 export interface DelegationCallerScope extends DelegationCaller {
@@ -57,6 +59,7 @@ export interface StartDelegationRequest {
     | undefined
   readonly isolation?: DelegationIsolation | undefined
   readonly accessMode?: AgentAccessMode | undefined
+  readonly role?: DelegationRole | undefined
   readonly wait: boolean
   readonly waitTimeoutMs: number
   readonly clientRequestId?: string | undefined
@@ -73,6 +76,8 @@ export interface DelegationConnectionRef {
 
 export interface DelegationServiceOptions {
   readonly loadConnections: () => Effect.Effect<ReadonlyArray<DelegationConnectionRef>>
+  /** The execution owner epoch, needed to steer or answer a live child. Absent means only settled children resume. */
+  readonly ownerEpoch?: number | undefined
   /** Creates an isolated checkout for `isolation: 'worktree'`. Absent means worktrees are unavailable. */
   readonly createWorktree?:
     | ((request: {
@@ -85,6 +90,27 @@ export interface DelegationServiceOptions {
     | undefined
 }
 
+/** A bounded view of a Delegated Task's Conversation, newest messages last. */
+export interface DelegationTranscript {
+  readonly summary: DelegationSummary
+  readonly messages: ReadonlyArray<{ readonly role: 'task' | 'agent'; readonly text: string; readonly truncated: boolean }>
+  readonly earlierOmitted: boolean
+  readonly pendingRequest?:
+    | {
+        readonly kind: 'approval' | 'question'
+        readonly prompt: string
+        readonly questions: ReadonlyArray<{ readonly id: string; readonly prompt: string; readonly options: ReadonlyArray<string> }>
+      }
+    | undefined
+}
+
+export interface SendDelegationRequest {
+  readonly message: string
+  /** Answers by question id. Without it, `message` answers every open question. */
+  readonly answers?: Readonly<Record<string, string>> | undefined
+  readonly clientRequestId?: string | undefined
+}
+
 export interface DelegationListing {
   readonly items: ReadonlyArray<DelegationSummary>
   readonly truncated: boolean
@@ -94,6 +120,23 @@ const LIVE_PARENT_STATUSES: ReadonlyArray<AgentRunStatus> = ['starting', 'runnin
 const RUN_SCAN = 500
 const TITLE_MAX = 80
 const NEXT_LIVE = 'Completion wakes this run. Do not poll; continue other work or end your turn.'
+const READ_MESSAGE_MAX = 4_000
+const READ_PAGE = 200
+
+/** The task as the child receives it. A role other than `general` frames it. */
+const framedTask = (task: string, role: DelegationRole | undefined) =>
+  role === undefined || role === 'general' ? task : `Act as the ${role} agent for this delegated task.\n\n${task}`
+
+const sendFailure = (error: unknown) =>
+  error instanceof DelegationError
+    ? error
+    : new DelegationError({
+        code: 'unavailable',
+        message:
+          error instanceof UnsupportedAgentOperation
+            ? 'This connection cannot take a message while the delegated task runs.'
+            : 'The message could not be delivered.',
+      })
 
 const token = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24)
 
@@ -136,6 +179,17 @@ export class DelegationService extends Context.Service<
     readonly cancel: (
       caller: DelegationCallerScope,
       delegationId: DelegationId,
+    ) => Effect.Effect<DelegationSummary, DelegationError>
+    readonly read: (
+      caller: DelegationCallerScope,
+      delegationId: DelegationId,
+      limit: number,
+    ) => Effect.Effect<DelegationTranscript, DelegationError>
+    /** Answers an open question, steers a running child, or resumes a settled one with a follow-up Run. */
+    readonly send: (
+      caller: DelegationCallerScope,
+      delegationId: DelegationId,
+      request: SendDelegationRequest,
     ) => Effect.Effect<DelegationSummary, DelegationError>
     /** Read for the Workspace UI, scoped to one Task's own delegations, optionally to one parent Run. */
     readonly listForTask: (query: {
@@ -204,6 +258,16 @@ export class DelegationService extends Context.Service<
           } satisfies DelegationSummary
         })
 
+        /** The parent Run must be live. A stop request or a finished Run cannot start or resume children. */
+        const liveParent = Effect.fn('DelegationService.liveParent')(function* (caller: DelegationCallerScope) {
+          const snapshot = yield* store.readTaskSnapshot(caller.taskId, RUN_SCAN).pipe(Effect.mapError(storeFailure))
+          const parentRun = snapshot.runs.find(run => run.id === caller.runId)
+          const parentContext = snapshot.runContexts?.find(context => context.runId === caller.runId)
+          if (!parentRun || !parentContext || !LIVE_PARENT_STATUSES.includes(parentRun.status))
+            return yield* new DelegationError({ code: 'parent-not-active', message: 'This run is not active.' })
+          return parentContext
+        })
+
         const capabilities = Effect.fn('DelegationService.capabilities')(function* (caller: DelegationCallerScope) {
           const link = yield* store.getDelegationByChildTask(caller.taskId).pipe(Effect.mapError(storeFailure))
           const active = yield* store
@@ -247,12 +311,7 @@ export class DelegationService extends Context.Service<
             if (replayed) return yield* summaryOf(yield* ownedBy(replayed, caller), false)
           }
 
-          // The parent Run must be live. A stop request or a finished Run cannot start children.
-          const snapshot = yield* store.readTaskSnapshot(caller.taskId, RUN_SCAN).pipe(Effect.mapError(storeFailure))
-          const parentRun = snapshot.runs.find(run => run.id === caller.runId)
-          const parentContext = snapshot.runContexts?.find(context => context.runId === caller.runId)
-          if (!parentRun || !parentContext || !LIVE_PARENT_STATUSES.includes(parentRun.status))
-            return yield* new DelegationError({ code: 'parent-not-active', message: 'This run is not active.' })
+          const parentContext = yield* liveParent(caller)
 
           const link = yield* store.getDelegationByChildTask(caller.taskId).pipe(Effect.mapError(storeFailure))
           const depth = (link?.depth ?? 0) + 1
@@ -394,7 +453,7 @@ export class DelegationService extends Context.Service<
               generation: 1,
               driverId: choice.driverId,
               connectionId: choice.id,
-              prompt: request.task,
+              prompt: framedTask(request.task, request.role),
               attachments: [],
               modelId: record.modelId,
               modeId: record.modeId,
@@ -460,12 +519,252 @@ export class DelegationService extends Context.Service<
           return yield* summaryOf(record, false)
         })
 
+        const read = Effect.fn('DelegationService.read')(function* (
+          caller: DelegationCallerScope,
+          delegationId: DelegationId,
+          limit: number,
+        ) {
+          const owned = yield* ownedBy(yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)), caller)
+          const page = yield* store
+            .readConversationPage(owned.childConversationId, 0, READ_PAGE, undefined, { direction: 'backward' })
+            .pipe(Effect.mapError(storeFailure))
+          const messages: Array<{ role: 'task' | 'agent'; runId: string | null; text: string }> = []
+          for (const item of [...page.items].sort((left, right) => left.event.sequence - right.event.sequence)) {
+            if (item.userMessage) {
+              messages.push({ role: 'task', runId: null, text: item.userMessage.content })
+              continue
+            }
+            const event = item.event
+            if (event.kind !== 'driverEvent' || event.payloadTruncated) continue
+            const decoded = Schema.decodeUnknownOption(agentDriverEventSchema)(event.data['event'])
+            if (Option.isNone(decoded) || decoded.value.kind !== 'textDelta') continue
+            const last = messages.at(-1)
+            if (last?.role === 'agent' && last.runId === event.runId) last.text += decoded.value.text
+            else messages.push({ role: 'agent', runId: event.runId, text: decoded.value.text })
+          }
+          const kept = messages.filter(message => message.text.trim().length > 0).slice(-limit)
+          let pendingRequest: DelegationTranscript['pendingRequest']
+          if (owned.pendingRequest) {
+            const requests = yield* store
+              .listPendingRuntimeRequests(owned.childTaskId, 0, 20)
+              .pipe(Effect.mapError(storeFailure))
+            const open = requests.items.find(item => item.request.requestId === owned.pendingRequest?.requestId)
+            if (open)
+              pendingRequest = {
+                kind: open.request.kind,
+                prompt: open.request.prompt.slice(0, READ_MESSAGE_MAX),
+                questions: open.request.questions.map(question => ({
+                  id: question.id,
+                  prompt: question.prompt,
+                  options: question.options.map(option => option.label),
+                })),
+              }
+          }
+          const current =
+            owned.settledAt !== null && owned.resultReadAt === null
+              ? yield* store.markDelegationRead(owned.id, yield* now).pipe(Effect.mapError(storeFailure))
+              : owned
+          return {
+            summary: yield* summaryOf(current, false),
+            messages: kept.map(message => {
+              const truncated = message.text.length > READ_MESSAGE_MAX
+              // An agent's answer ends its message, so a long one keeps its end; a task keeps its start.
+              const text = !truncated
+                ? message.text
+                : message.role === 'agent'
+                  ? message.text.slice(-READ_MESSAGE_MAX)
+                  : message.text.slice(0, READ_MESSAGE_MAX)
+              return { role: message.role, text, truncated }
+            }),
+            earlierOmitted: kept.length < messages.length || (page.nextBeforeSequence ?? null) !== null,
+            ...(pendingRequest ? { pendingRequest } : {}),
+          } satisfies DelegationTranscript
+        })
+
+        const steerOrAnswer = Effect.fn('DelegationService.steerOrAnswer')(function* (
+          record: DelegationRecord,
+          request: SendDelegationRequest,
+          key: string,
+        ) {
+          const ownerEpoch = options.ownerEpoch
+          const snapshot = yield* store.readTaskSnapshot(record.childTaskId, 20).pipe(Effect.mapError(storeFailure))
+          const run = snapshot.runs.find(item => item.id === record.childRunId)
+          if (ownerEpoch === undefined || !run)
+            return yield* new DelegationError({ code: 'unavailable', message: 'The message could not be delivered.' })
+          const issuedAt = yield* now
+          const pending = record.pendingRequest
+          if (!pending) {
+            yield* execution
+              .steer({
+                commandId: `delegation-steer:${key}`,
+                issuedAt,
+                runId: run.id,
+                ownerEpoch,
+                generation: run.generation,
+                message: request.message,
+              })
+              .pipe(Effect.mapError(sendFailure))
+            return
+          }
+          if (pending.kind === 'approval')
+            return yield* new DelegationError({
+              code: 'invalid-request',
+              message: 'This delegated task waits on an approval that only the user can give.',
+            })
+          const requests = yield* store
+            .listPendingRuntimeRequests(record.childTaskId, 0, 20)
+            .pipe(Effect.mapError(storeFailure))
+          const open = requests.items.find(item => item.request.requestId === pending.requestId)
+          if (!open) return yield* new DelegationError({ code: 'conflict', message: 'That question was already answered.' })
+          yield* execution
+            .respond({
+              commandId: `delegation-answer:${key}`,
+              issuedAt,
+              runId: run.id,
+              ownerEpoch,
+              generation: run.generation,
+              requestId: pending.requestId,
+              decision: {
+                kind: 'answers',
+                answers: Object.fromEntries(
+                  open.request.questions.map(question => [question.id, request.answers?.[question.id] ?? request.message]),
+                ),
+              },
+            })
+            .pipe(Effect.mapError(sendFailure))
+        })
+
+        const resumeSettled = Effect.fn('DelegationService.resumeSettled')(function* (
+          caller: DelegationCallerScope,
+          record: DelegationRecord,
+          request: SendDelegationRequest,
+          key: string,
+        ) {
+          yield* liveParent(caller)
+          const active = yield* store
+            .listDelegations({ parentRunId: caller.runId, activeOnly: true, limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN })
+            .pipe(Effect.mapError(storeFailure))
+          if (active.items.length >= DELEGATION_MAX_ACTIVE_PER_PARENT_RUN)
+            return yield* new DelegationError({
+              code: 'limit-exceeded',
+              message: `This run already has ${DELEGATION_MAX_ACTIVE_PER_PARENT_RUN} active delegations.`,
+            })
+          const snapshot = yield* store.readTaskSnapshot(record.childTaskId, 20).pipe(Effect.mapError(storeFailure))
+          const context = snapshot.runContexts?.find(item => item.runId === record.childRunId)
+          const driverId = context?.driverId ?? record.driverId
+          const connectionId = context?.connectionId ?? record.connectionId
+          // The follow-up never runs broader than the Run that asks for it, nor broader than the child ran before.
+          const narrowing = narrowChildAccessMode({
+            parent: caller.accessMode,
+            requested:
+              ACCESS_MODE_RANK[record.accessMode] <= ACCESS_MODE_RANK[caller.accessMode] ? record.accessMode : undefined,
+            supported: yield* accessModesOf(driverId),
+          })
+          if (narrowing.outcome === 'refused')
+            return yield* new DelegationError({ code: narrowing.code, message: narrowing.message })
+          const sessions = yield* store
+            .listNativeAgentSessions(record.childTaskId, { limit: 50 })
+            .pipe(Effect.mapError(storeFailure))
+          const session = sessions.items
+            .filter(
+              item =>
+                item.conversationId === record.childConversationId &&
+                item.connectionId === connectionId &&
+                (item.status === 'active' || item.status === 'suspended') &&
+                // A session the driver cannot load again would fail the resume, so the follow-up starts fresh.
+                item.capabilities?.loadSession.support !== 'unsupported',
+            )
+            .sort((left, right) => right.generation - left.generation)[0]
+          const childRunId = `run-${key}` as AgentRunId
+          const resumed = yield* coordinator
+            .resume(
+              record.id,
+              {
+                commandId: `delegation-reopen:${key}`,
+                delegationId: record.id,
+                parentRunId: caller.runId,
+                childRunId,
+                accessMode: narrowing.mode,
+                maxActivePerParentRun: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
+                occurredAt: yield* now,
+              },
+              {
+                commandId: `delegation-run:${key}`,
+                issuedAt: yield* now,
+                runId: childRunId,
+                taskId: record.childTaskId,
+                conversationId: record.childConversationId,
+                checkoutId: context?.checkoutId ?? record.checkoutId,
+                provisionalAgentSessionId: `delegation-session:${key}`,
+                generation: session?.generation ?? 1,
+                driverId,
+                connectionId,
+                prompt: request.message,
+                attachments: [],
+                modelId: record.modelId,
+                modeId: record.modeId,
+                accessMode: narrowing.mode,
+                nativeSessionId: session?.nativeSessionId ?? null,
+                retryOfRunId: null,
+                origin: 'delegation',
+                delegationId: record.id,
+              },
+            )
+            .pipe(Effect.mapError(error => (error instanceof WorkspaceStoreError ? writeFailure(error) : sendFailure(error))))
+          if (resumed === null)
+            return yield* new DelegationError({
+              code: 'conflict',
+              message: 'The delegated task is running again. Send the message again to reach it.',
+            })
+          return resumed
+        })
+
+        const alreadySent = Effect.fn('DelegationService.alreadySent')(function* (record: DelegationRecord, key: string) {
+          if (record.childRunId === `run-${key}`) return true
+          const [snapshot, steers, answers] = yield* Effect.all([
+            store.readTaskSnapshot(record.childTaskId, RUN_SCAN),
+            store.listSteerIntents(record.childTaskId, { limit: 50 }),
+            store.listRequestResponses(record.childTaskId, { limit: 50 }),
+          ]).pipe(Effect.mapError(storeFailure))
+          return (
+            snapshot.runs.some(run => run.id === `run-${key}`) ||
+            steers.items.some(item => item.commandId === `delegation-steer:${key}`) ||
+            answers.items.some(item => item.commandId === `delegation-answer:${key}`)
+          )
+        })
+
+        const send = Effect.fn('DelegationService.send')(function* (
+          caller: DelegationCallerScope,
+          delegationId: DelegationId,
+          request: SendDelegationRequest,
+        ) {
+          const record = yield* ownedBy(yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)), caller)
+          const key = token(`${caller.runId}:send:${request.clientRequestId ?? randomUUID()}`)
+          // A retry repeats the action its first call took, whatever state the child is in now.
+          if (request.clientRequestId !== undefined && (yield* alreadySent(record, key))) return yield* summaryOf(record, false)
+          if (isSettledDelegationStatus(yield* liveStatus(record))) {
+            if (record.cancelRequestedAt !== null && record.status === 'cancelled')
+              return yield* new DelegationError({
+                code: 'invalid-request',
+                message: 'This delegated task was stopped. Start a new one instead.',
+              })
+            return yield* summaryOf(yield* resumeSettled(caller, record, request, key), false)
+          }
+          yield* steerOrAnswer(record, request, key)
+          return yield* summaryOf(
+            yield* ownedBy(yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)), caller),
+            false,
+          )
+        })
+
         return DelegationService.of({
           capabilities,
           start,
           status,
           list,
           cancel,
+          read,
+          send,
           listForTask: query =>
             store
               .listDelegations({

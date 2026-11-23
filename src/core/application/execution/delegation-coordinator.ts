@@ -21,7 +21,12 @@ import {
 } from '@/shared/schemas/delegation.js'
 import { agentDriverEventSchema, type AgentRunStatus } from '@/shared/schemas/execution.js'
 import type { AgentRunId, TaskId } from '@/shared/schemas/workspace.js'
-import type { BeginRunCommand, WorkspaceExecutionEvent, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import type {
+  BeginRunCommand,
+  ReopenDelegationCommand,
+  WorkspaceExecutionEvent,
+  WorkspaceStoreError,
+} from '@/shared/schemas/workspace-store.js'
 
 const RUN_TERMINAL: ReadonlySet<AgentRunStatus> = new Set<AgentRunStatus>([
   'interrupted',
@@ -36,6 +41,15 @@ const RECOVERY_BATCH = 200
 const now = Effect.map(DateTime.now, DateTime.formatIso)
 
 const notFound = () => new DelegationError({ code: 'not-found', message: 'Delegation was not found.' })
+
+/**
+ * The first child Run keeps the original wake id, so a wake queued before resume existed is not queued twice. A resumed
+ * Delegation settles again, so each later child Run owes its own wake.
+ */
+const wakeCommandId = (record: Pick<DelegationRecord, 'id' | 'childRunId'>): string =>
+  record.childRunId === null || record.childRunId === `run-${record.id.slice('dlg-'.length)}`
+    ? `delegation-wake:${record.id}`
+    : `delegation-wake:${record.id}:${record.childRunId}`
 
 /**
  * A `wait` caller's claim on a Delegation's settlement. It is registered before the child launches, so a child that
@@ -69,6 +83,15 @@ export class DelegationCoordinator extends Context.Service<
       delegationId: DelegationId,
       command: BeginRunCommand,
     ) => Effect.Effect<boolean, WorkspaceStoreError | ExecutionServiceError | DelegationError>
+    /**
+     * Re-opens a settled Delegation and starts its follow-up Run under the Delegation lock. Returns null when the
+     * Delegation is still live, so the caller can message the running child instead.
+     */
+    readonly resume: (
+      delegationId: DelegationId,
+      reopen: ReopenDelegationCommand,
+      command: BeginRunCommand,
+    ) => Effect.Effect<DelegationRecord | null, WorkspaceStoreError | ExecutionServiceError | DelegationError>
     /** Registers a `wait` caller. Call it before the child launches, then await the returned watch. */
     readonly watch: (
       delegationId: DelegationId,
@@ -119,7 +142,7 @@ export class DelegationCoordinator extends Context.Service<
        */
       const enqueueWake = Effect.fn('DelegationCoordinator.enqueueWake')(function* (record: DelegationRecord) {
         yield* execution.enqueueFollowUp({
-          commandId: `delegation-wake:${record.id}`,
+          commandId: wakeCommandId(record),
           issuedAt: yield* now,
           taskId: record.parentTaskId,
           conversationId: record.parentConversationId,
@@ -138,17 +161,31 @@ export class DelegationCoordinator extends Context.Service<
         const conversation = yield* store.readConversationPage(first.parentConversationId, 0, 100, undefined, {
           direction: 'backward',
         })
-        const delivered = new Set(
-          conversation.items.flatMap(item => (item.userMessage?.delegation ? [item.userMessage.delegation.delegationId] : [])),
-        )
+        // A resumed Delegation settles more than once, so only a wake message from after this settlement counts.
+        const latestWake = new Map<string, string>()
+        for (const item of conversation.items) {
+          const message = item.userMessage
+          if (!message?.delegation) continue
+          const seen = latestWake.get(message.delegation.delegationId)
+          if (!seen || message.createdAt > seen) latestWake.set(message.delegation.delegationId, message.createdAt)
+        }
         for (const record of pending) {
-          if (!delivered.has(record.id)) continue
-          yield* store.setDelegationWake({
-            commandId: `delegation-wake-delivered:${record.id}`,
-            delegationId: record.id,
-            wakeState: 'delivered',
-            occurredAt: yield* now,
-          })
+          const wakeAt = latestWake.get(record.id)
+          if (!wakeAt || record.settledAt === null || wakeAt < record.settledAt) continue
+          // A resume may have replaced this settlement since the listing; only the settlement that was read is marked.
+          yield* withLock(
+            record.id,
+            Effect.gen(function* () {
+              const current = yield* store.getDelegation(record.id)
+              if (!current || current.settledAt !== record.settledAt || current.wakeState !== 'pending') return
+              yield* store.setDelegationWake({
+                commandId: `delegation-wake-delivered:${record.id}`,
+                delegationId: record.id,
+                wakeState: 'delivered',
+                occurredAt: yield* now,
+              })
+            }),
+          )
         }
       })
 
@@ -264,6 +301,26 @@ export class DelegationCoordinator extends Context.Service<
             if (current.settledAt !== null || current.cancelRequestedAt !== null) return false
             yield* execution.start(command)
             return true
+          }),
+        )
+      })
+
+      const resume = Effect.fn('DelegationCoordinator.resume')(function* (
+        delegationId: DelegationId,
+        reopen: ReopenDelegationCommand,
+        command: BeginRunCommand,
+      ) {
+        return yield* withLock(
+          delegationId,
+          Effect.gen(function* () {
+            const current = yield* store.getDelegation(delegationId)
+            if (!current) return yield* Effect.fail(notFound())
+            if (current.childRunId === reopen.childRunId) return current
+            if (current.settledAt === null) return null
+            const reopened = yield* store.reopenDelegation(reopen)
+            const started = yield* Effect.exit(execution.start(command))
+            if (started._tag === 'Success') return reopened
+            return yield* finish(delegationId, launchFailure)
           }),
         )
       })
@@ -418,8 +475,23 @@ export class DelegationCoordinator extends Context.Service<
         const due = yield* store.listDueDelegationWakes(RECOVERY_BATCH)
         const active = yield* store.listDelegations({ activeOnly: true, limit: RECOVERY_BATCH })
         for (const record of active.items) {
-          const runStatus = yield* childRunStatus(record).pipe(Effect.catch(() => Effect.succeed(null)))
-          if (runStatus === null) continue
+          const read = yield* childRunStatus(record).pipe(Effect.option)
+          if (Option.isNone(read)) continue
+          const runStatus = read.value
+          if (runStatus === null) {
+            // The Delegation names a child Run that was never written, as when the app stopped between a resume and its
+            // launch. Nothing will report back for it, so it settles as a failed launch.
+            if (record.childRunId === null) continue
+            yield* withLock(
+              record.id,
+              Effect.gen(function* () {
+                const current = yield* store.getDelegation(record.id)
+                if (!current || current.settledAt !== null || (yield* childRunStatus(current)) !== null) return
+                yield* finish(current.id, launchFailure)
+              }),
+            ).pipe(Effect.catch(() => Effect.void))
+            continue
+          }
           if (runStatus === 'queued') {
             yield* withLock(
               record.id,
@@ -456,6 +528,7 @@ export class DelegationCoordinator extends Context.Service<
         watch,
         settleLaunchFailure,
         launch,
+        resume,
         cancel: cancelRecord,
         recover,
       })

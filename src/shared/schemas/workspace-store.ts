@@ -212,6 +212,17 @@ export const setDelegationPendingRequestCommandSchema = Schema.Struct({
   occurredAt: timestamp,
 })
 export type SetDelegationPendingRequestCommand = Schema.Schema.Type<typeof setDelegationPendingRequestCommandSchema>
+/** Re-opens a settled Delegation for a follow-up Run that the parent asked for. */
+export const reopenDelegationCommandSchema = Schema.Struct({
+  commandId: text,
+  delegationId: delegationIdSchema,
+  parentRunId: agentRunIdSchema,
+  childRunId: agentRunIdSchema,
+  accessMode: agentAccessModeSchema,
+  maxActivePerParentRun: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+  occurredAt: timestamp,
+})
+export type ReopenDelegationCommand = Schema.Schema.Type<typeof reopenDelegationCommandSchema>
 export const delegationQuerySchema = Schema.Struct({
   parentRunId: Schema.optional(agentRunIdSchema),
   parentTaskId: Schema.optional(taskIdSchema),
@@ -583,7 +594,17 @@ export const workspaceTaskRuntimeSummarySchema = Schema.Struct({
       }),
     ),
   ),
-  delegatedChildren: Schema.optional(Schema.NullOr(Schema.Struct({ total: count, active: count, attention: count }))),
+  delegatedChildren: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        total: count,
+        active: count,
+        attention: count,
+        approvals: Schema.optionalKey(count),
+        questions: Schema.optionalKey(count),
+      }),
+    ),
+  ),
 })
 export type WorkspaceTaskRuntimeSummary = Schema.Schema.Type<typeof workspaceTaskRuntimeSummarySchema>
 export const workspaceTaskReadSchema = Schema.Struct({ ...taskSchema.fields, ...payloadSummaryFields })

@@ -31,6 +31,7 @@ import {
   registerCheckoutCommandSchema,
   registerProjectCommandSchema,
   renameTaskCommandSchema,
+  reopenDelegationCommandSchema,
   requestResponsePageSchema,
   setDelegationPendingRequestCommandSchema,
   setDelegationWakeCommandSchema,
@@ -66,7 +67,7 @@ import {
   workspaceTaskReadPageSchema,
 } from '@/shared/schemas/workspace-store.js'
 
-export const WORKSPACE_WORKER_PROTOCOL_VERSION = 18
+export const WORKSPACE_WORKER_PROTOCOL_VERSION = 19
 export const WORKSPACE_WORKER_REQUEST_CAPACITY = 64
 export const WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY = WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
 export const WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY = 4 * 1024 * 1024
@@ -355,6 +356,11 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
   }),
   Rpc.make('workspace-worker:requestDelegationCancel', {
     payload: Schema.Struct({ delegationId: text, requestedAt: timestamp }),
+    success: delegationRecordSchema,
+    error,
+  }),
+  Rpc.make('workspace-worker:reopenDelegation', {
+    payload: reopenDelegationCommandSchema,
     success: delegationRecordSchema,
     error,
   }),

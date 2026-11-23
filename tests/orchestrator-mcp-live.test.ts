@@ -27,8 +27,9 @@ import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-
 import { acquireOrchestratorMcp } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
 import {
   delegationToolCancelInputSchema,
-  delegationToolListInputSchema,
   delegationToolNoInputSchema,
+  delegationToolReadInputSchema,
+  delegationToolSendInputSchema,
   delegationToolStartInputSchema,
   delegationToolStatusInputSchema,
 } from '@/shared/schemas/delegation-tools.js'
@@ -223,14 +224,16 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
       'delegation_capabilities',
       'delegation_start',
       'delegation_status',
-      'delegation_list',
+      'delegation_read',
+      'delegation_send',
       'delegation_cancel',
     ])
     const byName = new Map(listed.tools.map(tool => [tool.name, tool]))
     expect(byName.get('delegation_capabilities')?.inputSchema).toEqual(expectedSchema(delegationToolNoInputSchema))
     expect(byName.get('delegation_start')?.inputSchema).toEqual(expectedSchema(delegationToolStartInputSchema))
     expect(byName.get('delegation_status')?.inputSchema).toEqual(expectedSchema(delegationToolStatusInputSchema))
-    expect(byName.get('delegation_list')?.inputSchema).toEqual(expectedSchema(delegationToolListInputSchema))
+    expect(byName.get('delegation_read')?.inputSchema).toEqual(expectedSchema(delegationToolReadInputSchema))
+    expect(byName.get('delegation_send')?.inputSchema).toEqual(expectedSchema(delegationToolSendInputSchema))
     expect(byName.get('delegation_cancel')?.inputSchema).toEqual(expectedSchema(delegationToolCancelInputSchema))
   }, 30_000)
 
@@ -257,7 +260,7 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
     const status = await callTool(parentClient, 'delegation_status', { id: parentDelegationId })
     expect(status.structuredContent).toMatchObject({ id: parentDelegationId, status: 'running' })
 
-    const listed = await callTool(parentClient, 'delegation_list', {})
+    const listed = await callTool(parentClient, 'delegation_status', {})
     expect(listed.structuredContent?.['items']).toEqual([expect.objectContaining({ id: parentDelegationId })])
   }, 30_000)
 

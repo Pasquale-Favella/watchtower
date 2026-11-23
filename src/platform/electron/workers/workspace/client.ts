@@ -530,6 +530,10 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:requestDelegationCancel'](payload),
           )
         },
+        reopenDelegation: command =>
+          invoke('workspace-worker:reopenDelegation', command, () =>
+            rawClient['workspace-worker:reopenDelegation'](command),
+          ),
         markDelegationRead: (delegationId, readAt) => {
           const payload = { delegationId, readAt }
           return invoke('workspace-worker:markDelegationRead', payload, () =>

@@ -14,9 +14,11 @@ import {
   delegationToolCancelInputSchema,
   delegationToolCapabilitiesOutputSchema,
   delegationToolErrorSchema,
-  delegationToolListInputSchema,
   delegationToolListOutputSchema,
   delegationToolNoInputSchema,
+  delegationToolReadInputSchema,
+  delegationToolReadOutputSchema,
+  delegationToolSendInputSchema,
   delegationToolStartInputSchema,
   delegationToolStatusInputSchema,
   type DelegationToolSummary,
@@ -31,29 +33,41 @@ import {
 const TOOLS = [
   {
     name: 'delegation_capabilities',
-    description: 'List connections, their access modes, this run access mode, and remaining delegation capacity.',
+    description: 'List connections, models, efforts and access modes for delegation_start, and remaining capacity.',
     input: delegationToolNoInputSchema,
+    readOnly: true,
   },
   {
     name: 'delegation_start',
     description:
-      'Start a delegated task that sees only `task`, so write it complete. Its completion wakes this run; do not poll.',
+      'Start one delegated task. It sees only `task`, no history and no secrets. Its completion wakes this run; do not poll. Keep `id`.',
     input: delegationToolStartInputSchema,
+    readOnly: false,
   },
   {
     name: 'delegation_status',
-    description: 'Read one delegation you started. A settled result is marked read.',
+    description: 'Read one delegation by `id`, or list yours without it. Reading a settled result marks it read.',
     input: delegationToolStatusInputSchema,
+    readOnly: false,
   },
   {
-    name: 'delegation_list',
-    description: 'List delegations this task started, newest first.',
-    input: delegationToolListInputSchema,
+    name: 'delegation_read',
+    description: 'Read the latest messages of a delegated task and its open question, if any.',
+    input: delegationToolReadInputSchema,
+    readOnly: false,
+  },
+  {
+    name: 'delegation_send',
+    description:
+      'Message a delegated task: answers its open question, steers it while running, or resumes it when settled. Approvals stay with the user.',
+    input: delegationToolSendInputSchema,
+    readOnly: false,
   },
   {
     name: 'delegation_cancel',
-    description: 'Stop one delegation and its child run. A settled delegation keeps its result.',
+    description: 'Stop one delegated task and its run. A settled task keeps its result.',
     input: delegationToolCancelInputSchema,
+    readOnly: false,
   },
 ] as const
 
@@ -63,6 +77,7 @@ type ToolName = (typeof TOOLS)[number]['name']
 const advertised = TOOLS.map(tool => ({
   name: tool.name,
   description: tool.description,
+  annotations: { readOnlyHint: tool.readOnly },
   inputSchema: {
     ...Schema.toStandardJSONSchemaV1(tool.input)['~standard'].jsonSchema.input({ target: 'draft-2020-12' }),
     type: 'object' as const,
@@ -99,6 +114,7 @@ function summaryView(summary: DelegationSummary): DelegationToolSummary {
     accessMode: summary.accessMode,
     ...(summary.accessModeSteppedDownFrom ? { steppedDownFrom: summary.accessModeSteppedDownFrom } : {}),
     ...(summary.pendingRequest ? { pending: summary.pendingRequest.kind } : {}),
+    ...(summary.modelId ? { model: summary.modelId } : {}),
     ...(result !== undefined
       ? { summary: result.slice(0, DELEGATION_TOOL_SUMMARY_MAX_CHARS), truncated: summary.resultTruncated || result.length > DELEGATION_TOOL_SUMMARY_MAX_CHARS }
       : {}),
@@ -147,6 +163,7 @@ function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Ef
             : undefined,
           isolation: request.isolation,
           accessMode: request.accessMode,
+          role: request.role,
           wait: request.mode === 'wait',
           waitTimeoutMs: request.timeoutMs ?? 30_000,
           clientRequestId: request.clientRequestId,
@@ -156,15 +173,36 @@ function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Ef
     case 'delegation_status': {
       const request = input as Schema.Schema.Type<typeof delegationToolStatusInputSchema>
       // The id is an opaque string from the parent; ownership is checked by the service, not by the brand.
-      return delegations
-        .status(caller, request.id as DelegationId)
-        .pipe(Effect.map(summaryView))
-    }
-    case 'delegation_list': {
-      const request = input as Schema.Schema.Type<typeof delegationToolListInputSchema>
+      if (request.id !== undefined)
+        return delegations.status(caller, request.id as DelegationId).pipe(Effect.map(summaryView))
       return delegations.list(caller, request.limit ?? 20).pipe(
         Effect.map(listing => ({ items: listing.items.map(summaryView), truncated: listing.truncated })),
       )
+    }
+    case 'delegation_read': {
+      const request = input as Schema.Schema.Type<typeof delegationToolReadInputSchema>
+      return delegations.read(caller, request.id as DelegationId, request.limit ?? 6).pipe(
+        Effect.map(transcript => ({
+          delegation: summaryView(transcript.summary),
+          messages: transcript.messages.map(message => ({
+            role: message.role,
+            text: message.text,
+            ...(message.truncated ? { truncated: true } : {}),
+          })),
+          earlierOmitted: transcript.earlierOmitted,
+          ...(transcript.pendingRequest ? { question: transcript.pendingRequest } : {}),
+        })),
+      )
+    }
+    case 'delegation_send': {
+      const request = input as Schema.Schema.Type<typeof delegationToolSendInputSchema>
+      return delegations
+        .send(caller, request.id as DelegationId, {
+          message: request.message,
+          answers: request.answers,
+          clientRequestId: request.clientRequestId,
+        })
+        .pipe(Effect.map(summaryView))
     }
     case 'delegation_cancel': {
       const request = input as Schema.Schema.Type<typeof delegationToolCancelInputSchema>
@@ -178,8 +216,10 @@ function validatedOutput(name: ToolName, value: unknown): unknown {
   const schema =
     name === 'delegation_capabilities'
       ? delegationToolCapabilitiesOutputSchema
-      : name === 'delegation_list'
+      : name === 'delegation_status' && typeof value === 'object' && value !== null && 'items' in value
         ? delegationToolListOutputSchema
+        : name === 'delegation_read'
+        ? delegationToolReadOutputSchema
         : undefined
   if (!schema) return value
   const decoded = Schema.decodeUnknownResult(schema)(value)
@@ -215,10 +255,9 @@ async function callTool(scope: OrchestratorMcpScope, name: string, args: unknown
 export function createOrchestratorMcpServer(scope: OrchestratorMcpScope): Server {
   const server = new Server({ name: 'watchtower-orchestrator', version: '1.0.0' }, { capabilities: { tools: {} } })
   server.setRequestHandler(ListToolsRequestSchema, async () => {
-    // The start tool is hidden once no depth remains, so a child never sees a tool it cannot use.
+    // A Run with no delegation depth left can start nothing, so it is offered no tools and pays no schema tokens.
     const capabilities = await scope.run(scope.delegations.capabilities(scope.caller)).catch(() => null)
-    const hideStart = capabilities !== null && capabilities.remainingDepth < 1
-    return { tools: advertised.filter(tool => !(hideStart && tool.name === 'delegation_start')) }
+    return { tools: capabilities !== null && capabilities.remainingDepth < 1 ? [] : advertised }
   })
   server.setRequestHandler(CallToolRequestSchema, (request) => callTool(scope, request.params.name, request.params.arguments))
   return server

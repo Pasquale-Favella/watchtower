@@ -71,7 +71,7 @@ const acceptRun = (store: WorkspaceStore['Service'], command: BeginRunCommand) =
     yield* store.claimDispatch(command.runId, 7, ts)
     yield* store.acknowledgeDispatch(command.runId, {
       ownerEpoch: 7,
-      nativeSessionId: `native-${command.runId}`,
+      nativeSessionId: command.nativeSessionId ?? `native-${command.runId}`,
       nativeTurnId: 'native-turn',
       acknowledgedAt: ts,
     })
@@ -93,6 +93,8 @@ function buildHarness(options: HarnessOptions = {}) {
   const starts: Array<BeginRunCommand> = []
   const interrupts: Array<string> = []
   const followUps: Array<string> = []
+  const steers: Array<{ readonly runId: string; readonly message: string }> = []
+  const responses: Array<{ readonly requestId: string; readonly decision: unknown }> = []
   /** Set by openParent, so a launch can settle its child through the same coordinator the service uses. */
   const lifecycle: { coordinator?: DelegationCoordinator['Service']; service?: DelegationService['Service'] } = {}
   const liveStoreLayer = WorkspaceStoreLive({ filename: ':memory:' })
@@ -164,6 +166,19 @@ function buildHarness(options: HarnessOptions = {}) {
             interrupts.push(runId)
           }),
         cancelQueuedFollowUp: () => Effect.void,
+        // Records the intent as the real service does, so a retry can find it.
+        steer: (command: Parameters<WorkspaceStore['Service']['recordSteer']>[0]) =>
+          store.recordSteer(command).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                steers.push({ runId: command.runId, message: command.message })
+              }),
+            ),
+          ),
+        respond: (command: { readonly requestId: string; readonly decision: unknown }) =>
+          Effect.sync(() => {
+            responses.push({ requestId: command.requestId, decision: command.decision })
+          }).pipe(Effect.as({} as never)),
         enqueueFollowUp: (command: { readonly commandId: string }) =>
           Effect.sync(() => {
             followUps.push(command.commandId)
@@ -172,11 +187,12 @@ function buildHarness(options: HarnessOptions = {}) {
     }),
   ).pipe(Layer.provideMerge(base))
   const service = DelegationService.layer({
+    ownerEpoch: 7,
     loadConnections: () => Effect.succeed(catalog),
     ...(options.createWorktree ? { createWorktree: options.createWorktree } : {}),
   }).pipe(Layer.provideMerge(DelegationCoordinator.layer), Layer.provideMerge(execution))
   const runtime = ManagedRuntime.make(service)
-  return { runtime, starts, interrupts, followUps, lifecycle }
+  return { runtime, starts, interrupts, followUps, steers, responses, lifecycle }
 }
 
 type Built = ReturnType<typeof buildHarness>
@@ -201,7 +217,166 @@ const childCallerOf = (command: BeginRunCommand): DelegationCallerScope => ({
   accessMode: 'auto',
 })
 
+const textDelta = (runId: string, eventId: string, text: string) => ({
+  ownerEpoch: 7,
+  generation: 1,
+  eventId,
+  occurredAt: ts,
+  event: { kind: 'textDelta' as const, text },
+})
+
 describe('DelegationService', () => {
+  it('frames the child task with a named role and leaves a general task unchanged', async () => {
+    const built = buildHarness()
+    try {
+      const { service } = await openParent(built)
+      await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: 'r1', role: 'review' })))
+      await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: 'r2', role: 'general' })))
+      expect(built.starts[0]?.prompt).toBe('Act as the review agent for this delegated task.\n\nAudit the parser')
+      expect(built.starts[1]?.prompt).toBe('Audit the parser')
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('reads the task and the agent text of a delegated task', async () => {
+    const built = buildHarness()
+    try {
+      const { store, service } = await openParent(built)
+      const summary = await built.runtime.runPromise(service.start(parentCaller, request()))
+      const child = built.starts[0]
+      if (!child) throw new Error('The delegation did not launch a child Run.')
+      await built.runtime.runPromise(store.recordDriverEvent(child.runId, textDelta(child.runId, 'd1', 'Found ')))
+      await built.runtime.runPromise(store.recordDriverEvent(child.runId, textDelta(child.runId, 'd2', 'two bugs.')))
+      const transcript = await built.runtime.runPromise(service.read(parentCaller, summary.delegationId, 6))
+      expect(transcript.messages).toEqual([
+        { role: 'task', text: 'Audit the parser', truncated: false },
+        { role: 'agent', text: 'Found two bugs.', truncated: false },
+      ])
+      expect(transcript.summary.status).toBe('running')
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('steers a running delegated task and refuses to answer its approval', async () => {
+    const built = buildHarness()
+    try {
+      const { store, service } = await openParent(built)
+      const summary = await built.runtime.runPromise(service.start(parentCaller, request()))
+      const child = built.starts[0]
+      if (!child) throw new Error('The delegation did not launch a child Run.')
+      await built.runtime.runPromise(service.send(parentCaller, summary.delegationId, { message: 'Focus on the lexer' }))
+      expect(built.steers).toEqual([{ runId: child.runId, message: 'Focus on the lexer' }])
+
+      await built.runtime.runPromise(
+        store.setDelegationPendingRequest({
+          commandId: 'pending-approval',
+          delegationId: summary.delegationId,
+          pendingRequest: { requestId: 'req-1', kind: 'approval' },
+          occurredAt: ts,
+        }),
+      )
+      const refused = await built.runtime.runPromise(
+        service.send(parentCaller, summary.delegationId, { message: 'Approve it' }).pipe(Effect.flip),
+      )
+      expect(refused.code).toBe('invalid-request')
+      expect(built.responses).toHaveLength(0)
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('refuses to resume a settled delegated task once the parent Run has finished', async () => {
+    const built = buildHarness({ settleChildOnLaunch: true })
+    try {
+      const { store, service } = await openParent(built)
+      const settled = await built.runtime.runPromise(
+        service.start(parentCaller, request({ wait: true, waitTimeoutMs: 5_000 })),
+      )
+      await built.runtime.runPromise(
+        store.recordDriverEvent(parentCommand.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'parent-done',
+          occurredAt: ts,
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn' },
+        }),
+      )
+      const refused = await built.runtime.runPromise(
+        service.send(parentCaller, settled.delegationId, { message: 'Again' }).pipe(Effect.flip),
+      )
+      expect(refused.code).toBe('parent-not-active')
+      expect(built.starts).toHaveLength(1)
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('repeats a retried steer as a no-op instead of resuming the child after it settled', async () => {
+    const built = buildHarness()
+    try {
+      const { store, service } = await openParent(built)
+      const summary = await built.runtime.runPromise(service.start(parentCaller, request()))
+      await built.runtime.runPromise(
+        service.send(parentCaller, summary.delegationId, { message: 'Focus', clientRequestId: 'steer-1' }),
+      )
+      expect(built.steers).toHaveLength(1)
+      await built.runtime.runPromise(
+        store.settleDelegation({
+          commandId: 'settle',
+          delegationId: summary.delegationId,
+          status: 'completed',
+          resultText: 'Done',
+          resultTruncated: false,
+          occurredAt: ts,
+        }),
+      )
+      await built.runtime.runPromise(
+        service.send(parentCaller, summary.delegationId, { message: 'Focus', clientRequestId: 'steer-1' }),
+      )
+      expect(built.starts).toHaveLength(1)
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('resumes a settled delegated task with a follow-up Run in its own Conversation', async () => {
+    const built = buildHarness({ settleChildOnLaunch: true })
+    try {
+      const { store, service } = await openParent(built)
+      const settled = await built.runtime.runPromise(
+        service.start(parentCaller, request({ wait: true, waitTimeoutMs: 5_000 })),
+      )
+      expect(settled.settled).toBe(true)
+      const first = built.starts[0]
+      if (!first) throw new Error('The delegation did not launch a child Run.')
+      const resumed = await built.runtime.runPromise(
+        service.send(parentCaller, settled.delegationId, { message: 'Now fix them', clientRequestId: 'follow-1' }),
+      )
+      const second = built.starts[1]
+      expect(second).toMatchObject({
+        taskId: first.taskId,
+        conversationId: first.conversationId,
+        prompt: 'Now fix them',
+        origin: 'delegation',
+        delegationId: settled.delegationId,
+      })
+      expect(second?.runId).not.toBe(first.runId)
+      expect(resumed.delegationId).toBe(settled.delegationId)
+      const record = await built.runtime.runPromise(store.getDelegation(settled.delegationId))
+      expect(record).toMatchObject({ childRunId: second?.runId, parentRunId: parentCommand.runId, wake: 'always' })
+
+      // A retried send with the same key does not launch a third Run.
+      await built.runtime.runPromise(
+        service.send(parentCaller, settled.delegationId, { message: 'Now fix them', clientRequestId: 'follow-1' }),
+      )
+      expect(built.starts).toHaveLength(2)
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
   it('replays a start with the same client request id without launching a second child', async () => {
     const built = buildHarness()
     try {
