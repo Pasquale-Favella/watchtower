@@ -48,6 +48,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'not-a-repository',
     'not-local-folder',
     'managed-folder',
+    'scratch-inside-git',
   ]),
   message: Schema.Literals([
     'Workspace is unavailable.',
@@ -66,6 +67,7 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'This folder is not a Git repository.',
     'Choose a folder on this computer.',
     'This folder is managed by Watchtower.',
+    'Chats without a project are off because the Watchtower data folder is inside a Git repository.',
   ]),
 }) {}
 

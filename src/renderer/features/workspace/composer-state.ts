@@ -143,6 +143,25 @@ export function currentConversationRuns(
   return runs.filter(run => contextByRun.get(run.id)?.conversationId === conversationId)
 }
 
+/**
+ * The checkout the server bound the Conversation's newest Run to. A "No project" chat starts from the
+ * scratch root but runs in its own folder, so this, not the saved preference, names where it works.
+ */
+export function latestConversationCheckoutId(
+  runs: readonly AgentRun[],
+  contexts: readonly WorkspaceRunContext[],
+  conversationId: ConversationId | null | undefined,
+): WorkspaceCheckoutId | undefined {
+  if (!conversationId) return undefined
+  const checkoutByRun = new Map(
+    contexts.filter(context => context.conversationId === conversationId).map(context => [context.runId, context]),
+  )
+  const latest = runs
+    .filter(run => checkoutByRun.has(run.id))
+    .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt) || right.id.localeCompare(left.id))[0]
+  return latest ? checkoutByRun.get(latest.id)?.checkoutId : undefined
+}
+
 /** Only the newest attempt can make the current composer state uncertain. Older terminal
  * uncertainty remains in history, but must not shadow a newer completed attempt. */
 export function latestUnresolvedRun(runs: readonly AgentRun[]): AgentRun | null {

@@ -17,3 +17,17 @@ checkout. Existing Tasks and Runs keep their checkout IDs and folder paths.
 New project initializes a Git repository on the configured default branch,
 falling back to `main`. It adds a README and attempts an initial commit. The
 repository can still be registered if Git refuses the commit.
+
+## No project
+
+Watchtower creates a managed scratch root under the app profile. Draft
+terminals open in the root. Each new conversation gets a directory checkout
+in a child folder named for the date, the first five words of the prompt,
+and a short conversation ID. Watchtower claims the folder before dispatch
+and recreates it empty if it has been deleted. Side chats share their
+parent's checkout.
+
+Watchtower runs no Git commands to create or open these folders. It refuses
+to enable No project if the scratch root is inside a Git checkout. Upgraded
+installs keep the old scratch repository and its files. Existing chats
+continue to use their original checkout and new chats get their own folders.

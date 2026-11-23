@@ -136,17 +136,24 @@ export const registerProjectCommandSchema = Schema.Struct({
 )
 export type RegisterProjectCommand = Schema.Schema.Type<typeof registerProjectCommandSchema>
 
-/** Registers an isolated worktree created for a Project. The main checkout is only registered with its Project. */
+/** Registers an additional checkout. The main checkout is registered with its Project. */
 export const registerCheckoutCommandSchema = Schema.Struct({
   commandId: text,
   checkout: Schema.Struct({
     id: workspaceCheckoutIdSchema,
     projectId: projectIdSchema,
-    kind: Schema.Literal('worktree'),
+    kind: Schema.Literals(['worktree', 'directory']),
+    scratchConversationId: Schema.optional(conversationIdSchema),
     path: text,
     branch: optionalText,
     createdAt: timestamp,
-  }),
+  }).check(
+    Schema.makeFilter(checkout =>
+      checkout.kind === 'directory'
+        ? checkout.scratchConversationId !== undefined && checkout.branch === undefined
+        : checkout.scratchConversationId === undefined,
+    ),
+  ),
 })
 export type RegisterCheckoutCommand = Schema.Schema.Type<typeof registerCheckoutCommandSchema>
 export const checkoutRegistrationReceiptSchema = Schema.Struct({
@@ -176,6 +183,8 @@ export const createTaskCommandSchema = Schema.Struct({
     id: conversationIdSchema,
     title: optionalText,
     createdAt: timestamp,
+    /** Set by side-chat creation to keep the parent's checkout binding. */
+    inheritedCheckoutId: Schema.optional(workspaceCheckoutIdSchema),
   }),
 })
 export type CreateTaskCommand = Schema.Schema.Type<typeof createTaskCommandSchema>
@@ -476,6 +485,8 @@ export const workspaceTaskPageOptionsSchema = Schema.Struct({
 })
 export type WorkspaceTaskPageOptions = Schema.Schema.Type<typeof workspaceTaskPageOptionsSchema>
 export const workspaceCheckoutPageOptionsSchema = Schema.Struct({
+  /** Fetches the named checkout alongside the main checkout, without paging. */
+  checkoutId: Schema.optional(workspaceCheckoutIdSchema),
   afterCheckoutId: Schema.optional(text),
   limit: Schema.optional(
     Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
@@ -708,6 +719,7 @@ export const workspaceConversationReadSchema = Schema.Struct({
   taskId: taskIdSchema,
   title: optionalText,
   createdAt: timestamp,
+  inheritedCheckoutId: Schema.optional(workspaceCheckoutIdSchema),
   forkedFromConversationId: Schema.optional(Schema.NullOr(conversationIdSchema)),
   forkedAtMessageId: optionalText,
 })

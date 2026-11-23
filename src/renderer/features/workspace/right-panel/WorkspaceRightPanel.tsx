@@ -39,6 +39,8 @@ const KEYBOARD_RESIZE_STEP = 16
 export interface WorkspaceRightPanelProps {
   readonly projectId?: ProjectId | undefined
   readonly checkoutId?: WorkspaceCheckoutId | undefined
+  /** False hides every Diff entry and closes a Diff tab left from before, for checkouts with no Git history. */
+  readonly diffAvailable?: boolean | undefined
   readonly controls?: RightPanelControls | undefined
   readonly open?: boolean | undefined
   readonly onOpenChange?: ((open: boolean) => void) | undefined
@@ -72,7 +74,8 @@ export function WorkspaceRightPanel(props: WorkspaceRightPanelProps): React.JSX.
 function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.Element {
   const flushFileEdits = useFlushFileEdits()
   const { controls: providedControls, tab, onTabChange, open, onOpenChange } = props
-  const local = useRightPanel(providedControls ? null : `project:${props.projectId ?? 'none'}`)
+  const diffAvailable = props.diffAvailable ?? true
+  const local = useRightPanel(providedControls ? null : `project:${props.projectId ?? 'none'}`, { diffAvailable })
   const controls = useMemo(
     () =>
       providedControls ?? {
@@ -99,7 +102,7 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
     function revealComment(event: Event): void {
       const detail = (event as CustomEvent<{ ownerKey: string; path: string; line: number; mode: string }>).detail
       if (detail.ownerKey !== props.reviewOwnerKey) return
-      if (detail.mode === 'diff') controls.openSurface('diff')
+      if (detail.mode === 'diff' && diffAvailable) controls.openSurface('diff')
       else {
         setReveal({ path: detail.path, line: detail.line })
         controls.openFile(detail.path)
@@ -107,7 +110,12 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
     }
     window.addEventListener('watchtower:reveal-review-comment', revealComment)
     return () => window.removeEventListener('watchtower:reveal-review-comment', revealComment)
-  }, [controls, props.reviewOwnerKey])
+  }, [controls, diffAvailable, props.reviewOwnerKey])
+  const staleDiff = !diffAvailable && controls.surfaces.includes('diff')
+  const closeStaleDiff = controls.closeSurface
+  useEffect(() => {
+    if (staleDiff) closeStaleDiff('diff')
+  }, [staleDiff, closeStaleDiff])
   if (controls.open && activeSurface && !mountedSurfaces.has(activeSurface)) {
     setMountedSurfaces(previous => new Set([...previous, activeSurface]))
   }
@@ -177,6 +185,7 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
 
   const launcher = {
     canInspect: scope !== null,
+    canDiff: diffAvailable,
     onOpenSurface: controls.openSurface,
     onAddBrowser: props.onAddBrowser,
     onAddTerminal: props.onAddTerminal,
@@ -245,7 +254,7 @@ function WorkspaceRightPanelContent(props: WorkspaceRightPanelProps): React.JSX.
             body = props.renderSurface?.(surface, visible)
           else if (!scope) body = <InspectionNotice>Choose a project to inspect its checkout.</InspectionNotice>
           else if (kind === 'diff')
-            body = (
+            body = !diffAvailable ? null : (
               <DiffTab
                 scope={scope}
                 revision={revision}

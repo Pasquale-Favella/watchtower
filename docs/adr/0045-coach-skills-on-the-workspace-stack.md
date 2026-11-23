@@ -9,6 +9,10 @@
 
 ## Context
 
+ADR 0047 amends the No project behavior described below. New No project chats
+use separate directory checkouts under the scratch root. The Coach checkout
+still uses Git.
+
 Coach & Skills (ADRs 0017 to 0022) ran on its own harness runtime: `agent-harnesses/runtime.ts` over
 `@mcpc-tech/acp-ai-provider` and the `ai` package, a coach coordinator, `coach:*` IPC and RPC, and renderer
 `coach-skills/*` stores and components. The Workspace stack (ADRs 0039 to 0044) had since become the general

@@ -446,8 +446,11 @@ export const WorkspaceSideChatsLive = Layer.effect(
                 code: 'invalid-request',
                 message: 'Send a message before opening a side chat.',
               })
+            const inheritedCheckoutId = snapshot.runContexts?.find(
+              item => item.conversationId === request.parentConversationId,
+            )?.checkoutId
             const project = yield* store
-              .getProject(detail.task.projectId, { limit: 50 })
+              .getProject(detail.task.projectId, { checkoutId: inheritedCheckoutId })
               .pipe(Effect.mapError(unavailable))
             if (project.project.isCoach)
               return yield* new SideChatError({
@@ -455,9 +458,7 @@ export const WorkspaceSideChatsLive = Layer.effect(
                 message: 'Coach chats cannot have side chats.',
               })
             // A side chat shares the checkout of the parent's latest Run, falling back to the main checkout.
-            const checkoutId =
-              snapshot.runContexts?.find(item => item.conversationId === request.parentConversationId)?.checkoutId ??
-              project.mainCheckout.id
+            const checkoutId = inheritedCheckoutId ?? project.mainCheckout.id
             if (
               ![project.mainCheckout, ...project.otherCheckouts].some(
                 item => item.id === checkoutId && !item.archivedAt,
@@ -494,7 +495,11 @@ export const WorkspaceSideChatsLive = Layer.effect(
                 createdAt: binding.createdAt,
                 sideChat: { parentTaskId: binding.parentTaskId, parentConversationId: binding.parentConversationId },
               },
-              conversation: { id: binding.conversationId, createdAt: binding.createdAt },
+              conversation: {
+                id: binding.conversationId,
+                createdAt: binding.createdAt,
+                inheritedCheckoutId: binding.checkoutId,
+              },
             })
             .pipe(Effect.mapError(unavailable))
           return binding

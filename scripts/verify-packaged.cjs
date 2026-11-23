@@ -385,7 +385,10 @@ async function checkWorkspace(app, window, profile, repository) {
   assert.equal(scratch.created.project.name, 'No project')
   assert.deepEqual(scratch.reused.project, scratch.created.project)
   assert.equal(scratch.reused.mainCheckout.id, scratch.created.mainCheckout.id)
-  assert.equal(fs.statSync(path.join(profile, 'workspace', 'scratch', '.git')).isDirectory(), true)
+  assert.equal(scratch.created.mainCheckout.kind, 'directory')
+  assert.equal(scratch.created.project.repositoryIdentity, undefined)
+  assert.equal(fs.statSync(path.join(profile, 'workspace', 'scratch')).isDirectory(), true)
+  assert.equal(fs.existsSync(path.join(profile, 'workspace', 'scratch', '.git')), false)
   console.log(
     'Packaged ASAR worker, project/task creation and reads, detail, command replay and event snapshot passed.',
   )

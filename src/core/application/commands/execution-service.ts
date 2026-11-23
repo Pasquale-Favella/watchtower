@@ -12,6 +12,14 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import * as Semaphore from 'effect/Semaphore'
 
+import {
+  findProjectCheckout,
+  isScratchCheckoutId,
+  prepareScratchCheckout,
+  recreateScratchCheckout,
+  SCRATCH_PROJECT_ID,
+  scratchCheckoutId,
+} from '@/core/application/commands/scratch-checkouts.js'
 import { sideChatBringBackPrompt } from '@/core/application/commands/workspace-side-chats.js'
 import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
 import { captureConversationContext, handoffBudget } from '@/core/application/execution/conversation-context.js'
@@ -74,6 +82,7 @@ export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceEr
     'background-failure',
     'unsupported-access-mode',
     'access-not-applied',
+    'scratch-inside-git',
   ]),
   message: Schema.String,
   cause: Schema.optional(Schema.Defect()),
@@ -272,25 +281,28 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
 
     const revalidateCheckout = Effect.fn('ExecutionService.revalidateCheckout')(
       function* (claim: DispatchClaim) {
-        let detail = yield* store.getProject(claim.projectId)
-        let registered =
-          detail.mainCheckout.id === claim.checkoutId
-            ? detail.mainCheckout
-            : detail.otherCheckouts.find(checkout => checkout.id === claim.checkoutId)
-        while (!registered && detail.nextAfterCheckoutId !== null) {
-          detail = yield* store.getProject(claim.projectId, { afterCheckoutId: detail.nextAfterCheckoutId })
-          registered = detail.otherCheckouts.find(checkout => checkout.id === claim.checkoutId)
-        }
-        const resolved = yield* checkouts.resolve(
-          claim.workspacePath,
-          registered?.kind === 'directory' ? 'directory' : undefined,
-        )
+        const detail = yield* store.getProject(claim.projectId, { checkoutId: claim.checkoutId })
+        const registered = findProjectCheckout(detail, claim.checkoutId)
+        if (!registered || registered.projectId !== claim.projectId || registered.path !== claim.workspacePath)
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Registered checkout could not be verified for execution.',
+          })
+        const directory = registered.kind === 'directory' || detail.project.isScratch
+        const resolved = yield* checkouts
+          .resolve(claim.workspacePath, directory ? 'directory' : undefined)
+          .pipe(
+            Effect.catch(error =>
+              registered.scratchConversationId && error.code === 'path-missing'
+                ? recreateScratchCheckout(claim.workspacePath).pipe(
+                    Effect.andThen(checkouts.resolve(claim.workspacePath, 'directory')),
+                  )
+                : Effect.fail(error),
+            ),
+          )
         if (
-          !registered ||
-          registered.projectId !== claim.projectId ||
-          registered.path !== claim.workspacePath ||
           resolved.canonicalPath !== claim.workspacePath ||
-          (registered.kind !== 'directory' &&
+          (!directory &&
             (resolved.kind !== registered.kind ||
               resolved.repositoryIdentity !== detail.project.repositoryIdentity ||
               resolved.mainCheckoutPath !== detail.mainCheckout.path))
@@ -790,6 +802,44 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         }),
       )
 
+    const selectRunCheckout = Effect.fnUntraced(function* (
+      command: Pick<BeginRunCommand, 'checkoutId' | 'taskId' | 'conversationId' | 'prompt' | 'issuedAt'>,
+      prepare: boolean,
+    ) {
+      if (!isScratchCheckoutId(command.checkoutId)) return command.checkoutId
+      const task = yield* store.readTaskDetail(command.taskId, { limit: 50 })
+      const conversation = task.conversations.find(item => item.id === command.conversationId)
+      if (task.task.projectId !== SCRATCH_PROJECT_ID || task.task.archivedAt || !conversation) return command.checkoutId // Let beginRun report invalid membership without creating a folder.
+      if (conversation.inheritedCheckoutId) return conversation.inheritedCheckoutId
+      const detail = yield* store.getProject(SCRATCH_PROJECT_ID, { checkoutId: command.checkoutId })
+      const requested = findProjectCheckout(detail, command.checkoutId)
+      if (!detail.project.isScratch || !requested || requested.scratchConversationId === command.conversationId)
+        return command.checkoutId
+      const ownId = scratchCheckoutId(command.conversationId)
+      const own = findProjectCheckout(yield* store.getProject(SCRATCH_PROJECT_ID, { checkoutId: ownId }), ownId)
+      if (own) return own.id
+      if (!prepare) return command.checkoutId
+      const snapshot = yield* store.readTaskSnapshot(command.taskId, 1)
+      if (snapshot.task.sideChat) return command.checkoutId
+      // The first event distinguishes an existing legacy Conversation from an unsent one,
+      // even if a different Conversation has the Task's most recent Run.
+      const history = yield* store.readConversationPage(command.conversationId, 0, 1)
+      if (history.items.length > 0) return detail.mainCheckout.id
+      const checkout = yield* prepareScratchCheckout(
+        store,
+        checkouts,
+        detail,
+        command.conversationId,
+        command.prompt,
+        command.issuedAt,
+      ).pipe(
+        Effect.catchTag('ScratchProjectInsideGitError', error =>
+          Effect.fail(new ExecutionServiceError({ reason: 'scratch-inside-git', message: error.message })),
+        ),
+      )
+      return checkout.id
+    })
+
     const start = Effect.fn('ExecutionService.start')(function* (
       command: BeginRunCommand,
     ): Effect.fn.Return<CommandReceipt, WorkspaceStoreError | ExecutionServiceError> {
@@ -804,7 +854,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 })
               }
               yield* requireAccessModeSupport(command.driverId, command.accessMode)
-              const receipt = yield* store.beginRun(command)
+              const checkoutId = yield* selectRunCheckout(command, true)
+              const receipt = yield* store.beginRun({ ...command, checkoutId })
               if (receipt.replayed) return receipt
               if (workers.size >= maxConcurrentRuns + maxQueuedRuns) {
                 const failed = yield* Effect.exit(
@@ -972,7 +1023,12 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const enqueueFollowUp = Effect.fn('ExecutionService.enqueueFollowUp')(function* (command: EnqueueFollowUpCommand) {
       // A queued follow-up names its driver only when the caller knows it; promotion re-checks the rest.
       if (command.driverId !== undefined) yield* requireAccessModeSupport(command.driverId, command.accessMode)
-      const receipt = yield* store.enqueueFollowUp(command)
+      const checkoutId = command.checkoutId
+        ? yield* selectRunCheckout({ ...command, checkoutId: command.checkoutId }, false)
+        : undefined
+      const receipt = yield* store.enqueueFollowUp(
+        checkoutId === command.checkoutId ? command : { ...command, checkoutId },
+      )
       yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
       return receipt
     })
@@ -1015,7 +1071,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             // Check the head the store will promote, using the same driver and mode precedence it applies.
             if (next)
               yield* requireAccessModeSupport(next.driverId ?? command.driverId, next.accessMode ?? command.accessMode)
-            const promoted = yield* store.promoteNextFollowUp(conversationId, command)
+            const checkoutId = yield* selectRunCheckout(command, false)
+            const promoted = yield* store.promoteNextFollowUp(conversationId, { ...command, checkoutId })
             if (!promoted || promoted.receipt.replayed) return promoted
             const claimResult = yield* Effect.exit(
               store.claimDispatch(promoted.receipt.runId, parsedOptions.ownerEpoch, yield* timestamp),

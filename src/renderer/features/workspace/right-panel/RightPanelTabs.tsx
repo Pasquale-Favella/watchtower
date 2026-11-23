@@ -50,6 +50,8 @@ export function SurfaceIcon({ surface }: { readonly surface: RightPanelSurface }
 
 export interface PanelLauncherProps {
   readonly canInspect: boolean
+  /** False hides the Diff entry, for a checkout that has no Git history to compare. Defaults to true. */
+  readonly canDiff?: boolean | undefined
   readonly onOpenSurface: (surface: RightPanelSurface) => void
   readonly onAddBrowser?: (() => void) | undefined
   readonly onAddTerminal?: (() => void) | undefined
@@ -92,7 +94,7 @@ function launcherItems(props: PanelLauncherProps): {
   readonly action: (() => void) | undefined
   readonly hint: string
 }[] {
-  return [
+  const items = [
     { label: 'Browser', icon: <Globe />, action: props.onAddBrowser, hint: 'Open a browser tab' },
     { label: 'Terminal', icon: <SquareTerminal />, action: props.onAddTerminal, hint: 'Open a terminal tab' },
     {
@@ -126,6 +128,7 @@ function launcherItems(props: PanelLauncherProps): {
       hint: props.canInspect ? 'Browse files' : 'Choose a project to browse files',
     },
   ]
+  return props.canDiff === false ? items.filter(item => item.label !== 'Diff') : items
 }
 
 interface Props extends PanelLauncherProps {

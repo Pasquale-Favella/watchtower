@@ -20,6 +20,7 @@ import {
   currentConversationRuns,
   isRunActive,
   isStopPrimary,
+  latestConversationCheckoutId,
   latestUnresolvedRun,
   resolveComposerDispatch,
   shouldSubmitComposerKey,
@@ -229,7 +230,16 @@ function WorkspaceComposerContent({
     if (createdCheckout && !choices.some(checkout => checkout.id === createdCheckout.id)) choices.push(createdCheckout)
     return choices
   }, [project.data, createdCheckout])
-  const availableCheckoutIds = useMemo(() => new Set(checkoutChoices.map(checkout => checkout.id)), [checkoutChoices])
+  // A "No project" chat starts from the scratch root but runs in a folder of its own that the server picked,
+  // so its newest Run, not the saved preference or the Project's checkout list, names where it works.
+  const boundScratchCheckoutId = project.data?.project.isScratch
+    ? latestConversationCheckoutId(snapshot.data?.runs ?? [], snapshot.data?.runContexts ?? [], conversationId)
+    : undefined
+  const availableCheckoutIds = useMemo(() => {
+    const ids = new Set(checkoutChoices.map(checkout => checkout.id))
+    if (boundScratchCheckoutId) ids.add(boundScratchCheckoutId)
+    return ids
+  }, [checkoutChoices, boundScratchCheckoutId])
   const sessionChoices = useMemo(() => sessions.data?.items ?? [], [sessions.data])
   // The checkout is fixed when the chat starts; only its branch can change afterwards.
   const preferredCheckout =
@@ -246,7 +256,7 @@ function WorkspaceComposerContent({
     snapshot.data?.runs ?? [],
     sessionChoices,
     conversationId,
-    preferredCheckout?.id ?? '',
+    boundScratchCheckoutId ?? preferredCheckout?.id ?? '',
     detectedConnectionIds,
   )
   const handoffTarget = connectionHandoffTarget(continuation, preferredConnectionId)
@@ -274,7 +284,8 @@ function WorkspaceComposerContent({
   // A started chat continues its agent session and stays with that agent.
   const resumeMode = continuation !== null && !freshSessionRequested
   const selectedSession = resumeMode ? continuation : null
-  const checkoutId = (resumeMode && selectedSession?.checkoutId) || preferredCheckout?.id || ''
+  const checkoutId =
+    (resumeMode && selectedSession?.checkoutId) || boundScratchCheckoutId || preferredCheckout?.id || ''
   const activeCheckout = checkoutChoices.find(checkout => checkout.id === checkoutId) ?? null
   const branchRequest = useMemo(
     () =>

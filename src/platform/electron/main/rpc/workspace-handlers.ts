@@ -11,6 +11,10 @@ import * as Stream from 'effect/Stream'
 import * as SubscriptionRef from 'effect/SubscriptionRef'
 
 import { ExecutionServiceError } from '@/core/application/commands/execution-service.js'
+import {
+  SCRATCH_INSIDE_GIT_MESSAGE,
+  ScratchProjectInsideGitError,
+} from '@/core/application/commands/scratch-checkouts.js'
 import { WorkspaceCheckouts } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
@@ -68,12 +72,14 @@ const messages = {
   'not-a-repository': 'This folder is not a Git repository.',
   'not-local-folder': CHOOSE_LOCAL_PROJECT_FOLDER,
   'managed-folder': MANAGED_PROJECT_FOLDER,
+  'scratch-inside-git': SCRATCH_INSIDE_GIT_MESSAGE,
 } as const
 function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
 }
 function sanitize(error: unknown): WorkspaceRpcError {
   if (Schema.is(WorkspaceRpcError)(error)) return error
+  if (Schema.is(ScratchProjectInsideGitError)(error)) return failure('scratch-inside-git')
   if (Schema.is(Store.WorkspaceStoreError)(error)) {
     switch (error.code) {
       case 'admission-conflict':
@@ -98,6 +104,7 @@ function sanitize(error: unknown): WorkspaceRpcError {
     return failure(error.message === 'Connection cleanup could not be confirmed.' ? 'cleanup-unconfirmed' : 'failed')
   if (Schema.is(ExecutionServiceError)(error)) {
     if (error.reason === 'unsupported-access-mode') return failure('unsupported-access-mode')
+    if (error.reason === 'scratch-inside-git') return failure('scratch-inside-git')
     return failure(error.reason === 'invalid-options' ? 'invalid-request' : 'unavailable')
   }
   if (Schema.is(HarnessConnectionResolutionError)(error))

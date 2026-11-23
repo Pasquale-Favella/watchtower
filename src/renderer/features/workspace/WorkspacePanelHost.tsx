@@ -32,6 +32,8 @@ import type { WorkspaceImageContext } from './WorkspaceImageAnnotation.js'
 interface Props {
   readonly projectId?: ProjectId | undefined
   readonly checkoutId?: WorkspaceCheckoutId | undefined
+  /** False hides the Diff entry points, for a checkout with no Git history. Defaults to true. */
+  readonly diffAvailable?: boolean | undefined
   readonly panel: RightPanelControls
   readonly resources: ReturnType<typeof useWorkspacePanelResources>
   readonly ownerKey: string
@@ -191,7 +193,7 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
             visible={visible}
             parentTitle={props.parentTitle ?? ''}
             parentBusy={props.parentBusy ?? false}
-            onOpenDiff={() => props.panel.openSurface('diff')}
+            onOpenDiff={props.diffAvailable === false ? undefined : () => props.panel.openSurface('diff')}
             onRunShellCommand={props.onRunShellCommand}
             onClose={() => void close(surface).then(() => props.panel.closeSurface(surface))}
             onDeleted={() => props.panel.closeSurface(surface)}
@@ -221,6 +223,7 @@ export function WorkspacePanelHost(props: Props): React.JSX.Element {
         reviewOwnerKey={props.reviewOwnerKey ?? props.parent?.conversationId ?? props.ownerKey}
         projectId={props.projectId}
         checkoutId={props.checkoutId}
+        diffAvailable={props.diffAvailable}
         controls={props.panel}
         refreshKey={props.refreshKey}
         onReferencePath={props.onReferencePath}

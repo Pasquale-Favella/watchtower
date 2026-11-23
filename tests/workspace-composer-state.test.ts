@@ -7,6 +7,7 @@ import {
   connectionHandoffTarget,
   currentConversationRuns,
   isRunActive,
+  latestConversationCheckoutId,
   latestConversationSession,
   latestUnresolvedRun,
   shouldSubmitComposerKey,
@@ -223,6 +224,34 @@ describe('workspace composer state', () => {
         conversationId,
       ),
     ).toEqual([first])
+  })
+
+  it('reads the checkout the server bound the newest Run of this Conversation to', () => {
+    const scratchRoot = workspaceCheckoutIdSchema.make('workspace-scratch-checkout')
+    const ownFolder = workspaceCheckoutIdSchema.make('scratch-checkout:conversation-1')
+    const older = { ...run('run-1', 'completed'), submittedAt: '2026-11-02T00:00:00Z' }
+    const newer = { ...run('run-2', 'completed'), submittedAt: '2026-11-03T00:00:00Z' }
+    const otherConversation = { ...run('run-3', 'completed'), submittedAt: '2026-11-04T00:00:00Z' }
+    const context = (
+      runId: AgentRun['id'],
+      conversation: string,
+      checkout: typeof checkoutId,
+    ): WorkspaceRunContext => ({
+      runId,
+      conversationId: conversationIdSchema.make(conversation),
+      checkoutId: checkout,
+      driverId: 'driver-a',
+      connectionId: 'connection-a',
+    })
+    const contexts = [
+      context(older.id, 'conversation-1', scratchRoot),
+      context(newer.id, 'conversation-1', ownFolder),
+      context(otherConversation.id, 'other', scratchRoot),
+    ]
+    expect(latestConversationCheckoutId([older, newer, otherConversation], contexts, conversationId)).toBe(ownFolder)
+    expect(latestConversationCheckoutId([older, newer], contexts, conversationIdSchema.make('unsent'))).toBeUndefined()
+    expect(latestConversationCheckoutId([], [], conversationId)).toBeUndefined()
+    expect(latestConversationCheckoutId([older], contexts, null)).toBeUndefined()
   })
 
   it('requires an exact, available native session tuple before resuming', () => {

@@ -12,9 +12,9 @@ import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
 import {
   clearCoachNewChatDraftIfUnchangedAtom,
   clearConversationDraftIfUnchangedAtom,
+  clearNewChatDraftIfUnchangedAtom,
   coachNewChatDraftAtom,
   ensureCoachProjectAtom,
-  clearNewChatDraftIfUnchangedAtom,
   ensureScratchProjectAtom,
   hydrateNewChatDraft,
   newChatDraftAtom,
@@ -91,7 +91,7 @@ export function useNewChatDraft(ephemeral = false) {
   const saveConversationPreference = useCallback(
     (
       conversationId: ConversationId,
-      checkoutId: string,
+      checkoutId: string | null,
       connectionId: string,
       modelId = '',
       modeId = '',

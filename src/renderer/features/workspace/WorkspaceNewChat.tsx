@@ -25,6 +25,7 @@ import { shouldSubmitComposerKey } from './composer-state.js'
 import { ComposerActionTooltip } from './ComposerActionHint.js'
 import { configOptionsForModel, configValuesForOptions } from './config-values.js'
 import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connection-hooks.js'
+import { isDiffAvailable } from './diff-availability.js'
 import { useErrorToast } from './error-toast.js'
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
@@ -106,7 +107,11 @@ const projectRequest = (projectId: ProjectId | null): WorkspaceRequest<'workspac
 
 export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach }: Props) {
   const panelContext = useDraftPanelContext(projectId, !coach)
-  const panel = useRightPanel(coach ? null : panelContext.key)
+  const projectReadRequest = useMemo(() => projectRequest(projectId), [projectId])
+  const project = useNewChatProject(projectReadRequest)
+  // Without a Project, or in a plain folder, there is no Git history to compare.
+  const diffAvailable = projectId !== null && isDiffAvailable(project.data)
+  const panel = useRightPanel(coach ? null : panelContext.key, { diffAvailable })
   const terminal = useTerminalDrawer(panelContext.target, !coach)
   const terminalAdoption = useTerminalAdoption()
   const resources = useWorkspacePanelResources(panelContext.key, panel, undefined, !coach)
@@ -149,8 +154,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
     [projectCursor],
   )
   const projects = useNewChatProjects(coach ? null : projectListRequest)
-  const projectReadRequest = useMemo(() => projectRequest(projectId), [projectId])
-  const project = useNewChatProject(projectReadRequest)
   const connections = useWorkspaceConnections()
   const inspect = useInspectWorkspaceConnection()
   const ensureScratch = useEnsureScratchProject()
@@ -315,9 +318,12 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
       const retained = draftRef.current
       copyDraftToConversation(receipt.conversationId, retained)
       attachments.copyTo(receipt.conversationId, creation.attachments)
+      // A "No project" chat runs in a folder the server picks on its first Run. Pinning the scratch root
+      // here would make the composer look for a native session in the wrong checkout on every follow-up.
+      const scratch = (target ?? project.data)?.project.isScratch === true
       saveConversationPreference(
         receipt.conversationId,
-        checkoutId,
+        scratch ? null : checkoutId,
         creation.connectionId,
         creation.modelId ?? '',
         creation.modeId ?? '',
@@ -708,7 +714,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
                 workspacePath={project.data?.mainCheckout.path}
                 isScratch={!selectedProject}
                 onOpenFiles={() => panel.openSurface('files')}
-                onOpenDiff={checkout.mode === 'local' ? () => panel.openSurface('diff') : undefined}
+                onOpenDiff={diffAvailable && checkout.mode === 'local' ? () => panel.openSurface('diff') : undefined}
                 onOpenPullRequests={() => panel.openSurface('pull-requests')}
                 checkoutControls={
                   gitProject ? (
@@ -736,6 +742,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
         {!coach && (
           <WorkspacePanelHost
             projectId={projectReady ? (projectId ?? undefined) : undefined}
+            diffAvailable={diffAvailable}
             panel={panel}
             resources={resources}
             ownerKey={panelContext.key}

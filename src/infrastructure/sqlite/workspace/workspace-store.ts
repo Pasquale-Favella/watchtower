@@ -479,6 +479,9 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
         projectId: registration.checkout.projectId,
         path: registration.checkout.path,
         branch: registration.checkout.branch ?? null,
+        ...(registration.checkout.scratchConversationId
+          ? { scratchConversationId: registration.checkout.scratchConversationId }
+          : {}),
       },
     }
   } else if (kind === 'createTask') {
@@ -686,6 +689,7 @@ const makeService = Effect.gen(function* () {
                   SELECT 1 FROM workspace_checkout c
                   WHERE c.project_id = p.id
                     AND json_extract(c.payload, '$.kind') IN ('main', 'directory')
+                    AND json_extract(c.payload, '$.scratchConversationId') IS NULL
                     AND (${repositoryIdentity} IS NULL OR json_extract(c.payload, '$.kind') = 'directory')
                     AND json_extract(c.payload, '$.archivedAt') IS NULL
                     AND json_extract(c.payload, '$.path') = ${command.mainCheckout.path}
@@ -702,7 +706,7 @@ const makeService = Effect.gen(function* () {
               project = yield* decodeJson(projectSchema)(String(existing[0].payload))
               if (!matchesMembership(project)) return yield* membershipConflict
               const checkouts =
-                yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') IN ('main', 'directory') AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
+                yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') IN ('main', 'directory') AND json_extract(payload, '$.scratchConversationId') IS NULL AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
               if (checkouts.length !== 1)
                 return yield* safeError('membership-conflict', 'Repository has no unambiguous active main checkout')
               mainCheckout = yield* decodeJson(workspaceCheckoutSchema)(String(checkouts[0].payload))
@@ -746,6 +750,8 @@ const makeService = Effect.gen(function* () {
             const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
             if (project.archivedAt)
               return yield* safeError('membership-conflict', 'Archived projects take no checkouts')
+            if (command.checkout.kind === 'directory' && !project.isScratch)
+              return yield* safeError('membership-conflict', 'Chat folders require the No project context')
             const samePath =
               yield* sql`SELECT id FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.path') = ${command.checkout.path} AND json_extract(payload, '$.archivedAt') IS NULL LIMIT 1`
             if (samePath[0]) return yield* safeError('membership-conflict', 'Checkout path is already registered')
@@ -3087,7 +3093,7 @@ const makeService = Effect.gen(function* () {
     guard(
       Effect.gen(function* () {
         const page = yield* Schema.decodeUnknownEffect(workspaceCheckoutPageOptionsSchema)(options ?? {}).pipe(
-          Effect.map(value => ({ afterCheckoutId: value.afterCheckoutId ?? '', limit: value.limit ?? 20 })),
+          Effect.map(value => ({ ...value, afterCheckoutId: value.afterCheckoutId ?? '', limit: value.limit ?? 20 })),
           Effect.mapError(() => safeError('invalid-data', 'Checkout cursor or page limit is invalid')),
         )
         return yield* sql.withTransaction(
@@ -3103,7 +3109,7 @@ const makeService = Effect.gen(function* () {
             if (project.id !== projectRows[0].id)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
             const mainRows =
-              yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') IN ('main', 'directory') ELSE 0 END LIMIT 2`
+              yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') IN ('main', 'directory') AND json_extract(payload, '$.scratchConversationId') IS NULL ELSE 0 END LIMIT 2`
             if (mainRows.length !== 1)
               return yield* Effect.fail(safeError('invalid-data', 'Project must have exactly one main checkout'))
             const mainCheckout = summarize(
@@ -3125,9 +3131,10 @@ const makeService = Effect.gen(function* () {
             const otherCheckouts: Array<WorkspaceCheckout> = []
             let checkoutCursor = page.afterCheckoutId
             let hasMore = false
-            for (let index = 0; index < page.limit; index += 1) {
-              const checkouts =
-                yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} ORDER BY id LIMIT 1`
+            for (let index = 0; index < (page.checkoutId ? 1 : page.limit); index += 1) {
+              const checkouts = page.checkoutId
+                ? yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id = ${page.checkoutId}`
+                : yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} ORDER BY id LIMIT 1`
               const row = checkouts[0]
               if (!row) break
               const checkout = summarize(
@@ -3160,7 +3167,7 @@ const makeService = Effect.gen(function* () {
               otherCheckouts.push(checkout)
               checkoutCursor = checkout.id
             }
-            if (!hasMore) {
+            if (!hasMore && !page.checkoutId) {
               const more =
                 yield* sql`SELECT 1 AS found FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} LIMIT 1`
               hasMore = more.length > 0

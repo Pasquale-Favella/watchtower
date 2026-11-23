@@ -10,6 +10,7 @@ import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/s
 import { currentConversationRuns, isRunActive } from './composer-state.js'
 import { useParentTaskLink } from './delegation/chat-delegation-hooks.js'
 import { useDelegations } from './delegation/hooks.js'
+import { isDiffAvailable } from './diff-availability.js'
 import {
   useWorkspaceNativeAgentSessions,
   useWorkspaceProject,
@@ -58,7 +59,13 @@ export function WorkspaceChatColumn({
   const retainedTerminalTarget = useRetainedTaskTerminalTarget(taskId)
   const terminalTarget = useMemo<TerminalTarget>(() => ({ kind: 'task', taskId }), [taskId])
   const terminal = useTerminalDrawer(terminalTarget, !coach)
-  const panel = useRightPanel(coach ? null : taskId)
+  const detail = useWorkspaceTask({
+    taskId,
+    options: { limit: 30, ...(afterConversationId ? { afterId: afterConversationId } : {}) },
+  })
+  const project = useWorkspaceProject(detail.data ? { projectId: detail.data.task.projectId } : null)
+  const diffAvailable = isDiffAvailable(project.data)
+  const panel = useRightPanel(coach ? null : taskId, { diffAvailable })
   const ownerKey = useTaskPanelResourceKey(taskId)
   const resources = useWorkspacePanelResources(ownerKey, panel, coach ? undefined : taskId, !coach)
   const appendDraft = useDraftAppend()
@@ -80,10 +87,6 @@ export function WorkspaceChatColumn({
     () => new Map(snapshot.data?.runContexts?.map(context => [context.runId, context] as const) ?? []),
     [snapshot.data?.runContexts],
   )
-  const detail = useWorkspaceTask({
-    taskId,
-    options: { limit: 30, ...(afterConversationId ? { afterId: afterConversationId } : {}) },
-  })
   const conversations = detail.data?.conversations ?? []
   const conversation =
     conversations.find(item => item.id === selectedConversationId) ?? (coach ? undefined : conversations[0])
@@ -100,7 +103,6 @@ export function WorkspaceChatColumn({
         .flatMap(session => session.capabilities?.commands?.map(command => command.name) ?? []) ?? [],
     [nativeSessions.data?.items, conversation?.id],
   )
-  const project = useWorkspaceProject(detail.data ? { projectId: detail.data.task.projectId } : null)
   const parentTask = useParentTaskLink(detail.data?.task.projectId ?? null, taskId, onSelectTask)
 
   useEffect(() => {
@@ -276,7 +278,7 @@ export function WorkspaceChatColumn({
                 workspacePath={runContext?.workspacePath ?? checkout?.path}
                 isScratch={project.data?.project.isScratch}
                 onOpenFiles={() => panel.openSurface('files')}
-                onOpenDiff={() => panel.openSurface('diff')}
+                onOpenDiff={diffAvailable ? () => panel.openSurface('diff') : undefined}
                 onOpenPullRequests={() => panel.openSurface('pull-requests')}
                 onOpenSideChat={id => panel.addSurface('side-chat', id)}
               >
@@ -323,6 +325,7 @@ export function WorkspaceChatColumn({
             conversationId={conversation?.id ?? null}
             taskStatus={task.status}
             checkoutId={checkoutId}
+            diffAvailable={diffAvailable}
             panel={panel}
             resources={resources}
             ownerKey={ownerKey}
@@ -360,6 +363,7 @@ function TaskRightPanel({
   readonly conversationId: ConversationId | null
   readonly taskStatus: string
   readonly checkoutId?: WorkspaceCheckoutId | undefined
+  readonly diffAvailable?: boolean | undefined
   readonly panel: RightPanelControls
   readonly resources: ReturnType<typeof useWorkspacePanelResources>
   readonly ownerKey: string

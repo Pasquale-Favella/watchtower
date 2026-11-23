@@ -82,8 +82,9 @@ worktree are distinct checkouts.
 _Avoid_: workspace folder
 
 **No project**:
-A chat using the application's persistent managed checkout rather than a
-registered user repository. Its internal Project keeps execution and recovery
+A chat in a folder managed by Watchtower under the app profile. Each new chat
+has its own directory checkout, with no Git setup. Side chats share their
+parent's checkout. The internal Project keeps execution and recovery
 identities valid and stays out of the user Project picker.
 
 **Coach project**:

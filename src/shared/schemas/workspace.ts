@@ -42,6 +42,7 @@ export const workspaceCheckoutSchema = Schema.Struct({
   id: workspaceCheckoutIdSchema,
   projectId: projectIdSchema,
   kind: Schema.Literals(['main', 'worktree', 'directory']),
+  scratchConversationId: Schema.optional(conversationIdSchema),
   path: nonBlank,
   environmentId: optionalText,
   branch: optionalText,

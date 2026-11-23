@@ -2,6 +2,11 @@
 
 Status: accepted for the workspace terminal drawer; authenticated native turns, packaged-app verification and Linux/macOS evidence remain pending.
 
+Amended by ADR 0047. A No project draft opens terminals in the managed scratch
+root. Each new chat has its own directory checkout, and its Task terminals
+open there. Draft shells in the scratch root follow the previous-checkout
+rules when the chat uses a different folder.
+
 Related work: [issue #178](https://github.com/Pasquale-Favella/watchtower/issues/178) and [workspace interaction plan](../plans/workspace-interaction.md). The domain and execution ownership in [ADR 0039](0039-agent-workspace-domain-and-execution.md) continue to apply; a terminal is an operator tool for a Task, not an Agent Session or Agent Run.
 
 The workspace needs a shell that belongs to its selected checkout. A user can inspect or run commands beside a conversation, including before its first message. A terminal must survive navigating to another Task and back, and hiding the drawer must not terminate work the user started. An in-renderer shell cannot provide this, because renderer reloads and view changes would own the process.

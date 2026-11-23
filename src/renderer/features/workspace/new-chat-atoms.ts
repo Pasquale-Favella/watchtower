@@ -87,7 +87,7 @@ export const saveConversationComposerPreferenceAtom = Atom.writable(
     context,
     input: {
       readonly conversationId: ConversationId
-      readonly checkoutId: string
+      readonly checkoutId: string | null
       readonly connectionId: string
       readonly modelId?: string
       readonly modeId?: string
@@ -98,7 +98,7 @@ export const saveConversationComposerPreferenceAtom = Atom.writable(
     context.set(updateWorkspaceComposerPreferenceAtom, {
       conversationId: input.conversationId,
       preference: {
-        checkoutId: input.checkoutId,
+        ...(input.checkoutId ? { checkoutId: input.checkoutId } : {}),
         connectionId: input.connectionId,
         modelId: input.modelId ?? '',
         modeId: input.modeId ?? '',

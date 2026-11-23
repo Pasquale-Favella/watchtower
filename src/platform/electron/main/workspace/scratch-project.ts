@@ -5,6 +5,11 @@ import { ChildProcess, ChildProcessSpawner } from 'effect/process'
 import * as Schema from 'effect/Schema'
 import * as Stream from 'effect/Stream'
 
+import {
+  resolveScratchRoot,
+  SCRATCH_PROJECT_ID,
+  SCRATCH_ROOT_CHECKOUT_ID,
+} from '@/core/application/commands/scratch-checkouts.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
@@ -17,11 +22,10 @@ export const managedChatProjectId = (kind: 'scratch' | 'coach') =>
 export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(function* (
   store: WorkspaceStore['Service'],
   directory: string,
-  kind: 'scratch' | 'coach',
+  kind: 'coach',
 ) {
-  const marker = kind === 'coach' ? 'isCoach' : 'isScratch'
   const projectId = managedChatProjectId(kind)
-  const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(`workspace-${kind}-checkout`)
+  const checkoutId = workspaceCheckoutIdSchema.make(`workspace-${kind}-checkout`)
   const fs = yield* FileSystem.FileSystem
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const resolver = yield* CheckoutResolver
@@ -29,9 +33,9 @@ export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(fu
     .getProject(projectId)
     .pipe(Effect.catch(error => (error.code === 'not-found' ? Effect.succeed(null) : Effect.fail(error))))
   if (existing) {
-    const checkout = existing.project[marker] ? yield* resolver.resolve(directory) : null
+    const checkout = existing.project.isCoach ? yield* resolver.resolve(directory) : null
     if (
-      (kind === 'coach' && existing.mainCheckout.id !== checkoutId) ||
+      existing.mainCheckout.id !== checkoutId ||
       checkout?.kind !== 'main' ||
       existing.mainCheckout.path !== checkout.canonicalPath ||
       existing.project.repositoryIdentity !== checkout.repositoryIdentity
@@ -87,9 +91,9 @@ export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(fu
   return yield* store.registerProject({
     project: {
       id: projectId,
-      name: kind === 'coach' ? 'Coach' : 'No project',
+      name: 'Coach',
       repositoryIdentity: checkout.repositoryIdentity,
-      [marker]: true,
+      isCoach: true,
       createdAt: at,
       updatedAt: at,
     },
@@ -103,6 +107,37 @@ export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(fu
   })
 })
 
-/** The no-project context owns a persistent checkout under the application profile. */
-export const ensureScratchProject = (store: WorkspaceStore['Service'], directory: string) =>
-  ensureManagedChatProject(store, directory, 'scratch')
+export const ensureScratchProject = Effect.fn('ensureScratchProject')(function* (
+  store: WorkspaceStore['Service'],
+  directory: string,
+) {
+  const projectId = SCRATCH_PROJECT_ID
+  const fs = yield* FileSystem.FileSystem
+  const resolver = yield* CheckoutResolver
+  const existing = yield* store
+    .getProject(projectId)
+    .pipe(Effect.catch(error => (error.code === 'not-found' ? Effect.succeed(null) : Effect.fail(error))))
+  const invalidIdentity = new WorkspaceStoreError({
+    code: 'membership-conflict',
+    message: 'Chat checkout identity is invalid.',
+  })
+  if (existing && !existing.project.isScratch) return yield* invalidIdentity
+  yield* fs.makeDirectory(directory, { recursive: true })
+  const legacy = existing?.mainCheckout.kind === 'main'
+  const root = yield* resolveScratchRoot(resolver, directory, legacy)
+  if (existing) {
+    if (existing.mainCheckout.path !== root) return yield* invalidIdentity
+    return {
+      commandId: `internal:registerProject:${projectId}`,
+      project: existing.project,
+      mainCheckout: existing.mainCheckout,
+      replayed: true,
+      reused: true,
+    }
+  }
+  const at = DateTime.formatIso(yield* DateTime.now)
+  return yield* store.registerProject({
+    project: { id: projectId, name: 'No project', isScratch: true, createdAt: at, updatedAt: at },
+    mainCheckout: { id: SCRATCH_ROOT_CHECKOUT_ID, kind: 'directory', path: root, createdAt: at },
+  })
+})

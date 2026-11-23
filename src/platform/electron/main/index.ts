@@ -14,8 +14,9 @@ import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join, relative, sep } from 'path'
 
+import { findProjectCheckout, SCRATCH_PROJECT_ID } from '@/core/application/commands/scratch-checkouts.js'
 import { WorkspaceCheckouts, WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
 import { WorkspaceProjectSetupLive } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
@@ -27,8 +28,8 @@ import {
 } from '@/core/application/commands/workspace-side-chats.js'
 import { AgentDriverError, type AgentSessionContext } from '@/core/ports/agent-driver.js'
 import type { CheckoutActions } from '@/core/ports/checkout-actions.js'
-import type { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
-import type { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import { CheckoutInspection, CheckoutInspectionError } from '@/core/ports/checkout-inspection.js'
+import { type CheckoutResolver, CheckoutResolverError } from '@/core/ports/checkout-resolver.js'
 import type { TerminalHost } from '@/core/ports/terminal-host.js'
 import type { WorkspaceDevices } from '@/core/ports/workspace-devices.js'
 import type { WorkspacePullRequests } from '@/core/ports/workspace-pull-requests.js'
@@ -47,6 +48,7 @@ import {
   safeLogOperationalEvent,
 } from '@/infrastructure/logging/operational-log.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
+import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
 import { TerminalHostLive } from '@/infrastructure/terminal/terminal-host.js'
 import { CheckoutActionsLive } from '@/infrastructure/workspace/checkout-actions.js'
 import { WorkspaceDevicesLive } from '@/infrastructure/workspace/devices.js'
@@ -81,6 +83,7 @@ import {
 } from '@/platform/electron/main/rpc/lifecycle.js'
 import { nativeHandlers } from '@/platform/electron/main/rpc/native-handlers.js'
 import { shellHandlers } from '@/platform/electron/main/rpc/shell-handlers.js'
+import { sourceControlHandlers } from '@/platform/electron/main/rpc/source-control-handlers.js'
 import { terminalHandlers } from '@/platform/electron/main/rpc/terminal-handlers.js'
 import { lifecycleEventFromWorker } from '@/platform/electron/main/rpc/worker-events.js'
 import { workspaceDelegationHandlers } from '@/platform/electron/main/rpc/workspace-delegation-handlers.js'
@@ -90,7 +93,11 @@ import { workspacePreviewHandlers } from '@/platform/electron/main/rpc/workspace
 import { workspacePullRequestHandlers } from '@/platform/electron/main/rpc/workspace-pull-request-handlers.js'
 import { workspaceSideChatHandlers } from '@/platform/electron/main/rpc/workspace-side-chat-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
-import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
+import {
+  type CheckoutPathFailure,
+  resolveCheckoutPath,
+  resolveTaskCheckoutPath,
+} from '@/platform/electron/main/workspace/checkout-paths.js'
 import { COACH_PROJECT_ID, ensureCoachProject } from '@/platform/electron/main/workspace/coach-project.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import { createPromptReferenceFiles } from '@/platform/electron/main/workspace/prompt-references.js'
@@ -103,9 +110,11 @@ import { createLedgerMcpQueries } from '@/platform/mcp/query-api.js'
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
 import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
 import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
-import { TerminalRpcError } from '@/shared/rpc/terminal.js'
+import { TerminalRpcError, terminalRpcMessages } from '@/shared/rpc/terminal.js'
 import { pullRequestRpcMessages, WorkspacePullRequestRpcError } from '@/shared/rpc/workspace-pull-requests.js'
+import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
+import type { TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceCheckout } from '@/shared/schemas/workspace.js'
 
 /**
@@ -158,6 +167,84 @@ const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
 }).pipe(Layer.provideMerge(appUpdatesLayer))
 
 const sideChatStorageLayer = sideChatPersistenceLayer(join(app.getPath('userData'), 'workspace', 'side-chats'))
+
+const resolveRegisteredCheckoutPath = Effect.fnUntraced(function* (request: CheckoutScope) {
+  if (!request.checkoutId) return yield* resolveCheckoutPath(request)
+  const host = yield* WorkspaceHost
+  const detail = yield* host.ensureOpen.pipe(
+    Effect.andThen(Effect.suspend(() => host.store.getProject(request.projectId, { checkoutId: request.checkoutId }))),
+    Effect.mapError((error): CheckoutPathFailure => (error.code === 'not-found' ? 'not-found' : 'unavailable')),
+  )
+  const checkout = findProjectCheckout(detail, request.checkoutId)
+  if (!checkout || detail.project.archivedAt) return yield* Effect.fail<CheckoutPathFailure>('not-found')
+  return checkout.path
+})
+
+const resolveWorkspaceTerminalTaskCwd = Effect.fnUntraced(function* (
+  taskId: TaskId,
+  requestedCheckoutId?: WorkspaceCheckoutId,
+) {
+  const host = yield* WorkspaceHost
+  yield* host.ensureOpen
+  const snapshot = yield* host.store.readTaskSnapshot(taskId, 1)
+  if (snapshot.task.projectId !== SCRATCH_PROJECT_ID) return yield* resolveTaskCheckoutPath(taskId, requestedCheckoutId)
+  if (snapshot.task.status === 'archived') return yield* Effect.fail('unavailable' as const)
+  const latest = snapshot.runContexts?.[0]?.checkoutId
+  const checkoutId =
+    latest ?? (yield* host.store.readTaskDetail(taskId, { limit: 1 })).conversations[0]?.inheritedCheckoutId
+  // An unsent scratch draft uses the root. Its new Task will use a different folder.
+  if (!checkoutId && requestedCheckoutId)
+    return yield* new TerminalRpcError({ code: 'conflict', message: terminalRpcMessages.conflict })
+  if (!checkoutId) return yield* Effect.fail('unavailable' as const)
+  return yield* resolveRegisteredCheckoutPath({ projectId: SCRATCH_PROJECT_ID, checkoutId })
+})
+
+const workspaceCheckoutInspectionHandlers = Layer.unwrap(
+  Effect.gen(function* () {
+    const host = yield* WorkspaceHost
+    const inspection = yield* CheckoutInspection
+    const gitOnly = <A>(path: string, inspect: Effect.Effect<A, CheckoutInspectionError>) =>
+      Effect.gen(function* () {
+        const scratch = yield* host.store
+          .getProject(SCRATCH_PROJECT_ID, { limit: 1 })
+          .pipe(
+            Effect.catch(error =>
+              error.code === 'not-found'
+                ? Effect.succeed(null)
+                : Effect.fail(
+                    new CheckoutInspectionError({ code: 'unavailable', message: 'Cannot check the scratch root.' }),
+                  ),
+            ),
+          )
+        if (scratch?.project.isScratch) {
+          const fromRoot = relative(scratch.mainCheckout.path, path)
+          if (fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))
+            return yield* new CheckoutInspectionError({
+              code: 'not-repository',
+              message: 'Git inspection is unavailable for No project.',
+            })
+        }
+        return yield* inspect
+      })
+    const withoutScratchGit = CheckoutInspection.of({
+      ...inspection,
+      diffPreview: (path, source) => gitOnly(path, inspection.diffPreview(path, source)),
+      filePatch: (path, request) => gitOnly(path, inspection.filePatch(path, request)),
+      branches: path => gitOnly(path, inspection.branches(path)),
+      commits: path => gitOnly(path, inspection.commits(path)),
+    })
+    return checkoutInspectionHandlers({
+      resolveCheckoutPath: request =>
+        resolveRegisteredCheckoutPath(request).pipe(
+          Effect.mapError(code =>
+            code === 'not-found'
+              ? new CheckoutInspectionRpcError({ code, message: 'Checkout record was not found.' })
+              : new CheckoutInspectionRpcError({ code, message: 'Checkout inspection is unavailable.' }),
+          ),
+        ),
+    }).pipe(Layer.provide(Layer.succeed(CheckoutInspection, withoutScratchGit)))
+  }),
+)
 
 // Only the inert host is acquired at boot. Its worker, database and drivers stay lazy.
 const workspaceHostLayer = Layer.effect(
@@ -305,10 +392,29 @@ const workspaceStoreLayer = Layer.effect(
   WorkspaceStore,
   Effect.map(WorkspaceHost, host => host.store),
 )
+const workspaceCheckoutsLayer = Layer.effect(
+  WorkspaceCheckouts,
+  Effect.map(WorkspaceCheckouts, checkouts => {
+    const scratchGitUnavailable = new CheckoutResolverError({
+      code: 'not-a-repository',
+      message: 'Git is unavailable for No project.',
+    })
+    return WorkspaceCheckouts.of({
+      branches: request =>
+        request.projectId === SCRATCH_PROJECT_ID ? Effect.fail(scratchGitUnavailable) : checkouts.branches(request),
+      switchBranch: request =>
+        request.projectId === SCRATCH_PROJECT_ID ? Effect.fail(scratchGitUnavailable) : checkouts.switchBranch(request),
+      createWorktree: request =>
+        request.projectId === SCRATCH_PROJECT_ID
+          ? Effect.fail(scratchGitUnavailable)
+          : checkouts.createWorktree(request),
+    })
+  }),
+).pipe(Layer.provide(WorkspaceCheckoutsLive(join(app.getPath('userData'), 'worktrees'))))
 const workspaceLayer = WorkspaceProjectSetupLive.pipe(
   Layer.provideMerge(WorkspaceProjectsLive),
   Layer.provideMerge(WorkspaceSideChatsLive.pipe(Layer.provide(sideChatStorageLayer))),
-  Layer.provideMerge(WorkspaceCheckoutsLive(join(app.getPath('userData'), 'worktrees'))),
+  Layer.provideMerge(workspaceCheckoutsLayer),
   Layer.provideMerge(
     Layer.mergeAll(
       CheckoutResolverLive,
@@ -544,39 +650,42 @@ app.whenReady().then(async () => {
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
             Effect.provide(
               Layer.mergeAll(
-                workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject>>>({
-                  attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
-                  promptReferences: createPromptReferenceFiles(
-                    join(app.getPath('userData'), 'workspace', 'prompt-references'),
-                  ),
-                  chooseProjectDirectory: () =>
-                    Effect.tryPromise({
-                      try: async () => {
-                        const selected = await dialog.showOpenDialog({
-                          title: 'Open a Project',
-                          properties: ['openDirectory'],
-                        })
-                        return selected.canceled ? null : (selected.filePaths[0] ?? null)
-                      },
-                      catch: error => error,
-                    }),
-                  prepareScratchProject: store =>
-                    ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
-                  prepareCoachProject: store =>
-                    ensureCoachProject(store, join(app.getPath('userData'), 'workspace', 'coach')),
-                }),
+                workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject | typeof ensureCoachProject>>>(
+                  {
+                    attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
+                    promptReferences: createPromptReferenceFiles(
+                      join(app.getPath('userData'), 'workspace', 'prompt-references'),
+                    ),
+                    chooseProjectDirectory: () =>
+                      Effect.tryPromise({
+                        try: async () => {
+                          const selected = await dialog.showOpenDialog({
+                            title: 'Open a Project',
+                            properties: ['openDirectory'],
+                          })
+                          return selected.canceled ? null : (selected.filePaths[0] ?? null)
+                        },
+                        catch: error => error,
+                      }),
+                    prepareScratchProject: store =>
+                      ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
+                    prepareCoachProject: store =>
+                      ensureCoachProject(store, join(app.getPath('userData'), 'workspace', 'coach')),
+                  },
+                ),
                 Layer.unwrap(
                   Effect.map(WorkspaceHost, host =>
                     terminalHandlers({
                       resolveTaskCwd: (taskId, checkoutId) =>
-                        resolveTaskCheckoutPath(taskId, checkoutId).pipe(
+                        resolveWorkspaceTerminalTaskCwd(taskId, checkoutId).pipe(
                           Effect.provideService(WorkspaceHost, host),
-                          Effect.mapError(
-                            () =>
-                              new TerminalRpcError({
-                                code: 'cwd-unavailable',
-                                message: 'The Task checkout is unavailable.',
-                              }),
+                          Effect.mapError(error =>
+                            error instanceof TerminalRpcError
+                              ? error
+                              : new TerminalRpcError({
+                                  code: 'cwd-unavailable',
+                                  message: 'The Task checkout is unavailable.',
+                                }),
                           ),
                         ),
                       resolveDraftCwd: target =>
@@ -606,23 +715,15 @@ app.whenReady().then(async () => {
                     }),
                   ),
                 ),
-                checkoutInspectionHandlers({
-                  resolveCheckoutPath: request =>
-                    resolveCheckoutPath(request).pipe(
-                      Effect.mapError(code =>
-                        code === 'not-found'
-                          ? new CheckoutInspectionRpcError({ code, message: 'Checkout record was not found.' })
-                          : new CheckoutInspectionRpcError({ code, message: 'Checkout inspection is unavailable.' }),
-                      ),
-                    ),
-                }),
-                checkoutActionsHandlers({ resolveCheckoutPath }),
-                checkoutNavigationHandlers({ resolveCheckoutPath }),
+                workspaceCheckoutInspectionHandlers,
+                checkoutActionsHandlers({ resolveCheckoutPath: resolveRegisteredCheckoutPath }),
+                checkoutNavigationHandlers({ resolveCheckoutPath: resolveRegisteredCheckoutPath }),
                 workspacePreviewHandlers(previews, sender),
                 workspaceDeviceHandlers(),
+                sourceControlHandlers.pipe(Layer.provide(CommandRunnerLive), Layer.provide(NodePlatformLive)),
                 workspacePullRequestHandlers({
                   resolveCheckoutPath: scope =>
-                    resolveCheckoutPath(scope).pipe(
+                    resolveRegisteredCheckoutPath(scope).pipe(
                       Effect.mapError(
                         () =>
                           new WorkspacePullRequestRpcError({

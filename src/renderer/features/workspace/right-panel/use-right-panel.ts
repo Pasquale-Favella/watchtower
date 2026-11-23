@@ -57,9 +57,12 @@ function isModKey(event: KeyboardEvent, code: string): boolean {
  * Open state, tabs and maximize for the changes panel, remembered per Task key. Shortcuts for the
  * current Task: Mod+Alt+B toggles the panel, Mod+D toggles the diff, Mod+T opens the add-surface menu.
  * Mod+D and Mod+T yield to a focused terminal. A null key, such as before the first Task exists, has
- * no remembered state.
+ * no remembered state. Mod+D does nothing while the Diff is unavailable, as for a chat in a plain folder.
  */
-export function useRightPanel(taskKey: string | null): RightPanelControls {
+export function useRightPanel(
+  taskKey: string | null,
+  { diffAvailable = true }: { readonly diffAvailable?: boolean } = {},
+): RightPanelControls {
   const [preferences, setPreferences] = useState(() => readRightPanelPreferences(browserStorage()))
   const [addMenuRequest, setAddMenuRequest] = useState(0)
   const key = taskKey ?? ''
@@ -145,6 +148,7 @@ export function useRightPanel(taskKey: string | null): RightPanelControls {
       const insideSideChat = event.target instanceof Element && event.target.closest('[data-side-chat-pane]') !== null
       if (event.repeat || insideSideChat || isTerminalFocusTarget(event.target)) return
       if (isModKey(event, 'KeyD')) {
+        if (!diffAvailable) return
         event.preventDefault()
         change(p => toggleSurface(p, 'diff'))
       } else if (open && isModKey(event, 'KeyT')) {
@@ -154,7 +158,7 @@ export function useRightPanel(taskKey: string | null): RightPanelControls {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [change, key, open, toggle])
+  }, [change, diffAvailable, key, open, toggle])
 
   return {
     open,

@@ -1,3 +1,7 @@
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -10,6 +14,7 @@ import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
 import { ExecutionService, type ExecutionServiceOptions } from '@/core/application/commands/execution-service.js'
+import { SCRATCH_PROJECT_ID, SCRATCH_ROOT_CHECKOUT_ID } from '@/core/application/commands/scratch-checkouts.js'
 import { enrichSideChatPrompt, SideChatPersistence } from '@/core/application/commands/workspace-side-chats.js'
 import {
   AgentDriver,
@@ -169,6 +174,115 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
 }
 
 describe('ExecutionService', () => {
+  it('dispatches No project chats into their registered directory and recreates it before the next Run', async () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'watchtower-scratch-dispatch-'))
+    const root = realpathSync.native(temporary)
+    const workspacePaths: string[] = []
+    const runtime = makeRuntime(
+      () => {
+        const submitted = Effect.runSync(Deferred.make<undefined>())
+        const nativeSessionId = `native-scratch-${workspacePaths.length + 1}`
+        const session = makeSession({
+          identity: { nativeSessionId, generation: 1 },
+          submit: () =>
+            Deferred.succeed(submitted, undefined).pipe(
+              Effect.as({ nativeSessionId, nativeTurnId: 'native-turn', generation: 1 }),
+            ),
+          events: () =>
+            Stream.fromEffect(Deferred.await(submitted)).pipe(
+              Stream.flatMap(() =>
+                Stream.fromIterable([
+                  { kind: 'turnStarted' as const, nativeTurnId: 'native-turn' },
+                  { kind: 'turnCompleted' as const, nativeTurnId: 'native-turn' },
+                ]),
+              ),
+            ),
+        })
+        return Effect.succeed(
+          makeConnection(session, {
+            openSession: context =>
+              Effect.sync(() => {
+                workspacePaths.push(context.workspacePath)
+                return session
+              }),
+          }),
+        )
+      },
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(),
+      checkoutResolverLayer((path, mode) =>
+        Effect.try({
+          try: () => {
+            expect(mode).toBe('directory')
+            return {
+              ...resolvedCheckout,
+              canonicalPath: realpathSync.native(path),
+              kind: 'directory',
+              repositoryIdentity: null,
+              mainCheckoutPath: null,
+              branch: null,
+              headRevision: null,
+            } as const
+          },
+          catch: () => new CheckoutResolverError({ code: 'path-missing', message: 'Checkout folder is missing' }),
+        }),
+      ),
+    )
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const execution = await runtime.runPromise(ExecutionService)
+      await runtime.runPromise(
+        store.registerProject({
+          project: { ...project, id: SCRATCH_PROJECT_ID, isScratch: true, repositoryIdentity: undefined },
+          mainCheckout: { ...checkout, id: SCRATCH_ROOT_CHECKOUT_ID, kind: 'directory', path: root },
+        }),
+      )
+      await runtime.runPromise(store.createTask({ task: { ...task, projectId: SCRATCH_PROJECT_ID }, conversation }))
+      const initial = { ...command, checkoutId: SCRATCH_ROOT_CHECKOUT_ID, prompt: 'Fix the bug now please soon' }
+      const accepted = await runtime.runPromise(execution.start(initial))
+      const waitFor = (runId: BeginRunCommand['runId']) =>
+        expect
+          .poll(async () => {
+            const snapshot = await runtime.runPromise(store.readTaskSnapshot(task.id, 2))
+            return snapshot.runs.find(run => run.id === runId)?.status
+          })
+          .toBe('completed')
+      await waitFor(accepted.runId)
+      const folder = join(root, '2026-10-29-fix-the-bug-now-please-sation-1')
+      const detail = await runtime.runPromise(store.getProject(SCRATCH_PROJECT_ID))
+      const [registered] = detail.otherCheckouts
+      expect(registered).toMatchObject({ kind: 'directory', scratchConversationId: conversation.id })
+      expect(workspacePaths).toEqual([registered?.path])
+      expect(registered?.path).toBe(folder)
+      expect(await runtime.runPromise(execution.start(initial))).toMatchObject({
+        runId: accepted.runId,
+        replayed: true,
+      })
+      mkdirSync(join(folder, 'child'))
+      writeFileSync(join(folder, 'child', 'message.txt'), 'old contents')
+      rmSync(folder, { recursive: true })
+      const followUp = await runtime.runPromise(
+        execution.start({
+          ...initial,
+          commandId: 'follow-up-command',
+          provisionalAgentSessionId: 'follow-up-session',
+          runId: 'follow-up-run' as never,
+          prompt: 'Different prompt',
+        }),
+      )
+      await waitFor(followUp.runId)
+      expect(workspacePaths).toEqual([folder, folder])
+      expect(readdirSync(folder)).toEqual([])
+      const snapshot = await runtime.runPromise(store.readTaskSnapshot(task.id, 2))
+      expect(snapshot.runContexts?.map(context => context.checkoutId)).toEqual([registered?.id, registered?.id])
+    } finally {
+      await runtime.dispose()
+      rmSync(temporary, { recursive: true, force: true })
+    }
+  })
+
   it('hands prior Conversation context to a fresh connection without duplicating or rewriting the current user message', async () => {
     const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
     const store = await storeRuntime.runPromise(WorkspaceStore)
@@ -760,8 +874,9 @@ describe('ExecutionService', () => {
               Effect.map(detail => ({
                 ...detail,
                 mainCheckout: { ...detail.mainCheckout, id: 'main-checkout' as never, path: 'C:/main' },
-                otherCheckouts: options?.afterCheckoutId ? [{ ...detail.mainCheckout, kind: 'worktree' as const }] : [],
-                nextAfterCheckoutId: options?.afterCheckoutId ? null : ('before-target' as never),
+                // The target sits beyond the first page, so only the exact-id lookup returns it.
+                otherCheckouts: options?.checkoutId ? [{ ...detail.mainCheckout, kind: 'worktree' as const }] : [],
+                nextAfterCheckoutId: options?.checkoutId ? null : ('before-target' as never),
                 totalOtherCheckouts: 1,
               })),
             ),
