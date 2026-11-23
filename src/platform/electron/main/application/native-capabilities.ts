@@ -5,23 +5,23 @@ import type * as FileSystem from 'effect/FileSystem'
 import * as Schema from 'effect/Schema'
 import type { SaveDialogOptions } from 'electron'
 
+import { saveSkill } from '@/core/application/commands/save-skill.js'
+import { exportCsvZip } from '@/platform/electron/main/application/export-csv-zip.js'
+import { exportStamp } from '@/platform/electron/main/export-zip.js'
+import type { NativeRpcCapabilities } from '@/platform/electron/main/rpc/native-handlers.js'
+import { AppUpdates } from '@/platform/electron/main/updates.js'
+import { ledgerHttp, type LedgerMcpEndpoint } from '@/platform/mcp/ledger-endpoint.js'
+import { LocalLedgerMcp } from '@/platform/mcp/local-ledger-mcp.js'
+import { createLedgerMcpQueries } from '@/platform/mcp/query-api.js'
 import { slugifyCandidateName } from '@/shared/lib/skills-draft.js'
 import { exportResultSchema } from '@/shared/schemas/export.js'
 import { scanResultSchema } from '@/shared/schemas/ipc.js'
 import {
-  ledgerMcpStartupModeSchema,
   type LedgerMcpConnection,
+  ledgerMcpStartupModeSchema,
   type LedgerMcpStatus,
 } from '@/shared/schemas/ledger-mcp.js'
 import { skillsDismissalResultSchema, type SkillsSaveResult } from '@/shared/schemas/skills.js'
-import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
-import type { LedgerMcpSpawnContext } from '@/platform/mcp/config.js'
-import { LedgerMcpPool } from '@/platform/mcp/pool.js'
-import { exportStamp } from '@/platform/electron/main/export-zip.js'
-import type { NativeRpcCapabilities } from '@/platform/electron/main/rpc/native-handlers.js'
-import { AppUpdates } from '@/platform/electron/main/updates.js'
-import { exportCsvZip } from '@/platform/electron/main/application/export-csv-zip.js'
-import { saveSkill } from '@/core/application/commands/save-skill.js'
 
 export interface NativeApplicationPorts {
   readonly worker: {
@@ -31,7 +31,6 @@ export interface NativeApplicationPorts {
   readonly version: string
   readonly skillDirectory: string
   readonly exportDirectory: () => string
-  readonly ledgerMcpContext: () => LedgerMcpSpawnContext
   readonly showSaveDialog: (
     options: SaveDialogOptions,
   ) => Promise<{ readonly canceled: boolean; readonly filePath?: string }>
@@ -42,10 +41,10 @@ type HarnessCapabilities<R> = Pick<
   'getCoachHarnesses' | 'refreshCoachHarnesses' | 'inspectCoachHarness' | 'openCoachLoginTerminal'
 >
 
-export type NativeApplicationServices = FileSystem.FileSystem | LedgerMcpPool | AppUpdates
+export type NativeApplicationServices = FileSystem.FileSystem | LocalLedgerMcp | AppUpdates
 
-function connectionDetails(server: AcpMcpServer): LedgerMcpConnection {
-  if (!('url' in server) || !('headers' in server)) throw new Error('Ledger MCP requires an HTTP connection')
+function connectionDetails(endpoint: LedgerMcpEndpoint): LedgerMcpConnection {
+  const server = ledgerHttp(endpoint)
   const headers = Object.fromEntries(server.headers.map(header => [header.name, header.value]))
   return {
     url: server.url,
@@ -63,15 +62,16 @@ export function createNativeApplicationCapabilities<R>(
       Effect.flatMap(Schema.decodeUnknownEffect(schema)),
     )
   const ready = Effect.tryPromise({ try: () => ports.worker.ready, catch: cause => cause })
+  const ledgerQueries = createLedgerMcpQueries(ports.worker)
   const mcpStatus = Effect.fn('nativeApplication.ledgerMcpStatus')(function* (): Effect.fn.Return<
     LedgerMcpStatus,
     unknown,
-    LedgerMcpPool
+    LocalLedgerMcp
   > {
     const startupMode = yield* request('ledger-mcp:startup:get', ledgerMcpStartupModeSchema)
-    const pool = yield* LedgerMcpPool
-    const server = yield* pool.status()
-    return { startupMode, running: server !== null, url: server && 'url' in server ? server.url : null }
+    const local = yield* LocalLedgerMcp
+    const server = yield* local.status()
+    return { startupMode, running: server !== null, url: server?.url ?? null }
   })
 
   return {
@@ -87,22 +87,22 @@ export function createNativeApplicationCapabilities<R>(
     setLedgerMcpStartupMode: Effect.fn('nativeApplication.setLedgerMcpStartupMode')(function* (mode) {
       const confirmed = yield* request('ledger-mcp:startup:set', ledgerMcpStartupModeSchema, mode)
       if (confirmed === 'at-launch') {
-        const pool = yield* LedgerMcpPool
-        yield* pool.connection(ports.ledgerMcpContext())
+        const local = yield* LocalLedgerMcp
+        yield* local.connection(ledgerQueries)
       }
       return yield* mcpStatus()
     }),
     getLedgerMcpConnection: Effect.fn('nativeApplication.getLedgerMcpConnection')(function* () {
       yield* ready
-      const pool = yield* LedgerMcpPool
-      const server = yield* pool.connection(ports.ledgerMcpContext())
+      const local = yield* LocalLedgerMcp
+      const server = yield* local.connection(ledgerQueries)
       if (!server) return yield* Effect.fail(new Error('Ledger MCP server unavailable'))
-      return yield* Effect.try({ try: () => connectionDetails(server), catch: cause => cause })
+      return connectionDetails(server)
     }),
     regenerateLedgerMcpToken: Effect.fn('nativeApplication.regenerateLedgerMcpToken')(function* () {
       yield* ready
-      const pool = yield* LedgerMcpPool
-      yield* pool.regenerate(ports.ledgerMcpContext())
+      const local = yield* LocalLedgerMcp
+      yield* local.regenerate(ledgerQueries)
       return yield* mcpStatus()
     }),
     dismissSkill: input => request('skills:dismiss', skillsDismissalResultSchema, input),

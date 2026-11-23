@@ -36,6 +36,8 @@ const requiredOperations = [
   'models:setPrice',
   'ledger-mcp:startup:get',
   'ledger-mcp:startup:set',
+  'ledger-mcp:scope',
+  'ledger-mcp:calls',
   'scan:start',
   'scan:active',
   'scan:abort',
@@ -73,6 +75,16 @@ describe('typed db-worker RPC contract', () => {
     expect(Schema.decodeUnknownResult(request.payloadSchema)({ sessionId: 'session-1', sourceId: 0 })._tag).toBe(
       'Failure',
     )
+  })
+
+  it('requires a resolved worker scope and validates the ledger call limit', () => {
+    const request = WorkerRpcGroup.requests.get('ledger-mcp:calls')
+    if (!request) throw new Error('ledger-mcp:calls RPC is missing')
+
+    const decode = Schema.decodeUnknownResult(request.payloadSchema)
+    expect(decode({ scope: { period: 'lifetime' }, limit: 200 })._tag).toBe('Success')
+    expect(decode({ scope: { period: 'lifetime' }, limit: 201 })._tag).toBe('Failure')
+    expect(decode({ limit: 20 })._tag).toBe('Failure')
   })
 
   it('round-trips sequenced typed events and rejects unknown or malformed event payloads', () => {

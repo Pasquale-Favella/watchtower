@@ -64,17 +64,16 @@ on capability contracts in `core/ports/`. Infrastructure implements those
 contracts. The Node engine composition in
 [`infrastructure/runtime/engine-runtime.ts`](../src/infrastructure/runtime/engine-runtime.ts)
 selects the SQLite connection, provider IO and live services. Worker supervision
-and transport remain in `platform/electron/workers/`; the MCP adapter composes a
-separate read-only query runtime. `ScanSources` keeps provider/cache IO outside
-the core scan command, and the process port keeps Harness detection and ACP
+and transport remain in `platform/electron/workers/`. The main-process ledger
+MCP endpoint forwards read-only queries through `DbWorkerClient`. `ScanSources`
+keeps provider/cache IO outside the core scan command, and the process port keeps Harness detection and ACP
 dependencies out of ingestion. The filesystem and clock ports use the existing
 Effect services.
 
 The renderer consumes shared contracts through the preload bridge. ESLint
 rejects renderer/preload imports of engine implementations and rejects core
 imports of infrastructure, platform, Electron or React, including types.
-Source relocation preserves the three emitted entries under `out/main/`, so
-worker and MCP launch paths retain their existing representation.
+The build emits worker entries and a ledger MCP stdio proxy under `out/main/`.
 
 This separation does not establish a new distributable product. A future CLI
 can compose the engine in plain Node, as the ingestion/query smoke test does,
@@ -101,9 +100,8 @@ under `components/ui`, utilities under `@/renderer/shared/lib`, and hooks under
 
 Each backend isolate owns its Effect runtime and resources. Each renderer
 window owns an Atom registry and a shared Atom runtime factory. Solid arrows show
-calls, data, and events; dashed arrows show lifecycle ownership. The worker
-and MCP processes share application query code, but have separate service
-instances and SQLite connections.
+calls, data, and events. Dashed arrows show lifecycle ownership. The db-worker
+runs the application queries and owns the ledger SQLite connection.
 
 ```mermaid
 flowchart TB
@@ -121,7 +119,7 @@ flowchart TB
         ipc["RPC/IPC handlers and worker client"]
         shell["BackgroundShell<br/>Tray, orb, windows, subscriptions"]
         coach["Coach harness coordination"]
-        pool["MCP pool and sidecar lifecycle"]
+        sdk["Loopback ledger MCP endpoint<br/>Tools, resources, prompts"]
     end
 
     subgraph worker["db-worker thread · EngineRuntime"]
@@ -133,13 +131,8 @@ flowchart TB
         sql["One Effect SQL client<br/>Synchronous transactions, single writer"]
     end
 
-    subgraph mcp["MCP query processes · read-only Effect runtime per process"]
-        sdk["Official MCP SDK<br/>Tools, resources, prompts"]
-        mcpQueries["Application queries and calculations<br/>Effect Schema tool arguments and results"]
-        mcpSql["Separate read-only SQL connection"]
-    end
-
     harness["Coding-agent CLI<br/>ACP harness"]
+    proxy["Ledger MCP stdio proxy"]
     sources[("Tool session stores<br/>SQLite, JSONL, JSON")]
     cache[("Session cache<br/>Per-file fingerprints")]
     ledger[("ledger.db<br/>Transcript facts and persisted settings")]
@@ -167,12 +160,11 @@ flowchart TB
 
     ipc -->|"Coach commands"| coach
     coach <-->|"ACP requests and events"| harness
-    pool -.->|"Start and dispose"| sdk
-    coach -->|"Acquire MCP attachment"| pool
-    harness <-->|"MCP over stdio or loopback HTTP"| sdk
-    sdk -->|"Tool and resource requests"| mcpQueries
-    mcpQueries -->|"Read facts and live settings"| mcpSql
-    mcpSql -->|"Read only"| ledger
+    coach -->|"Acquire MCP attachment"| sdk
+    harness <-->|"Bearer-authenticated loopback HTTP"| sdk
+    harness <-->|"MCP over stdio"| proxy
+    proxy <-->|"Bearer-authenticated loopback HTTP"| sdk
+    sdk -->|"Read-only queries through DbWorkerClient"| ipc
 ```
 
 The diagram shows the core scan, query, and Coach paths. HTTP pricing/FX
@@ -218,9 +210,9 @@ and event paths are drawn explicitly.
    Clear commands return a ledger generation; the renderer waits until its reset
    has been applied before rescanning, with one authoritative invalidation owner.
 4. A Coach request goes to main's harness integration. The coding-agent CLI
-   can call `watchtower-ledger` tools over MCP to inspect usage. Each MCP
-   query process owns a read-only connection and reuses the application query
-   code with its own service graph. A continuous RPC stream establishes the run
+   can call `watchtower-ledger` tools over bearer-authenticated loopback HTTP
+   or through the stdio proxy. The endpoint forwards read-only queries through
+   `DbWorkerClient`. A continuous RPC stream establishes the run
    identity before delivering ordered text, tool and terminal events. Pending
    output is bounded by event count and encoded bytes; overflow terminates the
    stream visibly and drains the owning run. Disconnect and cancellation never
@@ -228,8 +220,9 @@ and event paths are drawn explicitly.
    Schema owns Watchtower's tool arguments and result contracts. Tool scopes
    default to lifetime and can differ from the current dashboard scope.
 5. Cancellation and shutdown belong to the runtime that owns the work.
-   Scoped fibers and finalizers release scan, harness, shell, and sidecar
-   resources. Expected operational failures stay typed inside Effect until a
+   Scoped fibers and finalizers release scan, harness, shell, and MCP endpoint
+   resources. Closing an endpoint interrupts its in-flight worker requests.
+   Expected operational failures stay typed inside Effect until a
    worker, IPC, or SDK adapter translates them. A malformed renderer result
    becomes an error state; a malformed broadcast is dropped by the tripwire.
 
@@ -238,8 +231,8 @@ To trace these paths in source, start with the
 [scan application](../src/core/application/commands/scan-ledger.ts),
 [query dispatcher](../src/platform/electron/workers/query-dispatch.ts), and
 [Overview query](../src/core/application/queries/overview-query.ts). The
-[MCP query runtime](../src/platform/mcp/query-runtime.ts) shows how
-the same application queries run with a separate read-only service graph.
+[MCP query adapter](../src/platform/mcp/query-api.ts) forwards the SDK's
+read-only tool and resource queries to the db-worker.
 
 The renderer composition follows [ADR 0036](./adr/0036-effect-renderer-composition.md).
 Window roots own bootstrap, subscriptions and disposal across React remounts.
@@ -370,13 +363,12 @@ describe the original backend and Schema adoption.
 
 ### Current ownership
 
-The main process owns windows, IPC, harness coordination, and the pooled MCP
-sidecar lifecycle. Its `MainRuntime` composes those services with HTTP,
+The main process owns windows, IPC, harness coordination, and the loopback
+ledger MCP endpoint lifecycle. Its `MainRuntime` composes those services with HTTP,
 configuration, logging, metrics, and tracing. The db-worker owns the scan
 pipeline, cadence supervisor, initialized Effect/SQL graph, and single-writer
-SQLite connection. It keeps database work off the Electron main thread. MCP
-query processes use a separate read-only runtime and connection; they never
-share the worker's SQLite state.
+SQLite connection. It keeps database work off the Electron main thread.
+Ledger MCP tools and resources use the worker's read-only query operations.
 
 The Electron root also composes `BackgroundShell` into that same runtime.
 Its scoped Layer owns the tray, orb windows, IPC and display subscriptions,

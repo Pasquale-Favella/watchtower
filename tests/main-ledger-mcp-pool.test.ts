@@ -1,64 +1,27 @@
-import type { ChildProcess, spawn } from 'node:child_process'
-import { EventEmitter } from 'node:events'
-import { PassThrough } from 'node:stream'
+import { expect, it } from 'vitest'
 
-import * as Effect from 'effect/Effect'
-import { afterEach, expect, it, vi } from 'vitest'
+import { makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
+import { LocalLedgerMcp } from '@/platform/mcp/local-ledger-mcp.js'
+import { createLedgerMcpQueries } from '@/platform/mcp/query-api.js'
 
-import { LedgerMcpPool } from '../src/platform/mcp/pool.js'
-import { type MainRuntime, makeMainRuntime } from '../src/platform/electron/main/main-runtime.js'
-
-const fixtures: Array<{ runtime: MainRuntime; close: () => void }> = []
-
-afterEach(async () => {
-  for (const fixture of fixtures.splice(0)) {
-    fixture.close()
-    await fixture.runtime.dispose()
-  }
-})
-
-it('the main graph owns a pooled sidecar boot before READY and awaits actual close', async () => {
-  const child = new EventEmitter()
-  const stdout = new PassThrough()
-  const stderr = new PassThrough()
-  const kill = vi.fn(() => true)
-  Object.assign(child, { stdout, stderr, kill })
-  let closed = false
-  function close(): void {
-    if (closed) return
-    closed = true
-    stdout.end()
-    stderr.end()
-    child.emit('close', 0, null)
-  }
-  const spawnChild = vi.fn(() => child as ChildProcess) as unknown as typeof spawn
+it('closes the app-owned ledger MCP listener when the main runtime is disposed', async () => {
   const runtime = makeMainRuntime(
-    { clientVersion: 'test', appPath: '/app', onHarnessChange: () => {} },
-    { detect: async () => [], sidecar: { spawnChild } },
+    { clientVersion: '1.0.0', appPath: '/app', onHarnessChange: () => {} },
+    { detect: async () => [] },
   )
-  fixtures.push({ runtime, close })
-  const pending = runtime
-    .runPromise(
-      Effect.flatMap(LedgerMcpPool, pool =>
-        pool.connection({ execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }),
-      ),
+  let healthUrl: URL
+  try {
+    const local = await runtime.runPromise(LocalLedgerMcp)
+    const endpoint = await runtime.runPromise(
+      local.connection(createLedgerMcpQueries({ request: async () => undefined })),
     )
-    .then(
-      () => undefined,
-      () => undefined,
-    )
-  await vi.waitFor(() => expect(stdout.listenerCount('data')).toBeGreaterThan(0))
-  let disposed = false
-  const disposal = runtime.dispose().then(() => {
-    disposed = true
-  })
-  await vi.waitFor(() => expect(kill).toHaveBeenCalledOnce())
-  expect(disposed).toBe(false)
-  close()
-  await disposal
-  await pending
-  expect(spawnChild).toHaveBeenCalledOnce()
-  expect(kill).toHaveBeenCalledOnce()
-  expect(child.listenerCount('close')).toBe(0)
-  expect(child.listenerCount('error')).toBe(0)
+    if (!endpoint) throw new Error('Expected the local ledger endpoint')
+    healthUrl = new URL('/health', endpoint.url)
+    const response = await fetch(healthUrl, { headers: { Authorization: `Bearer ${endpoint.token}` } })
+    expect(response.status).toBe(200)
+  } finally {
+    await runtime.dispose()
+  }
+
+  await expect(fetch(healthUrl)).rejects.toBeDefined()
 })

@@ -8,6 +8,7 @@ const { createRequire } = require('node:module')
 const fromRepo = createRequire(path.join(process.cwd(), 'package.json'))
 const { _electron: electron, expect } = fromRepo('@playwright/test')
 const { Client } = fromRepo('@modelcontextprotocol/sdk/client/index.js')
+const { StreamableHTTPClientTransport } = fromRepo('@modelcontextprotocol/sdk/client/streamableHttp.js')
 const { StdioClientTransport, getDefaultEnvironment } = fromRepo('@modelcontextprotocol/sdk/client/stdio.js')
 
 function parseOptions(args) {
@@ -46,22 +47,28 @@ function resolveExecutablePath(options) {
   return executablePath
 }
 
-function ledgerMcpEntry(resourcesPath) {
+function ledgerMcpProxyEntry(resourcesPath) {
   const archive = path.join(resourcesPath, 'app.asar')
   assert.ok(fs.statSync(archive).isFile(), `Packaged ASAR archive does not exist: ${archive}`)
-  return path.join(archive, 'out', 'main', 'ledger-mcp.js')
+  return path.join(archive, 'out', 'main', 'ledger-mcp-proxy.js')
 }
 
-async function checkMcp(executablePath, entryPath, dbPath) {
+async function checkMcp(executablePath, entryPath, url, token) {
   const transport = new StdioClientTransport({
     command: executablePath,
-    args: [entryPath, '--ledger-mcp'],
-    env: { ...getDefaultEnvironment(), ELECTRON_RUN_AS_NODE: '1', WATCHTOWER_LEDGER_MCP: JSON.stringify({ dbPath }) },
+    args: [entryPath],
+    env: {
+      ...getDefaultEnvironment(),
+      ELECTRON_RUN_AS_NODE: '1',
+      WATCHTOWER_LEDGER_MCP_URL: url,
+      WATCHTOWER_LEDGER_MCP_TOKEN: token,
+    },
     stderr: 'pipe',
   })
   const client = new Client({ name: 'watchtower-packaged-gate', version: '1.0.0' })
   try {
     await client.connect(transport)
+    assert.equal(client.getServerVersion()?.name, 'watchtower-ledger')
     const tools = await client.listTools()
     assert.deepEqual(tools.tools.map(tool => tool.name).sort(), [
       'ledger_calls',
@@ -98,7 +105,7 @@ async function checkMcp(executablePath, entryPath, dbPath) {
     assert.equal(prompts.prompts.length, 1)
     assert.ok((await client.getPrompt({ name: prompts.prompts[0].name })).messages.length > 0)
     console.log(
-      'Packaged MCP stdio passed: six tools, generated metadata, invalid/unknown tool results, resource and prompt.',
+      'Packaged MCP stdio proxy passed: six tools, generated metadata, invalid/unknown tool results, resources and prompt.',
     )
   } finally {
     try {
@@ -110,46 +117,18 @@ async function checkMcp(executablePath, entryPath, dbPath) {
   }
 }
 
-async function checkMcpHttp(executablePath, entryPath, dbPath) {
-  const { spawn } = require('node:child_process')
-  const { once } = require('node:events')
-  const { createInterface } = require('node:readline')
-  const { randomUUID } = require('node:crypto')
-  const { StreamableHTTPClientTransport } = fromRepo('@modelcontextprotocol/sdk/client/streamableHttp.js')
-  const token = randomUUID()
-  const child = spawn(executablePath, [entryPath, '--ledger-mcp-http'], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WATCHTOWER_LEDGER_MCP: JSON.stringify({ dbPath, token }) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
-  const exited = once(child, 'exit')
-  const stderr = []
-  child.stderr.on('data', chunk => stderr.push(chunk.toString()))
-  const lines = createInterface({ input: child.stdout })
+async function checkMcpHttp(url, headers) {
   const client = new Client({ name: 'watchtower-packaged-http-gate', version: '1.0.0' })
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('Packaged HTTP child did not announce READY')), 10000)
-      child.once('error', reject)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        reject(Error('Packaged HTTP child exited before READY: ' + stderr.join('')))
-      })
-      lines.on('line', line => {
-        if (line.startsWith('READY ')) {
-          clearTimeout(timer)
-          resolve(JSON.parse(line.slice(6)).port)
-        }
-      })
-    })
-    const url = new URL('http://127.0.0.1:' + port + '/mcp')
-    const headers = { authorization: 'Bearer ' + token }
     assert.equal(
       (await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status,
       401,
     )
-    await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }))
-    assert.equal((await client.listTools()).tools.length, 6)
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }))
+    assert.equal(client.getServerVersion()?.name, 'watchtower-ledger')
+    const { tools } = await client.listTools()
+    assert.equal(tools.length, 6)
+    assert.ok(tools.some(tool => tool.name === 'ledger_scope'))
     for (const name of [
       'ledger_scope',
       'ledger_overview',
@@ -169,20 +148,14 @@ async function checkMcpHttp(executablePath, entryPath, dbPath) {
     assert.ok((await client.getPrompt({ name: 'coach-orient' })).messages.length > 0)
     const before = JSON.parse((await client.callTool({ name: 'ledger_scope' })).content[0].text)
     const after = JSON.parse((await client.callTool({ name: 'ledger_scope' })).content[0].text)
+    assert.ok(before.calls > 0 && before.sessions > 0, 'Packaged MCP did not read the scanned fixture')
     assert.equal(after.calls, before.calls)
     assert.equal(after.sessions, before.sessions)
     console.log(
-      'Packaged MCP HTTP passed: six tools, three resources, prompt, bearer rejection and runtime reuse across stateless requests.',
+      'Packaged MCP HTTP passed: six tools, three resources, prompt, bearer rejection and repeated reads of the scanned ledger.',
     )
   } finally {
-    try {
-      await client.close()
-    } finally {
-      lines.close()
-      if (child.exitCode === null && child.signalCode === null) child.kill()
-      await exited
-      assert.notEqual(child.pid, undefined)
-    }
+    await client.close()
   }
 }
 async function installRendererRpcProbe(window) {
@@ -748,7 +721,7 @@ async function main() {
       const resourcesPath = await app.evaluate(() => process.resourcesPath)
       const runtimeExecutablePath = await app.evaluate(() => process.execPath)
       assert.ok(fs.statSync(runtimeExecutablePath).isFile(), 'Electron runtime executable is missing')
-      const entryPath = ledgerMcpEntry(resourcesPath)
+      const proxyEntryPath = ledgerMcpProxyEntry(resourcesPath)
       const exportFolder = path.join(profile, 'exports', 'usage')
       const jsonPath = path.join(profile, 'exports', 'usage.json')
       const exports = await window.evaluate(
@@ -882,8 +855,16 @@ async function main() {
       console.log(
         'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned harness RPC passed.',
       )
-      await checkMcp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
-      await checkMcpHttp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
+      // This is the RPC Settings uses to copy the Local MCP config.
+      const connection = await window.evaluate(() => window.rpcProbe.call('ledger-mcp:connection'))
+      const server = JSON.parse(connection.config).mcpServers['watchtower-ledger']
+      assert.equal(server.type, 'http')
+      assert.equal(server.url, connection.url)
+      assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+      const bearer = /^Bearer (\S+)$/.exec(server.headers?.Authorization)
+      assert.ok(bearer, 'Packaged Local MCP config is missing bearer authorization')
+      await checkMcpHttp(server.url, server.headers)
+      await checkMcp(runtimeExecutablePath, proxyEntryPath, server.url, bearer[1])
       const cleared = await window.evaluate(async () => {
         const call = window.rpcProbe.call
         await call('cadence:set', { value: 'manual' })

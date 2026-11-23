@@ -16,7 +16,7 @@ export interface LoopbackMcpEndpoint {
 /**
  * One ephemeral, bearer-authenticated MCP endpoint on 127.0.0.1. A fresh MCP server answers each request and shares
  * the abort signal, so a released endpoint stops serving at once. The finalizer aborts, runs `release`, and closes
- * every connection. Both the browser and the orchestrator endpoints use this helper.
+ * every connection.
  */
 export const acquireLoopbackMcp = Effect.fn('acquireLoopbackMcp')(function* (options: {
   readonly createServer: (signal: AbortSignal) => Server
@@ -35,28 +35,30 @@ export const acquireLoopbackMcp = Effect.fn('acquireLoopbackMcp')(function* (opt
       .runRequest(handleMcpHttpRequest(req, res, token, () => options.createServer(controller.signal)))
       .catch(() => res.destroy())
   })
-  yield* Effect.addFinalizer(() =>
-    Effect.gen(function* () {
-      controller.abort()
-      if (options.release) {
-        const release = options.release
-        yield* Effect.promise(() => release())
-      }
-      http.closeAllConnections()
-      yield* Effect.callback<undefined>(resume => {
+  const close = Effect.gen(function* () {
+    controller.abort()
+    const release = options.release
+    if (release) yield* Effect.promise(release)
+  }).pipe(
+    Effect.ensuring(
+      Effect.callback<undefined>(resume => {
         http.close(() => resume(Effect.succeed(undefined)))
-      })
-    }),
+        http.closeAllConnections()
+      }),
+    ),
   )
-  yield* Effect.callback<undefined, AgentDriverError>(resume => {
-    const failed = () =>
-      resume(Effect.fail(new AgentDriverError({ code: 'invalid-state', message: options.startFailure })))
-    http.once('error', failed)
-    http.listen(0, '127.0.0.1', () => {
-      http.off('error', failed)
-      resume(Effect.succeed(undefined))
-    })
-  })
+  yield* Effect.acquireRelease(
+    Effect.callback<undefined, AgentDriverError>(resume => {
+      const failed = () =>
+        resume(Effect.fail(new AgentDriverError({ code: 'invalid-state', message: options.startFailure })))
+      http.once('error', failed)
+      http.listen(0, '127.0.0.1', () => {
+        http.off('error', failed)
+        resume(Effect.succeed(undefined))
+      })
+    }).pipe(Effect.onError(() => close)),
+    () => close,
+  )
   const address = http.address()
   if (!address || typeof address === 'string')
     return yield* new AgentDriverError({ code: 'invalid-state', message: options.startFailure })

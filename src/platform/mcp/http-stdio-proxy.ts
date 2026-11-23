@@ -4,11 +4,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import * as Config from 'effect/Config'
 import * as Effect from 'effect/Effect'
 
+import { bearerHeaderValue } from './auth.js'
 import { createBrowserMcpProxy } from './browser-proxy.js'
 
 export interface HttpMcpStdioProxyOptions {
   /** The MCP server name the stdio harness sees. */
-  readonly serverName: 'watchtower-browser' | 'watchtower-orchestrator'
+  readonly serverName: 'watchtower-browser' | 'watchtower-orchestrator' | 'watchtower-ledger'
   /** Environment variables the harness passes to this process: the loopback URL and its bearer token. */
   readonly urlVariable: string
   readonly tokenVariable: string
@@ -30,7 +31,7 @@ export const runHttpMcpStdioProxy = (options: HttpMcpStdioProxyOptions) =>
       yield* Effect.tryPromise(() =>
         client.connect(
           new StreamableHTTPClientTransport(new URL(url), {
-            requestInit: { headers: { Authorization: `Bearer ${token}` } },
+            requestInit: { headers: { Authorization: bearerHeaderValue(token) } },
           }),
         ),
       )

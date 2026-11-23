@@ -9,11 +9,11 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import * as Effect from 'effect/Effect'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { bearerHeaderValue } from '../src/platform/mcp/auth.js'
 import { ledgerMcpTransportFor } from '../src/platform/mcp/config.js'
 import { handleLedgerMcpHttpRequest } from '../src/platform/mcp/http-server.js'
-import { createLedgerMcpQueryRuntime } from '../src/platform/mcp/query-runtime.js'
-import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
+import { fixtureLedgerMcpQueries } from './fixtures/ledger-mcp-queries.js'
 
 const TOKEN = 'test-bearer-token'
 
@@ -74,12 +74,13 @@ async function serveLedger(
 ): Promise<{ baseUrl: string }> {
   const seeded = await seedLedger()
   dirs.push(seeded.cleanup)
-  const runtime = await createLedgerMcpQueryRuntime(seeded.dbPath)
+  const runtime = openEngineRuntime(seeded.dbPath)
+  const queries = fixtureLedgerMcpQueries(runtime)
   disposals.push(runtime.dispose)
   const server = createServer((req, res) => {
     incomingRequests.push(req)
     const handler = (request: IncomingMessage, response: import('node:http').ServerResponse): void => {
-      void Effect.runPromise(handleLedgerMcpHttpRequest(request, response, runtime.queries, TOKEN))
+      void Effect.runPromise(handleLedgerMcpHttpRequest(request, response, queries, TOKEN))
     }
     if (onRequest) onRequest(req, res, handler)
     else void handler(req, res)

@@ -9,20 +9,7 @@ import * as Schema from 'effect/Schema'
 import { hasBearerAuthorization } from '@/platform/mcp/auth.js'
 import type { LedgerMcpQueries } from '@/platform/mcp/query-api.js'
 import { createLedgerMcpServer } from '@/platform/mcp/server.js'
-import { reportSidecarRequestFailure } from '@/platform/mcp/sidecar-log.js'
-
-/**
- * The loopback-HTTP face of the `watchtower-ledger` MCP server: the SAME
- * tools/resources/prompts as the stdio entry, served over StreamableHTTP for
- * harnesses that reject client-provided stdio servers (the Copilot CLI drops
- * them outright — `Rejecting non-http/sse MCP server ... from client` — so
- * stdio can never deliver ledger tools there). Stateless: a fresh SDK server
- * per request over the shared read-only store, exactly like the stdio entry
- * serves one protocol stream.
- *
- * Bound to 127.0.0.1 on an ephemeral port by the entry; every route requires
- * the per-spawn bearer token (no ambient authority on the loopback).
- */
+import { fileErrorCode } from '@/infrastructure/ingestion/file-errors.js'
 
 /** Tool args are tiny scope objects — 1MB is a generous ceiling that still
  *  bounds a neighbour process stuffing the request pipe. */
@@ -155,7 +142,7 @@ function asError(cause: unknown): Error {
   return cause instanceof Error ? cause : new Error(String(cause))
 }
 
-/** Native request workflow used by the process-owned HTTP server. */
+/** Ledger request workflow over the shared loopback transport. */
 export function handleLedgerMcpHttpRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -172,14 +159,13 @@ export function handleMcpHttpRequest(
   token: string,
   createServer: () => Server,
 ): Effect.Effect<void> {
-  let pathname = ''
   const operation = Effect.scoped(
     Effect.gen(function* () {
       if (!hasBearerAuthorization(req.headers.authorization, token)) {
         yield* Effect.sync(() => sendJson(res, 401, { error: 'unauthorized' }))
         return
       }
-      pathname = yield* Effect.try({
+      const pathname = yield* Effect.try({
         try: () => new URL(req.url ?? '/', 'http://127.0.0.1').pathname,
         catch: error => asError(error),
       })
@@ -244,12 +230,15 @@ export function handleMcpHttpRequest(
   return operation.pipe(
     Effect.catchCause(cause => {
       if (Cause.hasInterruptsOnly(cause)) return Effect.void
-      const error = Cause.squash(cause)
-      return Effect.sync(() => {
-        reportSidecarRequestFailure(req.method, pathname, error)
-        if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
-        else res.destroy()
-      })
+      return Effect.logError('mcp.request.failed').pipe(
+        Effect.annotateLogs({ event: 'mcp.request.failed', code: fileErrorCode(Cause.squash(cause), 'failed') }),
+        Effect.andThen(
+          Effect.sync(() => {
+            if (!res.headersSent) sendJson(res, 500, { error: 'internal error' })
+            else res.destroy()
+          }),
+        ),
+      )
     }),
   )
 }

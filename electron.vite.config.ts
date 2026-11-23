@@ -13,15 +13,12 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin({ exclude: ['effect', '@effect/platform-node', '@effect/sql-sqlite-node'] })],
     build: {
       lib: {
-        // Main entries: the app (`index`), the electron-free
-        // `watchtower-ledger` MCP server the harness agent spawns as plain node
-        // (ELECTRON_RUN_AS_NODE=1) — emitted as out/main/ledger-mcp.js — and
-        // the db-worker thread that owns the ledger, the scan pipeline, and
-        // every query-time view builder (ADR 0023) — out/main/db-worker.js.
-        // The separate workspace worker owns operational execution storage.
+        // Stdio proxies run as plain Node (ELECTRON_RUN_AS_NODE=1).
+        // The DB worker owns the ledger, scan pipeline, and analytics queries (ADR 0023).
+        // The Workspace worker owns operational execution storage.
         entry: {
           index: resolve('src/platform/electron/main/index.ts'),
-          'ledger-mcp': resolve('src/platform/mcp/entry.ts'),
+          'ledger-mcp-proxy': resolve('src/platform/mcp/ledger-proxy-entry.ts'),
           'browser-mcp-proxy': resolve('src/platform/mcp/browser-proxy-entry.ts'),
           'orchestrator-mcp-proxy': resolve('src/platform/mcp/orchestrator-proxy-entry.ts'),
           'db-worker': resolve('src/platform/electron/workers/entry.ts'),

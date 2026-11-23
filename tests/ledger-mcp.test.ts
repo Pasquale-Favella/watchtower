@@ -17,22 +17,21 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
-import * as SqlClient from 'effect/sql/SqlClient'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { LedgerQueries } from '../src/core/ports/repository.js'
 import { bearerHeaderValue } from '../src/platform/mcp/auth.js'
 import { handleLedgerMcpHttpRequest } from '../src/platform/mcp/http-server.js'
 import { buildLedgerPrompts } from '../src/platform/mcp/prompts.js'
-import { createLedgerMcpQueryRuntime } from '../src/platform/mcp/query-runtime.js'
 import { buildLedgerResources } from '../src/platform/mcp/resources.js'
 import { createLedgerMcpServer } from '../src/platform/mcp/server.js'
 import { buildLedgerTools } from '../src/platform/mcp/tools.js'
-import { LedgerQueries } from '../src/core/ports/repository.js'
 import { modelsPayloadSchema } from '../src/shared/schemas/models.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import { overviewPayloadSchema } from '../src/shared/schemas/overview.js'
 import { skillsPayloadSchema } from '../src/shared/schemas/skills.js'
 import { sessionRowSchema } from '../src/shared/schemas/views.js'
+import { fixtureLedgerMcpQueries } from './fixtures/ledger-mcp-queries.js'
 import { openLedgerFixture } from './fixtures/ledger-runtime.js'
 
 /** Seeds the real migrated ledger DB and fixture
@@ -108,10 +107,7 @@ const scope: OverviewScope = { period: '30days', range: { since: '2026-07-01', u
 async function openStore() {
   const fixture = openLedgerFixture()
   seedLedger(fixture.dbPath)
-  const runtime = await createLedgerMcpQueryRuntime(fixture.dbPath)
-  // afterEach runs before the fixture's guarded directory cleanup.
-  cleanups.push(runtime.dispose)
-  return { queries: runtime.queries, runtime, worker: fixture.runtime, dbPath: fixture.dbPath }
+  return { queries: fixtureLedgerMcpQueries(fixture.runtime), worker: fixture.runtime, dbPath: fixture.dbPath }
 }
 
 function decode<S extends Schema.ConstraintDecoder<unknown>>(schema: S, input: unknown): S['Type'] {
@@ -209,7 +205,7 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     const preparedSelections = vi.spyOn(DatabaseSync.prototype, 'prepare')
     const writer = new DatabaseSync(dbPath)
     // Close the writer before the fixture cleanup removes the SQLite directory.
-    cleanups.splice(cleanups.length - 1, 0, () => writer.close())
+    cleanups.push(() => writer.close())
     writer
       .prepare(
         `INSERT INTO ledger_call (source_id, session_id, turn_index, call_index, provider, model, timestamp, base_cost_usd)
@@ -326,20 +322,6 @@ describe('Ledger MCP tools (ADR 0020) — lifetime-serving over the shared seam'
     const bashCall = rows.find(r => r.bash_commands.includes('git commit'))!
     expect(bashCall.tools).toEqual(['Read', 'Bash'])
     expect(bashCall.skills).toEqual(['git-commit'])
-  })
-
-  it('is strictly read-only — a write through the read-only SQL client throws', async () => {
-    const { runtime } = await openStore()
-    const sources = await runtime.run(Effect.flatMap(LedgerQueries, queries => queries.getSources()))
-    expect(sources).toHaveLength(2)
-    await expect(
-      runtime.run(
-        Effect.gen(function* () {
-          const sql = yield* SqlClient.SqlClient
-          yield* sql.unsafe("INSERT INTO ledger_source (provider, env_fingerprint, file_path) VALUES ('x', 'y', 'z')")
-        }),
-      ),
-    ).rejects.toThrow()
   })
 })
 

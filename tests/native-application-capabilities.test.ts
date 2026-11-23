@@ -10,9 +10,6 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import type { SaveDialogOptions } from 'electron'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AcpMcpServer } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
-import type { LedgerMcpSpawnContext } from '../src/platform/mcp/config.js'
-import { LedgerMcpPool } from '../src/platform/mcp/pool.js'
 import type { NativeApplicationServices } from '../src/platform/electron/main/application/native-capabilities.js'
 import {
   createNativeApplicationCapabilities,
@@ -21,9 +18,11 @@ import {
 import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { nativeHandlers } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { AppUpdates } from '../src/platform/electron/main/updates.js'
+import type { LedgerMcpEndpoint } from '../src/platform/mcp/ledger-endpoint.js'
+import { LocalLedgerMcp } from '../src/platform/mcp/local-ledger-mcp.js'
 import { NativeRpcGroup } from '../src/shared/rpc/native.js'
 
-type LedgerMcpPoolService = LedgerMcpPool['Service']
+type LocalLedgerMcpService = LocalLedgerMcp['Service']
 
 const idleUpdate = {
   revision: 0,
@@ -37,28 +36,16 @@ const idleUpdate = {
   message: null,
 }
 
-const context: LedgerMcpSpawnContext = {
-  execPath: 'watchtower',
-  entryPath: '/app/ledger-mcp.js',
-  dbPath: '/data/ledger.db',
+function endpoint(token: string): LedgerMcpEndpoint {
+  return { name: 'watchtower-ledger', url: 'http://127.0.0.1:43123/mcp', token }
 }
 
-function httpServer(token: string): AcpMcpServer {
-  return {
-    type: 'http',
-    name: 'watchtower-ledger',
-    url: 'http://127.0.0.1:43123/mcp',
-    headers: [{ name: 'Authorization', value: `Bearer ${token}` }],
-  }
-}
-
-function fakePool(overrides: Partial<LedgerMcpPoolService> = {}): LedgerMcpPoolService {
-  return LedgerMcpPool.of({
-    acquire: () => Effect.succeed(null),
+function fakeLocal(overrides: Partial<LocalLedgerMcpService> = {}): LocalLedgerMcpService {
+  return LocalLedgerMcp.of({
     connection: () => Effect.succeed(null),
     regenerate: () => Effect.succeed(null),
     status: () => Effect.succeed(null),
-    releaseAll: () => Effect.void,
+    shutdown: () => Effect.void,
     ...overrides,
   })
 }
@@ -79,8 +66,8 @@ function fakeUpdates() {
   }
 }
 
-function serviceLayer(pool = fakePool(), updates = fakeUpdates().service) {
-  return Layer.mergeAll(NodeFileSystem.layer, Layer.succeed(LedgerMcpPool, pool), Layer.succeed(AppUpdates, updates))
+function serviceLayer(local = fakeLocal(), updates = fakeUpdates().service) {
+  return Layer.mergeAll(NodeFileSystem.layer, Layer.succeed(LocalLedgerMcp, local), Layer.succeed(AppUpdates, updates))
 }
 
 function provide<A, E>(effect: Effect.Effect<A, E, NativeApplicationServices>, layer = serviceLayer()) {
@@ -123,25 +110,24 @@ describe('native application capability owner', () => {
         throw new Error(`unexpected worker operation: ${operation}`)
       }),
     }
-    const poolCalls: string[] = []
+    const localCalls: string[] = []
     const update = fakeUpdates()
     const ports: NativeApplicationPorts = {
       worker,
       version: '1.2.3',
       skillDirectory: '/skills',
       exportDirectory: () => '/exports',
-      ledgerMcpContext: () => context,
       showSaveDialog: async () => ({ canceled: true }),
     }
     const capabilities = createNativeApplicationCapabilities(ports, harnessCapabilities())
     expect(worker.request).not.toHaveBeenCalled()
-    expect(poolCalls).toEqual([])
+    expect(localCalls).toEqual([])
 
     const layer = nativeHandlers(capabilities).pipe(
       Layer.provideMerge(
         serviceLayer(
-          fakePool({
-            connection: () => Effect.sync(() => void poolCalls.push('connection')).pipe(Effect.as(null)),
+          fakeLocal({
+            connection: () => Effect.sync(() => void localCalls.push('connection')).pipe(Effect.as(null)),
           }),
           update.service,
         ),
@@ -167,16 +153,16 @@ describe('native application capability owner', () => {
       { operation: 'skills:dismiss', args: [{ source: 'bash', name: 'git status', reason: 'too specific' }] },
     ])
     await expect(
-      Effect.runPromise(provide(capabilities.getUpdateStatus(), serviceLayer(fakePool(), update.service))),
+      Effect.runPromise(provide(capabilities.getUpdateStatus(), serviceLayer(fakeLocal(), update.service))),
     ).resolves.toEqual(idleUpdate)
     expect(update.check).not.toHaveBeenCalled()
-    expect(poolCalls).toEqual([])
+    expect(localCalls).toEqual([])
   })
 
-  it('persists MCP startup mode before start, keeps status read-only, and reuses its pool for credentials and rotation', async () => {
+  it('persists MCP startup mode before start, keeps status read-only, and uses the local endpoint for credentials and rotation', async () => {
     const events: string[] = []
     let startupMode: 'on-demand' | 'at-launch' = 'on-demand'
-    let currentServer: AcpMcpServer | null = null
+    let currentServer: LedgerMcpEndpoint | null = null
     const worker = {
       ready: Promise.resolve(),
       request: async (operation: string, ...args: unknown[]): Promise<unknown> => {
@@ -189,23 +175,21 @@ describe('native application capability owner', () => {
         throw new Error(`unexpected worker operation: ${operation}`)
       },
     }
-    const pool = fakePool({
-      connection: (ctx: LedgerMcpSpawnContext) =>
+    const local = fakeLocal({
+      connection: () =>
         Effect.sync(() => {
-          expect(ctx).toEqual(context)
-          events.push('pool:connection')
+          events.push('local:connection')
           return currentServer
         }),
-      regenerate: (ctx: LedgerMcpSpawnContext) =>
+      regenerate: () =>
         Effect.sync(() => {
-          expect(ctx).toEqual(context)
-          events.push('pool:regenerate')
-          currentServer = httpServer('rotated-token')
+          events.push('local:regenerate')
+          currentServer = endpoint('rotated-token')
           return currentServer
         }),
       status: () =>
         Effect.sync(() => {
-          events.push('pool:status')
+          events.push('local:status')
           return currentServer
         }),
     })
@@ -215,35 +199,34 @@ describe('native application capability owner', () => {
         version: '1.2.3',
         skillDirectory: '/skills',
         exportDirectory: () => '/exports',
-        ledgerMcpContext: () => context,
         showSaveDialog: async () => ({ canceled: true }),
       },
       harnessCapabilities(),
     )
     expect(events).toEqual([])
 
-    await expect(Effect.runPromise(provide(capabilities.getLedgerMcpStatus(), serviceLayer(pool)))).resolves.toEqual({
+    await expect(Effect.runPromise(provide(capabilities.getLedgerMcpStatus(), serviceLayer(local)))).resolves.toEqual({
       startupMode: 'on-demand',
       running: false,
       url: null,
     })
-    expect(events).toEqual(['worker:ledger-mcp:startup:get', 'pool:status'])
-    expect(events).not.toContain('pool:connection')
+    expect(events).toEqual(['worker:ledger-mcp:startup:get', 'local:status'])
+    expect(events).not.toContain('local:connection')
 
     events.length = 0
     await expect(
-      Effect.runPromise(provide(capabilities.setLedgerMcpStartupMode('at-launch'), serviceLayer(pool))),
+      Effect.runPromise(provide(capabilities.setLedgerMcpStartupMode('at-launch'), serviceLayer(local))),
     ).resolves.toEqual({ startupMode: 'at-launch', running: false, url: null })
     expect(events).toEqual([
       'worker:ledger-mcp:startup:set',
-      'pool:connection',
+      'local:connection',
       'worker:ledger-mcp:startup:get',
-      'pool:status',
+      'local:status',
     ])
 
-    currentServer = httpServer('initial-token')
+    currentServer = endpoint('initial-token')
     events.length = 0
-    const credential = await Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(pool)))
+    const credential = await Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(local)))
     expect(credential).toEqual({
       url: 'http://127.0.0.1:43123/mcp',
       config: JSON.stringify(
@@ -260,30 +243,30 @@ describe('native application capability owner', () => {
         2,
       ),
     })
-    expect(events).toEqual(['pool:connection'])
+    expect(events).toEqual(['local:connection'])
 
     events.length = 0
     await expect(
-      Effect.runPromise(provide(capabilities.regenerateLedgerMcpToken(), serviceLayer(pool))),
+      Effect.runPromise(provide(capabilities.regenerateLedgerMcpToken(), serviceLayer(local))),
     ).resolves.toEqual({ startupMode: 'at-launch', running: true, url: 'http://127.0.0.1:43123/mcp' })
-    expect(events).toEqual(['pool:regenerate', 'worker:ledger-mcp:startup:get', 'pool:status'])
+    expect(events).toEqual(['local:regenerate', 'worker:ledger-mcp:startup:get', 'local:status'])
     events.length = 0
-    const rotated = await Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(pool)))
+    const rotated = await Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(local)))
     expect(rotated.config).toContain('Bearer rotated-token')
-    expect(events).toEqual(['pool:connection'])
+    expect(events).toEqual(['local:connection'])
   })
 
-  it('waits for worker readiness before returning the pooled credential', async () => {
+  it('waits for worker readiness before returning the local credential', async () => {
     let releaseReady!: () => void
     const ready = new Promise<void>(resolve => {
       releaseReady = resolve
     })
     let connections = 0
-    const pool = fakePool({
+    const local = fakeLocal({
       connection: () =>
         Effect.sync(() => {
           connections++
-          return httpServer('ready-token')
+          return endpoint('ready-token')
         }),
     })
     const capabilities = createNativeApplicationCapabilities(
@@ -292,13 +275,12 @@ describe('native application capability owner', () => {
         version: '1.2.3',
         skillDirectory: '/skills',
         exportDirectory: () => '/exports',
-        ledgerMcpContext: () => context,
         showSaveDialog: async () => ({ canceled: true }),
       },
       harnessCapabilities(),
     )
 
-    const pending = Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(pool)))
+    const pending = Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(local)))
     await new Promise<void>(resolve => setImmediate(resolve))
     expect(connections).toBe(0)
     releaseReady()
@@ -335,7 +317,6 @@ describe('native application capability owner', () => {
         version: '1.2.3',
         skillDirectory: join(root, 'skills'),
         exportDirectory: () => root,
-        ledgerMcpContext: () => context,
         showSaveDialog,
       },
       harnessCapabilities(),
@@ -384,7 +365,6 @@ describe('native application capability owner', () => {
         version: '1.2.3',
         skillDirectory,
         exportDirectory: () => root,
-        ledgerMcpContext: () => context,
         showSaveDialog,
       },
       harnessCapabilities(),
@@ -406,7 +386,6 @@ describe('native application capability owner', () => {
         version: '1.2.3',
         skillDirectory: cancelledRoot,
         exportDirectory: () => root,
-        ledgerMcpContext: () => context,
         showSaveDialog: async () => ({ canceled: true }),
       },
       harnessCapabilities(),

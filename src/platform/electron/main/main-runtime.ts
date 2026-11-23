@@ -1,16 +1,12 @@
-import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Effect from 'effect/Effect'
 import * as FetchHttpClient from 'effect/http/FetchHttpClient'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 
-import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
 import { CommandRunner } from '@/core/ports/process.js'
 import { detectHarnesses, type HarnessInfo, which } from '@/infrastructure/agent-harnesses/detect.js'
 import { resolveBundledEntry } from '@/infrastructure/agent-harnesses/harnesses/bundled.js'
-import { LedgerMcpPool, ledgerMcpPoolLayer } from '@/platform/mcp/pool.js'
-import { LedgerMcpSidecar, ledgerMcpSidecarLayer, type LedgerMcpSidecarOptions } from '@/platform/mcp/sidecar.js'
 import type { ProbeResult } from '@/infrastructure/agent-harnesses/probe.js'
 import {
   CoachHarnessExecution,
@@ -21,14 +17,17 @@ import {
 } from '@/infrastructure/agent-harnesses/runtime.js'
 import { HarnessProbe, HarnessSnapshot, harnessSnapshotLayer } from '@/infrastructure/agent-harnesses/snapshot.js'
 import { Env } from '@/infrastructure/config/environment.js'
+import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
 import {
   OperationalLog,
   OperationalLogLoggerLayer,
   OperationalLogMetricLayer,
   OperationalLogTracerLayer,
 } from '@/infrastructure/logging/operational-log.js'
-import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
 import { NodePlatformLive, type NodePlatformServices } from '@/infrastructure/platform/platform-live.js'
+import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
+import { LocalLedgerMcp, localLedgerMcpLayer } from '@/platform/mcp/local-ledger-mcp.js'
+import type { CoachHarnessRow } from '@/shared/schemas/agents.js'
 
 /** Stable services available through the Electron main isolate's one runtime. */
 export type MainServices =
@@ -39,8 +38,7 @@ export type MainServices =
   | CommandRunner
   | HarnessProbe
   | HarnessSnapshot
-  | LedgerMcpSidecar
-  | LedgerMcpPool
+  | LocalLedgerMcp
   | CoachHarnessExecution
 export type MainRuntime<Additional = never> = ManagedRuntime.ManagedRuntime<MainServices | Additional, never>
 
@@ -56,7 +54,6 @@ export interface MainRuntimeOverrides {
   readonly probe?: (info: HarnessInfo, clientVersion: string) => Effect.Effect<ProbeResult>
   readonly readPath?: () => string | undefined
   readonly configProvider?: ConfigProvider.ConfigProvider
-  readonly sidecar?: LedgerMcpSidecarOptions
   readonly coachSdk?: () => Promise<HarnessSdk>
   readonly coachRuntime?: HarnessRuntimeOptions
   readonly platform?: Layer.Layer<NodePlatformServices>
@@ -116,11 +113,13 @@ export function makeMainLive(
     ...(overrides.readPath ? { readPath: overrides.readPath } : {}),
   }).pipe(Layer.provideMerge(Layer.merge(mainServices, probeAndRunner)))
 
-  const sidecar = ledgerMcpSidecarLayer(overrides.sidecar)
-  const pool = ledgerMcpPoolLayer.pipe(Layer.provideMerge(sidecar))
+  const localLedgerMcp = Layer.unwrap(
+    Effect.context<never>().pipe(Effect.map(context => localLedgerMcpLayer(Effect.runPromiseWith(context)))),
+  ).pipe(Layer.provide(mainServices))
+
   return Layer.mergeAll(
     snapshot,
-    pool,
+    localLedgerMcp,
     coachHarnessExecutionLayer(overrides.coachRuntime, overrides.coachSdk ?? loadHarnessSdk),
   )
 }

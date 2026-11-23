@@ -49,6 +49,8 @@ const operations: Readonly<Record<string, Operation>> = {
   },
   'ledger-mcp:startup:get': { tag: 'ledger-mcp:startup:get', payload: noPayload },
   'ledger-mcp:startup:set': { tag: 'ledger-mcp:startup:set', payload: args => ({ mode: args[0] }) },
+  'ledger-mcp:scope': { tag: 'ledger-mcp:scope', payload: scope },
+  'ledger-mcp:calls': { tag: 'ledger-mcp:calls', payload: args => args[0] },
   'scan:start': { tag: 'scan:start', payload: args => args[0] ?? {} },
   'scan:active': { tag: 'scan:active', payload: noPayload },
   'scan:abort': { tag: 'scan:abort', payload: noPayload },

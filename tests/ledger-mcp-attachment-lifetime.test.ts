@@ -4,17 +4,6 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HarnessInfo } from '../src/infrastructure/agent-harnesses/detect.js'
-import type { AcpMcpServer } from '../src/infrastructure/agent-harnesses/harnesses/types.js'
-import {
-  type CoachRunner,
-  createCoachRunner,
-  type HarnessSource,
-  type LedgerMcpAttachment,
-  type NativeHarnessSource,
-} from '../src/platform/electron/main/coach/ipc.js'
-import type { LedgerMcpSpawnContext } from '../src/platform/mcp/config.js'
-import { createSidecarPool } from '../src/platform/mcp/pool.js'
-import type { StartedLedgerMcpHttp } from '../src/platform/mcp/sidecar.js'
 import type {
   ControlledHarnessInspection,
   HarnessProviderInput,
@@ -22,7 +11,17 @@ import type {
   HarnessRuntime,
   NativeHarnessRun,
 } from '../src/infrastructure/agent-harnesses/runtime.js'
+import {
+  type CoachRunner,
+  createCoachRunner,
+  type HarnessSource,
+  type LedgerMcpAttachment,
+  type NativeHarnessSource,
+} from '../src/platform/electron/main/coach/ipc.js'
 import type { MainRuntime } from '../src/platform/electron/main/main-runtime.js'
+import { ledgerHttp } from '../src/platform/mcp/ledger-endpoint.js'
+import { LocalLedgerMcp, localLedgerMcpLayer } from '../src/platform/mcp/local-ledger-mcp.js'
+import { createLedgerMcpQueries } from '../src/platform/mcp/query-api.js'
 import type { CoachEvent } from '../src/shared/schemas/agents.js'
 
 /**
@@ -37,8 +36,6 @@ import type { CoachEvent } from '../src/shared/schemas/agents.js'
  * where `for await` never reaches the `finally` — an ordinary interruption is
  * already covered by `agents-ipc.test.ts` and stays green here.
  */
-
-const CTX: LedgerMcpSpawnContext = { execPath: '/bin/app', entryPath: '/app/ledger-mcp.js', dbPath: '/data/ledger.db' }
 
 const harness: HarnessInfo = {
   name: 'claude',
@@ -105,37 +102,6 @@ function streamingRuntime(): HarnessRuntime {
   }
 }
 
-function httpServer(port: number): AcpMcpServer {
-  return {
-    type: 'http',
-    name: 'watchtower-ledger',
-    url: `http://127.0.0.1:${port}/mcp`,
-    headers: [{ name: 'Authorization', value: 'Bearer test' }],
-  }
-}
-
-/** A pool whose sidecars are observable: a counter for boots, a flag for kills,
- * and a mutable health answer. No child process, no socket — the property is
- *  about lifetimes, not about the loopback endpoint. */
-function trackedPool() {
-  const state = { boots: 0, healthy: true, live: 0, killed: 0 }
-  const pool = createSidecarPool({
-    spawn: async () => {
-      state.boots++
-      state.live++
-      return {
-        server: httpServer(9_000 + state.boots),
-        release: () => {
-          state.killed++
-          state.live--
-        },
-        checkHealth: async () => state.healthy,
-      } satisfies StartedLedgerMcpHttp
-    },
-  })
-  return { pool, state }
-}
-
 /** The runner's `ledgerMcpServer` dep, wrapped so the test can count the
  *  runner's releases without reaching into the pool's own (no-op) one. */
 function countingAttachmentSource(counter: { released: number }): {
@@ -143,7 +109,7 @@ function countingAttachmentSource(counter: { released: number }): {
 } {
   return {
     ledgerMcpServer: async () => ({
-      server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp.js', '--ledger-mcp'], env: [] },
+      server: { name: 'watchtower-ledger', command: 'node', args: ['ledger-mcp-proxy.js'], env: [] },
       release: () => {
         counter.released++
       },
@@ -334,110 +300,31 @@ describe('ledger MCP attachment lifetime — a run the app stopped waiting for c
     await resetting
   })
 
-  it('does NOT claim the sidecar is dead: a reset releases the claim, ADR 0027 keeps the process', async () => {
-    const { pool, state } = trackedPool()
-    const runner = ownRunner({
-      getRuntime: async () => wedgedRuntime(() => {}),
-      harnesses: harnessSource,
-      ledgerMcpServer: async () => pool.acquire(CTX),
-    })
+  it('keeps the app-scoped HTTP endpoint available after a Coach reset', async () => {
+    const localRuntime = ManagedRuntime.make(localLedgerMcpLayer(Effect.runPromise))
+    const queries = createLedgerMcpQueries({ request: async () => undefined })
+    const connection = Effect.flatMap(LocalLedgerMcp, local => local.connection(queries))
+    try {
+      const runner = ownRunner({
+        getRuntime: async () => streamingRuntime(),
+        harnesses: harnessSource,
+        ledgerMcpServer: async () => {
+          const endpoint = await localRuntime.runPromise(connection)
+          return endpoint ? { server: ledgerHttp(endpoint), release: () => {} } : null
+        },
+      })
 
-    await runner.start(request, () => {})
-    await flush()
-    expect(state.boots).toBe(1)
-    expect(state.live).toBe(1)
-
-    const resetting = runner.reset()
-    await resetting
-
-    // The honest half of the property, asserted so it cannot be read as
-    // "a reset kills the endpoint": the sidecar is APP-scoped (ADR 0027 — a
-    // local MCP client may be using it independently), so a conversation reset
-    // leaves it running, and the next turn reuses it with no new boot.
-    expect(state.killed).toBe(0)
-    expect(state.live).toBe(1)
-    const reused = await pool.acquire(CTX)
-    expect(reused?.server).toEqual(httpServer(9_001))
-    expect(state.boots).toBe(1)
-    reused?.release()
-
-    // App quit is the other end of the same lifetime, and it kills it.
-    pool.releaseAll()
-    expect(state.killed).toBe(1)
-    expect(state.live).toBe(0)
-  })
-})
-
-describe('sidecar pool lifetime — one app-scoped process, and who may end it', () => {
-  it('shares ONE sidecar across concurrent acquisitions and the app keeps it until quit', async () => {
-    const { pool, state } = trackedPool()
-
-    const first = pool.acquire(CTX)
-    const second = pool.acquire(CTX)
-    const [a, b] = await Promise.all([first, second])
-
-    expect(state.boots).toBe(1)
-    expect(a?.server).toEqual(b?.server)
-
-    // The count, not a boolean: the app's own claim is permanent (ADR 0027),
-    // so dropping run claims can never be the last release. The flip is the
-    // intermediate assertion — with a boolean, "still alive after one release"
-    // and "alive because release is a no-op" would be indistinguishable.
-    a?.release()
-    expect(state.killed).toBe(0)
-    b?.release()
-    expect(state.killed).toBe(0)
-
-    // A third turn after both releases: still one process, still no new boot.
-    const third = await pool.acquire(CTX)
-    expect(state.boots).toBe(1)
-    expect(third?.server).toEqual(httpServer(9_001))
-    third?.release()
-
-    pool.releaseAll()
-    expect(state.killed).toBe(1)
-  })
-
-  it('kills a dead sidecar on the health gate even while a run still holds it', async () => {
-    const { pool, state } = trackedPool()
-
-    const held = await pool.acquire(CTX)
-    expect(state.boots).toBe(1)
-    state.healthy = false
-
-    // Never handed out, and killed NOW: the holder's claim is on a dead
-    // process, so waiting for it to let go would leak nothing and delay the
-    // only thing that matters — the next turn gets a fresh boot.
-    const next = await pool.acquire(CTX)
-    expect(state.boots).toBe(2)
-    expect(state.killed).toBe(1)
-    expect(next?.server).toEqual(httpServer(9_002))
-
-    held?.release()
-    next?.release()
-    pool.releaseAll()
-    expect(state.live).toBe(0)
-  })
-
-  it('retries a failed boot on the next acquire instead of caching the failure', async () => {
-    let attempts = 0
-    const pool = createSidecarPool({
-      spawn: async () => {
-        attempts++
-        if (attempts === 1) throw new Error('no binary')
-        return {
-          server: httpServer(9_500),
-          release: () => {},
-          checkHealth: async () => true,
-        } satisfies StartedLedgerMcpHttp
-      },
-    })
-
-    // The booked honesty rule: a sidecar that fails to boot degrades the turn
-    // to no-tools rather than failing it.
-    expect(await pool.acquire(CTX)).toBeNull()
-    // ...and the failure is not sticky: the next turn tries again.
-    expect((await pool.acquire(CTX))?.server).toEqual(httpServer(9_500))
-    pool.releaseAll()
+      expect((await runner.start(request, () => {})).ok).toBe(true)
+      const endpoint = await localRuntime.runPromise(connection)
+      if (!endpoint) throw new Error('Expected the local ledger endpoint')
+      await runner.reset()
+      expect(await localRuntime.runPromise(connection)).toEqual(endpoint)
+      const status = await fetch(endpoint.url.replace(/\/mcp$/, '/health'), {
+        headers: { Authorization: `Bearer ${endpoint.token}` },
+      })
+      expect(status.status).toBe(200)
+    } finally {
+      await localRuntime.dispose()
+    }
   })
 })

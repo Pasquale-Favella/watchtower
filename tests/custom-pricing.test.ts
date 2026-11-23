@@ -1,20 +1,7 @@
 import * as Effect from 'effect/Effect'
 import { describe, expect, it } from 'vitest'
 
-import { createLedgerMcpQueryRuntime } from '../src/platform/mcp/query-runtime.js'
-import { buildLedgerTools } from '../src/platform/mcp/tools.js'
-import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
-import { queryCompareView } from '../src/core/application/queries/compare-query.js'
-import { queryModelsView } from '../src/core/application/queries/models-query.js'
-import { queryOptimizeView } from '../src/core/application/queries/optimize-query.js'
-import { queryOverview } from '../src/core/application/queries/overview-query.js'
-import { querySessionsView } from '../src/core/application/queries/sessions-query.js'
-import { querySkillsView } from '../src/core/application/queries/skills-query.js'
-import { querySpendView } from '../src/core/application/queries/spend-query.js'
 import { findLowWorthCandidates } from '../src/core/analytics/detectors/optimize-calculation.js'
-import { overviewDateRange } from '../src/core/domain/sessions/overview-scope.js'
-import { captureLocalModelSavings } from '../src/infrastructure/pricing/models.js'
-import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
 import { collectSkillCandidates } from '../src/core/analytics/detectors/skills-calculation.js'
 import { defaultRange } from '../src/core/analytics/projections/aggregate-calculation.js'
 import {
@@ -22,8 +9,20 @@ import {
   buildSessionSummariesFromSnapshot,
   groupSummariesIntoProjects,
 } from '../src/core/analytics/projections/aggregate-calculation.js'
-import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
+import { queryCompareView } from '../src/core/application/queries/compare-query.js'
 import { loadLedgerQuerySnapshotEffect } from '../src/core/application/queries/ledger-query-snapshot.js'
+import { queryModelsView } from '../src/core/application/queries/models-query.js'
+import { queryOptimizeView } from '../src/core/application/queries/optimize-query.js'
+import { queryOverview } from '../src/core/application/queries/overview-query.js'
+import { querySessionsView } from '../src/core/application/queries/sessions-query.js'
+import { querySkillsView } from '../src/core/application/queries/skills-query.js'
+import { querySpendView } from '../src/core/application/queries/spend-query.js'
+import { overviewDateRange } from '../src/core/domain/sessions/overview-scope.js'
+import { AssistantSetup } from '../src/core/ports/assistant-setup.js'
+import { LedgerConfig, LedgerIngest } from '../src/core/ports/repository.js'
+import type { CachedFile } from '../src/infrastructure/ingestion/session-cache.js'
+import { captureLocalModelSavings } from '../src/infrastructure/pricing/models.js'
+import { buildLedgerTools } from '../src/platform/mcp/tools.js'
 import type { ComparePayload } from '../src/shared/schemas/compare.js'
 import type { ModelsPayload } from '../src/shared/schemas/models.js'
 import type { OptimizePayload } from '../src/shared/schemas/optimize.js'
@@ -32,6 +31,7 @@ import type { SkillsPayload } from '../src/shared/schemas/skills.js'
 import type { SpendPayload } from '../src/shared/schemas/spend.js'
 import type { SessionRow } from '../src/shared/schemas/views.js'
 import { buildFixtureCachedCall, buildFixtureCachedFile, buildFixtureCachedTurn } from './fixtures/cached-file.js'
+import { fixtureLedgerMcpQueries } from './fixtures/ledger-mcp-queries.js'
 import { atTime, openLedgerFixture, viewInputs } from './fixtures/ledger-runtime.js'
 
 const NOW = new Date(2026, 6, 15)
@@ -306,33 +306,28 @@ describe('custom pricing applies query-time in every Section (issue 77)', () => 
   })
 
   it('the Coach ledger MCP tools answer with the same pricing the UI shows', async () => {
-    const { dbPath, runtime: worker } = openLedgerFixture()
+    const { runtime: worker } = openLedgerFixture()
     port(worker, [{ sessionId: 'sess-a', provider: 'claude', model: 'weird-model', cost: 0, date: '2026-07-10' }])
     setModelAlias(worker, 'weird-model', 'claude-sonnet-4-6')
 
-    const runtime = await createLedgerMcpQueryRuntime(dbPath)
-    try {
-      const tools = buildLedgerTools(runtime.queries)
-      const ui = overviewView(worker, { period: 'lifetime' })
-      const mcpOverview = (await tools.find(t => t.name === 'ledger_overview')!.run({})) as {
-        kpis: { cost: number }
-      }
-      expect(mcpOverview.kpis.cost).toBeCloseTo(ui.kpis.cost, 9)
-
-      const mcpSessions = (await tools.find(t => t.name === 'ledger_sessions')!.run({})) as Array<{
-        cost: number
-      }>
-      expect(mcpSessions[0]!.cost).toBeCloseTo(ui.kpis.cost, 9)
-
-      const mcpCalls = (await tools.find(t => t.name === 'ledger_calls')!.run({})) as Array<{
-        model: string
-        display_cost_usd: number
-      }>
-      expect(mcpCalls[0]!.model).toBe('claude-sonnet-4-6')
-      expect(mcpCalls[0]!.display_cost_usd).toBeCloseTo(0.0105, 4)
-    } finally {
-      await runtime.dispose()
+    const tools = buildLedgerTools(fixtureLedgerMcpQueries(worker))
+    const ui = overviewView(worker, { period: 'lifetime' })
+    const mcpOverview = (await tools.find(t => t.name === 'ledger_overview')!.run({})) as {
+      kpis: { cost: number }
     }
+    expect(mcpOverview.kpis.cost).toBeCloseTo(ui.kpis.cost, 9)
+
+    const mcpSessions = (await tools.find(t => t.name === 'ledger_sessions')!.run({})) as Array<{
+      cost: number
+    }>
+    expect(mcpSessions[0]!.cost).toBeCloseTo(ui.kpis.cost, 9)
+
+    const mcpCalls = (await tools.find(t => t.name === 'ledger_calls')!.run({})) as Array<{
+      model: string
+      display_cost_usd: number
+    }>
+    expect(mcpCalls[0]!.model).toBe('claude-sonnet-4-6')
+    expect(mcpCalls[0]!.display_cost_usd).toBeCloseTo(0.0105, 4)
   })
 
   it('Skills cost evidence reprices through the seam', async () => {

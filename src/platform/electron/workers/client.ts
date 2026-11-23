@@ -44,7 +44,7 @@ export type DbWorkerFactory = (scriptPath: string, workerData: DbWorkerData) => 
 
 export interface DbWorkerTransport {
   readonly ready: Promise<void>
-  request(operation: string, args: unknown[]): Promise<unknown>
+  request(operation: string, args: unknown[], signal?: AbortSignal): Promise<unknown>
   close(): Promise<void>
 }
 
@@ -97,11 +97,18 @@ const defaultTransportFactory: DbWorkerTransportFactory = (worker, callbacks) =>
   ready.catch(() => {})
   return {
     ready,
-    request: async (operation, args) => {
-      const handle = await transport
-      await handle.ready
-      return Effect.runPromise(workerOperation(handle.client, operation, args))
-    },
+    request: (operation, args, signal) =>
+      Effect.runPromise(
+        Effect.tryPromise({
+          try: async () => {
+            const handle = await transport
+            await handle.ready
+            return handle
+          },
+          catch: cause => cause,
+        }).pipe(Effect.flatMap(handle => workerOperation(handle.client, operation, args))),
+        { signal },
+      ),
     close: () =>
       transport.then(
         handle => handle.close(),
@@ -344,7 +351,7 @@ export class DbWorkerClient {
     return closed
   }
 
-  private send(op: string, args: unknown[] = [], beforeDispatch?: () => void): Promise<unknown> {
+  private send(op: string, args: unknown[] = [], beforeDispatch?: () => void, signal?: AbortSignal): Promise<unknown> {
     const isShutdown = op === 'shutdown'
     if (this.intentionalTeardown && !isShutdown && this.worker)
       return Promise.reject(new Error('data worker shut down'))
@@ -354,10 +361,10 @@ export class DbWorkerClient {
         if (this.intentionalTeardown && !isShutdown && this.worker)
           return Promise.reject(new Error('data worker shut down'))
         beforeDispatch?.()
-        return this.sendTo(this.worker, op, args)
+        return this.sendTo(this.worker, op, args, signal)
       })
     beforeDispatch?.()
-    return this.sendTo(this.worker, op, args)
+    return this.sendTo(this.worker, op, args, signal)
   }
 
   private admitOrdinaryRequest(start: () => Promise<unknown>): Promise<unknown> {
@@ -388,12 +395,17 @@ export class DbWorkerClient {
     const isShuttingDown = (): boolean => this.intentionalTeardown
     const revision = (): number => this.dataRevision
     let requestedRevision = 0
-    const send = (): Promise<unknown> =>
-      this.send(op, args, () => {
-        // Recovery may replace the ledger owner before this read is dispatched.
-        // Only changes after dispatch can make its response stale.
-        requestedRevision = revision()
-      })
+    const send = (signal: AbortSignal): Promise<unknown> =>
+      this.send(
+        op,
+        args,
+        () => {
+          // Recovery may replace the ledger owner before this read is dispatched.
+          // Only changes after dispatch can make its response stale.
+          requestedRevision = revision()
+        },
+        signal,
+      )
     return Effect.gen(function* () {
       while (true) {
         if (isShuttingDown()) return yield* Effect.fail(new Error('data worker shut down'))
@@ -406,7 +418,8 @@ export class DbWorkerClient {
     })
   }
 
-  private sendTo(worker: DbWorkerPort | null, op: string, args: unknown[] = []): Promise<unknown> {
+  private sendTo(worker: DbWorkerPort | null, op: string, args: unknown[], signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) return Promise.reject(signal.reason)
     if (!worker) return Promise.reject(new Error('data worker unavailable'))
     const transport = this.transports.get(worker)
     if (!transport) return Promise.reject(new Error('data worker transport unavailable'))
@@ -417,7 +430,7 @@ export class DbWorkerClient {
         if (this.pending.delete(pending)) settle()
       }
       try {
-        transport.request(op, args).then(
+        transport.request(op, args, signal).then(
           value => finish(() => resolve(value)),
           error => finish(() => reject(error)),
         )
@@ -425,6 +438,12 @@ export class DbWorkerClient {
         finish(() => reject(cause instanceof Error ? cause : new Error(String(cause))))
       }
     })
+  }
+
+  /** A scoped read has its own RPC so cancelling it leaves other callers' reads intact. */
+  requestRead(op: string, args: unknown[], signal: AbortSignal): Promise<unknown> {
+    if (!DEDUPABLE_OPS.has(op)) return Promise.reject(new Error('operation is not a database worker read'))
+    return this.admitOrdinaryRequest(() => Effect.runPromise(this.stableReadEffect(op, args), { signal }))
   }
 
   /** Invoke one worker op. Identical pure-read ops share one flight; if a

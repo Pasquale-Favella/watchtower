@@ -9,6 +9,8 @@ import type { AssistantSetup } from '@/core/ports/assistant-setup.js'
 import { queryCompareView } from '@/core/application/queries/compare-query.js'
 import type { ExportFiles } from '@/core/ports/export-files.js'
 import { queryExport } from '@/core/application/queries/export-query.js'
+import { queryLedgerMcpCalls, queryLedgerMcpScope } from '@/core/application/queries/ledger-mcp-query.js'
+import type { LedgerMcpCallsInput } from '@/core/analytics/projections/ledger-mcp-calculation.js'
 import { queryModelsView } from '@/core/application/queries/models-query.js'
 import { queryOptimizeView } from '@/core/application/queries/optimize-query.js'
 import { queryOverview } from '@/core/application/queries/overview-query.js'
@@ -50,6 +52,20 @@ export function ledgerQueryRequest(
   args: unknown[],
 ): Effect.Effect<unknown, SqlError | Schema.SchemaError, QueryServices> | undefined {
   switch (op) {
+    case 'ledger-mcp:scope':
+      return queryLedgerMcpScope({
+        scope: args[0] as OverviewScope,
+        catalogue: captureModelPricingCatalogue(),
+        proxyPaths: captureProxyPaths(),
+      })
+
+    case 'ledger-mcp:calls':
+      return queryLedgerMcpCalls({
+        ...(args[0] as LedgerMcpCallsInput),
+        catalogue: captureModelPricingCatalogue(),
+        proxyPaths: captureProxyPaths(),
+      })
+
     case 'store:views':
       return queryDashboardViews({ catalogue: captureModelPricingCatalogue(), proxyPaths: captureProxyPaths() })
 

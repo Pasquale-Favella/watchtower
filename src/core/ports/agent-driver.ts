@@ -68,7 +68,7 @@ export interface AgentSessionContext {
 }
 
 export interface AgentMcpEndpoint {
-  readonly name: 'watchtower-browser' | 'watchtower-orchestrator'
+  readonly name: 'watchtower-browser' | 'watchtower-orchestrator' | 'watchtower-ledger'
   readonly url: string
   readonly token: string
   /** Stdio bridge for harnesses that accept only stdio MCP servers. */

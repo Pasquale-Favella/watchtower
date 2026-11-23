@@ -97,8 +97,10 @@ import { createPromptReferenceFiles } from '@/platform/electron/main/workspace/p
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
 import { checkoutInspectionWorkerLayer } from '@/platform/electron/workers/checkout/client.js'
 import { DbWorkerClient } from '@/platform/electron/workers/client.js'
-import { buildLedgerMcpServer, ledgerMcpTransportFor } from '@/platform/mcp/config.js'
-import { LedgerMcpPool } from '@/platform/mcp/pool.js'
+import { ledgerMcpTransportFor } from '@/platform/mcp/config.js'
+import { acquireLedgerMcp, ledgerHttp, ledgerMcpWithStdio } from '@/platform/mcp/ledger-endpoint.js'
+import { LocalLedgerMcp } from '@/platform/mcp/local-ledger-mcp.js'
+import { createLedgerMcpQueries } from '@/platform/mcp/query-api.js'
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
 import { CheckoutInspectionRpcError } from '@/shared/rpc/checkout-inspection.js'
 import { serverProtocolLayer } from '@/shared/rpc/port-protocol.js'
@@ -331,14 +333,6 @@ const mainRuntime = makeMainRuntime(
     TerminalHostLive,
   ),
 )
-/** App-level loopback-HTTP ledger sidecar: shared by Copilot, local external
- * MCP clients, and any future harness that rejects stdio. It remains lazy by
- * default and is prewarmed after the data worker is ready when the persisted
- * startup setting requests it. */
-const sidecarPool = {
-  connection: (context: ReturnType<typeof ledgerMcpContext>) =>
-    mainRuntime.runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.connection(context))),
-}
 /** Tray + floating orb + hide-on-close (set once the app is ready). */
 let backgroundShell: BackgroundShellHandle | null = null
 
@@ -368,14 +362,6 @@ function readWorkerSnapshot(operation: string): Effect.Effect<unknown, Error> {
   })
 }
 
-function ledgerMcpContext(): { execPath: string; entryPath: string; dbPath: string } {
-  return {
-    execPath: process.execPath,
-    entryPath: join(app.getAppPath(), 'out/main/ledger-mcp.js'),
-    dbPath: join(app.getPath('userData'), 'ledger.db'),
-  }
-}
-
 /** The lifecycle hub projects worker events to each authenticated window role. */
 function relayWorkerEvents(db: DbWorkerClient): void {
   db.onReplaced(() => {
@@ -394,35 +380,32 @@ function relayWorkerEvents(db: DbWorkerClient): void {
 }
 
 function registerApplicationAgents(db: DbWorkerClient): ReturnType<typeof createApplicationAgents> {
-  // One coordinator owns harness runs and their conversation workspace.
+  const queries = createLedgerMcpQueries(db)
   return createApplicationAgents({
     runtime: mainRuntime,
-    // The in-app ledger MCP server (map 53): the harness agent spawns the app
-    // itself as plain node (ELECTRON_RUN_AS_NODE=1) and reads the FULL
-    // lifetime ledger read-only — no scope is baked at spawn (the harness
-    // filters through each tool's optional `scope` argument). Paths:
-    // `process.execPath` (dev + packaged), the bundled entry under appPath,
-    // and the ledger DB beside the cache.
     ledgerMcpServer: harnessKind =>
       Effect.gen(function* () {
         yield* Effect.tryPromise({ try: () => db.ready, catch: error => error })
-        // Fresh install: no ledger.db yet → no data to serve, so no MCP server
-        // (its read-only open would throw on a missing file). Once the first
-        // scan lands, the next run injects it.
-        const context = ledgerMcpContext()
-        const dbPath = context.dbPath
-        if (!existsSync(dbPath)) return null
-        // Harnesses that reject client-provided stdio servers (Copilot) get
-        // the same ledger over the app-level loopback-HTTP sidecar instead. A null
-        // (spawn failure, reset raced the spawn) degrades to no-tools (the
-        // turn still runs) rather than failing the turn.
         if (ledgerMcpTransportFor(harnessKind) === 'http') {
-          return yield* Effect.flatMap(LedgerMcpPool, pool => pool.acquire(context))
+          const local = yield* LocalLedgerMcp
+          const endpoint = yield* local.connection(queries)
+          return endpoint ? { server: ledgerHttp(endpoint), release: () => {} } : null
         }
-        return {
-          server: buildLedgerMcpServer(context),
-          release: () => {},
-        }
+
+        const scope = yield* Scope.fork(mainRuntime.scope)
+        return yield* Effect.gen(function* () {
+          const endpoint = yield* acquireLedgerMcp(queries, request => mainRuntime.runPromise(request))
+          const { name, stdio } = ledgerMcpWithStdio(endpoint, process.execPath, join(__dirname, 'ledger-mcp-proxy.js'))
+          return {
+            server: { name, command: stdio.command, args: [...stdio.args], env: [...stdio.env] },
+            release: () => {
+              mainRuntime.runFork(Scope.close(scope, Exit.void))
+            },
+          }
+        }).pipe(
+          Scope.provide(scope),
+          Effect.onExit(exit => (Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit))),
+        )
       }),
   })
 }
@@ -507,7 +490,6 @@ app.whenReady().then(async () => {
           return homedir()
         }
       },
-      ledgerMcpContext,
       showSaveDialog: options => dialog.showSaveDialog(options),
     },
     {
@@ -678,17 +660,16 @@ app.whenReady().then(async () => {
   backgroundShell = await mainRuntime.runPromise(BackgroundShell)
   createWindow()
 
-  // Optional app-level prewarm: the persisted setting is read only after the
-  // data worker owns the DB, so the sidecar can safely open its read-only
-  // connection. A failed prewarm is non-fatal; the next Coach run or an
-  // explicit copy-config action can retry on demand.
+  // Prewarm the local MCP endpoint after the data worker is ready when requested.
   void db.ready
     .then(async () => {
       safeLogOperationalEvent('info', 'boot.ready', {})
       safeLogOperationalEvent('info', 'worker.ready', {}, 'worker')
       const startupMode = (await db.request('ledger-mcp:startup:get')) as LedgerMcpStartupMode
       if (startupMode === 'at-launch') {
-        await sidecarPool.connection(ledgerMcpContext())
+        await mainRuntime.runPromise(
+          Effect.flatMap(LocalLedgerMcp, local => local.connection(createLedgerMcpQueries(db))),
+        )
       }
     })
     .catch(err => {
@@ -748,7 +729,7 @@ const quitCoordinator = createQuitCoordinator({
       await closeMainResources({
         stopCoach: () =>
           mainRuntime
-            .runPromise(Effect.flatMap(LedgerMcpPool, pool => pool.releaseAll()))
+            .runPromise(Effect.flatMap(LocalLedgerMcp, local => local.shutdown()))
             .finally(() => agentsCleanup?.dispose()),
         stopWorker: () => dbClient?.shutdown() ?? Promise.resolve(),
         disposeRuntime: () => mainRuntime.dispose(),
