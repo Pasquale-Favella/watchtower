@@ -94,9 +94,24 @@ test('chat virtualizes variable heights and holds the reader through streaming, 
     await expect.poll(gap).toBeGreaterThan(200)
     const rail = page.getByRole('button', { name: /^Jump to message:/ })
     await expect(rail).toBeVisible()
-    const beforeJump = (await readingAnchor(messages)).id
+    // The user message aligned at the jump inset, once the glide has settled.
+    const aligned = () =>
+      messages.evaluate(viewport => {
+        const top = viewport.getBoundingClientRect().top
+        const row = [...viewport.querySelectorAll<HTMLElement>('[data-message-id]')].find(element => {
+          const offset = element.getBoundingClientRect().top - top
+          return offset > 20 && offset < 28
+        })
+        return row ? Number(row.dataset.messageId?.replace('message-', '')) : null
+      })
     const previous = page.getByRole('button', { name: 'Previous message', exact: true })
     const next = page.getByRole('button', { name: 'Next message', exact: true })
+    // Real pointer input at the control, the way a reader clicks it.
+    const press = async (control: Locator) => {
+      const box = await control.boundingBox()
+      if (!box) throw new Error('Minimap control is not laid out')
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
+    }
     const pressWithoutShifting = async (control: Locator) => {
       await control.hover()
       const positions = () =>
@@ -111,31 +126,34 @@ test('chat virtualizes variable heights and holds the reader through streaming, 
       expect(pressed).toEqual(before)
       expect(await positions()).toEqual(before)
     }
+    await page.evaluate(() => {
+      const w = window as unknown as { dbg: string[] }
+      w.dbg = []
+      document.addEventListener('pointerup', event => {
+        const b = document.querySelector<HTMLElement>('[aria-label="Previous message"]')
+        const s = b && getComputedStyle(b)
+        w.dbg.push('UP pe=' + s?.pointerEvents + ' disp=' + s?.display + ' vis=' + s?.visibility + ' tf=' + s?.transform + ' stack=' + document.elementsFromPoint(event.clientX, event.clientY).slice(0, 4).map(e => e.tagName + '.' + (e.getAttribute('data-slot') ?? e.getAttribute('aria-label') ?? '')).join('|') + ' cap=' + String((event.target as Element).hasPointerCapture?.(event.pointerId)))
+      }, true)
+      for (const type of ['pointerover', 'pointerdown', 'mousedown', 'pointerup', 'click'])
+        document.addEventListener(type, event => w.dbg.push(type + ':' + ((event.target as HTMLElement).getAttribute?.('aria-label') ?? (event.target as HTMLElement).tagName + '.' + String((event.target as HTMLElement).className).slice(0, 60) + '#' + ((event.target as HTMLElement).dataset?.slot ?? '')) + ':' + (event as MouseEvent).clientX + ',' + (event as MouseEvent).clientY), true)
+    })
     await pressWithoutShifting(previous)
-    await expect.poll(async () => (await readingAnchor(messages)).id).not.toBe(beforeJump)
-    // The target user message lands at the jump inset near the top of the viewport.
-    await expect
-      .poll(() =>
-        messages.evaluate(viewport => {
-          const top = viewport.getBoundingClientRect().top
-          return [...viewport.querySelectorAll<HTMLElement>('[data-message-id]')].some(row => {
-            const offset = row.getBoundingClientRect().top - top
-            return offset > 20 && offset < 28
-          })
-        }),
-      )
-      .toBe(true)
-    await messages.hover()
-    await page.mouse.wheel(0, -3500)
-    await expect(next).toBeEnabled()
+    console.log('DBG4', JSON.stringify(await page.evaluate(() => (window as unknown as { dbg: string[] }).dbg)), JSON.stringify(await previous.boundingBox()))
+    await expect.poll(aligned).not.toBeNull()
+    const first = Number(await aligned())
+    // Rapid presses keep stepping from the destination instead of re-targeting mid-glide.
+    await press(previous)
+    await press(previous)
+    await expect.poll(aligned).toBe(first - 50)
     await pressWithoutShifting(next)
+    await expect.poll(aligned).toBe(first - 25)
     await rail.hover()
     const preview = page.getByRole('tooltip', { name: /A reply preview\./ })
     await expect(preview).toBeVisible()
     await page.screenshot({ path: test.info().outputPath('workspace-timeline-minimap.png') })
     await messages.hover()
-    await previous.focus()
-    await page.keyboard.press('Tab')
+    await next.focus()
+    await page.keyboard.press('Shift+Tab')
     await expect(rail).toBeFocused()
     await rail.press('Home')
     await expect(preview).toContainText('Message -80')

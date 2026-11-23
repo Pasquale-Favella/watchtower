@@ -8,6 +8,7 @@ import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { readScrollAnchor, type TimelineScrollAnchor, writeScrollAnchor } from './conversation-memory.js'
 import { initialTimelineFollow, reduceTimelineFollow, SCROLL_PILL_SHOW_DELAY_MS } from './follow-state.js'
 import { attachTimelineViewport, prefersReducedMotion } from './scroll-keys.js'
+import { glideScroll } from './scroll-tween.js'
 import { TIMELINE_MINIMAP_JUMP_INSET_PX, type TimelineMinimapItem } from './timeline-minimap.js'
 import { TimelineMinimap } from './TimelineMinimap.js'
 
@@ -145,18 +146,34 @@ export function TimelineScroller<Row extends { readonly id: string }>({
   useLayoutEffect(restoreAnchor, [restoreAnchor])
 
   const getList = useCallback(() => listRef.current, [])
-  const jumpTo = useCallback((item: TimelineMinimapItem) => {
+  const jumpTo = useCallback(async (item: TimelineMinimapItem): Promise<void> => {
     const list = listRef.current
-    if (!list) return
+    const viewport = list?.getScrollableNode()
+    if (!list || !viewport) return
     restoredRef.current = true
     setRestorationPending(false)
     dispatch({ type: 'scrolledUp' })
-    const target = { messageId: item.id, offset: TIMELINE_MINIMAP_JUMP_INSET_PX }
-    const isCurrent = () => listRef.current === list
-    // Far rows are only estimated until measured, so settle the alignment once the scroll lands.
-    void list
-      .scrollToKey({ key: item.id, viewOffset: target.offset, animated: !prefersReducedMotion() })
-      .then(() => (isCurrent() ? restorePosition(list, target, isCurrent) : undefined))
+    list.cancelScroll()
+    const inset = TIMELINE_MINIMAP_JUMP_INSET_PX
+    // Prefer the rendered row; fall back to the list's estimate (plus the header it excludes) until it renders.
+    const target = (): number | null => {
+      const rendered = rowPosition(list, item.id)
+      if (rendered) return rendered.viewport.scrollTop + rendered.offset - inset
+      const estimate = list.getState().positionByKey(item.id)
+      if (estimate === undefined) return null
+      const header = viewport.querySelector<HTMLElement>('[data-timeline-header]')?.offsetHeight ?? 0
+      return estimate + header - inset
+    }
+    const arrived = await glideScroll(viewport, target)
+    if (!arrived || listRef.current !== list) return
+    // Absorb any measurement that landed on the final frame.
+    for (let frame = 0; frame < 3; frame++) {
+      await new Promise<void>(resolve => requestAnimationFrame(() => resolve()))
+      const position = rowPosition(list, item.id)
+      if (!position) continue
+      const delta = position.offset - inset
+      if (Math.abs(delta) > 0.5) position.viewport.scrollTop += delta
+    }
   }, [])
 
   return (

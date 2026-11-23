@@ -20,7 +20,7 @@ import {
 
 const LINE_HEIGHT_PX = 16
 const STEP_BUTTON_CLASS =
-  'absolute left-0 opacity-0 transition-opacity duration-150 group-hover/minimap:opacity-100 focus-visible:opacity-100 active:not-aria-[haspopup]:translate-y-0'
+  'aria-disabled:text-muted-foreground/40 absolute left-0 opacity-0 transition-opacity duration-150 group-hover/minimap:opacity-100 focus-visible:opacity-100 active:not-aria-[haspopup]:translate-y-0 aria-disabled:cursor-default aria-disabled:hover:bg-transparent'
 
 interface Metrics {
   readonly gutter: number
@@ -45,7 +45,8 @@ export function TimelineMinimap({
 }: {
   readonly items: readonly TimelineMinimapItem[]
   readonly list: () => LegendListRef | null
-  readonly onSelect: (item: TimelineMinimapItem) => void
+  /** Resolves once the timeline has settled on the item (or the reader interrupted the glide). */
+  readonly onSelect: (item: TimelineMinimapItem) => Promise<void>
 }): React.JSX.Element | null {
   const marks = useRef(new Map<number, HTMLSpanElement>())
   const rail = useRef<HTMLButtonElement | null>(null)
@@ -53,6 +54,9 @@ export function TimelineMinimap({
   const [hovered, setHovered] = useState<ActiveMark | null>(null)
   const [focused, setFocused] = useState<ActiveMark | null>(null)
   const [dragging, setDragging] = useState(false)
+  // While a glide is in flight, steps continue from its destination rather than the moving scroll position.
+  const [pendingIndex, setPendingIndex] = useState<number | null>(null)
+  const pending = useRef<number | null>(null)
   const enabled = items.length >= TIMELINE_MINIMAP_MIN_ITEMS
 
   const refresh = useCallback(() => {
@@ -156,8 +160,17 @@ export function TimelineMinimap({
   }
   const select = (index: number) => {
     const item = items[index]
-    if (item) onSelect(item)
+    if (!item) return
+    pending.current = index
+    setPendingIndex(index)
+    void onSelect(item).finally(() => {
+      if (pending.current !== index) return
+      pending.current = null
+      setPendingIndex(null)
+    })
   }
+  const previousIndex = pendingIndex === null ? metrics.previousIndex : pendingIndex - 1
+  const nextIndex = pendingIndex === null ? metrics.nextIndex : pendingIndex + 1 < count ? pendingIndex + 1 : -1
 
   return (
     <div
@@ -185,13 +198,22 @@ export function TimelineMinimap({
               variant="ghost"
               size="icon-xs"
               aria-label="Previous message"
-              disabled={metrics.previousIndex < 0}
+              aria-disabled={previousIndex < 0}
               className={cn(
                 STEP_BUTTON_CLASS,
                 'bottom-full mb-1.5',
                 interactive ? 'pointer-events-auto' : 'pointer-events-none',
               )}
-              onClick={() => select(metrics.previousIndex)}
+              // Steps fire on press: immediate, and never lost when the transcript under the overlay re-targets the
+              // pointer before release. Keyboard activation still arrives as a click without pointer detail.
+              onPointerDown={event => {
+                if (event.button !== 0 || event.pointerType === 'touch') return
+                event.preventDefault()
+                select(previousIndex)
+              }}
+              onClick={event => {
+                if (event.detail === 0) select(previousIndex)
+              }}
             >
               <ChevronUpIcon aria-hidden />
             </Button>
@@ -225,7 +247,7 @@ export function TimelineMinimap({
               if (event.detail !== 0) event.currentTarget.blur()
             }}
             onKeyDown={event => {
-              const current = focused?.index ?? Math.max(0, metrics.currentIndex)
+              const current = focused?.index ?? pendingIndex ?? Math.max(0, metrics.currentIndex)
               let next: number | null = null
               if (event.key === 'ArrowUp') next = current - 1
               else if (event.key === 'ArrowDown') next = current + 1
@@ -275,13 +297,20 @@ export function TimelineMinimap({
               variant="ghost"
               size="icon-xs"
               aria-label="Next message"
-              disabled={metrics.nextIndex < 0}
+              aria-disabled={nextIndex < 0}
               className={cn(
                 STEP_BUTTON_CLASS,
                 'top-full mt-1.5',
                 interactive ? 'pointer-events-auto' : 'pointer-events-none',
               )}
-              onClick={() => select(metrics.nextIndex)}
+              onPointerDown={event => {
+                if (event.button !== 0 || event.pointerType === 'touch') return
+                event.preventDefault()
+                select(nextIndex)
+              }}
+              onClick={event => {
+                if (event.detail === 0) select(nextIndex)
+              }}
             >
               <ChevronDownIcon aria-hidden />
             </Button>
