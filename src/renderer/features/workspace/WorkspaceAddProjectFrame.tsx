@@ -1,12 +1,25 @@
-import { ArrowDown, ArrowLeft, ArrowUp } from 'lucide-react'
-import { type ReactNode, useId, useState } from 'react'
+import { useHotkeys } from '@tanstack/react-hotkeys'
+import { ArrowLeft } from 'lucide-react'
+import { type ReactNode, useId, useRef, useState } from 'react'
 
+import { displayShortcut, displayShortcutText } from '@/renderer/app/shortcuts'
 import { Button } from '@/renderer/components/ui/button'
 import { Kbd } from '@/renderer/components/ui/kbd'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
-import { isMac, submitModifier } from './platform-labels.js'
+import {
+  PALETTE_BACK_HOTKEY,
+  PALETTE_CLOSE_HOTKEY,
+  PALETTE_COMPLETE_HOTKEY,
+  PALETTE_FORCE_SUBMIT_HOTKEY,
+  PALETTE_NEXT_HOTKEY,
+  PALETTE_PREVIOUS_HOTKEY,
+  PALETTE_SUBMIT_HOTKEY,
+  paletteBackspaceGoesBack,
+  paletteEnterIntent,
+  paletteMoveTarget,
+} from './project-browse-state.js'
 
 export interface PaletteRow {
   readonly id: string
@@ -34,14 +47,20 @@ export function FooterAction({
   readonly onClick: () => void
 }) {
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className="hover:text-foreground focus-visible:outline-ring cursor-pointer font-medium underline-offset-2 hover:underline focus-visible:outline-2 disabled:pointer-events-none disabled:opacity-50"
-    >
+    <Button type="button" variant="ghost" size="xs" disabled={disabled} onClick={onClick}>
       {children}
-    </button>
+    </Button>
+  )
+}
+
+function KeyHint({ keys, children }: { readonly keys: readonly string[]; readonly children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1">
+      {keys.map(key => (
+        <Kbd key={key}>{key}</Kbd>
+      ))}
+      {children}
+    </span>
   )
 }
 
@@ -60,7 +79,8 @@ interface Props {
   /** Enter activates the first enabled row while nothing is highlighted. */
   readonly autoHighlight?: boolean
   readonly submit?: PaletteSubmit
-  readonly onTab?: (active: PaletteRow | null) => void
+  /** Returns whether Tab completed something; when it did not, Tab keeps moving focus as usual. */
+  readonly onTab?: (active: PaletteRow | null) => boolean
   readonly header?: ReactNode
   readonly hint?: string | null
   readonly emptyMessage?: string | null
@@ -90,6 +110,7 @@ export function WorkspaceAddProjectFrame({
   footerTrailing,
 }: Props) {
   const listId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
   const [highlight, setHighlight] = useState<{ readonly key: string; readonly id: string | null }>({
     key: resetKey,
     id: null,
@@ -99,47 +120,92 @@ export function WorkspaceAddProjectFrame({
   const active = chosen ?? (autoHighlight ? enabledRows[0] : undefined) ?? null
   const optionId = (row: PaletteRow) => `${listId}-${rows.indexOf(row)}`
   const highlightRow = (row: PaletteRow | null) => setHighlight({ key: resetKey, id: row?.id ?? null })
-  const submitShortcut = chosen ? `${submitModifier} Enter` : 'Enter'
+  const submitHotkey = chosen ? PALETTE_FORCE_SUBMIT_HOTKEY : PALETTE_SUBMIT_HOTKEY
+  const submitShortcut = displayShortcutText(submitHotkey)
   const enterLabel = active ? 'Select' : (submit?.label ?? 'Select')
 
   const move = (offset: 1 | -1) => {
-    if (enabledRows.length === 0) return
-    const index = active === null ? (offset === 1 ? 0 : enabledRows.length - 1) : enabledRows.indexOf(active) + offset
-    const next = enabledRows[(index + enabledRows.length) % enabledRows.length] ?? null
+    const id = paletteMoveTarget(
+      enabledRows.map(row => row.id),
+      active?.id ?? null,
+      offset,
+    )
+    const next = enabledRows.find(row => row.id === id) ?? null
     highlightRow(next)
     if (next) document.getElementById(optionId(next))?.scrollIntoView({ block: 'nearest' })
   }
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.nativeEvent.isComposing) return
-    const modifier = isMac ? event.metaKey : event.ctrlKey
-    switch (event.key) {
-      case 'ArrowDown':
-      case 'ArrowUp':
-        event.preventDefault()
-        move(event.key === 'ArrowDown' ? 1 : -1)
-        return
-      case 'Enter':
-        event.preventDefault()
-        if (active && !(modifier && submit)) active.onActivate()
-        else if (submit && !submit.disabled) submit.onSubmit()
-        return
-      case 'Tab':
-        if (!onTab || event.shiftKey) return
-        event.preventDefault()
-        onTab(chosen ?? null)
-        return
-      case 'Backspace':
-        if (value === '' && onBack) {
-          event.preventDefault()
-          onBack()
-        }
-    }
+  const enter = (forceSubmit: boolean) => {
+    const intent = paletteEnterIntent({
+      forceSubmit,
+      hasActiveRow: active !== null,
+      hasSubmit: submit !== undefined,
+      submitDisabled: submit?.disabled ?? true,
+    })
+    if (intent === 'activate') active?.onActivate()
+    else if (intent === 'submit') submit?.onSubmit()
   }
 
+  // Scoped to the input. Each callback claims its key itself (the registrations leave preventDefault off)
+  // so an Enter that confirms an IME composition, or a Backspace that deletes text, still reaches the input.
+  const claim = (event: KeyboardEvent, run: () => void) => {
+    if (event.isComposing) return
+    event.preventDefault()
+    run()
+  }
+  useHotkeys(
+    [
+      {
+        hotkey: PALETTE_NEXT_HOTKEY,
+        callback: event => claim(event, () => move(1)),
+        options: { meta: { name: 'Next option', description: 'Highlight the next option' } },
+      },
+      {
+        hotkey: PALETTE_PREVIOUS_HOTKEY,
+        callback: event => claim(event, () => move(-1)),
+        options: { meta: { name: 'Previous option', description: 'Highlight the previous option' } },
+      },
+      {
+        hotkey: PALETTE_SUBMIT_HOTKEY,
+        callback: event => claim(event, () => enter(false)),
+        options: {
+          meta: { name: 'Submit', description: 'Submit the typed value, or activate the highlighted option' },
+        },
+      },
+      {
+        hotkey: PALETTE_FORCE_SUBMIT_HOTKEY,
+        callback: event => claim(event, () => enter(true)),
+        options: {
+          meta: { name: 'Submit typed value', description: 'Submit the typed value even with an option highlighted' },
+        },
+      },
+      {
+        hotkey: PALETTE_COMPLETE_HOTKEY,
+        callback: event => {
+          if (event.isComposing) return
+          if (onTab?.(chosen ?? null)) event.preventDefault()
+        },
+        options: {
+          enabled: onTab !== undefined,
+          meta: { name: 'Complete', description: 'Complete the path or open the highlighted folder' },
+        },
+      },
+      {
+        hotkey: PALETTE_BACK_HOTKEY,
+        callback: event => {
+          if (event.isComposing || !paletteBackspaceGoesBack({ value, repeat: event.repeat })) return
+          event.preventDefault()
+          onBack?.()
+        },
+        options: { enabled: onBack !== undefined, meta: { name: 'Back', description: 'Go back from an empty input' } },
+      },
+    ],
+    { target: inputRef, ignoreInputs: false, preventDefault: false, stopPropagation: false },
+  )
+
   return (
-    <div className="flex flex-col">
-      <div className="relative flex items-center gap-2 border-b px-3">
+    <div className="flex flex-col p-1">
+      <div className="flex h-9 items-center gap-2 border-b px-3">
         {onBack ? (
           <button
             type="button"
@@ -150,11 +216,12 @@ export function WorkspaceAddProjectFrame({
             <ArrowLeft />
           </button>
         ) : (
-          <span aria-hidden="true" className="text-muted-foreground flex shrink-0 [&_svg]:size-4">
+          <span aria-hidden="true" className="flex shrink-0 opacity-50 [&_svg]:size-4">
             {icon}
           </span>
         )}
         <input
+          ref={inputRef}
           role="combobox"
           aria-label={inputLabel}
           aria-expanded={rows.length > 0}
@@ -169,11 +236,7 @@ export function WorkspaceAddProjectFrame({
             highlightRow(null)
             onValueChange(event.target.value)
           }}
-          onKeyDown={onKeyDown}
-          className={cn(
-            'placeholder:text-muted-foreground h-11 min-w-0 flex-1 bg-transparent text-sm outline-hidden disabled:opacity-50',
-            submit && 'pe-36',
-          )}
+          className="placeholder:text-muted-foreground flex h-9 min-w-0 flex-1 bg-transparent py-3 text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50"
         />
         {submit && (
           <Button
@@ -181,7 +244,7 @@ export function WorkspaceAddProjectFrame({
             variant="outline"
             size="xs"
             tabIndex={-1}
-            className="absolute top-1/2 right-2.5 -translate-y-1/2"
+            className="shrink-0"
             aria-label={`${submit.label} (${submitShortcut})`}
             disabled={submit.disabled}
             onMouseDown={event => event.preventDefault()}
@@ -193,20 +256,20 @@ export function WorkspaceAddProjectFrame({
         )}
       </div>
       {header}
-      <div className="max-h-[min(24rem,60vh)] overflow-y-auto p-1">
+      <div className="no-scrollbar max-h-72 scroll-py-1 overflow-x-hidden overflow-y-auto outline-none">
         {error && (
-          <p role="alert" className="text-destructive px-2 py-2 text-sm">
+          <p role="alert" className="text-destructive px-3 py-2 text-sm">
             {error}
           </p>
         )}
-        {hint && <p className="text-muted-foreground px-2 py-1.5 text-xs">{hint}</p>}
+        {hint && <p className="text-muted-foreground px-3 py-1.5 text-xs">{hint}</p>}
         {emptyMessage ? (
-          <p role="status" className="text-muted-foreground px-2 py-6 text-center text-sm">
+          <p role="status" className="text-muted-foreground py-6 text-center text-sm">
             {emptyMessage}
           </p>
         ) : (
           rows.length > 0 && (
-            <>
+            <div className="text-foreground overflow-hidden p-1">
               {groupLabel && <div className="text-muted-foreground px-2 py-1.5 text-xs font-medium">{groupLabel}</div>}
               <div role="listbox" id={listId} aria-label={groupLabel ?? inputLabel}>
                 {rows.map(row => (
@@ -223,12 +286,12 @@ export function WorkspaceAddProjectFrame({
                         onMouseDown={event => event.preventDefault()}
                         onClick={() => !row.disabled && row.onActivate()}
                         className={cn(
-                          'flex min-h-8 cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm select-none [&_svg]:size-4 [&_svg]:shrink-0',
-                          row === active && 'bg-muted text-foreground',
-                          row.disabled && 'cursor-default opacity-50',
+                          'relative flex cursor-default items-center gap-2 rounded-lg px-2 py-1.5 text-sm select-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*=size-])]:size-4',
+                          row === active && 'bg-muted text-foreground [&_svg]:text-foreground',
+                          row.disabled && 'opacity-50',
                         )}
                       >
-                        <span aria-hidden="true" className="text-muted-foreground flex">
+                        <span aria-hidden="true" className="flex">
                           {row.icon}
                         </span>
                         <span className="flex min-w-0 flex-1 flex-col">
@@ -243,41 +306,22 @@ export function WorkspaceAddProjectFrame({
                   />
                 ))}
               </div>
-            </>
+            </div>
           )
         )}
       </div>
-      <div className="bg-muted/50 text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2 text-xs">
+      <div className="bg-muted/50 text-muted-foreground -mx-1 mt-1 -mb-1 flex flex-wrap items-center justify-between gap-2 border-t px-3 py-2 text-xs">
         <div className="flex flex-wrap items-center gap-3">
-          <span className="flex items-center gap-1">
-            <Kbd>
-              <ArrowUp />
-            </Kbd>
-            <Kbd>
-              <ArrowDown />
-            </Kbd>
+          <KeyHint keys={[displayShortcut(PALETTE_PREVIOUS_HOTKEY), displayShortcut(PALETTE_NEXT_HOTKEY)]}>
             Navigate
-          </span>
-          <span className="flex items-center gap-1">
-            <Kbd>Enter</Kbd>
-            {enterLabel}
-          </span>
-          {onTab && (
-            <span className="flex items-center gap-1">
-              <Kbd>Tab</Kbd>
-              Complete
-            </span>
+          </KeyHint>
+          <KeyHint keys={[displayShortcutText(PALETTE_SUBMIT_HOTKEY)]}>{enterLabel}</KeyHint>
+          {chosen && submit && (
+            <KeyHint keys={[displayShortcutText(PALETTE_FORCE_SUBMIT_HOTKEY)]}>{submit.label}</KeyHint>
           )}
-          {onBack && (
-            <span className="flex items-center gap-1">
-              <Kbd>Backspace</Kbd>
-              Back
-            </span>
-          )}
-          <span className="flex items-center gap-1">
-            <Kbd>Esc</Kbd>
-            Close
-          </span>
+          {onTab && <KeyHint keys={[displayShortcutText(PALETTE_COMPLETE_HOTKEY)]}>Complete</KeyHint>}
+          {onBack && <KeyHint keys={[displayShortcutText(PALETTE_BACK_HOTKEY)]}>Back</KeyHint>}
+          <KeyHint keys={[displayShortcutText(PALETTE_CLOSE_HOTKEY)]}>Close</KeyHint>
         </div>
         {footerTrailing}
       </div>

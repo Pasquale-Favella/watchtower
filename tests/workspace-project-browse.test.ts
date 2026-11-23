@@ -5,17 +5,32 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { browseDirectories } from '@/platform/electron/main/workspace/directory-browse.js'
+import { displayShortcut, displayShortcutText } from '@/renderer/app/shortcuts'
 import {
+  ADD_ACTION_HINTS,
+  ADD_ACTION_LABELS,
   appendBrowseSegment,
   browseAddAction,
   browseDirectoryOf,
   browseLeafOf,
   browseParentOf,
+  browseTabAction,
   browseTabCompletion,
   cloneFolderName,
   filterBrowseEntries,
   isBrowsePath,
   isValidFolderName,
+  PALETTE_BACK_HOTKEY,
+  PALETTE_CLOSE_HOTKEY,
+  PALETTE_COMPLETE_HOTKEY,
+  PALETTE_FORCE_SUBMIT_HOTKEY,
+  PALETTE_NEXT_HOTKEY,
+  PALETTE_PREVIOUS_HOTKEY,
+  PALETTE_SUBMIT_HOTKEY,
+  paletteBackspaceGoesBack,
+  paletteEnterIntent,
+  paletteMoveTarget,
+  projectSources,
   resolveBrowseTarget,
 } from '@/renderer/features/workspace/project-browse-state.js'
 
@@ -68,16 +83,95 @@ describe('project browse paths', () => {
     expect(browseTabCompletion([], 'x')).toBeNull()
   })
 
-  it('picks the add action from what exists at the target', () => {
-    const missing = { exists: false, isRepository: false }
-    const folder = { exists: true, isRepository: false }
-    const repository = { exists: true, isRepository: true }
-    expect(browseAddAction('~/src/', repository, null)).toBe('add')
-    expect(browseAddAction('~/src/', folder, null)).toBe('init')
+  it('only claims Tab when there is something to complete or open', () => {
+    const base = { browsing: true, hasActiveRow: false, hasDirectory: true, leaf: 'w' }
+    expect(browseTabAction({ ...base, visible: [entry('watchtower')] })).toEqual({
+      kind: 'descend',
+      name: 'watchtower',
+    })
+    expect(browseTabAction({ ...base, visible: [entry('watch-a'), entry('Watch-b')] })).toEqual({
+      kind: 'extend',
+      name: 'watch-',
+    })
+    expect(browseTabAction({ ...base, hasActiveRow: true, visible: [entry('alpha'), entry('beta')] })).toEqual({
+      kind: 'activate',
+    })
+    // Nothing to complete: Tab keeps moving focus, so it can reach the footer button.
+    expect(browseTabAction({ ...base, leaf: '', visible: [entry('alpha'), entry('beta')] })).toBeNull()
+    expect(browseTabAction({ ...base, visible: [] })).toBeNull()
+    expect(browseTabAction({ ...base, hasDirectory: false, visible: [entry('watch-a'), entry('Watch-b')] })).toBeNull()
+    expect(browseTabAction({ ...base, browsing: false, hasActiveRow: true, visible: [entry('watchtower')] })).toBeNull()
+  })
+
+  it('adds an existing folder as it is and creates a missing one, never running Git', () => {
+    const missing = { exists: false }
+    const folder = { exists: true }
+    expect(browseAddAction('~/src/', folder, null)).toBe('add')
     expect(browseAddAction('~/src/', missing, null)).toBe('create')
-    expect(browseAddAction('~/src/app', folder, { isRepository: true })).toBe('add')
-    expect(browseAddAction('~/src/app', folder, { isRepository: false })).toBe('init')
-    expect(browseAddAction('~/src/new', repository, null)).toBe('create')
+    expect(browseAddAction('~/src/app', folder, entry('app'))).toBe('add')
+    expect(browseAddAction('~/src/new', folder, null)).toBe('create')
+    expect(Object.keys(ADD_ACTION_LABELS)).toEqual(['add', 'create'])
+    expect(ADD_ACTION_LABELS).toEqual({ add: 'Add', create: 'Create & Add' })
+    expect(ADD_ACTION_HINTS).toEqual({
+      add: null,
+      create: 'Press Enter to create this folder and add it as a project.',
+    })
+  })
+
+  it('lists the sources in order with their copy', () => {
+    expect(projectSources('ready').map(source => [source.id, source.title, source.description])).toEqual([
+      ['new', 'New project', 'Start a new Git repository from a name'],
+      ['local', 'Local folder', 'Browse a folder on disk'],
+      ['git', 'Clone from Git URL', 'Clone from a remote URL'],
+      ['github', 'Clone from GitHub', 'owner/repository through GitHub CLI'],
+    ])
+    expect(projectSources('unauthenticated')[3]?.description).toBe('Sign in first: run gh auth login')
+    expect(projectSources('unavailable')[3]?.description).toBe('Requires GitHub CLI (gh)')
+    expect(projectSources(null)[3]?.description).toBe('Checking GitHub CLI…')
+  })
+
+  it('submits on Enter unless a row is active, and on the modifier with Enter regardless', () => {
+    const typed = { hasSubmit: true, submitDisabled: false }
+    expect(paletteEnterIntent({ ...typed, forceSubmit: false, hasActiveRow: false })).toBe('submit')
+    expect(paletteEnterIntent({ ...typed, forceSubmit: false, hasActiveRow: true })).toBe('activate')
+    expect(paletteEnterIntent({ ...typed, forceSubmit: true, hasActiveRow: true })).toBe('submit')
+    expect(paletteEnterIntent({ ...typed, submitDisabled: true, forceSubmit: true, hasActiveRow: true })).toBe('none')
+    expect(paletteEnterIntent({ ...typed, submitDisabled: true, forceSubmit: false, hasActiveRow: false })).toBe('none')
+    const listOnly = { hasSubmit: false, submitDisabled: true }
+    expect(paletteEnterIntent({ ...listOnly, forceSubmit: false, hasActiveRow: true })).toBe('activate')
+    expect(paletteEnterIntent({ ...listOnly, forceSubmit: true, hasActiveRow: true })).toBe('activate')
+    expect(paletteEnterIntent({ ...listOnly, forceSubmit: false, hasActiveRow: false })).toBe('none')
+  })
+
+  it('moves the highlight with the arrows and wraps at both ends', () => {
+    const ids = ['a', 'b', 'c']
+    expect(paletteMoveTarget(ids, null, 1)).toBe('a')
+    expect(paletteMoveTarget(ids, null, -1)).toBe('c')
+    expect(paletteMoveTarget(ids, 'a', 1)).toBe('b')
+    expect(paletteMoveTarget(ids, 'c', 1)).toBe('a')
+    expect(paletteMoveTarget(ids, 'a', -1)).toBe('c')
+    expect(paletteMoveTarget(ids, 'gone', 1)).toBe('a')
+    expect(paletteMoveTarget([], null, 1)).toBeNull()
+  })
+
+  it('goes back on Backspace only from an empty input and not on a held key', () => {
+    expect(paletteBackspaceGoesBack({ value: '', repeat: false })).toBe(true)
+    expect(paletteBackspaceGoesBack({ value: '', repeat: true })).toBe(false)
+    expect(paletteBackspaceGoesBack({ value: 'a', repeat: false })).toBe(false)
+  })
+
+  it('labels the palette keys per platform', () => {
+    const labels = (platform: 'mac' | 'windows') => [
+      displayShortcut(PALETTE_PREVIOUS_HOTKEY, platform),
+      displayShortcut(PALETTE_NEXT_HOTKEY, platform),
+      displayShortcutText(PALETTE_SUBMIT_HOTKEY, platform),
+      displayShortcutText(PALETTE_FORCE_SUBMIT_HOTKEY, platform),
+      displayShortcutText(PALETTE_COMPLETE_HOTKEY, platform),
+      displayShortcutText(PALETTE_BACK_HOTKEY, platform),
+      displayShortcutText(PALETTE_CLOSE_HOTKEY, platform),
+    ]
+    expect(labels('windows')).toEqual(['↑', '↓', 'Enter', 'Ctrl+Enter', 'Tab', 'Backspace', 'Escape'])
+    expect(labels('mac')[3]).toBe('⌘↵')
   })
 
   it.each([

@@ -7,6 +7,7 @@ import {
   FolderPlus,
   Github,
   Link,
+  Search,
   Square,
   SquareCheck,
 } from 'lucide-react'
@@ -19,20 +20,25 @@ import {
 } from '@/shared/schemas/workspace-projects.js'
 
 import {
+  ADD_ACTION_HINTS,
+  ADD_ACTION_LABELS,
   appendBrowseSegment,
   type BrowseAddAction,
   browseAddAction,
   browseDirectoryOf,
   browseLeafOf,
   browseParentOf,
-  browseTabCompletion,
+  browseTabAction,
   filterBrowseEntries,
+  githubDescription,
   hasTrailingSeparator,
   INITIAL_BROWSE_QUERY,
   isBrowsePath,
   isValidFolderName,
   joinBrowsePath,
   projectNameOf,
+  type ProjectSourceId,
+  projectSources,
   resolveBrowseTarget,
 } from './project-browse-state.js'
 import { useWorkspaceDirectoryListing } from './project-directory-hooks.js'
@@ -43,17 +49,11 @@ export type RemoteSourceKind = 'github' | 'git'
 const isGitHubRepository = Schema.is(githubRepositorySchema)
 const isGitRemoteUrl = Schema.is(gitRemoteUrlSchema)
 
-function githubDescription(readiness: RemoteSourceReadiness['github'] | null): string {
-  switch (readiness) {
-    case 'ready':
-      return 'owner/repository through GitHub CLI'
-    case 'unauthenticated':
-      return 'Sign in first: run gh auth login'
-    case 'unavailable':
-      return 'Requires GitHub CLI (gh)'
-    default:
-      return 'Checking GitHub CLI…'
-  }
+const SOURCE_ICONS: Record<ProjectSourceId, ReactNode> = {
+  new: <FolderPlus />,
+  local: <FolderOpen />,
+  git: <Link />,
+  github: <Github />,
 }
 
 export function SourcesView({
@@ -72,37 +72,20 @@ export function SourcesView({
   readonly onRemote: (kind: RemoteSourceKind) => void
 }) {
   const [query, setQuery] = useState('')
-  const rows: PaletteRow[] = [
-    {
-      id: 'local',
-      icon: <FolderOpen />,
-      title: 'Local folder',
-      description: 'Browse to a folder on this computer',
-      onActivate: onLocal,
-    },
-    {
-      id: 'new',
-      icon: <FolderPlus />,
-      title: 'New project',
-      description: 'Create a folder with an empty Git repository',
-      onActivate: onNew,
-    },
-    {
-      id: 'github',
-      icon: <Github />,
-      title: 'Clone from GitHub',
-      description: githubDescription(readiness),
-      disabled: readiness !== 'ready',
-      onActivate: () => onRemote('github'),
-    },
-    {
-      id: 'git',
-      icon: <Link />,
-      title: 'Clone from Git URL',
-      description: 'HTTPS, SSH or a local repository path',
-      onActivate: () => onRemote('git'),
-    },
-  ]
+  const activations: Record<ProjectSourceId, () => void> = {
+    new: onNew,
+    local: onLocal,
+    git: () => onRemote('git'),
+    github: () => onRemote('github'),
+  }
+  const rows: PaletteRow[] = projectSources(readiness).map(source => ({
+    id: source.id,
+    icon: SOURCE_ICONS[source.id],
+    title: source.title,
+    description: source.description,
+    disabled: source.id === 'github' && readiness !== 'ready',
+    onActivate: activations[source.id],
+  }))
   const needle = query.trim().toLowerCase()
   const visible = rows.filter(row => row.title.toLowerCase().includes(needle))
   return (
@@ -111,7 +94,7 @@ export function SourcesView({
       placeholder="Add a project…"
       value={query}
       onValueChange={setQuery}
-      icon={<FolderPlus />}
+      icon={<Search />}
       resetKey={needle}
       rows={visible}
       autoHighlight
@@ -120,13 +103,6 @@ export function SourcesView({
       footerTrailing={footerTrailing}
     />
   )
-}
-
-const ADD_LABELS: Record<BrowseAddAction, string> = { add: 'Add', init: 'Init & Add', create: 'Create & Add' }
-const ADD_HINTS: Record<BrowseAddAction, string | null> = {
-  add: null,
-  init: 'This folder is not a Git repository yet. Enter runs git init and adds it.',
-  create: 'This folder does not exist. Enter creates it with an empty Git repository.',
 }
 
 /** Local folders and clone destinations share one browser; a clone keeps its folder name pinned as the leaf. */
@@ -168,6 +144,7 @@ export function BrowseView({
   const target = resolveBrowseTarget(query, listing.data?.parentPath ?? null, exact)
   const action =
     cloneFolder !== undefined ? 'clone' : listing.data ? browseAddAction(query, listing.data, exact) : 'add'
+  const actionLabel = action === 'clone' ? 'Clone' : ADD_ACTION_LABELS[action]
   const canSubmit = browsing && listing.data !== null && !busy && projectNameOf(target) !== ''
 
   const browseTo = (name: string) => onQueryChange(`${appendBrowseSegment(directory ?? query, name)}${pinned}`)
@@ -207,22 +184,26 @@ export function BrowseView({
       rows={rows}
       groupLabel={cloneFolder !== undefined ? 'Select where to clone' : 'Directories'}
       submit={{
-        label: busy ? busyLabel : action === 'clone' ? 'Clone' : ADD_LABELS[action],
+        label: busy ? busyLabel : actionLabel,
         disabled: !canSubmit,
         onSubmit: () => onSubmit(target, action),
       }}
       onTab={active => {
-        if (!browsing) return
-        if (active) {
-          active.onActivate()
-          return
-        }
-        const completion = browseTabCompletion(visible, filterLeaf)
-        if (completion?.complete) browseTo(completion.name)
-        else if (completion && directory) onQueryChange(`${directory}${completion.name}`)
+        const action = browseTabAction({
+          browsing,
+          hasActiveRow: active !== null,
+          hasDirectory: directory !== null,
+          visible,
+          leaf: filterLeaf,
+        })
+        if (action === null) return false
+        if (action.kind === 'activate') active?.onActivate()
+        else if (action.kind === 'descend') browseTo(action.name)
+        else onQueryChange(`${directory ?? ''}${action.name}`)
+        return true
       }}
       header={header}
-      hint={action === 'clone' || listing.data === null ? null : ADD_HINTS[action]}
+      hint={action === 'clone' || listing.data === null ? null : ADD_ACTION_HINTS[action]}
       emptyMessage={emptyMessage}
       error={error ?? listing.error}
       footerTrailing={footerTrailing}
@@ -284,7 +265,7 @@ export function NewProjectView({
         onSubmit: () => path && onSubmit(path, trimmed, publish && canPublish),
       }}
       header={
-        <p className="text-muted-foreground border-b px-4 py-2 text-xs">
+        <p className="text-muted-foreground border-b px-3 py-2 text-xs">
           {taken
             ? `A folder named ${trimmed} already exists here.`
             : path
@@ -344,7 +325,7 @@ export function RemoteRepositorySummary({
   readonly description: string
 }) {
   return (
-    <div className="flex items-center gap-2 border-b px-4 py-2 text-sm">
+    <div className="flex items-center gap-2 border-b px-3 py-2 text-sm">
       <FolderGit2 aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
       <span className="min-w-0 flex-1">
         <span className="block truncate font-medium">{title}</span>

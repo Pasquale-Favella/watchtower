@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-import { Dialog, DialogContent, DialogTitle } from '@/renderer/components/ui/dialog'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/renderer/components/ui/dialog'
 import type { ProjectRemoteSource, WorkspaceProjectRegistration } from '@/shared/schemas/workspace-projects.js'
 
 import { useCloneProject, useCreateProject, useRegisterProject } from './hooks.js'
@@ -57,8 +57,14 @@ export function WorkspaceProjectDialog(): React.JSX.Element {
         else dialog.close()
       }}
     >
-      <DialogContent showCloseButton={false} className="top-[15vh] translate-y-0 gap-0 overflow-hidden p-0 sm:max-w-xl">
-        <DialogTitle className="sr-only">Add project</DialogTitle>
+      <DialogContent
+        showCloseButton={false}
+        className="top-1/3 translate-y-0 gap-0 overflow-hidden rounded-xl! p-0 sm:max-w-lg"
+      >
+        <DialogHeader className="sr-only">
+          <DialogTitle>Add project</DialogTitle>
+          <DialogDescription>Add a project from a folder, a new repository or a remote.</DialogDescription>
+        </DialogHeader>
         <AddProjectPalette />
       </DialogContent>
     </Dialog>
@@ -174,7 +180,7 @@ function AddProjectPalette() {
           onSubmit={(path, action) => {
             const name = projectNameOf(path)
             void run(() =>
-              action === 'add' ? register.execute({ path, name }) : create.execute({ path, name, publish: 'none' }),
+              register.execute(action === 'create' ? { path, name, createIfMissing: true } : { path, name }),
             )
           }}
         />

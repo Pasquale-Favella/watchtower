@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 
 import { expect, test } from '@playwright/test'
@@ -11,7 +11,7 @@ const git = (cwd: string, ...args: string[]) =>
     .toString()
     .trim()
 
-test('add project creates, initializes and clones local repositories without GitHub', async () => {
+test('add project registers folders without Git, creates new repositories and clones without GitHub', async () => {
   const directory = mkdtempSync(join(resolve('.'), '.watchtower-setup-'))
   const remote = join(directory, 'remotes', 'origin-repo')
   let launched: Awaited<ReturnType<typeof launchApp>> | undefined
@@ -49,7 +49,18 @@ test('add project creates, initializes and clones local repositories without Git
     await folder.press('Enter')
     await expect(addProject).toHaveCount(0)
     await expect(picker).toHaveText('made-here')
-    expect(git(join(directory, 'made-here'), 'rev-parse', '--is-inside-work-tree')).toBe('true')
+    expect(existsSync(join(directory, 'made-here'))).toBe(true)
+    expect(existsSync(join(directory, 'made-here', '.git'))).toBe(false)
+
+    mkdirSync(join(directory, 'plain-folder'))
+    await openAddProject()
+    await addProject.getByRole('option', { name: /^Local folder/ }).click()
+    await folder.fill(join(directory, 'plain-folder'))
+    await expect(addProject.getByRole('button', { name: 'Add (Enter)', exact: true })).toBeEnabled()
+    await folder.press('Enter')
+    await expect(addProject).toHaveCount(0)
+    await expect(picker).toHaveText('plain-folder')
+    expect(existsSync(join(directory, 'plain-folder', '.git'))).toBe(false)
 
     await openAddProject()
     await addProject.getByRole('option', { name: /^Local folder/ }).click()
@@ -63,6 +74,7 @@ test('add project creates, initializes and clones local repositories without Git
     await name.press('Enter')
     await expect(addProject).toHaveCount(0)
     await expect(picker).toHaveText('fresh-app')
+    expect(git(join(directory, 'fresh-app'), 'rev-parse', '--is-inside-work-tree')).toBe('true')
 
     await openAddProject()
     await addProject.getByRole('option', { name: /^Clone from Git URL/ }).click()
