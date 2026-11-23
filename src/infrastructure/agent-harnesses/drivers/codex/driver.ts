@@ -30,7 +30,7 @@ import {
   spawnJsonRpcStdio,
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
-import { endpointInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
+import { endpointInstructions, LEDGER_MCP_SERVER } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import {
   isCodexOrchestratorTool,
   orchestrationAutoApproved,
@@ -788,7 +788,8 @@ function openSession(
 /**
  * One override entry per loopback endpoint. Overrides a server of the same name rather than the user's whole table.
  * Orchestration tools are approved up front outside approval-required: under the `never` policy Codex would otherwise
- * refuse every call that asks, and delegation never widens a child past the Run that starts it.
+ * refuse every call that asks, and delegation never widens a child past the Run that starts it. Ledger tools only read,
+ * so they are approved in every access mode.
  */
 function codexMcpConfig(
   endpoints: ReadonlyArray<AgentMcpEndpoint>,
@@ -809,7 +810,8 @@ function codexMcpConfig(
       {
         url: endpoint.url,
         http_headers: { Authorization: `Bearer ${endpoint.token}` },
-        ...(endpoint.name === ORCHESTRATOR_MCP_SERVER && orchestrationAutoApproved(accessMode)
+        ...(endpoint.name === LEDGER_MCP_SERVER ||
+        (endpoint.name === ORCHESTRATOR_MCP_SERVER && orchestrationAutoApproved(accessMode))
           ? { default_tools_approval_mode: 'approve' as const }
           : {}),
       },

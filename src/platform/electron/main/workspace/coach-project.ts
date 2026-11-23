@@ -1,5 +1,8 @@
 import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
-import { ensureManagedChatProject } from '@/platform/electron/main/workspace/scratch-project.js'
+import { ensureManagedChatProject, managedChatProjectId } from '@/platform/electron/main/workspace/scratch-project.js'
+
+/** The fixed id of the hidden Coach project; `ensureManagedChatProject` registers it under this id. */
+export const COACH_PROJECT_ID = managedChatProjectId('coach')
 
 export const ensureCoachProject = (store: WorkspaceStore['Service'], directory: string) =>
   ensureManagedChatProject(store, directory, 'coach')

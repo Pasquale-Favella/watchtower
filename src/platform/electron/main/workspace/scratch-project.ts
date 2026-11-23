@@ -10,13 +10,17 @@ import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
+/** The fixed id a managed chat project (scratch or Coach) is registered under. */
+export const managedChatProjectId = (kind: 'scratch' | 'coach') =>
+  Schema.decodeUnknownSync(projectIdSchema)(`workspace-${kind}-project`)
+
 export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(function* (
   store: WorkspaceStore['Service'],
   directory: string,
   kind: 'scratch' | 'coach',
 ) {
   const marker = kind === 'coach' ? 'isCoach' : 'isScratch'
-  const projectId = Schema.decodeUnknownSync(projectIdSchema)(`workspace-${kind}-project`)
+  const projectId = managedChatProjectId(kind)
   const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(`workspace-${kind}-checkout`)
   const fs = yield* FileSystem.FileSystem
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner

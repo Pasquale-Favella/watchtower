@@ -92,6 +92,7 @@ import { workspacePullRequestHandlers } from '@/platform/electron/main/rpc/works
 import { workspaceSideChatHandlers } from '@/platform/electron/main/rpc/workspace-side-chat-handlers.js'
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
 import { resolveCheckoutPath, resolveTaskCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
+import { COACH_PROJECT_ID, ensureCoachProject } from '@/platform/electron/main/workspace/coach-project.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import { createPromptReferenceFiles } from '@/platform/electron/main/workspace/prompt-references.js'
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
@@ -181,6 +182,21 @@ const workspaceHostLayer = Layer.effect(
     const context = yield* Layer.buildWithScope(
       WorkspaceHostLive({
         prepareSession: (context): Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope> => {
+          // Coaching reads the usage ledger and nothing else: no browser, and the host adds no orchestrator.
+          if (context.projectId === COACH_PROJECT_ID) {
+            const worker = dbClient
+            if (!worker)
+              return Effect.fail(new AgentDriverError({ code: 'invalid-state', message: 'The ledger is not ready.' }))
+            return acquireLedgerMcp(createLedgerMcpQueries(worker), request => mainRuntime.runPromise(request)).pipe(
+              Effect.map(endpoint => ({
+                ...context,
+                mcpEndpoints: [
+                  ...(context.mcpEndpoints ?? []),
+                  ledgerMcpWithStdio(endpoint, process.execPath, join(__dirname, 'ledger-mcp-proxy.js')),
+                ],
+              })),
+            )
+          }
           const manager = workspacePreviewManager
           if (!manager) return Effect.succeed(context)
           return acquireBrowserMcp(
@@ -569,6 +585,8 @@ app.whenReady().then(async () => {
                     }),
                   prepareScratchProject: store =>
                     ensureScratchProject(store, join(app.getPath('userData'), 'workspace', 'scratch')),
+                  prepareCoachProject: store =>
+                    ensureCoachProject(store, join(app.getPath('userData'), 'workspace', 'coach')),
                 }),
                 Layer.unwrap(
                   Effect.map(WorkspaceHost, host =>

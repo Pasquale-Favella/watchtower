@@ -50,6 +50,8 @@ interface FakeAcpState {
   readonly permissionOutcomes: Array<{ readonly outcome: string; readonly optionId?: string }>
   readonly questionOutcomes: Array<unknown>
   permissionOptions?: PermissionOption[]
+  /** The MCP tool call the 'toolApproval' mode asks about; defaults to an orchestration tool. */
+  toolApproval?: { readonly message: string; readonly tool: string }
   blockCancelWrite: boolean
   finishPrompt?: () => void
   onPrompt?: () => void
@@ -364,12 +366,14 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
       if (state.mode === 'toolApproval') {
         const response = await peer?.extMethod('elicitation/create', {
           mode: 'form',
-          message: 'Allow the watchtower-orchestrator MCP server to run tool "delegation_start"?',
+          message:
+            state.toolApproval?.message ??
+            'Allow the watchtower-orchestrator MCP server to run tool "delegation_start"?',
           sessionId: params.sessionId,
           requestedSchema: { type: 'object', properties: {} },
           _meta: {
             codex_approval_kind: 'mcp_tool_call',
-            tool_name: 'delegation_start',
+            tool_name: state.toolApproval?.tool ?? 'delegation_start',
             persist: ['session', 'always'],
           },
         })
@@ -1170,6 +1174,70 @@ describe('generic ACP driver', () => {
     },
   )
 
+  it.each([
+    {
+      message: 'Allow the watchtower-ledger MCP server to run tool "ledger_overview"?',
+      tool: 'ledger_overview',
+      asks: false,
+    },
+    { message: 'Allow the other MCP server to run tool "ledger_overview"?', tool: 'ledger_overview', asks: true },
+    {
+      message: 'Allow the watchtower-ledger MCP server to run tool "ledger_delete"?',
+      tool: 'ledger_delete',
+      asks: true,
+    },
+    {
+      message: 'Allow the watchtower-ledger-evil MCP server to run tool "ledger_overview"?',
+      tool: 'ledger_overview',
+      asks: true,
+    },
+    {
+      message: 'Allow the watchtower-ledger MCP server to run tool "ledger_overview"?',
+      tool: 'ledger_overview',
+      attached: false,
+      asks: true,
+    },
+  ])(
+    'answers an MCP tool approval for $tool in approval-required (asks: $asks)',
+    async ({ message, tool, asks, ...rest }) => {
+      const attached = (rest as { attached?: boolean }).attached ?? true
+      const fake = makeFakeAcp('toolApproval')
+      fake.toolApproval = { message, tool }
+      const seen = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* fake.driver.connect({ connectionId: 'acp-ledger-approval' })
+            const session = yield* connection.openSession({
+              ...context,
+              accessMode: 'approval-required',
+              mcpEndpoints: attached
+                ? [{ name: 'watchtower-ledger' as const, url: 'http://127.0.0.1:43125/mcp', token: 'ledger-token' }]
+                : [],
+            })
+            const promptRunId = runId('run-ledger-approval')
+            const fiber = yield* Effect.forkScoped(
+              session.submit({ runId: promptRunId, messages: [{ role: 'user', content: 'usage' }], attachmentIds: [] }),
+            )
+            const kinds: string[] = []
+            yield* Stream.runForEach(session.events(promptRunId), event => {
+              kinds.push(event.kind)
+              if (event.kind !== 'requestPending') return Effect.void
+              expect(event.request).toMatchObject({ kind: 'approval', tool: { category: 'mcp' } })
+              return session
+                .respond(promptRunId, event.request.requestId, context.generation, { kind: 'approve' })
+                .pipe(Effect.asVoid)
+            })
+            yield* Fiber.join(fiber)
+            yield* connection.close(1000)
+            return kinds
+          }),
+        ),
+      )
+      expect(seen.includes('requestPending')).toBe(asks)
+      expect(fake.questionOutcomes).toEqual([{ action: 'accept', content: {} }])
+    },
+  )
+
   it('waits for a human permission decision and defaults to allow-once even when allow-always is first', async () => {
     const fake = makeFakeAcp('permission')
     const result = await Effect.runPromise(
@@ -1833,18 +1901,75 @@ describe('generic ACP driver', () => {
       expected: undefined,
     },
     { accessMode: 'auto' as const, kind: 'other', title: 'other_server_delegation_start', expected: undefined },
-  ])('answers a $kind $title request in $accessMode with $expected', ({ accessMode, kind, title, expected }) => {
-    const options: PermissionOption[] = [
-      { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
-      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
-      { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
-    ]
-    const answer = automaticPermission(accessMode, {
-      options,
-      toolCall: { toolCallId: 't', kind: kind as never, ...(title ? { title } : {}) },
-    })
-    expect(answer?.outcome).toEqual(expected ? { outcome: 'selected', optionId: expected } : undefined)
-  })
+    { accessMode: 'approval-required' as const, kind: 'other', title: 'ledger_overview', expected: 'allow-once' },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'watchtower-ledger: ledger_calls',
+      expected: 'allow-once',
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'mcp__watchtower-ledger__ledger_scope',
+      expected: 'allow-once',
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'ledger_scope (watchtower-ledger)',
+      expected: 'allow-once',
+    },
+    { accessMode: 'approval-required' as const, kind: 'other', title: 'ledger_delete', expected: undefined },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'other_server_ledger_scope',
+      expected: undefined,
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'watchtower-ledger-evil: ledger_calls',
+      expected: undefined,
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'mcp__watchtower-ledger-evil__ledger_calls',
+      expected: undefined,
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'ledger_calls',
+      attachedLedger: false,
+      expected: undefined,
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'mcp__watchtower-ledger__ledger_scope',
+      attachedLedger: false,
+      expected: undefined,
+    },
+  ])(
+    'answers a $kind $title request in $accessMode with $expected',
+    ({ accessMode, kind, title, expected, ...rest }) => {
+      const attachedLedger = (rest as { attachedLedger?: boolean }).attachedLedger ?? true
+      const options: PermissionOption[] = [
+        { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
+      ]
+      const answer = automaticPermission(
+        accessMode,
+        { options, toolCall: { toolCallId: 't', kind: kind as never, ...(title ? { title } : {}) } },
+        attachedLedger ? [{ name: 'watchtower-ledger' }] : [],
+      )
+      expect(answer?.outcome).toEqual(expected ? { outcome: 'selected', optionId: expected } : undefined)
+    },
+  )
 
   it('asks instead of choosing a persistent approval for the user', () => {
     const options: PermissionOption[] = [{ optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' }]

@@ -33,7 +33,11 @@ import {
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
-import { endpointInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
+import {
+  endpointInstructions,
+  hasLedgerEndpoint,
+  LEDGER_MCP_SERVER,
+} from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import {
   isClaudeOrchestratorTool,
   isClaudeReadOnlyOrchestratorTool,
@@ -674,6 +678,13 @@ const modeOptions = (
   executablePath: string | undefined,
 ): Options => {
   const instructions = endpointInstructions('claude', context.mcpEndpoints)
+  const allowedTools = [
+    ...(hasOrchestratorEndpoint(context.mcpEndpoints) &&
+    orchestrationAutoApproved(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
+      ? [`mcp__${ORCHESTRATOR_MCP_SERVER}`]
+      : []),
+    ...(hasLedgerEndpoint(context.mcpEndpoints) ? [`mcp__${LEDGER_MCP_SERVER}`] : []),
+  ]
   return {
     cwd: context.workspacePath,
     ...(context.modelId !== undefined ? { model: context.modelId } : {}),
@@ -681,10 +692,8 @@ const modeOptions = (
     ...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
     ...claudePermissionOptions(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE),
     // Outside approval-required the orchestration tools run without a prompt; delegation never widens a child's access.
-    ...(hasOrchestratorEndpoint(context.mcpEndpoints) &&
-    orchestrationAutoApproved(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
-      ? { allowedTools: [`mcp__${ORCHESTRATOR_MCP_SERVER}`] }
-      : {}),
+    // The ledger tools only read, so they run without a prompt in every access mode.
+    ...(allowedTools.length > 0 ? { allowedTools } : {}),
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
     ...(instructions === undefined

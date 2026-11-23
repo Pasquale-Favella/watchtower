@@ -733,6 +733,49 @@ describe('Claude Agent SDK native driver', () => {
   )
 
   it.each([
+    {
+      accessMode: 'approval-required' as const,
+      endpoints: ['watchtower-ledger'],
+      allowedTools: ['mcp__watchtower-ledger'],
+    },
+    {
+      accessMode: 'approval-required' as const,
+      endpoints: ['watchtower-orchestrator', 'watchtower-ledger'],
+      allowedTools: ['mcp__watchtower-ledger'],
+    },
+    {
+      accessMode: 'auto' as const,
+      endpoints: ['watchtower-orchestrator', 'watchtower-ledger'],
+      allowedTools: ['mcp__watchtower-orchestrator', 'mcp__watchtower-ledger'],
+    },
+    { accessMode: 'approval-required' as const, endpoints: ['watchtower-browser'], allowedTools: undefined },
+  ])(
+    'allows the read-only ledger tools without a prompt in $accessMode with $endpoints',
+    async ({ accessMode, endpoints, allowedTools }) => {
+      const fake = fakeSdk()
+      const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const driver = yield* AgentDriver
+            const connection = yield* driver.connect({ connectionId: 'connection' })
+            yield* connection.openSession({
+              ...context,
+              accessMode,
+              mcpEndpoints: endpoints.map(name => ({
+                name: name as 'watchtower-ledger',
+                url: 'http://127.0.0.1:43124/mcp',
+                token: `${name}-token`,
+              })),
+            })
+            expect(fakeCall(fake).options.allowedTools).toEqual(allowedTools)
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+    },
+  )
+
+  it.each([
     { names: ['watchtower-ledger' as const], append: ledgerInstructions('claude') },
     {
       names: ['watchtower-orchestrator' as const, 'watchtower-ledger' as const],

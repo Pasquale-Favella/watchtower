@@ -45,7 +45,13 @@ import {
 import { type JsonRpcTransport, spawnJsonRpcStdio } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
-import { endpointInstructions, withAcpInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
+import {
+  endpointInstructions,
+  hasLedgerEndpoint,
+  LEDGER_MCP_SERVER,
+  LEDGER_TOOLS,
+  withAcpInstructions,
+} from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import {
   isOrchestratorToolTitle,
   isReadOnlyOrchestratorToolTitle,
@@ -409,12 +415,33 @@ const elicitationRequestSchema = Schema.Struct({
 const fieldlessFormSchema = Schema.Struct({ properties: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)) })
 
 /**
+ * ACP reports an MCP tool by its title: the bare tool name, or the name with its server prefixed the way the agent
+ * writes it, optionally followed by a parenthesised note. The ledger tools only read, so they never ask.
+ */
+const LEDGER_TOOL_TITLE = new RegExp(
+  `^(?:(?:mcp__)?watchtower[-_]ledger(?:__|_|\\s*[:/.]\\s*))?ledger_(?:${LEDGER_TOOLS.join('|')})(?:\\s*\\([^)]*\\))?$`,
+)
+
+/** The ledger server's name as a whole token, so a server named `watchtower-ledger-evil` does not match. */
+const LEDGER_SERVER_TOKEN = new RegExp(`(?<![\\w-])${LEDGER_MCP_SERVER}(?![\\w-])`)
+
+/**
+ * A ledger tool title counts only while the session has the ledger endpoint attached; otherwise any server could
+ * claim a ledger tool name and skip the approval.
+ */
+const isLedgerToolTitle = (
+  title: string | null | undefined,
+  endpoints: ReadonlyArray<{ readonly name: string }> | undefined,
+): boolean => typeof title === 'string' && hasLedgerEndpoint(endpoints) && LEDGER_TOOL_TITLE.test(title.trim())
+
+/**
  * Codex wrapped as an ACP agent asks before an MCP tool call with a field-less form tagged `mcp_tool_call`. Anything
  * else stays a question or is declined.
  */
 function mcpToolApproval(
   request: Schema.Schema.Type<typeof elicitationRequestSchema>,
-): { readonly toolName: string; readonly orchestration: boolean } | undefined {
+  endpoints: ReadonlyArray<{ readonly name: string }> | undefined,
+): { readonly toolName: string; readonly orchestration: boolean; readonly ledger: boolean } | undefined {
   if (request._meta?.['codex_approval_kind'] !== 'mcp_tool_call') return undefined
   const form = Schema.decodeUnknownOption(fieldlessFormSchema)(request.requestedSchema)
   if (form._tag === 'None' || Object.keys(form.value.properties ?? {}).length > 0) return undefined
@@ -422,17 +449,19 @@ function mcpToolApproval(
   return {
     toolName,
     orchestration: isOrchestratorToolTitle(toolName) && request.message.includes(ORCHESTRATOR_MCP_SERVER),
+    ledger: isLedgerToolTitle(toolName, endpoints) && LEDGER_SERVER_TOKEN.test(request.message),
   }
 }
 
 /**
  * Answers an MCP tool approval by the Run's access mode, as tool permissions are: orchestration tools outside
- * approval-required, reading orchestration tools always, and any tool under full access. Otherwise the user decides.
+ * approval-required, reading orchestration tools always, ledger tools always, and any tool under full access.
+ * Otherwise the user decides.
  */
 async function requestToolConsent(
   stateRef: AcpStateRef,
   request: Schema.Schema.Type<typeof elicitationRequestSchema>,
-  approval: { readonly toolName: string; readonly orchestration: boolean },
+  approval: { readonly toolName: string; readonly orchestration: boolean; readonly ledger: boolean },
 ): Promise<CreateElicitationResponse> {
   const state = stateRef.current
   const run = state?.activeRun
@@ -448,6 +477,7 @@ async function requestToolConsent(
   const accessMode = state.context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE
   const automatic =
     accessMode === 'full-access' ||
+    approval.ledger ||
     (approval.orchestration &&
       (orchestrationAutoApproved(accessMode) || isReadOnlyOrchestratorToolTitle(approval.toolName)))
   if (automatic) return { action: 'accept', content: {} }
@@ -1467,12 +1497,14 @@ const EDIT_TOOL_KINDS: ReadonlyArray<string> = ['edit', 'delete', 'move']
 export function automaticPermission(
   accessMode: AgentAccessMode,
   params: Pick<RequestPermissionRequest, 'options' | 'toolCall'>,
+  mcpEndpoints?: ReadonlyArray<{ readonly name: string }>,
 ): RequestPermissionResponse | undefined {
   const kind = params.toolCall.kind ?? 'other'
   const title = params.toolCall.title
   const allowed =
     READ_TOOL_KINDS.includes(kind) ||
     isReadOnlyOrchestratorToolTitle(title) ||
+    isLedgerToolTitle(title, mcpEndpoints) ||
     (orchestrationAutoApproved(accessMode) && isOrchestratorToolTitle(title)) ||
     accessMode === 'full-access' ||
     ((accessMode === 'auto-accept-edits' || accessMode === 'auto') && EDIT_TOOL_KINDS.includes(kind))
@@ -1488,7 +1520,11 @@ function makeClient(stateRef: AcpStateRef): Client {
       if (!state || !run || state.closed || !state.acceptRequests || params.sessionId !== state.nativeSessionId) {
         return { outcome: { outcome: 'cancelled' } }
       }
-      const automatic = automaticPermission(state.context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE, params)
+      const automatic = automaticPermission(
+        state.context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+        params,
+        state.context.mcpEndpoints,
+      )
       if (automatic) return automatic
       const id = `acp-request-${++state.requestSequence}`
       let resolve!: (response: RequestPermissionResponse) => void
@@ -1537,7 +1573,7 @@ function makeClient(stateRef: AcpStateRef): Client {
       const decoded = Schema.decodeUnknownOption(elicitationRequestSchema)(params)
       if (decoded._tag === 'None' || decoded.value.mode !== 'form' || decoded.value.requestedSchema === undefined)
         return { action: 'decline' }
-      const toolApproval = mcpToolApproval(decoded.value)
+      const toolApproval = mcpToolApproval(decoded.value, stateRef.current?.context.mcpEndpoints)
       if (toolApproval) return requestToolConsent(stateRef, decoded.value, toolApproval)
       const form = Schema.decodeUnknownOption(elicitationFormSchema)(decoded.value.requestedSchema)
       if (form._tag === 'None') return { action: 'decline' }

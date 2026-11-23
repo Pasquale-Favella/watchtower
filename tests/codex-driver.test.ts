@@ -754,6 +754,37 @@ describe('Codex native App Server driver', () => {
     )
   })
 
+  it.each(['approval-required', 'auto', 'full-access'] as const)(
+    'approves the read-only ledger tools up front in %s',
+    async accessMode => {
+      const server = fakeServer()
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* connect(server)
+            const opening = yield* Effect.forkScoped(
+              connection.openSession({
+                ...context,
+                accessMode,
+                mcpEndpoints: [
+                  { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+                  { name: 'watchtower-ledger' as const, url: 'http://127.0.0.1:43125/mcp', token: 'ledger-token' },
+                ],
+              }),
+            )
+            const start = yield* server.read
+            const config = (start.params as { config: Record<string, Record<string, unknown>> }).config
+            expect(config['mcp_servers.watchtower-ledger']?.['default_tools_approval_mode']).toBe('approve')
+            expect(config['mcp_servers.watchtower-browser']).not.toHaveProperty('default_tools_approval_mode')
+            yield* server.send({ id: start.id, result: { thread: { id: 'thread-ledger' } } })
+            yield* Fiber.join(opening)
+            yield* connection.close(100)
+          }),
+        ),
+      )
+    },
+  )
+
   it('applies the fail-safe approval-required policy when a context has no access mode', async () => {
     const server = fakeServer()
     await Effect.runPromise(

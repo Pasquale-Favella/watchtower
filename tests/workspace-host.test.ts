@@ -21,10 +21,12 @@ import {
   type AgentDriverConnection,
   AgentDriverError,
   type AgentDriverSession,
+  type AgentSessionContext,
 } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
+import { COACH_PROJECT_ID } from '@/platform/electron/main/workspace/coach-project.js'
 import type { WorkspaceHostOptions } from '@/platform/electron/main/workspace/host.js'
 import { WorkspaceHost, WorkspaceHostLive } from '@/platform/electron/main/workspace/host.js'
 import type { WorkspaceWorkerSupervisorOptions } from '@/platform/electron/main/workspace/supervisor.js'
@@ -166,6 +168,7 @@ const fakeRegistry = (
   closes: Array<string>,
   nativeClose: Effect.Effect<void, AgentDriverError>,
   sessionOverrides: Partial<AgentDriverSession> = {},
+  openedContexts: Array<AgentSessionContext> = [],
 ) =>
   AgentDriverRegistry.fromDrivers([
     AgentDriver.of({
@@ -197,7 +200,10 @@ const fakeRegistry = (
         const connection: AgentDriverConnection = {
           identity: { id: 'test-connection', driverId: 'acp', authentication: 'authenticated' },
           discover: () => Effect.succeed(capabilities),
-          openSession: () => Effect.succeed(session),
+          openSession: context => {
+            openedContexts.push(context)
+            return Effect.succeed(session)
+          },
           loadSession: () => Effect.succeed(session),
           close: () =>
             Effect.suspend(() => {
@@ -877,4 +883,84 @@ describe('delegation recovery before the workspace opens', () => {
       await second.runtime.dispose()
     }
   })
+})
+
+describe('Coach project policies', () => {
+  const coachWorkspace = (suffix: string) => {
+    const input = workspace(suffix)
+    return {
+      ...input,
+      project: { ...input.project, id: COACH_PROJECT_ID, isCoach: true },
+      task: { ...input.task, projectId: COACH_PROJECT_ID },
+    }
+  }
+
+  it('sweeps Coach chats when the workspace opens and keeps other chats', async () => {
+    const suffix = 'coach-sweep'
+    const coach = coachWorkspace(suffix)
+    const other = workspace(`${suffix}-other`)
+    const first = fixture(suffix)
+    try {
+      const host = await first.runtime.runPromise(WorkspaceHost)
+      await first.runtime.runPromise(
+        host.store.registerProject({ project: coach.project, mainCheckout: coach.checkout }),
+      )
+      await first.runtime.runPromise(host.store.createTask({ task: coach.task, conversation: coach.conversation }))
+      await first.runtime.runPromise(
+        host.store.registerProject({ project: other.project, mainCheckout: other.checkout }),
+      )
+      await first.runtime.runPromise(host.store.createTask({ task: other.task, conversation: other.conversation }))
+      await expect(first.runtime.runPromise(host.store.readTaskSnapshot(coach.task.id, 10))).resolves.toMatchObject({
+        task: { id: coach.task.id },
+      })
+    } finally {
+      await first.runtime.dispose()
+    }
+
+    const second = fixture(suffix)
+    try {
+      const host = await second.runtime.runPromise(WorkspaceHost)
+      await second.runtime.runPromise(host.ensureOpen)
+      await expect(second.runtime.runPromise(host.store.readTaskSnapshot(coach.task.id, 10))).rejects.toMatchObject({
+        code: 'not-found',
+      })
+      await expect(second.runtime.runPromise(host.store.readTaskSnapshot(other.task.id, 10))).resolves.toMatchObject({
+        task: { id: other.task.id },
+      })
+    } finally {
+      await second.runtime.dispose()
+    }
+  }, 20_000)
+
+  it.each([
+    { kind: 'coach', endpoints: ['watchtower-ledger'] },
+    { kind: 'regular', endpoints: ['watchtower-ledger', 'watchtower-orchestrator'] },
+  ] as const)(
+    'attaches the orchestrator to a $kind session only outside the Coach project',
+    async ({ kind, endpoints }) => {
+      const suffix = `compose-${kind}`
+      const input = kind === 'coach' ? coachWorkspace(suffix) : workspace(suffix)
+      const opened: Array<AgentSessionContext> = []
+      const { runtime } = fixture(suffix, undefined, fakeRegistry([], [], Effect.void, {}, opened), undefined, {
+        prepareSession: context =>
+          Effect.succeed({
+            ...context,
+            mcpEndpoints: [{ name: 'watchtower-ledger', url: 'http://127.0.0.1:1/mcp', token: 'ledger-token' }],
+          }),
+        runOrchestration: request => Effect.runPromise(request),
+      })
+      try {
+        const host = await runtime.runPromise(WorkspaceHost)
+        await runtime.runPromise(host.store.registerProject({ project: input.project, mainCheckout: input.checkout }))
+        await runtime.runPromise(host.store.createTask({ task: input.task, conversation: input.conversation }))
+        await runtime.runPromise(host.withExecution(service => service.start(beginCommand(suffix))))
+        await expect.poll(() => opened.length, { timeout: 12_000 }).toBe(1)
+        expect(opened[0]?.projectId).toBe(input.project.id)
+        expect(opened[0]?.mcpEndpoints?.map(endpoint => endpoint.name)).toEqual(endpoints)
+      } finally {
+        await runtime.dispose()
+      }
+    },
+    20_000,
+  )
 })

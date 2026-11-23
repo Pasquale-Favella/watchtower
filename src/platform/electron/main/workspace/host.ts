@@ -24,10 +24,12 @@ import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import type { HarnessConnectionCatalog } from '@/infrastructure/agent-harnesses/connection-catalog.js'
+import { logCodeFor, safeLogOperationalEvent } from '@/infrastructure/logging/operational-log.js'
 import {
   acquireOrchestratorMcp,
   type OrchestrationRunner,
 } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
+import { COACH_PROJECT_ID, sweepCoachChats } from '@/platform/electron/main/workspace/coach-project.js'
 import {
   ConnectionInspectionError,
   discoverWorkspacePromptCatalog,
@@ -235,6 +237,15 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
           yield* SubscriptionRef.set(status, { state: 'unavailable', ownerEpoch: undefined })
           return yield* unavailableStore()
         }
+        // Coach chats are ephemeral: any left by the last app session go before the context is published. A failed
+        // sweep keeps the leftover chat (Coach & Skills still shows it and can discard it) instead of failing Workspace.
+        yield* sweepCoachChats(current.store).pipe(
+          Effect.catch(error =>
+            Effect.sync(() =>
+              safeLogOperationalEvent('warn', 'workspace.coach-sweep', { outcome: 'failed', code: logCodeFor(error) }),
+            ),
+          ),
+        )
         supervisor = current
         // Recovery completes before the context is published, so no caller reads a Delegation that is still queued
         // after its Run ended. Callers wait on the open until then.
@@ -498,7 +509,8 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         ): Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope> =>
           Effect.gen(function* () {
             const prepared = options.prepareSession ? yield* options.prepareSession(context) : context
-            if (!context.runId || !options.runOrchestration) return prepared
+            // Coaching never delegates: a Coach session gets no orchestrator endpoint.
+            if (!context.runId || !options.runOrchestration || context.projectId === COACH_PROJECT_ID) return prepared
             const delegations = delegationBox.delegations
             if (!delegations)
               return yield* new AgentDriverError({ code: 'invalid-state', message: 'Orchestration is not ready.' })

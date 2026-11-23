@@ -7,14 +7,15 @@ import {
 /** The server name every harness registers the read-only usage ledger endpoint under. */
 export const LEDGER_MCP_SERVER = 'watchtower-ledger'
 
-const TOOLS = ['scope', 'overview', 'sessions', 'models', 'skills', 'calls'] as const
+/** The ledger MCP's read-only tools, without their `ledger_` prefix. */
+export const LEDGER_TOOLS = ['scope', 'overview', 'sessions', 'models', 'skills', 'calls'] as const
 
 /**
  * How each harness reaches the tools. Claude and Codex defer MCP tools out of the list the model reads, so the
  * guidance names the callable form, and for Claude how to load it.
  */
 const ACCESS = {
-  claude: `Ledger tools are \`mcp__${LEDGER_MCP_SERVER}__ledger_*\`. If they are not loaded, load them first with ToolSearch \`select:${TOOLS.map(tool => `mcp__${LEDGER_MCP_SERVER}__ledger_${tool}`).join(',')}\`.`,
+  claude: `Ledger tools are \`mcp__${LEDGER_MCP_SERVER}__ledger_*\`. If they are not loaded, load them first with ToolSearch \`select:${LEDGER_TOOLS.map(tool => `mcp__${LEDGER_MCP_SERVER}__ledger_${tool}`).join(',')}\`.`,
   codex:
     'Ledger tools are `mcp__watchtower_ledger__ledger_*`, inside `exec` as `tools.mcp__watchtower_ledger__ledger_*`. They can be missing from the tools listed to you and are still callable.',
   acp: `Ledger tools are \`ledger_*\` on the \`${LEDGER_MCP_SERVER}\` MCP server; your harness may prefix them with that server name. If they are not in your tool list, search your tools for "ledger" before you say they are missing.`,
