@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   displayShortcut,
   displayShortcutForAction,
+  displayShortcutText,
   NAV_SECTIONS,
   NUMBERED_SECTION_SHORTCUTS,
   sectionsRangeLabel,
@@ -46,6 +47,11 @@ describe('shortcut registry', () => {
     expect(displayShortcut('Mod+1', 'windows')).toBe('Ctrl+1')
     expect(displayShortcut('Mod+1', 'linux')).toBe('Ctrl+1')
     expect(displayShortcut('Mod+,', 'mac')).toBe('⌘,')
+    expect(displayShortcut('Mod', 'mac')).toBe('⌘')
+    expect(displayShortcutText('Mod+Enter', 'mac')).toBe('⌘↵')
+    expect(displayShortcutText('Mod+Enter', 'windows')).toBe('Ctrl+Enter')
+    expect(displayShortcutText('Shift+Enter', 'linux')).toBe('Shift+Enter')
+    expect(displayShortcutText('Mod', 'windows')).toBe('Ctrl')
     expect(displayShortcut('Mod+R', 'mac')).toBe('⌘R')
     expect(displayShortcutForAction('settings', 'windows')).toBe('Ctrl+,')
     expect(displayShortcutForAction('refresh', 'windows')).toBe('Ctrl+R')

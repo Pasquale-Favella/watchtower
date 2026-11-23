@@ -1,4 +1,4 @@
-import { detectPlatform, formatForDisplay, type Hotkey } from '@tanstack/react-hotkeys'
+import { detectPlatform, formatForDisplay, type Hotkey, type Modifier } from '@tanstack/react-hotkeys'
 
 import { SHORTCUTS } from '@/shared/lib/shortcuts.js'
 import type { Section } from '@/shared/schemas/navigation.js'
@@ -42,10 +42,17 @@ const NON_NUMBERED: ReadonlySet<ShortcutAction> = new Set([
 /** The numbered section shortcuts (settings excluded): `Mod+1`..`Mod+N` in nav order. */
 export const NUMBERED_SECTION_SHORTCUTS: readonly ShortcutDef[] = SHORTCUTS.filter(def => !NON_NUMBERED.has(def.action))
 
-/** Platform-aware shortcut badge: `⌘1` on mac, `Ctrl+1` on Windows/Linux. */
-export function displayShortcut(hotkey: Hotkey, platform?: Platform): string {
+/** Platform-aware shortcut badge: `⌘1` on mac, `Ctrl+1` on Windows/Linux. A lone modifier (`Mod`) renders as `⌘` or `Ctrl`. */
+export function displayShortcut(hotkey: Hotkey | Modifier, platform?: Platform): string {
   const os = platform ?? detectPlatform()
   return formatForDisplay(hotkey, os === 'mac' ? { platform: os, separatorToken: '' } : { platform: os })
+}
+
+/** Like `displayShortcut`, but spells key names out off mac (`Ctrl+Enter`, not `Ctrl+↵`); mac keeps `⌘↵`.
+ * Only for named keys: punctuation spells out too (`Comma`). */
+export function displayShortcutText(hotkey: Hotkey | Modifier, platform?: Platform): string {
+  const os = platform ?? detectPlatform()
+  return os === 'mac' ? displayShortcut(hotkey, os) : formatForDisplay(hotkey, { platform: os, useSymbols: false })
 }
 
 export function displayShortcutForAction(action: ShortcutAction, platform?: Platform): string | undefined {

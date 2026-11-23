@@ -166,7 +166,10 @@ describe('composer primary action', () => {
     expect(composerPlaceholder({ busy: false, awaiting: null, canSteer: false })).toBeUndefined()
     expect(composerPlaceholder({ busy: true, awaiting: 'question', canSteer: true })).toMatch(/Answer the question/)
     expect(composerPlaceholder({ busy: true, awaiting: 'approval', canSteer: false })).toMatch(/Approve or decline/)
-    expect(composerPlaceholder({ busy: true, awaiting: null, canSteer: true })).toMatch(/Ctrl\+Enter to steer/)
+    expect(composerPlaceholder({ busy: true, awaiting: null, canSteer: true, platform: 'windows' })).toMatch(
+      /Ctrl\+Enter to steer/,
+    )
+    expect(composerPlaceholder({ busy: true, awaiting: null, canSteer: true, platform: 'mac' })).toMatch(/⌘↵ to steer/)
   })
 })
 

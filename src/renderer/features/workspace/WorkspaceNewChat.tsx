@@ -3,7 +3,6 @@ import { type ComponentType, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Popover } from '@/renderer/components/ui/popover'
-import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   useCreateTask,
   useCreateWorktree,
@@ -23,6 +22,7 @@ import type { WorkspaceProjectReadPage } from '@/shared/schemas/workspace-store.
 import { useWorkspaceAgentPreferences } from './agent-preferences.js'
 import type { CheckoutMode } from './checkout-strip-state.js'
 import { shouldSubmitComposerKey } from './composer-state.js'
+import { ComposerActionTooltip } from './ComposerActionHint.js'
 import { configOptionsForModel, configValuesForOptions } from './config-values.js'
 import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connection-hooks.js'
 import { useErrorToast } from './error-toast.js'
@@ -610,8 +610,9 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
                     )
                   }
                   actions={
-                    <TextTooltip
-                      label="Send"
+                    <ComposerActionTooltip
+                      busy={false}
+                      canSteer={false}
                       trigger={
                         <Button
                           type="button"

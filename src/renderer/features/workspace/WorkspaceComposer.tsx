@@ -26,6 +26,7 @@ import {
   targetSelectionError,
   validateResumeSelection,
 } from './composer-state.js'
+import { ComposerActionTooltip } from './ComposerActionHint.js'
 import { configOptionsForModel, configValuesForOptions, withoutModelSpecificConfigValues } from './config-values.js'
 import {
   useInspectWorkspaceConnection,
@@ -1252,14 +1253,9 @@ function WorkspaceComposerContent({
                 />
               )}
               {!stopPrimary && (
-                <TextTooltip
-                  label={
-                    busy
-                      ? steerAvailable
-                        ? 'Queue follow-up · Ctrl/⌘+click or Ctrl/⌘+Enter to steer the running turn'
-                        : 'Queue follow-up'
-                      : 'Send'
-                  }
+                <ComposerActionTooltip
+                  busy={busy}
+                  canSteer={steerAvailable}
                   trigger={
                     <Button
                       type="button"

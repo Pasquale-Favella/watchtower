@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   canOpenAgentPicker,
   canSwitchAgentConnection,
+  composerActionHintRows,
   connectionHandoffTarget,
   currentConversationRuns,
   isRunActive,
@@ -37,6 +38,35 @@ const run = (id: string, status: AgentRun['status']): AgentRun => ({
   finishedAt: null,
   nativeTurnId: null,
   failure: null,
+})
+
+describe('composer action hint', () => {
+  it('lists send and new line while idle', () => {
+    expect(composerActionHintRows({ busy: false, canSteer: true, platform: 'windows' })).toEqual([
+      { label: 'Send', keys: 'Enter' },
+      { label: 'New line', keys: 'Shift+Enter' },
+    ])
+  })
+
+  it('offers queue and steer while a Run is active and the agent can steer', () => {
+    expect(composerActionHintRows({ busy: true, canSteer: true, platform: 'windows' })).toEqual([
+      { label: 'Queue follow-up', keys: 'Enter', detail: 'Sent when the current turn ends' },
+      { label: 'Steer the running turn', keys: 'Ctrl+Enter', orClick: 'Ctrl+click' },
+    ])
+  })
+
+  it('says steering is unsupported when the agent cannot steer', () => {
+    const rows = composerActionHintRows({ busy: true, canSteer: false, platform: 'linux' })
+    expect(rows.map(row => row.label)).toEqual(['Queue follow-up', "This agent doesn't support steering"])
+    expect(rows[1]).toEqual({ label: "This agent doesn't support steering", muted: true })
+  })
+
+  it('formats keys for the platform', () => {
+    const rows = composerActionHintRows({ busy: true, canSteer: true, platform: 'mac' })
+    expect(rows[0]?.keys).toBe('↵')
+    expect(rows[1]).toMatchObject({ keys: '⌘↵', orClick: '⌘+click' })
+    expect(composerActionHintRows({ busy: false, canSteer: false, platform: 'mac' })[1]?.keys).toBe('⇧↵')
+  })
 })
 
 describe('workspace composer state', () => {

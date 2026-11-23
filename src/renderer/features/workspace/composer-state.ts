@@ -1,4 +1,8 @@
+import type { Hotkey } from '@tanstack/react-hotkeys'
+
+import { displayShortcutText } from '@/renderer/app/shortcuts.js'
 import type { AgentRun } from '@/shared/schemas/execution.js'
+import type { Platform } from '@/shared/schemas/renderer.js'
 import type { ConversationId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceNativeAgentSession, WorkspaceRunContext } from '@/shared/schemas/workspace-store.js'
 
@@ -54,6 +58,52 @@ export function canSwitchAgentConnection(input: {
   )
 }
 
+/** Keys the composer reacts to: Enter submits (queues while a Run is active), Shift+Enter is a new line,
+ * the platform modifier with Enter (or a click) steers. No key stops a Run. */
+const SUBMIT_HOTKEY: Hotkey = 'Enter'
+const NEW_LINE_HOTKEY: Hotkey = 'Shift+Enter'
+const STEER_HOTKEY: Hotkey = 'Mod+Enter'
+
+export interface ComposerActionHintRow {
+  readonly label: string
+  /** The formatted key chip, absent for an informational line. */
+  readonly keys?: string
+  /** A formatted pointer alternative to the key, such as `Ctrl+click`. */
+  readonly orClick?: string
+  /** A short explanation shown below the label. */
+  readonly detail?: string
+  readonly muted?: boolean
+}
+
+/** What the submit button's tooltip says about sending, queueing and steering. */
+export function composerActionHintRows(input: {
+  readonly busy: boolean
+  readonly canSteer: boolean
+  readonly platform?: Platform
+}): readonly ComposerActionHintRow[] {
+  const keys = (hotkey: Hotkey) => displayShortcutText(hotkey, input.platform)
+  if (!input.busy)
+    return [
+      { label: 'Send', keys: keys(SUBMIT_HOTKEY) },
+      { label: 'New line', keys: keys(NEW_LINE_HOTKEY) },
+    ]
+  const queue: ComposerActionHintRow = {
+    label: 'Queue follow-up',
+    keys: keys(SUBMIT_HOTKEY),
+    detail: 'Sent when the current turn ends',
+  }
+  return input.canSteer
+    ? [
+        queue,
+        {
+          label: 'Steer the running turn',
+          keys: keys(STEER_HOTKEY),
+          orClick: `${displayShortcutText('Mod', input.platform)}+click`,
+        },
+      ]
+    : [queue, { label: "This agent doesn't support steering", muted: true }]
+}
+
 export type ComposerAwaiting = 'approval' | 'question' | null
 
 /** Placeholder that points at what the agent is waiting for, or how a follow-up will be delivered. */
@@ -62,12 +112,13 @@ export function composerPlaceholder(input: {
   readonly awaiting: ComposerAwaiting
   readonly canSteer: boolean
   readonly hideFileMentions?: boolean
+  readonly platform?: Platform
 }): string | undefined {
   if (input.awaiting === 'question') return 'Answer the question above, or queue a follow-up'
   if (input.awaiting === 'approval') return 'Approve or decline the request above, or queue a follow-up'
   if (!input.busy) return undefined
   return input.canSteer
-    ? 'Queue a follow-up, or Ctrl+Enter to steer the running turn'
+    ? `Queue a follow-up, or ${displayShortcutText(STEER_HOTKEY, input.platform)} to steer the running turn`
     : `Queue a follow-up. ${input.hideFileMentions ? '' : '@ files, '}/ commands, $ skills`
 }
 
