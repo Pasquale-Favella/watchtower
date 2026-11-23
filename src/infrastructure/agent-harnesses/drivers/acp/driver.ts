@@ -45,18 +45,18 @@ import {
 import { type JsonRpcTransport, spawnJsonRpcStdio } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
 import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
+import { endpointInstructions, withAcpInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import {
   isOrchestratorToolTitle,
   isReadOnlyOrchestratorToolTitle,
-  ORCHESTRATOR_MCP_SERVER,
   orchestrationAutoApproved,
   orchestrationReferenceFromRaw,
+  ORCHESTRATOR_MCP_SERVER,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
 import {
   acpOrchestrationHarness,
   isSlashCommandPrompt,
   type OrchestrationHarness,
-  withAcpOrchestrationInstructions,
 } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type {
   AgentAccessMode,
@@ -242,8 +242,8 @@ interface AcpSessionState {
   readonly queues: Map<AgentRunId, RunChannel>
   /** Open tool calls that are orchestration tools. Their later updates usually omit the title that names them. */
   readonly orchestrationToolCalls: Set<string>
-  /** The guidance that rides ahead of the next prompt of a session this connection opened with the orchestrator attached. */
-  orchestrationInstructionsPending: OrchestrationHarness | null
+  /** The guidance that rides ahead of the next prompt of a session this connection opened with the ledger or orchestrator attached. */
+  endpointInstructionsPending: string | null
   readonly completedRuns: Array<AgentRunId>
   readonly permissions: Map<string, PendingRequest>
   readonly replay: Array<ReplayRecord>
@@ -1649,7 +1649,7 @@ function makeSessionState(
     browserMcpUnavailable,
     queues: new Map(),
     orchestrationToolCalls: new Set(),
-    orchestrationInstructionsPending: null,
+    endpointInstructionsPending: null,
     completedRuns: [],
     permissions: new Map(),
     replay: [],
@@ -1810,9 +1810,9 @@ function sessionInterface(
           })
         const content = yield* mapPromptContent(input, state.liveCapabilities.promptContent?.images === true)
         const prompt = input.messages[0]?.content ?? ''
-        const pendingGuidance = state.orchestrationInstructionsPending
+        const pendingGuidance = state.endpointInstructionsPending
         const instructed = pendingGuidance !== null && !isSlashCommandPrompt(prompt)
-        if (instructed) content[0] = { type: 'text', text: withAcpOrchestrationInstructions(prompt, pendingGuidance) }
+        if (instructed) content[0] = { type: 'text', text: withAcpInstructions(prompt, pendingGuidance) }
         if (!channel) channel = yield* emptyEventChannel(input.runId)
         channel.submitted = true
         const completed = yield* Effect.sync(() => {
@@ -1833,7 +1833,7 @@ function sessionInterface(
         state.activeRun = active
         state.queues.set(input.runId, channel)
         yield* emitEventEffect(state, { kind: 'turnStarted' })
-        if (instructed) state.orchestrationInstructionsPending = null
+        if (instructed) state.endpointInstructionsPending = null
         promptPromise = client.prompt({ sessionId: state.nativeSessionId as never, prompt: content })
         void promptPromise.then(
           result => {
@@ -2221,12 +2221,11 @@ function createConnection(
           false,
         )
         // A loaded session gets it too: it may predate the guidance, and its agent process is new to this endpoint.
-        state.orchestrationInstructionsPending = sessionMcpServers(
-          context,
-          connectionState.browserMcpHttpSupported,
-        ).some(server => server.name === 'watchtower-orchestrator')
-          ? connectionState.orchestrationHarness
-          : null
+        state.endpointInstructionsPending =
+          endpointInstructions(
+            connectionState.orchestrationHarness,
+            sessionMcpServers(context, connectionState.browserMcpHttpSupported),
+          ) ?? null
         state.liveCapabilities = {
           ...state.liveCapabilities,
           promptContent: { images: initialized.agentCapabilities?.promptCapabilities?.image === true, files: true },

@@ -7,6 +7,7 @@ import {
   codexAgentDriverFromTransport,
 } from '@/infrastructure/agent-harnesses/drivers/codex/driver.js'
 import type { JsonRpcTransport } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { ledgerInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import { orchestrationInstructions } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import { projectConversationView } from '@/renderer/features/workspace/conversation-view.js'
 import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
@@ -769,6 +770,64 @@ describe('Codex native App Server driver', () => {
       ),
     )
   })
+
+  it.each([
+    { names: ['watchtower-ledger' as const], developerInstructions: ledgerInstructions('codex') },
+    {
+      names: ['watchtower-orchestrator' as const, 'watchtower-ledger' as const],
+      developerInstructions: `${ledgerInstructions('codex')}\n\n${orchestrationInstructions('codex')}`,
+    },
+  ])(
+    'sends the ledger guidance as developer instructions on start and resume with $names',
+    async ({ names, developerInstructions }) => {
+      const ledgerContext = {
+        ...context,
+        mcpEndpoints: names.map(name => ({ name, url: 'http://127.0.0.1:43125/mcp', token: `${name}-token` })),
+      }
+      const freshServer = fakeServer()
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* connect(freshServer)
+            const opening = yield* Effect.forkScoped(connection.openSession(ledgerContext))
+            const start = yield* freshServer.read
+            expect(start.method).toBe('thread/start')
+            expect(start.params).toMatchObject({ developerInstructions })
+            yield* freshServer.send({ id: start.id, result: { thread: { id: 'thread-ledger' } } })
+            yield* Fiber.join(opening)
+            yield* connection.close(100)
+          }),
+        ),
+      )
+
+      const resumedServer = fakeServer()
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* connect(resumedServer)
+            const loading = yield* Effect.forkScoped(
+              connection.loadSession(ledgerContext, {
+                nativeSessionId: 'thread-ledger-resume',
+                generation: context.generation,
+              }),
+            )
+            const resume = yield* resumedServer.read
+            expect(resume.method).toBe('thread/resume')
+            expect(resume.params).toMatchObject({ developerInstructions })
+            yield* resumedServer.send({
+              id: resume.id,
+              result: { cwd: context.workspacePath, thread: { id: 'thread-ledger-resume', turns: [] } },
+            })
+            const goalRead = yield* resumedServer.read
+            expect(goalRead.method).toBe('thread/goal/get')
+            yield* resumedServer.send({ id: goalRead.id, result: { goal: null } })
+            yield* Fiber.join(loading)
+            yield* connection.close(100)
+          }),
+        ),
+      )
+    },
+  )
 
   it('injects the browser and orchestrator MCP endpoints through Codex thread configuration on start and resume', async () => {
     const browserContext = {

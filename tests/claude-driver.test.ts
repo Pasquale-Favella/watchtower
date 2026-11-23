@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { type ClaudeAgentSdk, makeClaudeAgentDriver } from '@/infrastructure/agent-harnesses/drivers/claude/driver.js'
 import { resolveInstalledClaudeExecutable } from '@/infrastructure/agent-harnesses/drivers/claude/executable.js'
+import { ledgerInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import { orchestrationInstructions } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
@@ -730,6 +731,30 @@ describe('Claude Agent SDK native driver', () => {
       )
     },
   )
+
+  it.each([
+    { names: ['watchtower-ledger' as const], append: ledgerInstructions('claude') },
+    {
+      names: ['watchtower-orchestrator' as const, 'watchtower-ledger' as const],
+      append: `${ledgerInstructions('claude')}\n\n${orchestrationInstructions('claude')}`,
+    },
+  ])('appends the ledger guidance to the system prompt when $names are attached', async ({ names, append }) => {
+    const fake = fakeSdk()
+    const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const driver = yield* AgentDriver
+          const connection = yield* driver.connect({ connectionId: 'connection' })
+          yield* connection.openSession({
+            ...context,
+            mcpEndpoints: names.map(name => ({ name, url: 'http://127.0.0.1:43125/mcp', token: `${name}-token` })),
+          })
+          expect(fakeCall(fake).options.systemPrompt).toEqual({ type: 'preset', preset: 'claude_code', append })
+        }).pipe(Effect.provide(layer)),
+      ),
+    )
+  })
 
   it('uses a scoped streaming query and reports accepted text, tool, and final usage events', async () => {
     const fake = fakeSdk()

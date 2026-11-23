@@ -33,17 +33,15 @@ import {
   UnsupportedAgentOperation,
 } from '@/core/ports/agent-driver.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
+import { endpointInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import {
   isClaudeOrchestratorTool,
   isClaudeReadOnlyOrchestratorTool,
-  ORCHESTRATOR_MCP_SERVER,
   orchestrationAutoApproved,
   orchestrationReference,
+  ORCHESTRATOR_MCP_SERVER,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
-import {
-  hasOrchestratorEndpoint,
-  orchestrationInstructions,
-} from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
+import { hasOrchestratorEndpoint } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import {
   discoverClaudePromptCatalog,
   normalizeAgentPromptCatalog,
@@ -675,6 +673,7 @@ const modeOptions = (
   apiKey: string | undefined,
   executablePath: string | undefined,
 ): Options => {
+  const instructions = endpointInstructions('claude', context.mcpEndpoints)
   return {
     cwd: context.workspacePath,
     ...(context.modelId !== undefined ? { model: context.modelId } : {}),
@@ -688,15 +687,9 @@ const modeOptions = (
       : {}),
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
-    ...(hasOrchestratorEndpoint(context.mcpEndpoints)
-      ? {
-          systemPrompt: {
-            type: 'preset' as const,
-            preset: 'claude_code' as const,
-            append: orchestrationInstructions('claude'),
-          },
-        }
-      : {}),
+    ...(instructions === undefined
+      ? {}
+      : { systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const, append: instructions } }),
     includePartialMessages: true,
     ...(context.mcpEndpoints?.length
       ? {

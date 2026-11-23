@@ -30,16 +30,13 @@ import {
   spawnJsonRpcStdio,
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
+import { endpointInstructions } from '@/infrastructure/agent-harnesses/ledger-instructions.js'
 import {
   isCodexOrchestratorTool,
-  ORCHESTRATOR_MCP_SERVER,
   orchestrationAutoApproved,
   orchestrationReference,
+  ORCHESTRATOR_MCP_SERVER,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
-import {
-  hasOrchestratorEndpoint,
-  orchestrationInstructions,
-} from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type {
   AgentAccessMode,
   AgentCapabilities,
@@ -663,9 +660,8 @@ function openSession(
     if (native && native.generation !== context.generation)
       return yield* failure('invalid-state', 'Native session generation does not match the requested generation.')
     const policy = codexAccessPolicy(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
-    const instructions = hasOrchestratorEndpoint(context.mcpEndpoints)
-      ? { developerInstructions: orchestrationInstructions('codex') }
-      : {}
+    const guidance = endpointInstructions('codex', context.mcpEndpoints)
+    const instructions = guidance === undefined ? {} : { developerInstructions: guidance }
     const response = yield* client
       .request(
         native ? 'thread/resume' : 'thread/start',

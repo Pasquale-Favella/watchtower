@@ -24,6 +24,7 @@ import {
   makeAcpDriver,
 } from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
 import type { JsonRpcTransport } from '../src/infrastructure/agent-harnesses/drivers/json-rpc.js'
+import { ledgerInstructions } from '../src/infrastructure/agent-harnesses/ledger-instructions.js'
 import { orchestrationInstructions } from '../src/infrastructure/agent-harnesses/orchestration-instructions.js'
 import { agentConfigOptionSchema } from '../src/shared/schemas/execution.js'
 import type { AgentRunId } from '../src/shared/schemas/workspace.js'
@@ -1589,6 +1590,66 @@ describe('generic ACP driver', () => {
     // A loaded session may predate the guidance, so it reads it once too.
     expect(resumed.promptCalls.map(call => JSON.parse(call.prompt))).toEqual([
       [{ type: 'text', text: wrap('resumed request') }],
+    ])
+  })
+
+  it('sends the ledger block, then the orchestration block, with the first prompt of a session that has both attached', async () => {
+    const stdio = { command: 'electron.exe', args: ['mcp-proxy.js'], env: [] }
+    const orchestrator = {
+      name: 'watchtower-orchestrator' as const,
+      url: 'http://127.0.0.1:43124/mcp',
+      token: 'orchestrator-token',
+      stdio,
+    }
+    const ledger = {
+      name: 'watchtower-ledger' as const,
+      url: 'http://127.0.0.1:43125/mcp',
+      token: 'ledger-token',
+      stdio,
+    }
+    const endpoints = [orchestrator, ledger]
+    const ledgerOnly = [ledger]
+    const wrap = (instructions: string, request: string) =>
+      '<watchtower_instructions>\n' +
+      instructions +
+      '\n</watchtower_instructions>\n\n<user_request>\n' +
+      request +
+      '\n</user_request>'
+    const run = async (mcpEndpoints: ReadonlyArray<typeof orchestrator | typeof ledger>, id: string) => {
+      const fake = makeFakeAcp()
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* fake.driver.connect({ connectionId: id })
+            const session = yield* connection.openSession({ ...context, mcpEndpoints })
+            for (const [index, content] of ['/compact', 'first request', 'second request'].entries()) {
+              const turnRunId = runId(id + '-' + index)
+              const submitting = yield* Effect.forkScoped(
+                session.submit({ runId: turnRunId, messages: [{ role: 'user', content }], attachmentIds: [] }),
+              )
+              yield* Stream.runCollect(session.events(turnRunId))
+              yield* Fiber.join(submitting)
+            }
+            yield* connection.close(1000)
+          }),
+        ),
+      )
+      return fake.promptCalls.map(call => JSON.parse(call.prompt))
+    }
+    expect(await run(endpoints, 'acp-ledger-both')).toEqual([
+      [{ type: 'text', text: '/compact' }],
+      [
+        {
+          type: 'text',
+          text: wrap(ledgerInstructions('acp') + '\n\n' + orchestrationInstructions('acp'), 'first request'),
+        },
+      ],
+      [{ type: 'text', text: 'second request' }],
+    ])
+    expect(await run(ledgerOnly, 'acp-ledger-only')).toEqual([
+      [{ type: 'text', text: '/compact' }],
+      [{ type: 'text', text: wrap(ledgerInstructions('acp'), 'first request') }],
+      [{ type: 'text', text: 'second request' }],
     ])
   })
 
