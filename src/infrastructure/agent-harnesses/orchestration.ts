@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import type { AgentToolMetadata } from '@/shared/schemas/execution.js'
+import type { AgentAccessMode, AgentToolMetadata } from '@/shared/schemas/execution.js'
 
 /** The server name every harness registers the orchestrator endpoint under. */
 export const ORCHESTRATOR_MCP_SERVER = 'watchtower-orchestrator'
@@ -89,12 +89,24 @@ const ORCHESTRATOR_TOOLS = [
 ] as const
 
 /**
- * ACP reports an MCP tool by its title: the bare tool name, or the name with its server (`watchtower-orchestrator:
- * delegation_start`, `mcp__watchtower-orchestrator__delegation_start`). Any other title is not an orchestration tool.
+ * ACP reports an MCP tool by its title: the bare tool name, or the name with its server prefixed the way the agent
+ * writes it (`watchtower-orchestrator: delegation_start`, `mcp__watchtower-orchestrator__delegation_start`,
+ * `watchtower-orchestrator_delegation_start`), optionally followed by a parenthesised note. Any other title is not an
+ * orchestration tool.
  */
 const ORCHESTRATOR_TOOL_TITLE = new RegExp(
-  `^(?:(?:mcp__)?${ORCHESTRATOR_MCP_SERVER}(?:__|\\s*[:/]\\s*))?(?:${ORCHESTRATOR_TOOLS.join('|')})$`,
+  `^(?:(?:mcp__)?watchtower[-_]orchestrator(?:__|_|\\s*[:/.]\\s*))?(${ORCHESTRATOR_TOOLS.join('|')})(?:\\s*\\([^)]*\\))?$`,
 )
 
 export const isOrchestratorToolTitle = (title: string | null | undefined): boolean =>
   typeof title === 'string' && ORCHESTRATOR_TOOL_TITLE.test(title.trim())
+
+/** An ACP title that names a read-only orchestration tool. */
+export const isReadOnlyOrchestratorToolTitle = (title: string | null | undefined): boolean =>
+  typeof title === 'string' && READ_ONLY_TOOLS.has(ORCHESTRATOR_TOOL_TITLE.exec(title.trim())?.[1] ?? '')
+
+/**
+ * Whether a Run may call orchestration tools without a prompt. Delegation never widens a child past its parent's
+ * access, so only approval-required asks, and even then not for the tools that only read delegation state.
+ */
+export const orchestrationAutoApproved = (accessMode: AgentAccessMode): boolean => accessMode !== 'approval-required'

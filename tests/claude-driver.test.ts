@@ -16,7 +16,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { type ClaudeAgentSdk, makeClaudeAgentDriver } from '@/infrastructure/agent-harnesses/drivers/claude/driver.js'
 import { resolveInstalledClaudeExecutable } from '@/infrastructure/agent-harnesses/drivers/claude/executable.js'
-import { ORCHESTRATION_INSTRUCTIONS } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
+import { orchestrationInstructions } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
@@ -699,6 +699,38 @@ describe('Claude Agent SDK native driver', () => {
     },
   )
 
+  it.each([
+    { accessMode: 'approval-required' as const, allowedTools: undefined },
+    { accessMode: 'auto' as const, allowedTools: ['mcp__watchtower-orchestrator'] },
+    { accessMode: 'full-access' as const, allowedTools: ['mcp__watchtower-orchestrator'] },
+  ])(
+    'allows the orchestration tools without a prompt in $accessMode: $allowedTools',
+    async ({ accessMode, allowedTools }) => {
+      const fake = fakeSdk()
+      const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const driver = yield* AgentDriver
+            const connection = yield* driver.connect({ connectionId: 'connection' })
+            yield* connection.openSession({
+              ...context,
+              accessMode,
+              mcpEndpoints: [
+                {
+                  name: 'watchtower-orchestrator' as const,
+                  url: 'http://127.0.0.1:43124/mcp',
+                  token: 'orchestrator-token',
+                },
+              ],
+            })
+            expect(fakeCall(fake).options.allowedTools).toEqual(allowedTools)
+          }).pipe(Effect.provide(layer)),
+        ),
+      )
+    },
+  )
+
   it('uses a scoped streaming query and reports accepted text, tool, and final usage events', async () => {
     const fake = fakeSdk()
     const layer = makeClaudeAgentDriver({ sdk: fake.sdk, apiKey: () => 'test-key', makeId: () => 'native-session' })
@@ -1023,7 +1055,7 @@ describe('Claude Agent SDK native driver', () => {
     expect(fakeCall(fake).options.systemPrompt).toEqual({
       type: 'preset',
       preset: 'claude_code',
-      append: ORCHESTRATION_INSTRUCTIONS,
+      append: orchestrationInstructions('claude'),
     })
     expect(events).toContainEqual(
       expect.objectContaining({ kind: 'toolStarted', toolCallId: 'orch', category: 'delegation' }),

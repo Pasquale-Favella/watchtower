@@ -30,10 +30,15 @@ import {
   spawnJsonRpcStdio,
 } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
 import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-content.js'
-import { isCodexOrchestratorTool, orchestrationReference } from '@/infrastructure/agent-harnesses/orchestration.js'
+import {
+  isCodexOrchestratorTool,
+  ORCHESTRATOR_MCP_SERVER,
+  orchestrationAutoApproved,
+  orchestrationReference,
+} from '@/infrastructure/agent-harnesses/orchestration.js'
 import {
   hasOrchestratorEndpoint,
-  ORCHESTRATION_INSTRUCTIONS,
+  orchestrationInstructions,
 } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type {
   AgentAccessMode,
@@ -631,7 +636,7 @@ function openSession(
       return yield* failure('invalid-state', 'Native session generation does not match the requested generation.')
     const policy = codexAccessPolicy(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
     const instructions = hasOrchestratorEndpoint(context.mcpEndpoints)
-      ? { developerInstructions: ORCHESTRATION_INSTRUCTIONS }
+      ? { developerInstructions: orchestrationInstructions('codex') }
       : {}
     const response = yield* client
       .request(
@@ -644,7 +649,9 @@ function openSession(
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
               ...instructions,
-              ...(context.mcpEndpoints?.length ? { config: codexMcpConfig(context.mcpEndpoints) } : {}),
+              ...(context.mcpEndpoints?.length
+                ? { config: codexMcpConfig(context.mcpEndpoints, context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE) }
+                : {}),
             }
           : {
               cwd: context.workspacePath,
@@ -652,7 +659,9 @@ function openSession(
               approvalPolicy: policy.approvalPolicy,
               sandbox: policy.sandbox,
               ...instructions,
-              ...(context.mcpEndpoints?.length ? { config: codexMcpConfig(context.mcpEndpoints) } : {}),
+              ...(context.mcpEndpoints?.length
+                ? { config: codexMcpConfig(context.mcpEndpoints, context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE) }
+                : {}),
             },
       )
       .pipe(Effect.mapError(toDriverFailure))
@@ -752,16 +761,34 @@ function openSession(
   })
 }
 
-/** One override entry per loopback endpoint. Overrides a server of the same name rather than the user's whole table. */
+/**
+ * One override entry per loopback endpoint. Overrides a server of the same name rather than the user's whole table.
+ * Orchestration tools are approved up front outside approval-required: under the `never` policy Codex would otherwise
+ * refuse every call that asks, and delegation never widens a child past the Run that starts it.
+ */
 function codexMcpConfig(
   endpoints: ReadonlyArray<AgentMcpEndpoint>,
+  accessMode: AgentAccessMode,
 ): Readonly<
-  Record<`mcp_servers.${string}`, { readonly url: string; readonly http_headers: Readonly<Record<string, string>> }>
+  Record<
+    `mcp_servers.${string}`,
+    {
+      readonly url: string
+      readonly http_headers: Readonly<Record<string, string>>
+      readonly default_tools_approval_mode?: 'approve'
+    }
+  >
 > {
   return Object.fromEntries(
     endpoints.map(endpoint => [
       `mcp_servers.${endpoint.name}`,
-      { url: endpoint.url, http_headers: { Authorization: `Bearer ${endpoint.token}` } },
+      {
+        url: endpoint.url,
+        http_headers: { Authorization: `Bearer ${endpoint.token}` },
+        ...(endpoint.name === ORCHESTRATOR_MCP_SERVER && orchestrationAutoApproved(accessMode)
+          ? { default_tools_approval_mode: 'approve' as const }
+          : {}),
+      },
     ]),
   )
 }

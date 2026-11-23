@@ -74,10 +74,14 @@ const TOOLS = [
 type ToolName = (typeof TOOLS)[number]['name']
 
 /** The advertised JSON Schema comes from the same Effect Schema that validates the call. */
+/** Claude defers MCP tools behind ToolSearch; the two entry tools load up front so a run sees that it can delegate. */
+const ALWAYS_LOADED: ReadonlySet<ToolName> = new Set(['delegation_capabilities', 'delegation_start'])
+
 const advertised = TOOLS.map(tool => ({
   name: tool.name,
   description: tool.description,
   annotations: { readOnlyHint: tool.readOnly },
+  ...(ALWAYS_LOADED.has(tool.name) ? { _meta: { 'anthropic/alwaysLoad': true } } : {}),
   inputSchema: {
     ...Schema.toStandardJSONSchemaV1(tool.input)['~standard'].jsonSchema.input({ target: 'draft-2020-12' }),
     type: 'object' as const,
@@ -96,7 +100,8 @@ export interface OrchestratorMcpScope {
 
 const toolError = (code: string, message: string) => {
   const payload = Schema.decodeUnknownResult(delegationToolErrorSchema)({ code, message })
-  const body = payload._tag === 'Success' ? payload.success : { code: 'unavailable', message: 'Delegation is unavailable.' }
+  const body =
+    payload._tag === 'Success' ? payload.success : { code: 'unavailable', message: 'Delegation is unavailable.' }
   return { isError: true as const, content: [{ type: 'text' as const, text: JSON.stringify(body) }] }
 }
 
@@ -116,7 +121,10 @@ function summaryView(summary: DelegationSummary): DelegationToolSummary {
     ...(summary.pendingRequest ? { pending: summary.pendingRequest.kind } : {}),
     ...(summary.modelId ? { model: summary.modelId } : {}),
     ...(result !== undefined
-      ? { summary: result.slice(0, DELEGATION_TOOL_SUMMARY_MAX_CHARS), truncated: summary.resultTruncated || result.length > DELEGATION_TOOL_SUMMARY_MAX_CHARS }
+      ? {
+          summary: result.slice(0, DELEGATION_TOOL_SUMMARY_MAX_CHARS),
+          truncated: summary.resultTruncated || result.length > DELEGATION_TOOL_SUMMARY_MAX_CHARS,
+        }
       : {}),
     ...(summary.waitTimedOut ? { waitTimedOut: true } : {}),
     ...(summary.cancelRequested ? { cancelRequested: true } : {}),
@@ -175,9 +183,9 @@ function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Ef
       // The id is an opaque string from the parent; ownership is checked by the service, not by the brand.
       if (request.id !== undefined)
         return delegations.status(caller, request.id as DelegationId).pipe(Effect.map(summaryView))
-      return delegations.list(caller, request.limit ?? 20).pipe(
-        Effect.map(listing => ({ items: listing.items.map(summaryView), truncated: listing.truncated })),
-      )
+      return delegations
+        .list(caller, request.limit ?? 20)
+        .pipe(Effect.map(listing => ({ items: listing.items.map(summaryView), truncated: listing.truncated })))
     }
     case 'delegation_read': {
       const request = input as Schema.Schema.Type<typeof delegationToolReadInputSchema>
@@ -219,8 +227,8 @@ function validatedOutput(name: ToolName, value: unknown): unknown {
       : name === 'delegation_status' && typeof value === 'object' && value !== null && 'items' in value
         ? delegationToolListOutputSchema
         : name === 'delegation_read'
-        ? delegationToolReadOutputSchema
-        : undefined
+          ? delegationToolReadOutputSchema
+          : undefined
   if (!schema) return value
   const decoded = Schema.decodeUnknownResult(schema)(value)
   return decoded._tag === 'Success' ? decoded.success : value
@@ -259,7 +267,9 @@ export function createOrchestratorMcpServer(scope: OrchestratorMcpScope): Server
     const capabilities = await scope.run(scope.delegations.capabilities(scope.caller)).catch(() => null)
     return { tools: capabilities !== null && capabilities.remainingDepth < 1 ? [] : advertised }
   })
-  server.setRequestHandler(CallToolRequestSchema, (request) => callTool(scope, request.params.name, request.params.arguments))
+  server.setRequestHandler(CallToolRequestSchema, request =>
+    callTool(scope, request.params.name, request.params.arguments),
+  )
   return server
 }
 

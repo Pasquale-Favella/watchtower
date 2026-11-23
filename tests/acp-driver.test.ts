@@ -24,7 +24,7 @@ import {
   makeAcpDriver,
 } from '../src/infrastructure/agent-harnesses/drivers/acp/driver.js'
 import type { JsonRpcTransport } from '../src/infrastructure/agent-harnesses/drivers/json-rpc.js'
-import { ORCHESTRATION_INSTRUCTIONS } from '../src/infrastructure/agent-harnesses/orchestration-instructions.js'
+import { orchestrationInstructions } from '../src/infrastructure/agent-harnesses/orchestration-instructions.js'
 import { agentConfigOptionSchema } from '../src/shared/schemas/execution.js'
 import type { AgentRunId } from '../src/shared/schemas/workspace.js'
 import {
@@ -1466,7 +1466,7 @@ describe('generic ACP driver', () => {
     })
   })
 
-  it('sends the orchestration block with the first prompt of a fresh orchestrated session only', async () => {
+  it('sends the orchestration block with the first prompt of each orchestrated session the connection opens', async () => {
     const endpoints = [
       {
         name: 'watchtower-orchestrator' as const,
@@ -1477,7 +1477,7 @@ describe('generic ACP driver', () => {
     ]
     const wrap = (request: string) =>
       '<watchtower_instructions>\n' +
-      ORCHESTRATION_INSTRUCTIONS +
+      orchestrationInstructions('acp') +
       '\n</watchtower_instructions>\n\n<user_request>\n' +
       request +
       '\n</user_request>'
@@ -1528,8 +1528,9 @@ describe('generic ACP driver', () => {
         }),
       ),
     )
+    // A loaded session may predate the guidance, so it reads it once too.
     expect(resumed.promptCalls.map(call => JSON.parse(call.prompt))).toEqual([
-      [{ type: 'text', text: 'resumed request' }],
+      [{ type: 'text', text: wrap('resumed request') }],
     ])
   })
 
@@ -1688,13 +1689,21 @@ describe('generic ACP driver', () => {
     { accessMode: 'auto' as const, kind: 'edit', expected: 'allow-once' },
     { accessMode: 'auto' as const, kind: 'execute', expected: undefined },
     { accessMode: 'full-access' as const, kind: 'execute', expected: 'allow-once' },
-  ])('answers a $kind request in $accessMode with $expected', ({ accessMode, kind, expected }) => {
+    { accessMode: 'auto' as const, kind: 'other', title: 'watchtower-orchestrator_delegation_start', expected: 'allow-once' },
+    { accessMode: 'auto-accept-edits' as const, kind: 'other', title: 'delegation_send (watchtower-orchestrator)', expected: 'allow-once' },
+    { accessMode: 'approval-required' as const, kind: 'other', title: 'mcp__watchtower-orchestrator__delegation_status', expected: 'allow-once' },
+    { accessMode: 'approval-required' as const, kind: 'other', title: 'watchtower-orchestrator: delegation_start', expected: undefined },
+    { accessMode: 'auto' as const, kind: 'other', title: 'other_server_delegation_start', expected: undefined },
+  ])('answers a $kind $title request in $accessMode with $expected', ({ accessMode, kind, title, expected }) => {
     const options: PermissionOption[] = [
       { optionId: 'allow-always', name: 'Always allow', kind: 'allow_always' },
       { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
       { optionId: 'reject-once', name: 'Reject once', kind: 'reject_once' },
     ]
-    const answer = automaticPermission(accessMode, { options, toolCall: { toolCallId: 't', kind: kind as never } })
+    const answer = automaticPermission(accessMode, {
+      options,
+      toolCall: { toolCallId: 't', kind: kind as never, ...(title ? { title } : {}) },
+    })
     expect(answer?.outcome).toEqual(expected ? { outcome: 'selected', optionId: expected } : undefined)
   })
 

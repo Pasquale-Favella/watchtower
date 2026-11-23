@@ -36,11 +36,13 @@ import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-
 import {
   isClaudeOrchestratorTool,
   isClaudeReadOnlyOrchestratorTool,
+  ORCHESTRATOR_MCP_SERVER,
+  orchestrationAutoApproved,
   orchestrationReference,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
 import {
   hasOrchestratorEndpoint,
-  ORCHESTRATION_INSTRUCTIONS,
+  orchestrationInstructions,
 } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import {
   discoverClaudePromptCatalog,
@@ -679,6 +681,11 @@ const modeOptions = (
     ...(context.modeId !== undefined && isClaudeEffort(context.modeId) ? { effort: context.modeId } : {}),
     ...(executablePath === undefined ? {} : { pathToClaudeCodeExecutable: executablePath }),
     ...claudePermissionOptions(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE),
+    // Outside approval-required the orchestration tools run without a prompt; delegation never widens a child's access.
+    ...(hasOrchestratorEndpoint(context.mcpEndpoints) &&
+    orchestrationAutoApproved(context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE)
+      ? { allowedTools: [`mcp__${ORCHESTRATOR_MCP_SERVER}`] }
+      : {}),
     settingSources: ['user', 'project', 'local'],
     tools: { type: 'preset', preset: 'claude_code' },
     ...(hasOrchestratorEndpoint(context.mcpEndpoints)
@@ -686,7 +693,7 @@ const modeOptions = (
           systemPrompt: {
             type: 'preset' as const,
             preset: 'claude_code' as const,
-            append: ORCHESTRATION_INSTRUCTIONS,
+            append: orchestrationInstructions('claude'),
           },
         }
       : {}),

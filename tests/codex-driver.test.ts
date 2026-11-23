@@ -7,7 +7,7 @@ import {
   codexAgentDriverFromTransport,
 } from '@/infrastructure/agent-harnesses/drivers/codex/driver.js'
 import type { JsonRpcTransport } from '@/infrastructure/agent-harnesses/drivers/json-rpc.js'
-import { ORCHESTRATION_INSTRUCTIONS } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
+import { orchestrationInstructions } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import { projectConversationView } from '@/renderer/features/workspace/conversation-view.js'
 import type { WorkspaceConversationPageItem } from '@/shared/schemas/workspace-store.js'
 
@@ -715,6 +715,44 @@ describe('Codex native App Server driver', () => {
     )
   })
 
+  it.each([
+    { accessMode: 'approval-required' as const, approve: false },
+    { accessMode: 'auto' as const, approve: true },
+    { accessMode: 'full-access' as const, approve: true },
+  ])('approves the orchestration tools up front in $accessMode: $approve', async ({ accessMode, approve }) => {
+    const server = fakeServer()
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const connection = yield* connect(server)
+          const opening = yield* Effect.forkScoped(
+            connection.openSession({
+              ...context,
+              accessMode,
+              mcpEndpoints: [
+                { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+                {
+                  name: 'watchtower-orchestrator' as const,
+                  url: 'http://127.0.0.1:43124/mcp',
+                  token: 'orchestrator-token',
+                },
+              ],
+            }),
+          )
+          const start = yield* server.read
+          const config = (start.params as { config: Record<string, Record<string, unknown>> }).config
+          expect(config['mcp_servers.watchtower-orchestrator']?.['default_tools_approval_mode']).toBe(
+            approve ? 'approve' : undefined,
+          )
+          expect(config['mcp_servers.watchtower-browser']).not.toHaveProperty('default_tools_approval_mode')
+          yield* server.send({ id: start.id, result: { thread: { id: 'thread-approve' } } })
+          yield* Fiber.join(opening)
+          yield* connection.close(100)
+        }),
+      ),
+    )
+  })
+
   it('applies the fail-safe approval-required policy when a context has no access mode', async () => {
     const server = fakeServer()
     await Effect.runPromise(
@@ -760,7 +798,7 @@ describe('Codex native App Server driver', () => {
           expect(start.method).toBe('thread/start')
           expect(start.params).toMatchObject({
             config: endpointConfig,
-            developerInstructions: ORCHESTRATION_INSTRUCTIONS,
+            developerInstructions: orchestrationInstructions('codex'),
           })
           yield* freshServer.send({ id: start.id, result: { thread: { id: 'thread-browser' } } })
           yield* Fiber.join(opening)
@@ -784,7 +822,7 @@ describe('Codex native App Server driver', () => {
           expect(resume.method).toBe('thread/resume')
           expect(resume.params).toMatchObject({
             config: endpointConfig,
-            developerInstructions: ORCHESTRATION_INSTRUCTIONS,
+            developerInstructions: orchestrationInstructions('codex'),
           })
           yield* resumedServer.send({
             id: resume.id,

@@ -138,6 +138,18 @@ describe('watchtower-orchestrator endpoint', () => {
     expect(withoutStart).toEqual([])
   })
 
+  it('loads only the entry tools up front where a harness defers MCP tools', async () => {
+    const { service } = fakeDelegations(1)
+    const tools = await withEndpoint(service, async (url, token) => {
+      const client = await connect(url, token)
+      const listed = await client.listTools()
+      await client.close()
+      return listed.tools
+    })
+    const alwaysLoaded = tools.filter(tool => tool._meta?.['anthropic/alwaysLoad'] === true).map(tool => tool.name)
+    expect(alwaysLoaded.sort()).toEqual(['delegation_capabilities', 'delegation_start'])
+  })
+
   it('binds the caller from the endpoint, so arguments cannot name another task', async () => {
     const { service, start } = fakeDelegations(1)
     const result = await withEndpoint(service, async (url, token) => {

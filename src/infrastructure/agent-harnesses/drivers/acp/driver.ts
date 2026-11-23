@@ -47,10 +47,14 @@ import { attachmentText } from '@/infrastructure/agent-harnesses/drivers/prompt-
 import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 import {
   isOrchestratorToolTitle,
+  isReadOnlyOrchestratorToolTitle,
+  orchestrationAutoApproved,
   orchestrationReferenceFromRaw,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
 import {
+  acpOrchestrationHarness,
   isSlashCommandPrompt,
+  type OrchestrationHarness,
   withAcpOrchestrationInstructions,
 } from '@/infrastructure/agent-harnesses/orchestration-instructions.js'
 import type {
@@ -231,8 +235,8 @@ interface AcpSessionState {
   readonly queues: Map<AgentRunId, RunChannel>
   /** Open tool calls that are orchestration tools. Their later updates usually omit the title that names them. */
   readonly orchestrationToolCalls: Set<string>
-  /** The orchestration block rides ahead of the next prompt of a fresh native session that has the orchestrator attached. */
-  orchestrationInstructionsPending: boolean
+  /** The guidance that rides ahead of the next prompt of a session this connection opened with the orchestrator attached. */
+  orchestrationInstructionsPending: OrchestrationHarness | null
   readonly completedRuns: Array<AgentRunId>
   readonly permissions: Map<string, PendingRequest>
   readonly replay: Array<ReplayRecord>
@@ -265,6 +269,8 @@ interface AcpConnectionState {
   readonly connection: ClientSideConnection
   readonly transport: JsonRpcTransport
   readonly loadSessionSupported: boolean
+  /** Which delegation guidance this agent reads: Claude and Codex agents defer MCP tools behind their own lookups. */
+  readonly orchestrationHarness: OrchestrationHarness
   readonly browserMcpHttpSupported: boolean
   readonly initializeModels?: AcpSessionModelState | undefined
   readonly initializeModes?: AcpSessionModeState | undefined
@@ -1364,8 +1370,11 @@ export function automaticPermission(
   params: Pick<RequestPermissionRequest, 'options' | 'toolCall'>,
 ): RequestPermissionResponse | undefined {
   const kind = params.toolCall.kind ?? 'other'
+  const title = params.toolCall.title
   const allowed =
     READ_TOOL_KINDS.includes(kind) ||
+    isReadOnlyOrchestratorToolTitle(title) ||
+    (orchestrationAutoApproved(accessMode) && isOrchestratorToolTitle(title)) ||
     accessMode === 'full-access' ||
     ((accessMode === 'auto-accept-edits' || accessMode === 'auto') && EDIT_TOOL_KINDS.includes(kind))
   const once = allowed ? params.options.find(option => option.kind === 'allow_once') : undefined
@@ -1539,7 +1548,7 @@ function makeSessionState(
     browserMcpUnavailable,
     queues: new Map(),
     orchestrationToolCalls: new Set(),
-    orchestrationInstructionsPending: false,
+    orchestrationInstructionsPending: null,
     completedRuns: [],
     permissions: new Map(),
     replay: [],
@@ -1700,8 +1709,9 @@ function sessionInterface(
           })
         const content = yield* mapPromptContent(input, state.liveCapabilities.promptContent?.images === true)
         const prompt = input.messages[0]?.content ?? ''
-        const instructed = state.orchestrationInstructionsPending && !isSlashCommandPrompt(prompt)
-        if (instructed) content[0] = { type: 'text', text: withAcpOrchestrationInstructions(prompt) }
+        const pendingGuidance = state.orchestrationInstructionsPending
+        const instructed = pendingGuidance !== null && !isSlashCommandPrompt(prompt)
+        if (instructed) content[0] = { type: 'text', text: withAcpOrchestrationInstructions(prompt, pendingGuidance) }
         if (!channel) channel = yield* emptyEventChannel(input.runId)
         channel.submitted = true
         const completed = yield* Effect.sync(() => {
@@ -1722,7 +1732,7 @@ function sessionInterface(
         state.activeRun = active
         state.queues.set(input.runId, channel)
         yield* emitEventEffect(state, { kind: 'turnStarted' })
-        if (instructed) state.orchestrationInstructionsPending = false
+        if (instructed) state.orchestrationInstructionsPending = null
         promptPromise = client.prompt({ sessionId: state.nativeSessionId as never, prompt: content })
         void promptPromise.then(
           result => {
@@ -1935,6 +1945,7 @@ function createConnection(
       connection: client,
       transport,
       loadSessionSupported,
+      orchestrationHarness: acpOrchestrationHarness(initialized.agentInfo?.name, initialized.agentInfo?.title),
       browserMcpHttpSupported,
       initializeModels: initializeStates.models ?? undefined,
       initializeModes: initializeStates.modes ?? undefined,
@@ -2092,11 +2103,12 @@ function createConnection(
           browserMcpUnavailable(context, connectionState.browserMcpHttpSupported),
           false,
         )
-        state.orchestrationInstructionsPending =
-          !restore &&
-          sessionMcpServers(context, connectionState.browserMcpHttpSupported).some(
-            server => server.name === 'watchtower-orchestrator',
-          )
+        // A loaded session gets it too: it may predate the guidance, and its agent process is new to this endpoint.
+        state.orchestrationInstructionsPending = sessionMcpServers(context, connectionState.browserMcpHttpSupported).some(
+          server => server.name === 'watchtower-orchestrator',
+        )
+          ? connectionState.orchestrationHarness
+          : null
         state.liveCapabilities = {
           ...state.liveCapabilities,
           promptContent: { images: initialized.agentCapabilities?.promptCapabilities?.image === true, files: true },
