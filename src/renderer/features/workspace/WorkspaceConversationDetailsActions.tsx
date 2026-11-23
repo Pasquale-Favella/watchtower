@@ -144,7 +144,12 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
         </section>
       )}
       {props.visible.delegations && props.taskId && (
-        <DelegationDetails taskId={props.taskId} conversationId={props.conversationId ?? null} />
+        <DelegationDetails
+          key={props.conversationId ?? props.taskId}
+          taskId={props.taskId}
+          conversationId={props.conversationId ?? null}
+          projectId={props.projectId ?? null}
+        />
       )}
       {sideChats.error && !props.taskId && (
         <p role="alert" className="text-destructive px-2.5 py-1 text-xs">

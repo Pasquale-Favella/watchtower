@@ -60,7 +60,6 @@ function strip(values: Partial<DelegationStripViewProps> = {}): string {
     createElement(DelegationStripView, {
       records: [],
       heldWake: false,
-      child: null,
       isStopPending: () => false,
       onOpen: noop,
       onStop: noop,
@@ -70,7 +69,7 @@ function strip(values: Partial<DelegationStripViewProps> = {}): string {
 }
 
 describe('delegation strip', () => {
-  it('renders nothing without live delegations, held wakes or a parent Task', () => {
+  it('renders nothing without live delegations or held wakes', () => {
     expect(strip()).toBe('')
   })
 
@@ -106,12 +105,6 @@ describe('delegation strip', () => {
     expect(markup).toContain('aria-label="Open delegated task Delegate ask"')
   })
 
-  it('shows the child context with Runs on its own and Open parent', () => {
-    const markup = strip({ child: { status: 'running' }, onOpenParent: noop })
-    expect(markup).toContain('Runs on its own · Running')
-    expect(markup).toContain('Open parent')
-  })
-
   it('disables Stop while a stop is pending or already requested', () => {
     const pending = strip({ records: [record('a')], isStopPending: () => true })
     expect(buttonTag(pending, 'Stop delegated task Delegate a')).toContain('disabled')
@@ -121,7 +114,7 @@ describe('delegation strip', () => {
 })
 
 describe('delegation wake notice', () => {
-  it('states the settled status of the delegated task and offers Open, never a user message', () => {
+  it('links the settled delegated task with its outcome, never a user message', () => {
     const markup = renderToStaticMarkup(
       createElement(DelegationWakeNoticeView, {
         delegation: {
@@ -133,14 +126,14 @@ describe('delegation wake notice', () => {
         onOpen: noop,
       }),
     )
-    expect(markup).toContain('Delegated task Check the migration settled as completed')
-    expect(markup).toContain('aria-label="Delegated task settled"')
-    expect(markup).toContain('aria-label="Open Check the migration"')
+    expect(markup).toContain('Check the migration completed')
+    expect(markup).toContain('<button')
+    expect(markup).not.toContain('Result')
   })
 })
 
 describe('delegation details section', () => {
-  it('lists delegations with status, Open and Stop, and reports an empty list', () => {
+  it('lists active delegations with Stop, folds settled ones under Previous, and hides when empty', () => {
     const markup = renderToStaticMarkup(
       createElement(DelegationDetailsView, {
         records: [record('a'), record('b', { status: 'failed', settledAt: '2026-11-19T10:02:00.000Z' })],
@@ -154,7 +147,9 @@ describe('delegation details section', () => {
     expect(markup).toContain('aria-label="Delegated tasks"')
     expect(markup).toContain('aria-label="Stop delegated task Delegate a"')
     expect(markup).not.toContain('aria-label="Stop delegated task Delegate b"')
-    expect(markup).toContain('Failed')
+    expect(markup).toContain('Delegated tasks · 1 running')
+    expect(markup).toContain('Previous tasks (1)')
+    expect(markup).not.toContain('Delegate b<')
 
     const empty = renderToStaticMarkup(
       createElement(DelegationDetailsView, {
@@ -166,7 +161,7 @@ describe('delegation details section', () => {
         onStop: noop,
       }),
     )
-    expect(empty).toContain('No delegated tasks')
+    expect(empty).toBe('')
   })
 })
 

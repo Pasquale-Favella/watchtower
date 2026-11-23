@@ -1,10 +1,14 @@
-import type { ComponentProps, ReactNode } from 'react'
+import { type ComponentProps, type ReactElement, type ReactNode, useState } from 'react'
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
+import { HarnessIcon } from '@/renderer/features/coach-skills/harness-icon.js'
+import type { DelegationRecord } from '@/shared/schemas/delegation.js'
+import type { WorkspaceCheckout } from '@/shared/schemas/workspace.js'
 
 import { formatRunDuration } from '../timeline/duration.js'
 import { useElapsedMs } from '../timeline/use-elapsed.js'
-import type { DelegateView } from './delegation-view.js'
+import { type DelegateView, delegationDetailsPreview } from './delegation-view.js'
+import { delegationDetailsElapsed } from './details-view.js'
 
 /** The hover and focus card for a delegate: status, model, access, isolation, elapsed time and result preview. */
 export function DelegationTooltip({
@@ -53,5 +57,63 @@ export function DelegationTooltipBody({ view }: { readonly view: DelegateView })
         <span className="text-background/75 line-clamp-4 whitespace-normal">Result: {view.preview}</span>
       )}
     </>
+  )
+}
+
+interface DetailsTooltipProps {
+  readonly record: DelegationRecord
+  readonly view: DelegateView
+  readonly harnessKind: string
+  readonly checkout: WorkspaceCheckout | undefined
+  readonly trigger: ReactElement
+  readonly children: ReactNode
+}
+
+export function DelegationDetailsTooltip({
+  record,
+  view,
+  harnessKind,
+  checkout,
+  trigger,
+  children,
+}: DetailsTooltipProps): React.JSX.Element {
+  const [openedAt, setOpenedAt] = useState<number | null>(null)
+  const elapsed = delegationDetailsElapsed(record, openedAt)
+  const preview = delegationDetailsPreview(record)
+  const folder = checkout?.path.split(/[\\/]/).filter(Boolean).at(-1)
+  const effort = record.modeId?.trim()
+
+  return (
+    <Tooltip
+      onOpenChange={open => {
+        if (open && view.live) setOpenedAt(Date.now())
+      }}
+    >
+      <TooltipTrigger render={trigger}>{children}</TooltipTrigger>
+      <TooltipContent side="left" className="max-w-72 flex-col items-start gap-0.5 text-left">
+        <span className="max-w-full truncate font-medium">{view.title}</span>
+        <span className="text-background/75 flex max-w-full items-center gap-1">
+          <HarnessIcon kind={harnessKind} className="size-3 shrink-0" />
+          <span className="min-w-0 wrap-anywhere">{[view.connection, view.model].filter(Boolean).join(' · ')}</span>
+        </span>
+        {effort && <span className="text-background/75 max-w-full wrap-anywhere">Effort: {effort}</span>}
+        <span>Status: {view.statusLabel}</span>
+        {elapsed !== null && <span className="text-background/75">Elapsed {formatRunDuration(elapsed)}</span>}
+        {view.accessMode && (
+          <span className="text-background/75">
+            Access: {view.accessMode}
+            {view.accessModeNote ? ` · ${view.accessModeNote}` : ''}
+          </span>
+        )}
+        <span className="text-background/75 max-w-full wrap-anywhere">
+          {[view.isolation, checkout?.branch, folder].filter(Boolean).join(' · ')}
+        </span>
+        {preview && (
+          <span className="text-background/75 mt-0.5 wrap-anywhere whitespace-normal">
+            {view.live ? preview : `Result: ${preview}`}
+          </span>
+        )}
+      </TooltipContent>
+    </Tooltip>
   )
 }

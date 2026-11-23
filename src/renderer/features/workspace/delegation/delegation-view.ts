@@ -34,13 +34,22 @@ export const accessModeLabels: Readonly<Record<AgentAccessMode, string>> = {
   'full-access': 'Full access',
 }
 
-const PREVIEW_MAX_CHARS = 200
-
 /** A short single-line excerpt of a result, for hover cards. */
 export function previewText(text: string | null | undefined): string | null {
+  return excerpt(text, 200)
+}
+
+function excerpt(text: string | null | undefined, maxChars: number): string | null {
   const collapsed = text?.replace(/\s+/g, ' ').trim() ?? ''
   if (collapsed.length === 0) return null
-  return collapsed.length > PREVIEW_MAX_CHARS ? `${collapsed.slice(0, PREVIEW_MAX_CHARS - 1)}…` : collapsed
+  return collapsed.length > maxChars ? `${collapsed.slice(0, maxChars - 1)}…` : collapsed
+}
+
+export function delegationDetailsPreview(
+  record: Pick<DelegationRecord, 'status' | 'settledAt' | 'pendingRequest' | 'resultText'>,
+): string | null {
+  if (!isLiveDelegation(record)) return excerpt(record.resultText, 280)
+  return record.pendingRequest?.kind === 'question' ? 'Waiting for an answer' : 'Working…'
 }
 
 /** The task text of a native subagent call, falling back to the call name. */
