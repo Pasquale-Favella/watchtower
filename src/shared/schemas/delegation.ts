@@ -192,6 +192,8 @@ export const delegationTargetChoiceSchema = Schema.Struct({
   driverId: boundedText(128),
   accessModes: Schema.Array(agentAccessModeSchema),
   models: Schema.Array(delegationModelChoiceSchema).check(Schema.isMaxLength(64)),
+  /** How many catalog models matched, which can exceed the models listed. */
+  modelCount: Schema.optional(nonNegativeInt),
   modelsKnown: Schema.Boolean,
 })
 export type DelegationTargetChoice = Schema.Schema.Type<typeof delegationTargetChoiceSchema>

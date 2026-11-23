@@ -138,6 +138,22 @@ const sendFailure = (error: unknown) =>
             : 'The message could not be delivered.',
       })
 
+/**
+ * Whether a model matches every word of a search. A word may also name the connection, so "opencode flint free" finds
+ * OpenCode's `opencode/flint-40b-free`. Punctuation is ignored, so "flint free" matches "flint-40b-free".
+ */
+export function matchesModelSearch(
+  model: { readonly id: string; readonly label: string },
+  connectionLabel: string,
+  search: string,
+): boolean {
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, ' ')
+  const words = normalize(search).split(' ').filter(Boolean)
+  const modelText = normalize(`${model.id} ${model.label}`)
+  const connectionText = normalize(connectionLabel)
+  return words.every(word => modelText.includes(word) || connectionText.includes(word))
+}
+
 const token = (value: string) => createHash('sha256').update(value).digest('hex').slice(0, 24)
 
 const storeFailure = () => new DelegationError({ code: 'unavailable', message: 'Delegation storage is unavailable.' })
@@ -166,7 +182,11 @@ const ownedBy = (record: DelegationRecord | null, caller: DelegationCallerScope)
 export class DelegationService extends Context.Service<
   DelegationService,
   {
-    readonly capabilities: (caller: DelegationCallerScope) => Effect.Effect<DelegationCapabilities, DelegationError>
+    /** `search` filters each connection's whole catalog, so a model past the listing cap can still be found. */
+    readonly capabilities: (
+      caller: DelegationCallerScope,
+      search?: string,
+    ) => Effect.Effect<DelegationCapabilities, DelegationError>
     readonly start: (
       caller: DelegationCallerScope,
       request: StartDelegationRequest,
@@ -268,7 +288,10 @@ export class DelegationService extends Context.Service<
           return parentContext
         })
 
-        const capabilities = Effect.fn('DelegationService.capabilities')(function* (caller: DelegationCallerScope) {
+        const capabilities = Effect.fn('DelegationService.capabilities')(function* (
+          caller: DelegationCallerScope,
+          search?: string,
+        ) {
           const link = yield* store.getDelegationByChildTask(caller.taskId).pipe(Effect.mapError(storeFailure))
           const active = yield* store
             .listDelegations({ parentRunId: caller.runId, activeOnly: true, limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN })
@@ -276,15 +299,19 @@ export class DelegationService extends Context.Service<
           const loaded = yield* options.loadConnections()
           const connections: Array<DelegationTargetChoice> = []
           for (const connection of loaded.slice(0, 64)) {
-            const models = (connection.models ?? []).slice(0, 64)
+            const catalog = connection.models ?? []
+            const matching = search?.trim()
+              ? catalog.filter(model => matchesModelSearch(model, connection.label, search))
+              : catalog
             connections.push({
               connectionId: connection.id,
               label: connection.label,
               driverId: connection.driverId,
               accessModes: yield* accessModesOf(connection.driverId),
-              models,
+              models: matching.slice(0, 64),
+              modelCount: matching.length,
               // A connection that lists no models is treated as unknown, so the caller may name a model freely.
-              modelsKnown: models.length > 0,
+              modelsKnown: catalog.length > 0,
             })
           }
           const depth = link?.depth ?? 0

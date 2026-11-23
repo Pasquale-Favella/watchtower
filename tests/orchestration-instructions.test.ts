@@ -15,6 +15,7 @@ describe('orchestration instructions', () => {
       expect(text.startsWith('## Watchtower delegation\n')).toBe(true)
       expect(text.length).toBeLessThan(2000)
       expect(text).toContain('an opencode delegate using <model>')
+      expect(text).toContain("`search` set to the user's words")
       expect(text.endsWith('As a delegated task, do the work yourself.')).toBe(true)
     }
   })

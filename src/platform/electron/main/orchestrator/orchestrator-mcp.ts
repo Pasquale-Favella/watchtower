@@ -10,12 +10,13 @@ import { AgentDriverError } from '@/core/ports/agent-driver.js'
 import { acquireLoopbackMcp } from '@/platform/mcp/loopback-endpoint.js'
 import { DelegationError, type DelegationId, type DelegationSummary } from '@/shared/schemas/delegation.js'
 import {
+  DELEGATION_TOOL_MODEL_MAX,
   DELEGATION_TOOL_SUMMARY_MAX_CHARS,
+  delegationToolCapabilitiesInputSchema,
   delegationToolCancelInputSchema,
   delegationToolCapabilitiesOutputSchema,
   delegationToolErrorSchema,
   delegationToolListOutputSchema,
-  delegationToolNoInputSchema,
   delegationToolReadInputSchema,
   delegationToolReadOutputSchema,
   delegationToolSendInputSchema,
@@ -33,8 +34,9 @@ import {
 const TOOLS = [
   {
     name: 'delegation_capabilities',
-    description: 'List connections, models, efforts and access modes for delegation_start, and remaining capacity.',
-    input: delegationToolNoInputSchema,
+    description:
+      'List connections, models, efforts and access modes for delegation_start, and `available`: how many more tasks you can start now. Model lists are short; `moreModels` counts the rest, and `search` finds them.',
+    input: delegationToolCapabilitiesInputSchema,
     readOnly: true,
   },
   {
@@ -136,26 +138,34 @@ function summaryView(summary: DelegationSummary): DelegationToolSummary {
 function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Effect.Effect<unknown, unknown> {
   const { caller, delegations } = scope
   switch (name) {
-    case 'delegation_capabilities':
-      return delegations.capabilities(caller).pipe(
+    case 'delegation_capabilities': {
+      const request = input as Schema.Schema.Type<typeof delegationToolCapabilitiesInputSchema>
+      return delegations.capabilities(caller, request.search).pipe(
         Effect.map(capabilities => ({
           accessMode: capabilities.parentAccessMode,
-          remaining: capabilities.remainingDepth,
+          // Free slots, not nesting depth: a Run that has no depth left is offered no tools at all.
+          available: Math.max(0, capabilities.maxActive - capabilities.activeCount),
           active: capabilities.activeCount,
           maxActive: capabilities.maxActive,
-          connections: capabilities.connections.map(connection => ({
-            connection: connection.connectionId,
-            label: connection.label,
-            accessModes: connection.accessModes,
-            models: connection.models.slice(0, 20).map(model => ({
-              id: model.id,
-              label: model.label,
-              ...(model.modes ? { efforts: model.modes.map(mode => mode.id) } : {}),
-            })),
-            modelsKnown: connection.modelsKnown,
-          })),
+          connections: capabilities.connections.map(connection => {
+            const shown = connection.models.slice(0, DELEGATION_TOOL_MODEL_MAX)
+            const more = (connection.modelCount ?? connection.models.length) - shown.length
+            return {
+              connection: connection.connectionId,
+              label: connection.label,
+              accessModes: connection.accessModes,
+              models: shown.map(model => ({
+                id: model.id,
+                label: model.label,
+                ...(model.modes ? { efforts: model.modes.map(mode => mode.id) } : {}),
+              })),
+              ...(more > 0 ? { moreModels: more } : {}),
+              modelsKnown: connection.modelsKnown,
+            }
+          }),
         })),
       )
+    }
     case 'delegation_start': {
       const request = input as Schema.Schema.Type<typeof delegationToolStartInputSchema>
       return delegations

@@ -36,25 +36,29 @@ const summary: DelegationSummary = {
 
 function fakeDelegations(remainingDepth: number) {
   const start = vi.fn(() => Effect.succeed(summary))
+  const models = Array.from({ length: 25 }, (_, index) => ({ id: `opencode/model-${index}`, label: `Model ${index}` }))
+  const capabilities = vi.fn((_caller: unknown, _search?: string) =>
+    Effect.succeed({
+      parentAccessMode: 'auto',
+      depth: 0,
+      remainingDepth,
+      activeCount: 1,
+      maxActive: 4,
+      connections: [
+        {
+          connectionId: 'opencode-1',
+          label: 'OpenCode',
+          driverId: 'acp',
+          accessModes: ['approval-required'],
+          models,
+          modelCount: 449,
+          modelsKnown: true,
+        },
+      ],
+    }),
+  )
   const service = {
-    capabilities: () =>
-      Effect.succeed({
-        parentAccessMode: 'auto',
-        depth: 0,
-        remainingDepth,
-        activeCount: 0,
-        maxActive: 4,
-        connections: [
-          {
-            connectionId: 'codex-1',
-            label: 'Codex',
-            driverId: 'codex-app-server',
-            accessModes: ['approval-required'],
-            models: [],
-            modelsKnown: false,
-          },
-        ],
-      }),
+    capabilities,
     start,
     status: (...args: ReadonlyArray<unknown>) =>
       args[1] === 'dlg-missing'
@@ -63,7 +67,7 @@ function fakeDelegations(remainingDepth: number) {
     list: () => Effect.succeed({ items: [summary], truncated: false }),
     cancel: () => Effect.succeed({ ...summary, status: 'cancelled', settled: true, cancelRequested: true }),
   } as unknown as DelegationService['Service']
-  return { service, start }
+  return { service, start, capabilities }
 }
 
 async function withEndpoint<A>(
@@ -136,6 +140,22 @@ describe('watchtower-orchestrator endpoint', () => {
       return listed.tools.map(tool => tool.name)
     })
     expect(withoutStart).toEqual([])
+  })
+
+  it('reports free slots, not depth, and counts the models past the short list', async () => {
+    const { service, capabilities } = fakeDelegations(1)
+    const result = await withEndpoint(service, async (url, token) => {
+      const client = await connect(url, token)
+      const called = await client.callTool({ name: 'delegation_capabilities', arguments: { search: 'flint free' } })
+      await client.close()
+      return called
+    })
+    expect(capabilities.mock.calls[0]?.[1]).toBe('flint free')
+    const body = JSON.parse(text(result)) as Record<string, unknown> & { connections: Array<Record<string, unknown>> }
+    expect(body).toMatchObject({ available: 3, active: 1, maxActive: 4 })
+    expect(body).not.toHaveProperty('remaining')
+    expect(body.connections[0]?.['models']).toHaveLength(20)
+    expect(body.connections[0]?.['moreModels']).toBe(429)
   })
 
   it('loads only the entry tools up front where a harness defers MCP tools', async () => {

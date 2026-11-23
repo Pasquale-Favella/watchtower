@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest'
 import {
   type DelegationCallerScope,
   DelegationService,
+  matchesModelSearch,
   type DelegationServiceOptions,
   type StartDelegationRequest,
 } from '@/core/application/commands/delegation-service.js'
@@ -21,7 +22,13 @@ import type { BeginRunCommand } from '@/shared/schemas/workspace-store.js'
 
 const ts = '2026-10-29T10:00:00Z'
 const project = { id: 'p-1' as never, name: 'Project', repositoryIdentity: 'repo:one', createdAt: ts, updatedAt: ts }
-const checkout = { id: 'co-1' as never, kind: 'main' as const, path: 'C:/repo', createdAt: ts, branch: 'feature/parent' }
+const checkout = {
+  id: 'co-1' as never,
+  kind: 'main' as const,
+  path: 'C:/repo',
+  createdAt: ts,
+  branch: 'feature/parent',
+}
 const parentTask = { id: 't-parent' as never, projectId: project.id, title: 'Parent', description: '', createdAt: ts }
 const parentConversation = { id: 'c-parent' as never, title: 'Parent chat', createdAt: ts }
 const parentCommand: BeginRunCommand = {
@@ -225,7 +232,38 @@ const textDelta = (runId: string, eventId: string, text: string) => ({
   event: { kind: 'textDelta' as const, text },
 })
 
+describe('model search', () => {
+  it('matches every word against the model or its connection, ignoring punctuation', () => {
+    const flint = { id: 'opencode/flint-40b-free', label: 'opencode/Flint 40B Free' }
+    expect(matchesModelSearch(flint, 'OpenCode', 'flint free')).toBe(true)
+    expect(matchesModelSearch(flint, 'OpenCode', 'opencode flint')).toBe(true)
+    expect(matchesModelSearch(flint, 'OpenCode', 'Flint-Free')).toBe(true)
+    expect(matchesModelSearch(flint, 'OpenCode', 'flint pro')).toBe(false)
+  })
+})
+
 describe('DelegationService', () => {
+  it('filters each catalog by search before any cap and counts the matches', async () => {
+    const built = buildHarness()
+    try {
+      const { service } = await openParent(built)
+      const all = await built.runtime.runPromise(service.capabilities(parentCaller))
+      expect(all.connections.find(connection => connection.connectionId === 'codex-1')).toMatchObject({ modelCount: 1 })
+      const found = await built.runtime.runPromise(service.capabilities(parentCaller, 'gpt 5'))
+      expect(found.connections.find(connection => connection.connectionId === 'codex-1')?.models).toEqual([
+        expect.objectContaining({ id: 'gpt-5' }),
+      ])
+      const missing = await built.runtime.runPromise(service.capabilities(parentCaller, 'flint free'))
+      expect(missing.connections.find(connection => connection.connectionId === 'codex-1')).toMatchObject({
+        models: [],
+        modelCount: 0,
+        modelsKnown: true,
+      })
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
   it('frames the child task with a named role and leaves a general task unchanged', async () => {
     const built = buildHarness()
     try {
@@ -266,7 +304,9 @@ describe('DelegationService', () => {
       const summary = await built.runtime.runPromise(service.start(parentCaller, request()))
       const child = built.starts[0]
       if (!child) throw new Error('The delegation did not launch a child Run.')
-      await built.runtime.runPromise(service.send(parentCaller, summary.delegationId, { message: 'Focus on the lexer' }))
+      await built.runtime.runPromise(
+        service.send(parentCaller, summary.delegationId, { message: 'Focus on the lexer' }),
+      )
       expect(built.steers).toEqual([{ runId: child.runId, message: 'Focus on the lexer' }])
 
       await built.runtime.runPromise(
@@ -381,12 +421,8 @@ describe('DelegationService', () => {
     const built = buildHarness()
     try {
       const { service } = await openParent(built)
-      const first = await built.runtime.runPromise(
-        service.start(parentCaller, request({ clientRequestId: 'req-1' })),
-      )
-      const second = await built.runtime.runPromise(
-        service.start(parentCaller, request({ clientRequestId: 'req-1' })),
-      )
+      const first = await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: 'req-1' })))
+      const second = await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: 'req-1' })))
       expect(second.delegationId).toBe(first.delegationId)
       expect(built.starts).toHaveLength(1)
     } finally {
@@ -402,9 +438,7 @@ describe('DelegationService', () => {
       for (const id of ['a', 'b', 'c']) {
         await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: id })))
       }
-      const replayed = await built.runtime.runPromise(
-        service.start(parentCaller, request({ clientRequestId: 'keep' })),
-      )
+      const replayed = await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: 'keep' })))
       expect(replayed.delegationId).toBe(first.delegationId)
     } finally {
       await built.runtime.dispose()
@@ -509,20 +543,22 @@ describe('DelegationService', () => {
     try {
       const { store, service } = await openParent(built)
       const summary = await built.runtime.runPromise(
-        service.start(
-          parentCaller,
-          request({ target: { connectionId: 'codex-1', modelId: 'gpt-5', modeId: 'high' } }),
-        ),
+        service.start(parentCaller, request({ target: { connectionId: 'codex-1', modelId: 'gpt-5', modeId: 'high' } })),
       )
       const record = await built.runtime.runPromise(store.getDelegation(summary.delegationId))
       expect(record).toMatchObject({ modelId: 'gpt-5', modeId: 'high' })
       expect(built.starts[0]?.modeId).toBe('high')
 
       const refused = await built.runtime.runPromise(
-        service.start(
-          parentCaller,
-          request({ clientRequestId: 'bad-effort', target: { connectionId: 'codex-1', modelId: 'gpt-5', modeId: 'turbo' } }),
-        ).pipe(Effect.flip),
+        service
+          .start(
+            parentCaller,
+            request({
+              clientRequestId: 'bad-effort',
+              target: { connectionId: 'codex-1', modelId: 'gpt-5', modeId: 'turbo' },
+            }),
+          )
+          .pipe(Effect.flip),
       )
       expect(refused.code).toBe('invalid-request')
     } finally {
@@ -577,9 +613,7 @@ describe('DelegationService', () => {
       const { service } = await openParent(built)
       const started = await built.runtime.runPromise(service.start(parentCaller, request()))
       const sibling: DelegationCallerScope = { ...parentCaller, taskId: 'task-other' as never }
-      const refused = await built.runtime.runPromise(
-        service.cancel(sibling, started.delegationId).pipe(Effect.flip),
-      )
+      const refused = await built.runtime.runPromise(service.cancel(sibling, started.delegationId).pipe(Effect.flip))
       expect(refused.code).toBe('not-found')
       expect(built.interrupts).toEqual([])
 

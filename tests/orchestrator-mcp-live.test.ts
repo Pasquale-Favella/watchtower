@@ -14,10 +14,7 @@ import * as Scope from 'effect/Scope'
 import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import {
-  type DelegationCallerScope,
-  DelegationService,
-} from '@/core/application/commands/delegation-service.js'
+import { type DelegationCallerScope, DelegationService } from '@/core/application/commands/delegation-service.js'
 import { ExecutionService } from '@/core/application/commands/execution-service.js'
 import { DelegationCoordinator } from '@/core/application/execution/delegation-coordinator.js'
 import { AgentDriver } from '@/core/ports/agent-driver.js'
@@ -27,7 +24,7 @@ import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-
 import { acquireOrchestratorMcp } from '@/platform/electron/main/orchestrator/orchestrator-mcp.js'
 import {
   delegationToolCancelInputSchema,
-  delegationToolNoInputSchema,
+  delegationToolCapabilitiesInputSchema,
   delegationToolReadInputSchema,
   delegationToolSendInputSchema,
   delegationToolStartInputSchema,
@@ -37,7 +34,13 @@ import type { BeginRunCommand } from '@/shared/schemas/workspace-store.js'
 
 const ts = '2026-10-29T10:00:00Z'
 const project = { id: 'p-1' as never, name: 'Project', repositoryIdentity: 'repo:one', createdAt: ts, updatedAt: ts }
-const checkout = { id: 'co-1' as never, kind: 'main' as const, path: 'C:/repo', createdAt: ts, branch: 'feature/parent' }
+const checkout = {
+  id: 'co-1' as never,
+  kind: 'main' as const,
+  path: 'C:/repo',
+  createdAt: ts,
+  branch: 'feature/parent',
+}
 const parentTask = { id: 't-parent' as never, projectId: project.id, title: 'Parent', description: '', createdAt: ts }
 const parentConversation = { id: 'c-parent' as never, title: 'Parent chat', createdAt: ts }
 const parentCommand: BeginRunCommand = {
@@ -229,7 +232,9 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
       'delegation_cancel',
     ])
     const byName = new Map(listed.tools.map(tool => [tool.name, tool]))
-    expect(byName.get('delegation_capabilities')?.inputSchema).toEqual(expectedSchema(delegationToolNoInputSchema))
+    expect(byName.get('delegation_capabilities')?.inputSchema).toEqual(
+      expectedSchema(delegationToolCapabilitiesInputSchema),
+    )
     expect(byName.get('delegation_start')?.inputSchema).toEqual(expectedSchema(delegationToolStartInputSchema))
     expect(byName.get('delegation_status')?.inputSchema).toEqual(expectedSchema(delegationToolStatusInputSchema))
     expect(byName.get('delegation_read')?.inputSchema).toEqual(expectedSchema(delegationToolReadInputSchema))
@@ -237,10 +242,10 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
     expect(byName.get('delegation_cancel')?.inputSchema).toEqual(expectedSchema(delegationToolCancelInputSchema))
   }, 30_000)
 
-  it('reports connections and remaining depth through delegation_capabilities', async () => {
+  it('reports connections and free slots through delegation_capabilities', async () => {
     const result = await callTool(parentClient, 'delegation_capabilities')
     expect(result.isError).toBeFalsy()
-    expect(result.structuredContent).toMatchObject({ accessMode: 'auto', remaining: 1 })
+    expect(result.structuredContent).toMatchObject({ accessMode: 'auto', available: 4 })
     expect(result.structuredContent?.['connections']).toEqual([
       expect.objectContaining({ connection: 'codex-1', label: 'Codex' }),
     ])
@@ -348,7 +353,14 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
     const listed = await proxy.listTools()
     expect(listed.tools.map(tool => tool.name)).toContain('delegation_start')
     const capabilities = await callTool(proxy, 'delegation_capabilities')
-    expect(capabilities.structuredContent).toMatchObject({ accessMode: 'auto', remaining: 1 })
+    const slots = capabilities.structuredContent as {
+      accessMode: string
+      available: number
+      active: number
+      maxActive: number
+    }
+    // Earlier cases leave delegations running, so free slots are the cap less those.
+    expect(slots).toMatchObject({ accessMode: 'auto', available: slots.maxActive - slots.active })
     const missing = await callTool(proxy, 'delegation_status', { id: 'dlg-missing' })
     expect(errorCodeOf(missing)).toBe('not-found')
     await proxy.close()

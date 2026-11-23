@@ -72,7 +72,11 @@ export const delegationToolStartInputSchema = Schema.Struct({
     }),
   ),
   timeoutMs: Schema.optionalKey(
-    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(DELEGATION_WAIT_MAX_MS)).annotate({
+    Schema.Number.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(1),
+      Schema.isLessThanOrEqualTo(DELEGATION_WAIT_MAX_MS),
+    ).annotate({
       description: 'Wait limit in ms when mode is wait. Default 30000, maximum 45000.',
     }),
   ),
@@ -85,7 +89,11 @@ export type DelegationToolStartInput = Schema.Schema.Type<typeof delegationToolS
 export const delegationToolStatusInputSchema = Schema.Struct({
   id: Schema.optionalKey(idText.annotate({ description: 'Delegation id. Omit to list yours, newest first.' })),
   limit: Schema.optionalKey(
-    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(DELEGATION_TOOL_LIST_MAX)).annotate({
+    Schema.Number.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(1),
+      Schema.isLessThanOrEqualTo(DELEGATION_TOOL_LIST_MAX),
+    ).annotate({
       description: 'List size without id. Default 20.',
     }),
   ),
@@ -97,7 +105,11 @@ export const DELEGATION_TOOL_READ_MAX = 20
 export const delegationToolReadInputSchema = Schema.Struct({
   id: idText,
   limit: Schema.optionalKey(
-    Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(DELEGATION_TOOL_READ_MAX)).annotate({
+    Schema.Number.check(
+      Schema.isInt(),
+      Schema.isGreaterThanOrEqualTo(1),
+      Schema.isLessThanOrEqualTo(DELEGATION_TOOL_READ_MAX),
+    ).annotate({
       description: 'Latest messages to return. Default 6.',
     }),
   ),
@@ -106,7 +118,11 @@ export type DelegationToolReadInput = Schema.Schema.Type<typeof delegationToolRe
 
 export const delegationToolSendInputSchema = Schema.Struct({
   id: idText,
-  message: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1), Schema.isMaxLength(DELEGATION_PROMPT_MAX_CHARS)),
+  message: Schema.String.check(
+    Schema.isTrimmed(),
+    Schema.isMinLength(1),
+    Schema.isMaxLength(DELEGATION_PROMPT_MAX_CHARS),
+  ),
   answers: Schema.optionalKey(
     Schema.Record(idText, Schema.String.check(Schema.isMaxLength(4_000))).annotate({
       description: 'Answers by question id from delegation_read. Default: message answers all.',
@@ -125,6 +141,14 @@ export const delegationToolCancelInputSchema = Schema.Struct({
 export type DelegationToolCancelInput = Schema.Schema.Type<typeof delegationToolCancelInputSchema>
 
 export const delegationToolNoInputSchema = Schema.Struct({})
+
+export const delegationToolCapabilitiesInputSchema = Schema.Struct({
+  search: Schema.optionalKey(
+    Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1), Schema.isMaxLength(128)).annotate({
+      description: 'Words that find models in every catalog, such as "flint free". Lists are short without it.',
+    }),
+  ),
+})
 
 /** One delegation as the parent Run reads it. Bounded, and never a full transcript. */
 export const delegationToolSummarySchema = Schema.Struct({
@@ -148,14 +172,20 @@ export type DelegationToolSummary = Schema.Schema.Type<typeof delegationToolSumm
 export const delegationToolReadOutputSchema = Schema.Struct({
   delegation: delegationToolSummarySchema,
   messages: Schema.Array(
-    Schema.Struct({ role: Schema.Literals(['task', 'agent']), text: Schema.String, truncated: Schema.optionalKey(Schema.Boolean) }),
+    Schema.Struct({
+      role: Schema.Literals(['task', 'agent']),
+      text: Schema.String,
+      truncated: Schema.optionalKey(Schema.Boolean),
+    }),
   ).check(Schema.isMaxLength(DELEGATION_TOOL_READ_MAX)),
   earlierOmitted: Schema.Boolean,
   question: Schema.optionalKey(
     Schema.Struct({
       kind: Schema.Literals(['approval', 'question']),
       prompt: Schema.String,
-      questions: Schema.Array(Schema.Struct({ id: Schema.String, prompt: Schema.String, options: Schema.Array(Schema.String) })),
+      questions: Schema.Array(
+        Schema.Struct({ id: Schema.String, prompt: Schema.String, options: Schema.Array(Schema.String) }),
+      ),
     }),
   ),
 })
@@ -167,7 +197,7 @@ export const delegationToolListOutputSchema = Schema.Struct({
 
 export const delegationToolCapabilitiesOutputSchema = Schema.Struct({
   accessMode: agentAccessModeSchema,
-  remaining: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+  available: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
   maxActive: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   connections: Schema.Array(
@@ -182,6 +212,7 @@ export const delegationToolCapabilitiesOutputSchema = Schema.Struct({
           efforts: Schema.optionalKey(Schema.Array(Schema.String).check(Schema.isMaxLength(DELEGATION_TOOL_MODEL_MAX))),
         }),
       ).check(Schema.isMaxLength(DELEGATION_TOOL_MODEL_MAX)),
+      moreModels: Schema.optionalKey(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))),
       modelsKnown: Schema.Boolean,
     }),
   ).check(Schema.isMaxLength(DELEGATION_TOOL_CONNECTION_MAX)),
