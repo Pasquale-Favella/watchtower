@@ -1,5 +1,9 @@
 # ADR 0026 — Pooled ledger MCP sidecar for stdio-rejecting harnesses
 
+> **Superseded by ADR 0046:** the pooled sidecar, its per-conversation pool, the READY-line port handshake and the
+> parent-liveness check are all removed. Ledger reads run on the DB worker behind a per-scope loopback endpoint, and Coach
+> chat lifecycle is governed by ADR 0045 rather than by a pool.
+
 - Status: accepted
 - Date: 2026-09-16
 - Domain: agents (Coach & Skills surface), ledger MCP transport

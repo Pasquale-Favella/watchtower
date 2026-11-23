@@ -1,5 +1,9 @@
 # ADR 0027 — App-scoped local ledger MCP and startup controls
 
+> **Superseded in part (ADR 0046):** the app-scoped loopback sidecar is now an in-process endpoint, not a separate process.
+> The Settings › Local MCP controls (startup mode, copy configuration, regenerate token), the 127.0.0.1 binding and the
+> runtime-only token stand. New chat in the Coach (ADR 0045) purges only the Coach chat and never touches this endpoint.
+
 - Status: accepted
 - Date: 2026-09-16
 - Domain: agents (Coach & Skills surface), local MCP integration

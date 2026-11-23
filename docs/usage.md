@@ -38,9 +38,9 @@ the panel open, it opens the full app.
 
 Every section shares the same **period switcher** (Today, 7D, 30D, Month, 6M,
 Life, or a custom date range) and **provider filter**, and every data fetch
-consumes the active scope. The Coach is the one exception: it has no filter of
-its own — it reads the current scope as the _suggested default_ for its
-answers, never a boundary.
+consumes the active scope. The Coach & Skills chat is the one exception: it takes no scope
+from these controls. It reads your full lifetime ledger unless your message names a window, and it says which window
+its numbers cover.
 
 ## The nine sections
 
@@ -135,37 +135,34 @@ rate, plus per-category one-shot bars and a working-style summary.
 
 ### Coach & Skills
 
-One chat surface with a single harness agent — the picker shows which
-coding-agent CLIs are detected on your machine (Claude Code, Codex, OpenCode,
-Gemini, …) and whether they are logged in. Detection is per ACP server: for
-most agents the app drives the agent's own ACP-capable binary; for Codex,
-Claude Code, and Pi the ACP server ships **bundled inside the app** (no extra
-install — Claude Code and Codex only need their CLI login, Pi needs the base
-`pi` CLI on PATH). Ask anything about your usage: the
-agent answers from the same ledger the dashboard shows, queried live through
-the in-app `watchtower-ledger` MCP server, and it says which window its
-numbers cover (the current scope is its suggested default, never a boundary).
+A coaching chat with one harness agent. It answers from your usage ledger through the read-only `watchtower-ledger`
+MCP endpoint, and it drafts skills in the same chat. The chat runs on the Workspace stack, so the composer, the harness
+picker and Harness Connections work as they do in Workspace.
 
-- **Skills are crafted conversationally.** Describe what you do and ask for a
-  SKILL.md — or start from the **suggested-skill chips** on the welcome
-  screen, which surface the patterns detected in your current window
-  (frequency, spread, cost). A chip click is just a chat-starter: the agent
-  authors the complete skill file, grounded in your real usage through its
-  ledger tools, ready to copy and save.
-- **Model and mode pickers** appear only when the selected harness declares
-  them (progressive). Once probed, a harness's models and your picks are
-  remembered, so switching back restores them instantly.
-- A run streams live — thinking, tool calls with input/output previews, then
-  the answer. **Copy** sits on assistant answers; **Regenerate** on the last
-  one. **Stop** interrupts the running turn; **New conversation** (header)
-  starts a fresh thread. Follow-up messages resume the same harness session.
-- **Switching the harness mid-conversation asks first**: a switch starts a
-  new conversation, so a confirmation dialog appears before the thread is
-  cleared. Confirming stops any run in progress (the runner cancels all
-  active runs, waits for their teardown, then deletes the old temp
-  workspace), clears the thread and session, and restores the new harness's
-  models/picks. On the welcome screen a switch is immediate — there is
-  nothing to lose.
+- **Pick a harness.** The picker lists the coding-agent CLIs detected on this machine (Claude Code, Codex, OpenCode,
+  Gemini, …) and whether each one is signed in. Model and mode pickers appear only when the selected harness declares
+  them. Your picks are shared with Workspace and remembered. If a harness needs an API key, set it up in its Harness
+  Connection. There is no separate Coach switch for keys.
+- **Ask about your usage.** The agent reads your full lifetime ledger. It uses the window you name in your message
+  ("last 30 days", "Claude only") and states which window its numbers cover. The Analytics period and provider are not
+  sent to it.
+- **Only the ledger is read-only.** The ledger tools only read, so they run without an approval prompt: Claude and
+  Codex approve the ledger server as a whole because every tool on it reads, and ACP agents approve by tool name while
+  the ledger endpoint is attached. The agent's own tools (shell, file edits) follow the access mode you pick in the
+  composer, as in Workspace, and work in an app-managed Coach folder, not in your projects. The coach chat has no
+  orchestration tools, so it cannot start Delegated Tasks, and it has no browser. Subagents that a harness starts on
+  its own still run as they do in Workspace.
+- **Skills are crafted in the chat.** The suggested-skill chips on the empty state show the patterns detected in your
+  current Analytics window, with their frequency, spread and cost. A chip fills the composer with a skill-crafting
+  request. Review it and send. The agent drafts a SKILL.md grounded in your real invocations.
+- **Save…** on an assistant message saves its text as a skill file through the system save dialog.
+- **Streaming.** Answers stream live: thinking, tool calls, then the answer. **Stop** interrupts the running answer.
+- **Switching harness** applies to the next message. That message starts a new session on the new harness with a
+  bounded handoff of the chat so far. Nothing is cleared and no confirmation is asked.
+- **New chat** (header) interrupts a running answer, then discards the chat and its history. The chat stays while you
+  move between sections, but it is not kept across a Watchtower restart.
+- Workspace features that need a project folder are hidden in the chat: the checkout strip, @file mentions, the
+  terminal, the details panel, the file preview, diff, review, browser and pull-request panels, and side chats.
 
 ### Settings
 

@@ -1,5 +1,11 @@
 # ADR 0021 — One coach agent, two scopes: build-skill deleted, skills crafted conversationally
 
+> **Superseded in part (ADR 0045):** section 3 no longer sends a run on a chip click. A chip seeds the composer with its
+> skill-crafting prompt, and the user sends it. Section 4's per-harness coach model cache is replaced by the Workspace
+> harness and model picks, which Coach shares. Section 2's briefing is delivered by the drivers as endpoint-keyed ledger
+> instructions rather than composed into the coach prompt. The Save action on an assistant message, which uses
+> `skills:save`, replaces the copy-path Save described in Consequences. The one-agent, two-scope design stands.
+
 - Status: accepted
 - Date: 2026-08-12
 - Domain: agents (Coach & Skills surface), skills (detection/draft seam), store (models cache)

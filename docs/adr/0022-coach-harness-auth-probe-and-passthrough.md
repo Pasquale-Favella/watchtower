@@ -1,5 +1,10 @@
 # Coach harness auth: sign-in probe, actionable errors, API-key passthrough opt-in
 
+> **Superseded in part (ADR 0045):** decision 3, the API-key passthrough opt-in (`allowApiKeyEnv`, its Coach setting
+> and toggle), is removed. API-key handling follows the Workspace Harness Connection. Decision 2's actionable auth-wall
+> hints lived in the legacy `runtime.ts` and are removed with it. Decision 1's probe was wired in the Coach IPC
+> registration, which is removed. Sign-in status for the picker now comes from the Workspace Harness Connections.
+
 Status: accepted
 
 ## Context

@@ -1,5 +1,10 @@
 # Unified Coach & Skills section: one mode-tagged harness chat, no consent gate
 
+> **Superseded in part (ADR 0045):** the chat no longer runs on the `coach:run` channel and its coach store. It runs on
+> the Workspace stack, as an ephemeral chat in a hidden Coach project. Session resume across app restarts ends: New
+> chat purges the chat, and a startup sweep clears any left behind. The unified section, its route, the no-consent
+> decision and the detection pool are unchanged.
+
 > **Superseded in part (ADR 0021):** the mode-tagged run design — `CoachMode =
 'coach' | 'build-skill'`, the renderer-driven `SkillsProseRequest` evidence, and the
 > mid-thread draft card with its dismiss flow — was deleted in favour of ONE

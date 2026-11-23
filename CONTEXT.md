@@ -62,12 +62,13 @@ One row in the command palette — either a Section or a registry Action.
 _Avoid_: shortcut, action
 
 **Coach & Skills**:
-The unified chat section (ADR 0017): one surface where a single harness agent
-serves two scopes — coaching analysis and skill authoring — grounded in the
-ledger through the in-app `watchtower-ledger` MCP server (ADR 0020). Skill
-crafting is conversational; the detected-pattern chips on the welcome screen
-are plain chat-starters (ADR 0021).
-_Avoid_: coach section, skills section
+The unified chat section (ADR 0017): one ephemeral chat with a single harness agent that serves two
+scopes, coaching analysis and skill authoring, grounded in the ledger through the read-only
+`watchtower-ledger` MCP endpoint (ADRs 0020, 0046). The chat runs on the Workspace stack under a hidden
+**Coach project** (ADR 0045). It survives navigation and is discarded by New chat or at the next startup.
+Skill crafting is conversational; the detected-pattern chips on the empty state seed the composer rather than
+sending (ADR 0021, ADR 0045).
+_Avoid_: coach section, skills section, coach workspace
 
 **Project**:
 A registered local work context with a stable repository identity. Its name,
@@ -83,6 +84,12 @@ _Avoid_: workspace folder
 A chat using the application's persistent managed checkout rather than a
 registered user repository. Its internal Project keeps execution and recovery
 identities valid and stays out of the user Project picker.
+
+**Coach project**:
+The hidden internal Project under which the single live **Coach & Skills** chat runs. Like **No project**, it
+has a managed checkout under the app profile. It never appears in Project pickers, listings, search, delegation or
+side chats.
+_Avoid_: coach workspace, temp workspace
 
 **Task**:
 The user's objective and its delivery lifecycle, independent of any one agent
