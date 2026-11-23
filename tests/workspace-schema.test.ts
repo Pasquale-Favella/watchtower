@@ -500,6 +500,7 @@ describe('agent workspace domain schemas', () => {
         'workspace-worker:registerProject',
         'workspace-worker:registerCheckout',
         'workspace-worker:createTask',
+        'workspace-worker:getCoachChat',
         'workspace-worker:listActiveCoachRuns',
         'workspace-worker:purgeCoachChat',
         'workspace-worker:sweepCoachChats',

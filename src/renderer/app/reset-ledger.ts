@@ -1,7 +1,7 @@
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 
-import { coachDetection } from '@/renderer/features/coach-skills/atoms'
+import { coachSkillDetection } from '@/renderer/features/coach-skills/skill-detection-atoms.js'
 import { compareQuery } from '@/renderer/features/compare/atoms'
 import { modelsQuery } from '@/renderer/features/models/atoms'
 import { pricingKnownModelsQuery } from '@/renderer/features/models/pricing-atoms'
@@ -10,7 +10,6 @@ import { overviewQuery } from '@/renderer/features/overview/atoms'
 import { pullRequestsQuery } from '@/renderer/features/pull-requests/atoms'
 import { sessionQuery, sessionRowsQuery } from '@/renderer/features/sessions/atoms'
 import { spendQuery } from '@/renderer/features/spend/atoms'
-
 import { restartRpcQuery } from '@/renderer/stores/atoms/rpc-query.js'
 import { searchSlot } from '@/renderer/stores/atoms/search.js'
 
@@ -27,7 +26,7 @@ export function resetLedgerQueries(registry: AtomRegistry.AtomRegistry): void {
     restartRpcQuery(registry, compareQuery)
     restartRpcQuery(registry, optimizeQuery)
     restartRpcQuery(registry, yieldQuery)
-    restartRpcQuery(registry, coachDetection)
+    restartRpcQuery(registry, coachSkillDetection)
     restartRpcQuery(registry, searchSlot)
   })
 }

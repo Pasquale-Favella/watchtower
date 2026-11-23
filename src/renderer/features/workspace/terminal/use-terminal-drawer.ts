@@ -8,7 +8,7 @@ import { isTerminalDrawerShortcut } from './terminal-keys.js'
 import { hydrateTerminalLayouts, terminalLayoutsAtom, updateTerminalLayoutAtom } from './terminal-layout-atoms.js'
 
 /** Mod+J toggles the drawer from the composer too; the focused shell never receives it. */
-export function useTerminalDrawer(owner: TerminalOwner) {
+export function useTerminalDrawer(owner: TerminalOwner, enabled = true) {
   const registry = useContext(RegistryContext)
   const key = terminalOwnerKey(owner)
   const entries = useAtomValue(terminalLayoutsAtom)
@@ -20,6 +20,7 @@ export function useTerminalDrawer(owner: TerminalOwner) {
   )
   const toggle = useCallback(() => setOpen(!open), [open, setOpen])
   useEffect(() => {
+    if (!enabled) return
     const onKeyDown = (event: KeyboardEvent) => {
       if (!isTerminalDrawerShortcut(event, isMac) || event.repeat) return
       event.preventDefault()
@@ -27,6 +28,6 @@ export function useTerminalDrawer(owner: TerminalOwner) {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [toggle])
+  }, [enabled, toggle])
   return { open, toggle, setOpen }
 }

@@ -55,6 +55,7 @@ type Props = {
   readonly autoFocus?: boolean
   readonly maxLength: number
   readonly richText?: boolean
+  readonly hideFileMentions?: boolean
   readonly onOpenFile?: ((path: string) => void) | undefined
 }
 
@@ -448,11 +449,11 @@ function promptMarkdownDecorations(
   return DecorationSet.create(doc, decorations)
 }
 
+type PromptTokenCatalog = Pick<Props, 'skills' | 'commands' | 'attachments' | 'hideFileMentions'>
+
 function documentContent(
   value: string,
-  skills: Props['skills'],
-  commands: Props['commands'],
-  attachments: Props['attachments'],
+  { skills, commands, attachments, hideFileMentions }: PromptTokenCatalog,
   preserveTrailingFrom: readonly PromptInlineToken[] = [],
 ): JSONContent {
   const paragraphs: JSONContent[][] = [[]]
@@ -482,6 +483,8 @@ function documentContent(
   for (const segment of segments) {
     if (segment.type === 'text') {
       appendText(segment.text)
+    } else if (hideFileMentions && segment.type === 'mention') {
+      appendText(segment.source)
     } else {
       paragraphs[paragraphs.length - 1]?.push(promptTokenNode(segment, skills))
     }
@@ -629,13 +632,11 @@ function setEditorValue(
   editor: PromptEditorInstance,
   value: string,
   cursor: number,
-  skills: Props['skills'],
-  commands: Props['commands'],
-  attachments: Props['attachments'],
+  catalog: PromptTokenCatalog,
   preserveTrailingFrom: readonly PromptInlineToken[] = [],
   selectionEnd = cursor,
 ): PromptDocument {
-  editor.commands.setContent(documentContent(value, skills, commands, attachments, preserveTrailingFrom), {
+  editor.commands.setContent(documentContent(value, catalog, preserveTrailingFrom), {
     emitUpdate: false,
   })
   const document = readDocument(editor.state.doc)
@@ -677,7 +678,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
   const editor = useEditor(
     {
       extensions: [...PROMPT_EXTENSIONS, PROMPT_MARKDOWN_EXTENSION],
-      content: documentContent(props.value, props.skills, props.commands, props.attachments),
+      content: documentContent(props.value, props),
       editorProps: {
         attributes: editorAttributes(props),
         handleKeyDown: (_view, event) => {
@@ -699,9 +700,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
             updated,
             limited.value,
             limited.cursor,
-            propsRef.current.skills,
-            propsRef.current.commands,
-            propsRef.current.attachments,
+            propsRef.current,
             document.inlineTokens,
           )
           const selection = selectionRange(limitedDocument, updated.state.selection.from, updated.state.selection.to)
@@ -711,24 +710,10 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
 
         acceptedValueRef.current = document.value
         const normalized = updated.schema.nodeFromJSON(
-          documentContent(
-            document.value,
-            propsRef.current.skills,
-            propsRef.current.commands,
-            propsRef.current.attachments,
-            document.inlineTokens,
-          ),
+          documentContent(document.value, propsRef.current, document.inlineTokens),
         )
         if (!updated.state.doc.eq(normalized)) {
-          document = setEditorValue(
-            updated,
-            document.value,
-            cursor,
-            propsRef.current.skills,
-            propsRef.current.commands,
-            propsRef.current.attachments,
-            document.inlineTokens,
-          )
+          document = setEditorValue(updated, document.value, cursor, propsRef.current, document.inlineTokens)
         }
         const selection = selectionRange(document, updated.state.selection.from, updated.state.selection.to)
         propsRef.current.onChange(document.value, selection.start, selection.end)
@@ -788,9 +773,7 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
           current,
           limited.value,
           limited.cursor,
-          propsRef.current.skills,
-          propsRef.current.commands,
-          propsRef.current.attachments,
+          propsRef.current,
           currentDocument.inlineTokens,
           selectionEnd,
         )
@@ -805,30 +788,21 @@ export function WorkspacePromptEditor(props: Props): React.JSX.Element {
     propsRef.current = props
   }, [props])
 
+  const { skills, commands, attachments, hideFileMentions, value } = props
   useEffect(() => {
     if (!editor) return
+    const catalog = { skills, commands, attachments, ...(hideFileMentions ? { hideFileMentions } : {}) }
     const snapshot = readDocument(editor.state.doc)
-    const cursor =
-      snapshot.value === props.value ? positionToMarkdown(snapshot, editor.state.selection.from) : props.value.length
-    const normalized = editor.schema.nodeFromJSON(
-      documentContent(props.value, props.skills, props.commands, props.attachments, snapshot.inlineTokens),
-    )
-    if (snapshot.value !== props.value || !editor.state.doc.eq(normalized)) {
-      acceptedValueRef.current = props.value
-      const document = setEditorValue(
-        editor,
-        props.value,
-        cursor,
-        props.skills,
-        props.commands,
-        props.attachments,
-        snapshot.inlineTokens,
-      )
+    const cursor = snapshot.value === value ? positionToMarkdown(snapshot, editor.state.selection.from) : value.length
+    const normalized = editor.schema.nodeFromJSON(documentContent(value, catalog, snapshot.inlineTokens))
+    if (snapshot.value !== value || !editor.state.doc.eq(normalized)) {
+      acceptedValueRef.current = value
+      const document = setEditorValue(editor, value, cursor, catalog, snapshot.inlineTokens)
       const selection = selectionRange(document, editor.state.selection.from, editor.state.selection.to)
-      propsRef.current.onSelectionChange(props.value, selection.start, selection.end)
+      propsRef.current.onSelectionChange(value, selection.start, selection.end)
     }
-    acceptedValueRef.current = props.value
-  }, [editor, props.value, props.skills, props.commands, props.attachments])
+    acceptedValueRef.current = value
+  }, [editor, value, skills, commands, attachments, hideFileMentions])
 
   useEffect(() => {
     if (!editor) return

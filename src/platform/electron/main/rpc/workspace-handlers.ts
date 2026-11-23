@@ -348,6 +348,7 @@ export function workspaceHandlers<R = never>(
           options.prepareCoachProject
             ? mutation(options.prepareCoachProject(store))
             : Effect.fail(failure('unavailable')),
+        'workspace:getCoachChat': () => read(() => store.getCoachChat()),
         'workspace:discardCoachChat': ({ taskId }) =>
           read(() =>
             Effect.gen(function* () {

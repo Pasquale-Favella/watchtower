@@ -7,7 +7,6 @@ import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceTasks } from '../hooks.js'
 import { delegationListAtom, emptyDelegationListAtom } from './delegation-atoms.js'
-import { useOpenDelegatedTask } from './hooks.js'
 
 export interface ParentTaskLink {
   readonly title: string
@@ -18,20 +17,25 @@ export interface ParentTaskLink {
  * Reads the parent from the same Task listing as useDelegatedFrom, which also carries the parent's title. A second
  * Task detail query would compete with the selected Task's detail query, which is one slot per scope.
  */
-export function useParentTaskLink(projectId: ProjectId | null, taskId: TaskId | null): ParentTaskLink | null {
+export function useParentTaskLink(
+  projectId: ProjectId | null,
+  taskId: TaskId | null,
+  openTask?: (taskId: TaskId) => void,
+): ParentTaskLink | null {
   const request = useMemo(
     () =>
-      projectId && taskId ? { projectId, options: { includeDelegated: true, includeArchived: true, limit: 50 } } : null,
-    [projectId, taskId],
+      projectId && taskId && openTask
+        ? { projectId, options: { includeDelegated: true, includeArchived: true, limit: 50 } }
+        : null,
+    [openTask, projectId, taskId],
   )
   const items = useWorkspaceTasks(request).data?.items
   const parentTaskId = taskId
     ? items?.find(task => task.id === taskId)?.runtime?.delegatedFrom?.parentTaskId
     : undefined
   const title = items?.find(task => task.id === parentTaskId)?.title ?? 'Parent task'
-  const openTask = useOpenDelegatedTask()
   return useMemo(
-    () => (parentTaskId ? { title, open: () => openTask(parentTaskId) } : null),
+    () => (parentTaskId && openTask ? { title, open: () => openTask(parentTaskId) } : null),
     [openTask, parentTaskId, title],
   )
 }

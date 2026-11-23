@@ -75,22 +75,26 @@ describe('workspace worker RPC server', () => {
             mainCheckout: checkout,
           })
           yield* client['workspace-worker:createTask']({ task, conversation })
+          const chat = yield* client['workspace-worker:getCoachChat']({})
           yield* client['workspace-worker:beginRun'](command)
           const active = yield* client['workspace-worker:listActiveCoachRuns']({ taskId: task.id })
           const busy = yield* client['workspace-worker:purgeCoachChat']({ taskId: task.id }).pipe(Effect.flip)
           yield* client['workspace-worker:sweepCoachChats']({})
+          const chatAfterSweep = yield* client['workspace-worker:getCoachChat']({})
           const afterSweep = yield* client['workspace-worker:listActiveCoachRuns']({ taskId: task.id })
           yield* client['workspace-worker:createTask']({ task, conversation })
           yield* client['workspace-worker:purgeCoachChat']({ taskId: task.id })
           const missing = yield* client['workspace-worker:readTaskSnapshot']({ taskId: task.id, runLimit: 1 }).pipe(
             Effect.flip,
           )
-          return { active, busy, afterSweep, missing }
+          return { chat, active, busy, afterSweep, chatAfterSweep, missing }
         }).pipe(Effect.provide(workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) }))),
       ),
     )
     expect(result).toMatchObject({
+      chat: { taskId: task.id, conversationId: conversation.id },
       active: [command.runId],
+      chatAfterSweep: null,
       busy: { code: 'admission-conflict' },
       afterSweep: [],
       missing: { code: 'not-found' },

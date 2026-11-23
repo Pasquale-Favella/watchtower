@@ -61,13 +61,14 @@ export function composerPlaceholder(input: {
   readonly busy: boolean
   readonly awaiting: ComposerAwaiting
   readonly canSteer: boolean
+  readonly hideFileMentions?: boolean
 }): string | undefined {
   if (input.awaiting === 'question') return 'Answer the question above, or queue a follow-up'
   if (input.awaiting === 'approval') return 'Approve or decline the request above, or queue a follow-up'
   if (!input.busy) return undefined
   return input.canSteer
     ? 'Queue a follow-up, or Ctrl+Enter to steer the running turn'
-    : 'Queue a follow-up. @ files, / commands, $ skills'
+    : `Queue a follow-up. ${input.hideFileMentions ? '' : '@ files, '}/ commands, $ skills`
 }
 
 const activeRunStatuses = new Set<AgentRun['status']>([

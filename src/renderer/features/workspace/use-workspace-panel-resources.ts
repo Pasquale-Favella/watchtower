@@ -18,7 +18,12 @@ import {
 import type { RightPanelControls } from './right-panel/use-right-panel.js'
 import { useWorkspaceOperation } from './use-workspace-operation.js'
 
-export function useWorkspacePanelResources(ownerKey: string, panel: RightPanelControls, taskId?: TaskId) {
+export function useWorkspacePanelResources(
+  ownerKey: string,
+  panel: RightPanelControls,
+  taskId?: TaskId,
+  enabled = true,
+) {
   const registry = useContext(RegistryContext)
   const browser = useWorkspacePreviewCommands()
   const bind = useWorkspaceOperation(bindWorkspacePreviewAtom)
@@ -60,6 +65,7 @@ export function useWorkspacePanelResources(ownerKey: string, panel: RightPanelCo
     }
   }, [bindTask, taskId])
   useEffect(() => {
+    if (!enabled) return
     if (nativeTabIds.current.ownerKey !== ownerKey) nativeTabIds.current = { ownerKey, ids: new Set() }
     const unsubscribe = subscribeWorkspacePreviewTabs(ownerKey, states => {
       const update = reconcileWorkspacePreviewTabs(panelRef.current.surfaces, states, nativeTabIds.current.ids)
@@ -72,7 +78,7 @@ export function useWorkspacePanelResources(ownerKey: string, panel: RightPanelCo
       unmount()
       unsubscribe()
     }
-  }, [ownerKey, registry])
+  }, [enabled, ownerKey, registry])
   const closeBrowser = async (surface: RightPanelSurface): Promise<void> => {
     if (surfaceKind(surface) === 'browser') await browser.close(ownerKey, surfaceResource(surface))
   }

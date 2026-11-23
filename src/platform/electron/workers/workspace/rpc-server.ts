@@ -181,6 +181,8 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       execute('workspace-worker:createTask', command, () => options.store.createTask(command), true),
     'workspace-worker:listActiveCoachRuns': request =>
       execute('workspace-worker:listActiveCoachRuns', request, () => options.store.listActiveCoachRuns(request.taskId)),
+    'workspace-worker:getCoachChat': request =>
+      execute('workspace-worker:getCoachChat', request, () => options.store.getCoachChat()),
     'workspace-worker:purgeCoachChat': request =>
       execute('workspace-worker:purgeCoachChat', request, () => options.store.purgeCoachChat(request.taskId), true),
     'workspace-worker:sweepCoachChats': request =>

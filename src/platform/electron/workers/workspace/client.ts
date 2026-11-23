@@ -330,6 +330,8 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:listActiveCoachRuns'](payload),
           )
         },
+        getCoachChat: () =>
+          invoke('workspace-worker:getCoachChat', {}, () => rawClient['workspace-worker:getCoachChat']({})),
         purgeCoachChat: taskId => {
           const payload = { taskId }
           return invoke('workspace-worker:purgeCoachChat', payload, () =>

@@ -2,7 +2,7 @@ import * as Atom from 'effect/reactivity/Atom'
 import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
-import { createCoachAtoms } from '../src/renderer/features/coach-skills/atoms.js'
+import { createCoachDetectionSlot } from '../src/renderer/features/coach-skills/skill-detection-atoms.js'
 import { candidateKey, craftSkillPrompt } from '../src/renderer/features/coach-skills/lib.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import type { SkillCandidate, SkillsPayload, SkillsThresholds } from '../src/shared/schemas/skills.js'
@@ -12,10 +12,9 @@ function setup(getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds) 
   const registry = AtomRegistry.make()
   const runtime = Atom.context()
   const client = makeCoachRpcTestClient(runtime, { skills: getSkills })
-  const atoms = createCoachAtoms(client)
-  registry.mount(atoms.coachStateAtom)
-  registry.mount(atoms.detection.resultAtom)
-  return { registry, atoms }
+  const detection = createCoachDetectionSlot(client)
+  registry.mount(detection.resultAtom)
+  return { registry, detection }
 }
 
 async function waitFor(predicate: () => boolean): Promise<void> {
@@ -55,10 +54,10 @@ const payload = {
 describe('Coach & Skills detection pool (the welcome-screen suggested-skill chips)', () => {
   it('loads the detection pool for a scope', async () => {
     const getSkills = vi.fn(async () => payload)
-    const { registry, atoms } = setup(getSkills)
-    registry.set(atoms.detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
-    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
-    expect(registry.get(atoms.detection.resultAtom)).toMatchObject({ value: payload })
+    const { registry, detection } = setup(getSkills)
+    registry.set(detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
+    await waitFor(() => registry.get(detection.resultAtom)._tag === 'Success')
+    expect(registry.get(detection.resultAtom)).toMatchObject({ value: payload })
     expect(getSkills).toHaveBeenCalledWith({ period: 'lifetime' }, { frequency: 5, spread: 2 })
     registry.dispose()
   })
@@ -69,13 +68,13 @@ describe('Coach & Skills detection pool (the welcome-screen suggested-skill chip
       requests.push(JSON.stringify(scope))
       return scope.period === 'lifetime' ? payload : null
     })
-    const { registry, atoms } = setup(getSkills)
-    registry.set(atoms.detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
-    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
-    registry.set(atoms.detection.requestAtom, { scope: { period: 'today' }, frequency: 5, spread: 2 })
-    await waitFor(() => requests.length === 2 && registry.get(atoms.detection.resultAtom)._tag === 'Success')
+    const { registry, detection } = setup(getSkills)
+    registry.set(detection.requestAtom, { scope: { period: 'lifetime' }, frequency: 5, spread: 2 })
+    await waitFor(() => registry.get(detection.resultAtom)._tag === 'Success')
+    registry.set(detection.requestAtom, { scope: { period: 'today' }, frequency: 5, spread: 2 })
+    await waitFor(() => requests.length === 2 && registry.get(detection.resultAtom)._tag === 'Success')
     expect(requests).toEqual([JSON.stringify({ period: 'lifetime' }), JSON.stringify({ period: 'today' })])
-    expect(registry.get(atoms.detection.resultAtom)).toMatchObject({ value: null })
+    expect(registry.get(detection.resultAtom)).toMatchObject({ value: null })
     registry.dispose()
   })
 
@@ -84,14 +83,14 @@ describe('Coach & Skills detection pool (the welcome-screen suggested-skill chip
     const getSkills = vi.fn(() =>
       shouldFail ? Promise.reject(new Error('skills unavailable')) : Promise.resolve(payload),
     )
-    const { registry, atoms } = setup(getSkills)
+    const { registry, detection } = setup(getSkills)
     const request = { scope: { period: 'lifetime' as const }, frequency: 5, spread: 2 }
-    registry.set(atoms.detection.requestAtom, request)
-    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Success')
+    registry.set(detection.requestAtom, request)
+    await waitFor(() => registry.get(detection.resultAtom)._tag === 'Success')
     shouldFail = true
-    registry.set(atoms.detection.refreshAtom, undefined)
-    await waitFor(() => registry.get(atoms.detection.resultAtom)._tag === 'Failure')
-    const result = registry.get(atoms.detection.resultAtom)
+    registry.set(detection.refreshAtom, undefined)
+    await waitFor(() => registry.get(detection.resultAtom)._tag === 'Failure')
+    const result = registry.get(detection.resultAtom)
     expect(result._tag).toBe('Failure')
     if (result._tag === 'Failure') {
       expect(JSON.stringify(result.cause)).toContain('AnalyticsRpcError')

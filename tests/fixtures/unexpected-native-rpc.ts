@@ -144,6 +144,7 @@ export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:inspectConnection': unexpected,
   'workspace:ensureScratchProject': unexpected,
   'workspace:ensureCoachProject': unexpected,
+  'workspace:getCoachChat': unexpected,
   'workspace:discardCoachChat': unexpected,
   'workspace:chooseProjectDirectory': unexpected,
   'workspace:browseDirectories': unexpected,

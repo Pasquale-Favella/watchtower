@@ -127,6 +127,7 @@ type WorkspaceComposerProps = {
   readonly task: Task
   readonly conversationId: ConversationId
   readonly allowInitialCheckoutChoice?: boolean | undefined
+  readonly coach?: { readonly onConnectionChange: (connectionId: string) => void } | undefined
   readonly onSideChatCreated?: ((id: string) => void) | undefined
   /** A side chat's own composer: it shares the parent's checkout, starts no side chat and takes no focus. */
   readonly embedded?: boolean | undefined
@@ -149,6 +150,7 @@ function WorkspaceComposerContent({
   onSideChatCreated,
   onOpenFile,
   embedded = false,
+  coach,
 }: WorkspaceComposerProps) {
   const { draft, setDraft, preferences, setPreferences } = useWorkspaceDraft(conversationId)
   const { accessMode: defaultAccessMode } = useWorkspaceAgentPreferences()
@@ -274,15 +276,17 @@ function WorkspaceComposerContent({
   const activeCheckout = checkoutChoices.find(checkout => checkout.id === checkoutId) ?? null
   const branchRequest = useMemo(
     () =>
-      activeCheckout && project.data && (!project.data.project.isScratch || allowInitialCheckoutChoice)
+      !coach && activeCheckout && project.data && (!project.data.project.isScratch || allowInitialCheckoutChoice)
         ? { projectId: task.projectId, checkoutId: activeCheckout.id }
         : null,
-    [activeCheckout, project.data, task.projectId, allowInitialCheckoutChoice],
+    [activeCheckout, project.data, task.projectId, allowInitialCheckoutChoice, coach],
   )
   const branches = useWorkspaceBranches(branchRequest)
   const switchBranch = useSwitchBranch()
   const [branchError, setBranchError] = useState<string | null>(null)
   const connectionId = (resumeMode && selectedSession?.connectionId) || preferredConnectionId
+  const onConnectionChange = coach?.onConnectionChange
+  useEffect(() => onConnectionChange?.(connectionId), [connectionId, onConnectionChange])
   const selectedConnection = connections.data?.items.find(item => item.connectionId === connectionId) ?? null
   const inspection = inspect.data?.connectionId === connectionId ? inspect.data : null
   const observedSession = useMemo(() => {
@@ -582,7 +586,7 @@ function WorkspaceComposerContent({
       void sendIntent({ kind: 'steer', command, prompt: promptCommand.prompt, draftValue: draft })
       return
     }
-    if (promptCommand?.kind === 'side' || promptCommand?.kind === 'btw') {
+    if (!coach && (promptCommand?.kind === 'side' || promptCommand?.kind === 'btw')) {
       if (!actionStateReady || blocked || pendingStart || pendingStarts.store.error || intent) return
       const block = sideChatCommandBlock({
         embedded,
@@ -1089,11 +1093,12 @@ function WorkspaceComposerContent({
             {submissionHint}
           </p>
         )}
-        <DelegationStrip taskId={task.id} projectId={task.projectId} />
+        {!coach && <DelegationStrip taskId={task.id} projectId={task.projectId} />}
         <WorkspaceRequests taskId={task.id} conversationId={conversationId} />
         <WorkspacePromptInput
           onOpenFile={onOpenFile}
-          reviewOwnerKey={conversationId}
+          reviewOwnerKey={coach ? undefined : conversationId}
+          hideFileMentions={Boolean(coach)}
           value={draft}
           autoFocus={!embedded}
           onChange={value => {
@@ -1111,11 +1116,19 @@ function WorkspaceComposerContent({
           nativeCommands={observedSession?.capabilities?.commands ?? []}
           onOpenModelPicker={query => agentPickerRef.current?.open(query)}
           history={promptHistory}
-          sideChat={{
-            disabledReason: sideChatCommandBlock({ embedded, attachmentCount: 0 })?.reason ?? null,
-          }}
-          placeholder={composerPlaceholder({ busy, awaiting, canSteer: steerAvailable })}
+          sideChat={
+            coach
+              ? undefined
+              : { disabledReason: sideChatCommandBlock({ embedded, attachmentCount: 0 })?.reason ?? null }
+          }
+          placeholder={composerPlaceholder({
+            busy,
+            awaiting,
+            canSteer: steerAvailable,
+            hideFileMentions: Boolean(coach),
+          })}
           contextStrip={
+            !coach &&
             !embedded &&
             activeCheckout &&
             project.data &&

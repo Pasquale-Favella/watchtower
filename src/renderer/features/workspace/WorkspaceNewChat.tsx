@@ -1,5 +1,5 @@
 import { ArrowUp } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Popover } from '@/renderer/components/ui/popover'
@@ -28,7 +28,13 @@ import { useInspectWorkspaceConnection, useWorkspaceConnections } from './connec
 import { useErrorToast } from './error-toast.js'
 import { resolveAccessMode } from './model-picker/access-mode.js'
 import { PermissionsChip } from './model-picker/permissions.js'
-import { useEnsureScratchProject, useNewChatDraft, useNewChatProject, useNewChatProjects } from './new-chat-hooks.js'
+import {
+  useEnsureCoachProject,
+  useEnsureScratchProject,
+  useNewChatDraft,
+  useNewChatProject,
+  useNewChatProjects,
+} from './new-chat-hooks.js'
 import { NEW_CHAT_DRAFT_MAX_LENGTH } from './new-chat-state.js'
 import { parseWorkspacePromptCommand } from './prompt-command.js'
 import { usePromptAttachments } from './prompt-context-hooks.js'
@@ -63,7 +69,13 @@ import { WorkspacePromptInput } from './WorkspacePromptInput.js'
 type Props = {
   readonly projectId: ProjectId | null
   readonly onStarted: (projectId: ProjectId, taskId: TaskId, conversationId: ConversationId) => void
-  readonly onProjectChange: (projectId: ProjectId | null) => void
+  readonly onProjectChange?: (projectId: ProjectId | null) => void
+  readonly coach?: {
+    readonly onConnectionChange: (connectionId: string) => void
+    /** True while the first message is being created and admitted, so New chat cannot discard it mid-start. */
+    readonly onStartingChange: (starting: boolean) => void
+    readonly suggestedPrompts: (seedDraft: (prompt: string) => void, disabled: boolean) => ReactNode
+  }
 }
 
 type CreationIntent = {
@@ -91,12 +103,12 @@ type CreationIntent = {
 const projectRequest = (projectId: ProjectId | null): WorkspaceRequest<'workspace:getProject'> | null =>
   projectId ? { projectId } : null
 
-export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Props) {
-  const panelContext = useDraftPanelContext(projectId)
-  const panel = useRightPanel(panelContext.key)
-  const terminal = useTerminalDrawer(panelContext.target)
+export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach }: Props) {
+  const panelContext = useDraftPanelContext(projectId, !coach)
+  const panel = useRightPanel(coach ? null : panelContext.key)
+  const terminal = useTerminalDrawer(panelContext.target, !coach)
   const terminalAdoption = useTerminalAdoption()
-  const resources = useWorkspacePanelResources(panelContext.key, panel)
+  const resources = useWorkspacePanelResources(panelContext.key, panel, undefined, !coach)
   const { measureContainer, mode: detailsMode } = useConversationDetailsLayout()
   const {
     open: detailsOpen,
@@ -104,8 +116,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     toggle: toggleDetails,
   } = useConversationDetailsVisibility(panelContext.key, detailsMode)
   const { draft, setDraft, clearDraft, copyDraftToConversation, clearConversationDraft, saveConversationPreference } =
-    useNewChatDraft()
-  const attachments = usePromptAttachments('new-chat')
+    useNewChatDraft(Boolean(coach))
+  const attachments = usePromptAttachments(coach ? 'coach-new-chat' : 'new-chat')
   const reviewComments = useReviewComments(panelContext.key)
   const draftRef = useRef(draft)
   const promptRef = useRef<PromptInputHandle>(null)
@@ -123,6 +135,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     accessMode,
     setAccessMode,
   } = useWorkspaceAgentPreferences()
+  const onConnectionChange = coach?.onConnectionChange
+  useEffect(() => onConnectionChange?.(connectionId), [connectionId, onConnectionChange])
   const inspectedConnection = useRef('')
   const [projectCursor, setProjectCursor] = useState<string | undefined>()
   const [priorProjectPages, setPriorProjectPages] = useState<WorkspaceProjectReadPage['items']>([])
@@ -135,12 +149,13 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     () => ({ options: { limit: 50, ...(projectCursor ? { afterId: projectCursor } : {}) } }),
     [projectCursor],
   )
-  const projects = useNewChatProjects(projectListRequest)
+  const projects = useNewChatProjects(coach ? null : projectListRequest)
   const projectReadRequest = useMemo(() => projectRequest(projectId), [projectId])
   const project = useNewChatProject(projectReadRequest)
   const connections = useWorkspaceConnections()
   const inspect = useInspectWorkspaceConnection()
   const ensureScratch = useEnsureScratchProject()
+  const ensureCoach = useEnsureCoachProject()
   const createTask = useCreateTask()
   const createWorktree = useCreateWorktree()
   const switchBranch = useSwitchBranch()
@@ -236,6 +251,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   const createAndStart = async (creation: CreationIntent) => {
     if (creationLock.current || creating || starting) return
     creationLock.current = true
+    coach?.onStartingChange(true)
     setIntent(creation)
     setCreating(true)
     setError(null)
@@ -243,7 +259,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       let target: WorkspaceProjectRegistration | null = null
       let targetProjectId = creation.projectId
       if (!targetProjectId) {
-        target = await ensureScratch.execute()
+        target = await (coach ? ensureCoach : ensureScratch).execute()
         targetProjectId = target.project.id
       }
       // The worktree is made on send, before the Task, so a refused worktree leaves nothing behind.
@@ -265,21 +281,23 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
 
       reviewComments.copyTo(receipt.conversationId, creation.reviewComments)
       const checkoutId = worktree?.id ?? target?.mainCheckout.id ?? creation.checkoutId
-      const adoptedTerminals = await terminalAdoption.adopt(
-        creation.terminalTarget,
-        receipt.taskId,
-        checkoutId ?? undefined,
-      )
-      transferRightPanelState(creation.panelKey, receipt.taskId)
-      const previousDrawer = terminalAdoption.drawerState(creation.terminalTarget)
-      if (!adoptedTerminals && previousDrawer?.terminals?.length)
-        rememberRightPanelSurface(
+      if (!coach) {
+        const adoptedTerminals = await terminalAdoption.adopt(
+          creation.terminalTarget,
           receipt.taskId,
-          resourceSurface('terminal', PREVIOUS_CHECKOUT_DRAWER),
-          previousDrawer.open,
+          checkoutId ?? undefined,
         )
-      transferDraftPanelContext(creation.terminalTarget, creation.panelKey, receipt.taskId)
-      await resources.bindTask(receipt.taskId).catch(() => undefined)
+        transferRightPanelState(creation.panelKey, receipt.taskId)
+        const previousDrawer = terminalAdoption.drawerState(creation.terminalTarget)
+        if (!adoptedTerminals && previousDrawer?.terminals?.length)
+          rememberRightPanelSurface(
+            receipt.taskId,
+            resourceSurface('terminal', PREVIOUS_CHECKOUT_DRAWER),
+            previousDrawer.open,
+          )
+        transferDraftPanelContext(creation.terminalTarget, creation.panelKey, receipt.taskId)
+        await resources.bindTask(receipt.taskId).catch(() => undefined)
+      }
       if (!checkoutId) {
         const retained = draftRef.current
         copyDraftToConversation(receipt.conversationId, retained)
@@ -347,6 +365,8 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
       setError(
         cause instanceof Error ? cause.message : 'Task creation could not be confirmed. Retry this command safely.',
       )
+    } finally {
+      coach?.onStartingChange(false)
     }
   }
 
@@ -412,7 +432,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
     submit()
   }
   const selectProject = (projectId: ProjectId | null) => {
-    onProjectChange(projectId)
+    onProjectChange?.(projectId)
     promptRef.current?.focus()
   }
   const permissionsChip = (
@@ -449,33 +469,39 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
   useErrorToast('workspace:new-chat:branch', "Couldn't switch branch", branchError)
 
   return (
-    <Popover open={detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
-      <WorkspaceChatHeader
-        project={selectedProject?.name ?? 'No project'}
-        title="New chat"
-        terminalOpen={terminal.open}
-        onToggleTerminal={terminal.toggle}
-        panelOpen={panel.open}
-        onTogglePanel={panel.toggle}
-        detailsOpen={detailsOpen}
-        detailsMode={detailsMode}
-        onToggleDetails={toggleDetails}
-      />
+    <Popover open={!coach && detailsOpen && detailsMode === 'popover'} onOpenChange={setDetailsOpen}>
+      {!coach && (
+        <WorkspaceChatHeader
+          project={selectedProject?.name ?? 'No project'}
+          title="New chat"
+          terminalOpen={terminal.open}
+          onToggleTerminal={terminal.toggle}
+          panelOpen={panel.open}
+          onTogglePanel={panel.toggle}
+          detailsOpen={detailsOpen}
+          detailsMode={detailsMode}
+          onToggleDetails={toggleDetails}
+        />
+      )}
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <div
           ref={measureContainer}
-          className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${panel.maximized ? 'min-[980px]:hidden' : ''}`}
+          className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${!coach && panel.maximized ? 'min-[980px]:hidden' : ''}`}
         >
           <div
             className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
             style={
-              detailsOpen && detailsMode === 'inline' ? { paddingRight: CONVERSATION_DETAILS_LANE_INSET } : undefined
+              !coach && detailsOpen && detailsMode === 'inline'
+                ? { paddingRight: CONVERSATION_DETAILS_LANE_INSET }
+                : undefined
             }
           >
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-8">
               <section className="max-w-chat w-full" aria-label="New chat">
                 <div className="mb-8 flex flex-col items-center gap-2 text-center">
-                  {projectId && selectedProject && !archivedProject ? (
+                  {coach ? (
+                    <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
+                  ) : projectId && selectedProject && !archivedProject ? (
                     <>
                       <h2 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
                         <span>What should we build in</span>
@@ -519,8 +545,9 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                   )}
                 </div>
                 <WorkspacePromptInput
-                  onOpenFile={panel.openFile}
-                  reviewOwnerKey={panelContext.key}
+                  onOpenFile={coach ? undefined : panel.openFile}
+                  reviewOwnerKey={coach ? undefined : panelContext.key}
+                  hideFileMentions={Boolean(coach)}
                   value={draft}
                   onChange={writeDraft}
                   onKeyDown={keyDown}
@@ -602,6 +629,18 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                     />
                   }
                 />
+                {coach?.suggestedPrompts(
+                  prompt => {
+                    const text = prompt.slice(0, NEW_CHAT_DRAFT_MAX_LENGTH)
+                    if (promptRef.current) {
+                      promptRef.current.setValue(text)
+                      promptRef.current.focus()
+                    } else {
+                      writeDraft(text)
+                    }
+                  },
+                  creating || starting || Boolean(intent),
+                )}
                 {attachmentBlocked && (
                   <p className="text-muted-foreground mt-2 text-xs" role="status">
                     The selected agent has not confirmed support for these attachments. Choose a compatible agent or
@@ -631,65 +670,71 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange }: Prop
                 {archivedProject && (
                   <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="status">
                     <span>This Project is archived.</span>
-                    <Button type="button" size="sm" variant="outline" onClick={() => onProjectChange(null)}>
+                    <Button type="button" size="sm" variant="outline" onClick={() => onProjectChange?.(null)}>
                       Continue with No project
                     </Button>
                   </div>
                 )}
               </section>
             </div>
-            <WorkspaceTerminalDrawer
-              target={panelContext.target}
-              open={terminal.open}
-              onOpenLink={url => resources.openBrowser(url)}
-              onAddToChat={addTerminalExcerpt}
-            />
-            <WorkspaceConversationDetails
-              open={detailsOpen}
-              onOpenChange={setDetailsOpen}
-              mode={detailsMode}
-              projectId={projectReady ? (projectId ?? undefined) : undefined}
-              checkoutId={project.data?.mainCheckout.id}
-              workspacePath={project.data?.mainCheckout.path}
-              isScratch={!selectedProject}
-              onOpenFiles={() => panel.openSurface('files')}
-              onOpenDiff={checkout.mode === 'local' ? () => panel.openSurface('diff') : undefined}
-              onOpenPullRequests={() => panel.openSurface('pull-requests')}
-              checkoutControls={
-                gitProject ? (
-                  <CheckoutStrip
-                    layout="details"
-                    workspacePath={project.data?.mainCheckout.path}
-                    mode={checkout.mode}
-                    onModeChange={mode => {
-                      setBranchError(null)
-                      setCheckoutChoice({ projectId, mode, baseBranch: checkout.baseBranch })
-                    }}
-                    branch={shownBranch}
-                    branches={branches.data}
-                    pending={switchBranch.pending}
-                    disabled={creating || starting || switchBranch.pending}
-                    onBranchSelect={selectBranch}
-                    error={branches.error}
-                  />
-                ) : undefined
-              }
-            />
+            {!coach && (
+              <WorkspaceTerminalDrawer
+                target={panelContext.target}
+                open={terminal.open}
+                onOpenLink={url => resources.openBrowser(url)}
+                onAddToChat={addTerminalExcerpt}
+              />
+            )}
+            {!coach && (
+              <WorkspaceConversationDetails
+                open={detailsOpen}
+                onOpenChange={setDetailsOpen}
+                mode={detailsMode}
+                projectId={projectReady ? (projectId ?? undefined) : undefined}
+                checkoutId={project.data?.mainCheckout.id}
+                workspacePath={project.data?.mainCheckout.path}
+                isScratch={!selectedProject}
+                onOpenFiles={() => panel.openSurface('files')}
+                onOpenDiff={checkout.mode === 'local' ? () => panel.openSurface('diff') : undefined}
+                onOpenPullRequests={() => panel.openSurface('pull-requests')}
+                checkoutControls={
+                  gitProject ? (
+                    <CheckoutStrip
+                      layout="details"
+                      workspacePath={project.data?.mainCheckout.path}
+                      mode={checkout.mode}
+                      onModeChange={mode => {
+                        setBranchError(null)
+                        setCheckoutChoice({ projectId, mode, baseBranch: checkout.baseBranch })
+                      }}
+                      branch={shownBranch}
+                      branches={branches.data}
+                      pending={switchBranch.pending}
+                      disabled={creating || starting || switchBranch.pending}
+                      onBranchSelect={selectBranch}
+                      error={branches.error}
+                    />
+                  ) : undefined
+                }
+              />
+            )}
           </div>
         </div>
-        <WorkspacePanelHost
-          projectId={projectReady ? (projectId ?? undefined) : undefined}
-          panel={panel}
-          resources={resources}
-          ownerKey={panelContext.key}
-          terminalTarget={panelContext.target}
-          onToggleTerminal={terminal.toggle}
-          onAddImage={addImage}
-          onReferenceText={appendToDraft}
-          refreshKey={0}
-          onReferencePath={referencePath}
-          onAddToChat={addTerminalExcerpt}
-        />
+        {!coach && (
+          <WorkspacePanelHost
+            projectId={projectReady ? (projectId ?? undefined) : undefined}
+            panel={panel}
+            resources={resources}
+            ownerKey={panelContext.key}
+            terminalTarget={panelContext.target}
+            onToggleTerminal={terminal.toggle}
+            onAddImage={addImage}
+            onReferenceText={appendToDraft}
+            refreshKey={0}
+            onReferencePath={referencePath}
+            onAddToChat={addTerminalExcerpt}
+          />
+        )}
       </div>
     </Popover>
   )

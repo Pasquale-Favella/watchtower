@@ -149,6 +149,11 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     success: workspaceProjectRegistrationSchema,
     error,
   }),
+  Rpc.make('workspace:getCoachChat', {
+    payload: Schema.Struct({}),
+    success: Schema.NullOr(Store.coachChatSchema),
+    error,
+  }),
   Rpc.make('workspace:discardCoachChat', {
     payload: Schema.Struct({ taskId: taskIdSchema }),
     success: Schema.Void,
@@ -419,6 +424,11 @@ export const workspaceCoachWorkerRpcs = [
   Rpc.make('workspace-worker:listActiveCoachRuns', {
     payload: Schema.Struct({ taskId: taskIdSchema }),
     success: Schema.Array(agentRunIdSchema),
+    error: Store.WorkspaceStoreError,
+  }),
+  Rpc.make('workspace-worker:getCoachChat', {
+    payload: Schema.Struct({}),
+    success: Schema.NullOr(Store.coachChatSchema),
     error: Store.WorkspaceStoreError,
   }),
   Rpc.make('workspace-worker:purgeCoachChat', {

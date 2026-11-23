@@ -15,7 +15,7 @@ import {
 } from '@/renderer/features/workspace/hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
-import type { ConversationId, ProjectId } from '@/shared/schemas/workspace.js'
+import type { ConversationId, ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type {
   WorkspaceConversationPageItem,
   WorkspaceExecutionEvent,
@@ -118,6 +118,8 @@ export function WorkspaceConversation({
   runContextsByRunId,
   promptCommands,
   leading,
+  onOpenParentTask,
+  coach,
 }: {
   readonly conversationId: ConversationId
   readonly workspacePath?: string | undefined
@@ -128,6 +130,8 @@ export function WorkspaceConversation({
   readonly promptCommands?: readonly string[] | undefined
   /** Rendered as the first timeline row, for example a side chat's context divider. */
   readonly leading?: React.ReactNode | undefined
+  readonly onOpenParentTask?: ((taskId: TaskId) => void) | undefined
+  readonly coach?: { readonly assistantAction: (markdown: string) => React.ReactNode } | undefined
 }): React.JSX.Element {
   const loadImage = useMarkdownImageLoader(scope ?? null)
   const navigation = useMemo(
@@ -144,6 +148,8 @@ export function WorkspaceConversation({
         runContextsByRunId={runContextsByRunId}
         promptCommands={promptCommands}
         leading={leading}
+        onOpenParentTask={onOpenParentTask}
+        coach={coach}
       />
     </MarkdownNavigationContext>
   )
@@ -156,6 +162,8 @@ function WorkspaceConversationView({
   runContextsByRunId = new Map(),
   promptCommands = [],
   leading,
+  onOpenParentTask,
+  coach,
 }: {
   readonly conversationId: ConversationId
   readonly projectId?: ProjectId | undefined
@@ -163,6 +171,8 @@ function WorkspaceConversationView({
   readonly runContextsByRunId?: ReadonlyMap<string, WorkspaceRunContext>
   readonly promptCommands?: readonly string[]
   readonly leading?: React.ReactNode
+  readonly onOpenParentTask?: ((taskId: TaskId) => void) | undefined
+  readonly coach?: { readonly assistantAction: (markdown: string) => React.ReactNode } | undefined
 }): React.JSX.Element {
   const { projection, stream } = useWorkspaceEvents()
   const connections = useWorkspaceConnections()
@@ -181,9 +191,9 @@ function WorkspaceConversationView({
   const [transcript, setTranscript] = useState<Transcript>({ conversationId, items: [] })
   const items = transcript.items
   const taskId = items[0]?.event.taskId ?? null
-  const parentTask = useParentTaskLink(projectId ?? null, leading == null ? taskId : null)
+  const parentTask = useParentTaskLink(projectId ?? null, leading == null ? taskId : null, onOpenParentTask)
   const hasLeading = leading != null || parentTask !== null
-  const delegationsById = useChatDelegationsById(taskId)
+  const delegationsById = useChatDelegationsById(coach ? null : taskId)
   const [openingAnchor] = useState(() => readScrollAnchor(conversationId))
   const restoredAnchor = useRef(openingAnchor === null)
   const [highWatermark, setHighWatermark] = useState(0)
@@ -603,7 +613,8 @@ function WorkspaceConversationView({
             if (row.kind === 'activity') return <ActivityRow activity={row.activity} />
             if (row.kind === 'status')
               return <ConversationStatusEntry entry={row.entry} connectionLabels={connectionLabels} />
-            if (row.kind === 'turnEnd') return <AssistantTurnEnd entry={row.turn} />
+            if (row.kind === 'turnEnd')
+              return <AssistantTurnEnd entry={row.turn} assistantAction={coach?.assistantAction} />
             const segment = row.segment
             let content: React.ReactNode
             if (segment.kind === 'work')
@@ -756,13 +767,24 @@ interface HydratedTurnProps {
   readonly onLoadPayload: (reference: WorkspacePayloadReference, owner: string) => void
 }
 
-function AssistantTurnEnd({ entry }: { readonly entry: ConversationAssistantTurn }): React.JSX.Element {
+export function AssistantTurnEnd({
+  entry,
+  assistantAction,
+}: {
+  readonly entry: ConversationAssistantTurn
+  readonly assistantAction?: ((markdown: string) => React.ReactNode) | undefined
+}): React.JSX.Element {
   const streaming = isActiveRunStatus(entry.run.status)
   const copyText = streaming ? '' : turnCopyText(entry)
+  const markdown =
+    !streaming && assistantAction
+      ? entry.blocks.flatMap(block => (block.kind === 'text' && block.text.trim() ? [block.text] : [])).join('\n\n')
+      : ''
   return (
     <article className="group/message w-full space-y-3 px-1 py-1" aria-label="Assistant turn">
       <span className="sr-only">Durable event sequences {entry.audit.map(event => event.sequence).join(', ')}</span>
       <MessageActions copyText={copyText ? copyText : null} copyLabel="Copy response" timestamp={entry.occurredAt}>
+        {markdown && assistantAction?.(markdown)}
         <details className="min-w-0">
           <summary className="cursor-pointer">Turn details</summary>
           <p className="mt-1 break-all">

@@ -216,9 +216,9 @@ export function DelegationDetails({
   readonly projectId: ProjectId | null
 }): React.JSX.Element {
   const delegations = useDelegations(taskId)
-  const parentTask = useParentTaskLink(projectId, taskId)
   const cancel = useCancelDelegation()
   const openTask = useOpenDelegatedTask()
+  const parentTask = useParentTaskLink(projectId, taskId, openTask)
   const connections = useWorkspaceConnections()
   const project = useWorkspaceProject(projectId ? { projectId } : null)
   useErrorToast(`workspace:delegation:${taskId}:details-stop`, "Couldn't stop delegated task", cancel.error)

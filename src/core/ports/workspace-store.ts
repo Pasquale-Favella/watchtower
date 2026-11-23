@@ -11,6 +11,7 @@ import type { AgentRunId, ConversationId, ProjectId, TaskId } from '@/shared/sch
 import type {
   BeginRunCommand,
   CheckoutRegistrationReceipt,
+  CoachChat,
   CommandReceipt,
   ConsumeSideChatBringBackCommand,
   CreateDelegationCommand,
@@ -84,6 +85,7 @@ export class WorkspaceStore extends Context.Service<
       command: RegisterCheckoutCommand,
     ) => Effect.Effect<CheckoutRegistrationReceipt, WorkspaceStoreError>
     readonly createTask: (command: CreateTaskCommand) => Effect.Effect<TaskCreationReceipt, WorkspaceStoreError>
+    readonly getCoachChat: () => Effect.Effect<CoachChat | null, WorkspaceStoreError>
     readonly listActiveCoachRuns: (taskId: TaskId) => Effect.Effect<ReadonlyArray<AgentRunId>, WorkspaceStoreError>
     readonly purgeCoachChat: (taskId: TaskId) => Effect.Effect<void, WorkspaceStoreError>
     readonly sweepCoachChats: () => Effect.Effect<void, WorkspaceStoreError>

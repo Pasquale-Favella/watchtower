@@ -1,9 +1,4 @@
 import { useAtomSet, useAtomValue } from '@effect/atom-react'
-import { useMemo } from 'react'
-
-import { querySnapshot, useRemoteQuery } from '@/renderer/stores/hooks/use-remote-query'
-import { useOverviewScope } from '@/renderer/stores/hooks/use-scope-store'
-import { preferencesAtom, setPreferencesAtom } from '@/renderer/features/settings/preferences-atoms'
 
 import {
   cancelCoachAtom,
@@ -21,6 +16,10 @@ import {
   setModeIdAtom,
   setModelIdAtom,
 } from '@/renderer/features/coach-skills/atoms'
+import { preferencesAtom, setPreferencesAtom } from '@/renderer/features/settings/preferences-atoms'
+import { querySnapshot } from '@/renderer/stores/hooks/use-remote-query'
+
+import { useCoachSkillDetection } from './skill-detection-hooks.js'
 
 /** Selects a presentation value from the window-owned Coach state atom. */
 export function useCoachState<Value>(select: (state: CoachState) => Value): Value {
@@ -29,17 +28,7 @@ export function useCoachState<Value>(select: (state: CoachState) => Value): Valu
 
 /** Coach overview data, detection query, and hydration action. */
 export function useCoachOverviewStore() {
-  const scope = useOverviewScope()
-  const { skillsFrequency, skillsSpread } = useAtomValue(preferencesAtom)
-  const request = useMemo(
-    () => ({ scope, frequency: skillsFrequency, spread: skillsSpread }),
-    [scope, skillsFrequency, skillsSpread],
-  )
-  const detection = useRemoteQuery(
-    coachDetection,
-    request,
-    value => `${JSON.stringify(value.scope)}:${value.frequency}:${value.spread}`,
-  )
+  const detection = useCoachSkillDetection(coachDetection)
   return {
     detection,
     loadHarnesses: useAtomSet(loadHarnessesAtom),
@@ -99,4 +88,4 @@ export function useCoachHarnessSetupStore() {
   }
 }
 
-export type { ChatMessage, ToolNotice, CoachKindCache } from '@/renderer/features/coach-skills/atoms'
+export type { ChatMessage, CoachKindCache, ToolNotice } from '@/renderer/features/coach-skills/atoms'

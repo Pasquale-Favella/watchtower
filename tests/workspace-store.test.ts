@@ -4140,6 +4140,70 @@ describe('Coach chat storage', () => {
     })
   })
 
+  it('reports no Coach chat before one exists, then its Task and Conversation, and ignores regular chats', async () => {
+    await withStore(async (store, run) => {
+      await expect(run(store.getCoachChat())).resolves.toBeNull()
+      await setup(store, run)
+      await expect(run(store.getCoachChat())).resolves.toBeNull()
+      await run(store.registerProject({ project: coach, mainCheckout: coachCheckout }))
+      await expect(run(store.getCoachChat())).resolves.toBeNull()
+      await run(store.createTask(creation))
+      await expect(run(store.getCoachChat())).resolves.toEqual({
+        taskId: coachTask.id,
+        conversationId: coachConversation.id,
+      })
+      await run(store.purgeCoachChat(coachTask.id))
+      await expect(run(store.getCoachChat())).resolves.toBeNull()
+    })
+  })
+
+  it('excludes a side chat Task from the Coach chat identity', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-coach-side-'))
+    const filename = join(directory, 'workspace.sqlite')
+    try {
+      await withStore(async (store, run) => {
+        await createCoachChat(store, run)
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`UPDATE workspace_task SET side_chat = 1 WHERE id = ${coachTask.id}`
+          }).pipe(Effect.provide(Sqlite.SqliteClient.layer({ filename }))),
+        )
+        await expect(run(store.getCoachChat())).resolves.toBeNull()
+      }, filename)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('admits exactly one Coach Task, refuses side chats, and admits a new one after a discard', async () => {
+    await withStore(async (store, run) => {
+      await createCoachChat(store, run)
+      const second = {
+        task: { ...coachTask, id: 'second-coach-task' as never },
+        conversation: { ...coachConversation, id: 'second-coach-conversation' as never },
+      }
+      await expect(run(store.createTask(second))).rejects.toMatchObject({ code: 'admission-conflict' })
+      await expect(
+        run(
+          store.createTask({
+            ...second,
+            task: { ...second.task, sideChat: { parentTaskId: task.id, parentConversationId: conversation.id } },
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: 'membership-conflict',
+      })
+      await expect(run(store.getCoachChat())).resolves.toMatchObject({ taskId: coachTask.id })
+      await run(store.purgeCoachChat(coachTask.id))
+      await run(store.createTask(second))
+      await expect(run(store.getCoachChat())).resolves.toEqual({
+        taskId: second.task.id,
+        conversationId: second.conversation.id,
+      })
+    })
+  })
+
   it('refuses a regular Task and purges a settled Coach chat with its execution and receipts', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)

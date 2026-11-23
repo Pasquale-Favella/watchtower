@@ -32,13 +32,13 @@ function writeMap(key: string, values: Record<string, string>): void {
   }
 }
 
-export function useDraftPanelContext(projectId: ProjectId | null): DraftPanelContext {
+export function useDraftPanelContext(projectId: ProjectId | null, enabled = true): DraftPanelContext {
   const [saved] = useState(() => readMap(DRAFT_CONTEXTS))
   const [fallback] = useState(() => crypto.randomUUID())
   const draftId = saved[projectId ?? 'scratch'] ?? fallback
   useEffect(() => {
-    writeMap(DRAFT_CONTEXTS, { ...readMap(DRAFT_CONTEXTS), [projectId ?? 'scratch']: draftId })
-  }, [projectId, draftId])
+    if (enabled) writeMap(DRAFT_CONTEXTS, { ...readMap(DRAFT_CONTEXTS), [projectId ?? 'scratch']: draftId })
+  }, [enabled, projectId, draftId])
   return useMemo(
     () => ({ target: { kind: 'draft', draftId, projectId }, key: `draft:${projectId ?? 'scratch'}:${draftId}` }),
     [projectId, draftId],

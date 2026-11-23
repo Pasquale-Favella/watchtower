@@ -1,26 +1,22 @@
 import * as Cause from 'effect/Cause'
 import * as Effect from 'effect/Effect'
-import type * as AsyncResult from 'effect/reactivity/AsyncResult'
 import * as Atom from 'effect/reactivity/Atom'
 import type * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { RpcClientError } from 'effect/rpc/RpcClientError'
 import * as Stream from 'effect/Stream'
 
-import { createRpcQuerySlot } from '@/renderer/stores/atoms/rpc-query'
-import { overviewScopeAtom } from '@/renderer/stores/atoms/scope'
 import { preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
 import { ApplicationClient } from '@/renderer/shared/lib/application-rpc'
-
+import { overviewScopeAtom } from '@/renderer/stores/atoms/scope'
 import { CoachRpcError } from '@/shared/rpc/coach.js'
-import type { AnalyticsRpcError } from '@/shared/rpc/errors.js'
 import type {
   CoachEventEnvelope,
   CoachHarnessRow,
   CoachSessionModels,
   CoachSessionModes,
 } from '@/shared/schemas/agents.js'
-import type { OverviewScope } from '@/shared/schemas/overview.js'
-import type { SkillsPayload } from '@/shared/schemas/skills.js'
+
+import { type CoachDetectionQuery, createCoachDetectionSlot } from './skill-detection-atoms.js'
 
 export interface ToolNotice {
   id?: string
@@ -74,26 +70,6 @@ export interface CoachState {
   probeSequence: number
   runGenerations: Record<string, number>
 }
-
-export interface CoachDetectionRequest {
-  readonly scope: OverviewScope
-  readonly frequency: number
-  readonly spread: number
-}
-
-type CoachDetectionQuery = (
-  request: CoachDetectionRequest,
-  selectionId: string,
-) => Atom.Atom<AsyncResult.AsyncResult<SkillsPayload | null, AnalyticsRpcError | RpcClientError>>
-
-const applicationCoachDetectionQuery =
-  (client: typeof ApplicationClient): CoachDetectionQuery =>
-  (request, selectionId) =>
-    client.query(
-      'skills:view',
-      { scope: request.scope, thresholds: { frequency: request.frequency, spread: request.spread } },
-      { serializationKey: selectionId, reactivityKeys: ['ledger', 'pricing'] },
-    )
 
 const initialCoachState = (): CoachState => ({
   hydrated: false,
@@ -159,16 +135,11 @@ const safeCoachError = (error: unknown, fallback: string): string =>
 
 export const createCoachAtoms = (
   client: typeof ApplicationClient = ApplicationClient,
-  detectionQuery: CoachDetectionQuery = applicationCoachDetectionQuery(client),
+  detectionQuery?: CoachDetectionQuery,
 ) => {
   const api = client.runtime
   const coachStateAtom = Atom.keepAlive(Atom.make(initialCoachState()))
-  const detection = createRpcQuerySlot<CoachDetectionRequest, SkillsPayload | null, AnalyticsRpcError | RpcClientError>(
-    {
-      key: request => `${JSON.stringify(request.scope)}:${request.frequency}:${request.spread}`,
-      query: detectionQuery,
-    },
-  )
+  const detection = createCoachDetectionSlot(client, detectionQuery)
 
   const loadHarnessesAtom = api.fn<undefined>()(
     (_, get) =>

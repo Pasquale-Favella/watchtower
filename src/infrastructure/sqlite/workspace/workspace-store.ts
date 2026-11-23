@@ -57,6 +57,7 @@ import {
   type BeginRunCommand,
   beginRunCommandSchema,
   checkoutRegistrationReceiptSchema,
+  coachChatSchema,
   type CommandReceipt,
   commandReceiptSchema,
   type ConsumeSideChatBringBackCommand,
@@ -739,6 +740,26 @@ const makeService = Effect.gen(function* () {
             yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('createTask', command)}, ${encode(result)})`
             return result
           }),
+        )
+      }),
+    )
+
+  const getCoachChat: WorkspaceStore['Service']['getCoachChat'] = () =>
+    guard(
+      Effect.gen(function* () {
+        const rows = yield* sql`
+          SELECT t.id AS "taskId", c.id AS "conversationId"
+          FROM workspace_task t
+          JOIN workspace_project p ON p.id = t.project_id
+          JOIN workspace_conversation c ON c.task_id = t.id
+          WHERE json_type(CASE WHEN json_valid(p.payload) THEN p.payload END, '$.isCoach') = 'true'
+            AND t.side_chat = 0
+          ORDER BY t.rowid, c.rowid
+          LIMIT 1
+        `
+        if (!rows[0]) return null
+        return yield* Schema.decodeUnknownEffect(coachChatSchema)(rows[0]).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Coach chat identity is invalid')),
         )
       }),
     )
@@ -4127,6 +4148,7 @@ const makeService = Effect.gen(function* () {
     registerCheckout,
     createTask,
     listActiveCoachRuns,
+    getCoachChat,
     purgeCoachChat,
     sweepCoachChats,
     renameTask,

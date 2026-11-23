@@ -34,6 +34,21 @@ export const ensureScratchProjectAtom = scratchRuntime.fn<undefined>()(() =>
   }),
 )
 
+export const ensureCoachProjectAtom = scratchRuntime.fn<undefined>()(() =>
+  Effect.gen(function* () {
+    const client = yield* ApplicationClient
+    return yield* client('workspace:ensureCoachProject', {})
+  }),
+)
+
+export const coachNewChatDraftAtom = Atom.keepAlive(Atom.make(''))
+export const clearCoachNewChatDraftIfUnchangedAtom = Atom.writable(
+  get => get(coachNewChatDraftAtom),
+  (context, expectedText: string) => {
+    if (context.get(coachNewChatDraftAtom) === expectedText) context.set(coachNewChatDraftAtom, '')
+  },
+)
+
 export const newChatDraftAtom = Atom.keepAlive(Atom.make(''))
 const newChatDraftStorageAtom = Atom.keepAlive(Atom.make<NewChatDraftStorage | null>(null))
 const hydratedRegistries = new WeakSet<AtomRegistry.AtomRegistry>()
@@ -77,6 +92,7 @@ export const saveConversationComposerPreferenceAtom = Atom.writable(
       readonly modelId?: string
       readonly modeId?: string
       readonly accessMode?: AgentAccessMode
+      readonly configValues?: Readonly<Record<string, string>>
     },
   ) => {
     context.set(updateWorkspaceComposerPreferenceAtom, {
@@ -87,6 +103,7 @@ export const saveConversationComposerPreferenceAtom = Atom.writable(
         modelId: input.modelId ?? '',
         modeId: input.modeId ?? '',
         ...(input.accessMode ? { accessMode: input.accessMode } : {}),
+        ...(input.configValues ? { configValues: input.configValues } : {}),
       },
     })
   },

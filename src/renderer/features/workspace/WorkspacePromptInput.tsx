@@ -39,6 +39,7 @@ import { ReviewCommentChips } from './review/ReviewCommentChips.js'
 import { type PromptInputHandle, WorkspacePromptEditor } from './WorkspacePromptEditor.js'
 
 type Props = {
+  readonly hideFileMentions?: boolean
   readonly onOpenFile?: ((path: string) => void) | undefined
   readonly onOpenModelPicker?: (query?: string) => void
   /** Lists /side and /btw, which only insert text; a disabled reason keeps them listed but unavailable. */
@@ -147,8 +148,13 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   const ownRef = useRef<PromptInputHandle>(null)
   const inputRef = props.inputRef ?? ownRef
   const fileRef = useRef<HTMLInputElement>(null)
-  const [trigger, setTrigger] = useState<PromptTrigger | null>(() => promptTrigger(props.value, props.value.length))
-  const [query, setQuery] = useState<PromptTrigger | null>(() => promptTrigger(props.value, props.value.length))
+  const { hideFileMentions } = props
+  const [initialTrigger] = useState(() => {
+    const candidate = promptTrigger(props.value, props.value.length)
+    return hideFileMentions && candidate?.kind === 'file' ? null : candidate
+  })
+  const [trigger, setTrigger] = useState(initialTrigger)
+  const [query, setQuery] = useState(initialTrigger)
   const [highlighted, setActive] = useState(0)
   const [working, setWorking] = useState(false)
   const intakeLock = useRef(false)
@@ -169,19 +175,23 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
   const [stashOpen, setStashOpen] = useState(false)
   const menuId = useId()
   const hintId = useId()
-  const openTrigger = useCallback((candidate: PromptTrigger | null): void => {
-    const dismissed = dismissedRef.current
-    const resolved =
-      candidate && dismissed && candidate.kind === dismissed.kind && candidate.start === dismissed.start
-        ? null
-        : candidate
-    if (candidate === null || resolved !== null) dismissedRef.current = null
-    setTrigger(resolved)
-    if (resolved?.kind !== 'file') {
-      setQuery(resolved)
-      setActive(0)
-    }
-  }, [])
+  const openTrigger = useCallback(
+    (candidate: PromptTrigger | null): void => {
+      const dismissed = dismissedRef.current
+      const resolved =
+        (hideFileMentions && candidate?.kind === 'file') ||
+        (candidate && dismissed && candidate.kind === dismissed.kind && candidate.start === dismissed.start)
+          ? null
+          : candidate
+      if (candidate === null || resolved !== null) dismissedRef.current = null
+      setTrigger(resolved)
+      if (resolved?.kind !== 'file') {
+        setQuery(resolved)
+        setActive(0)
+      }
+    },
+    [hideFileMentions],
+  )
   const hasSkillReference = collectPromptInlineTokens(props.value).some(token => token.type === 'skill')
   const visibleAttachments = visiblePromptAttachments(props.attachments.items).filter(
     item => !promptContextAttachmentIsReferenced(props.value, item),
@@ -492,8 +502,10 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
       }
       const pastedText = text.replaceAll('\r\n', '\n').replaceAll('\r', '\n')
       const nextValue = currentValue.slice(0, selection.start) + pastedText + currentValue.slice(selection.end)
-      const copiedFiles = clipboardFileReferences(clipboard.getData('text/html'))
-      const copiedAttachments = clipboardAttachmentRecords(clipboard.getData('text/html'))
+      const copiedFiles = hideFileMentions ? [] : clipboardFileReferences(clipboard.getData('text/html'))
+      const copiedAttachments = clipboardAttachmentRecords(clipboard.getData('text/html')).filter(
+        attachment => !hideFileMentions || attachment.source !== 'reference',
+      )
       if (
         promptPasteUsesAttachment(currentValue, pastedText, selection.start, selection.end, props.maxLength, plainPaste)
       ) {
@@ -826,7 +838,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         onDragOver={event => {
           if (
             event.dataTransfer.types.includes('Files') ||
-            event.dataTransfer.types.includes('application/x-watchtower-file-reference')
+            (!hideFileMentions && event.dataTransfer.types.includes('application/x-watchtower-file-reference'))
           ) {
             event.preventDefault()
             setDragging(true)
@@ -837,7 +849,7 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
         }}
         onDrop={event => {
           const reference = event.dataTransfer.getData('application/x-watchtower-file-reference')
-          if (reference) {
+          if (!hideFileMentions && reference) {
             event.preventDefault()
             event.stopPropagation()
             setDragging(false)
@@ -970,12 +982,15 @@ export function WorkspacePromptInput(props: Props): React.JSX.Element {
           value={props.value}
           skills={promptSkills}
           commands={promptCommands}
+          hideFileMentions={Boolean(hideFileMentions)}
           attachments={props.attachments.items}
           onChange={update}
           onSelectionChange={updateTriggerFromInput}
           onKeyDown={keyDown}
           onPaste={paste}
-          placeholder={props.placeholder ?? DEFAULT_PROMPT_PLACEHOLDER}
+          placeholder={
+            props.placeholder ?? (hideFileMentions ? 'Ask anything. / commands, $ skills' : DEFAULT_PROMPT_PLACEHOLDER)
+          }
           describedBy={working || props.hint ? hintId : undefined}
           controls={trigger ? menuId : undefined}
           expanded={Boolean(trigger)}

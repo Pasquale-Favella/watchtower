@@ -309,6 +309,7 @@ it('interrupts a Coach run and waits for its terminal event before purging the c
           const { request } = yield* seed
           const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
           const store = yield* WorkspaceStore
+          expect(yield* client['workspace:getCoachChat']({})).toBeNull()
           const regular = yield* client['workspace:discardCoachChat']({ taskId: request.taskId }).pipe(Effect.flip)
           expect(regular.code).toBe('conflict')
           const registration = yield* store.registerProject({
@@ -333,6 +334,9 @@ it('interrupts a Coach run and waits for its terminal event before purging the c
             title: 'Coach',
             description: '',
           })
+          const identity = { taskId: coach.taskId, conversationId: coach.conversationId }
+          expect(yield* store.getCoachChat()).toEqual(identity)
+          expect(yield* client['workspace:getCoachChat']({})).toEqual(identity)
           const started = yield* client['workspace:startRun']({
             ...request,
             commandId: 'coach-start',
@@ -351,6 +355,7 @@ it('interrupts a Coach run and waits for its terminal event before purging the c
           yield* Fiber.join(discard).pipe(Effect.timeout('2 seconds'))
           const removed = yield* store.readTaskDetail(coach.taskId).pipe(Effect.flip)
           expect(removed.code).toBe('not-found')
+          expect(yield* client['workspace:getCoachChat']({})).toBeNull()
           yield* client['workspace:discardCoachChat']({ taskId: coach.taskId })
         }),
       ),

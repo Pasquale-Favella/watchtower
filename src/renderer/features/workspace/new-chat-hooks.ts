@@ -10,7 +10,10 @@ import type { ConversationId } from '@/shared/schemas/workspace.js'
 
 import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
 import {
+  clearCoachNewChatDraftIfUnchangedAtom,
   clearConversationDraftIfUnchangedAtom,
+  coachNewChatDraftAtom,
+  ensureCoachProjectAtom,
   clearNewChatDraftIfUnchangedAtom,
   ensureScratchProjectAtom,
   hydrateNewChatDraft,
@@ -20,6 +23,7 @@ import {
   saveConversationComposerPreferenceAtom,
   updateNewChatDraftAtom,
 } from './new-chat-atoms.js'
+import { NEW_CHAT_DRAFT_MAX_LENGTH } from './new-chat-state.js'
 
 function browserStorage(): Storage | null {
   try {
@@ -56,19 +60,25 @@ export function useEnsureScratchProject() {
   return useNewChatCommand(ensureScratchProjectAtom)
 }
 
-export function useNewChatDraft() {
+export function useEnsureCoachProject() {
+  return useNewChatCommand(ensureCoachProjectAtom)
+}
+
+export function useNewChatDraft(ephemeral = false) {
   const registry = useContext(RegistryContext)
-  const text = useAtomValue(newChatDraftAtom)
-  const update = useAtomSet(updateNewChatDraftAtom)
-  const clearDraft = useAtomSet(clearNewChatDraftIfUnchangedAtom)
+  const text = useAtomValue(ephemeral ? coachNewChatDraftAtom : newChatDraftAtom)
+  const update = useAtomSet(ephemeral ? coachNewChatDraftAtom : updateNewChatDraftAtom)
+  const clearDraft = useAtomSet(ephemeral ? clearCoachNewChatDraftIfUnchangedAtom : clearNewChatDraftIfUnchangedAtom)
   const saveConversationDraft = useAtomSet(updateWorkspaceDraftAtom)
   const clearConversationDraftIfUnchanged = useAtomSet(clearConversationDraftIfUnchangedAtom)
   const saveComposerPreference = useAtomSet(saveConversationComposerPreferenceAtom)
 
-  useEffect(() => hydrateNewChatDraft(registry, browserStorage()), [registry])
+  useEffect(() => {
+    if (!ephemeral) hydrateNewChatDraft(registry, browserStorage())
+  }, [ephemeral, registry])
   useEffect(() => hydrateWorkspaceDrafts(registry, browserStorage()), [registry])
 
-  const setDraft = useCallback((value: string) => update(value), [update])
+  const setDraft = useCallback((value: string) => update(value.slice(0, NEW_CHAT_DRAFT_MAX_LENGTH)), [update])
   const copyDraftToConversation = useCallback(
     (conversationId: ConversationId, value: string) => saveConversationDraft({ conversationId, text: value }),
     [saveConversationDraft],
@@ -94,10 +104,10 @@ export function useNewChatDraft() {
         connectionId,
         modelId,
         modeId,
-        ...(configValues ? { configValues } : {}),
+        ...(ephemeral && configValues ? { configValues } : {}),
         ...(accessMode ? { accessMode } : {}),
       }),
-    [saveComposerPreference],
+    [ephemeral, saveComposerPreference],
   )
   return {
     draft: text,

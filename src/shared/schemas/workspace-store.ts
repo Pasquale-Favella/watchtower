@@ -78,6 +78,12 @@ export const taskCreationReceiptSchema = Schema.Struct({
 })
 export type TaskCreationReceipt = Schema.Schema.Type<typeof taskCreationReceiptSchema>
 
+export const coachChatSchema = Schema.Struct({
+  taskId: taskIdSchema,
+  conversationId: conversationIdSchema,
+})
+export type CoachChat = typeof coachChatSchema.Type
+
 export const renameTaskCommandSchema = Schema.Struct({
   commandId: text,
   taskId: taskIdSchema,
