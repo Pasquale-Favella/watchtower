@@ -47,8 +47,8 @@ describe('semantic tool presentation', () => {
       category: 'delegation',
       orchestration: { delegationId: 'delegation-1', childTaskId: 'task-child' },
     })
-    expect(toolPresentation(delegated)).toMatchObject({ category: 'delegation', label: 'Delegated task' })
-    expect(summarizeToolCalls([delegated]).label).toBe('1 agent call')
+    expect(toolPresentation(delegated)).toMatchObject({ category: 'delegation', label: 'Delegated a task' })
+    expect(summarizeToolCalls([delegated]).label).toBe('Delegated 1 task')
   })
 
   it('uses explicit provider metadata before optional input hints', () => {

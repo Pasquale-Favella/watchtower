@@ -42,6 +42,7 @@ import { ToolOutputPanel } from './ToolOutputPanel.js'
 import type { WorkGroup } from './turn-segments.js'
 import { toolDisclosureKey, workDisclosureKey } from './turn-segments.js'
 import type { ToolBlock, ToolCategory, WorkSummary } from './work-log.js'
+import { toolCategoryFor } from './work-log.js'
 
 const toolStatus = {
   running: { label: 'Running', Icon: LoaderCircleIcon, className: 'motion-safe:animate-spin', trace: 'running' },
@@ -95,12 +96,18 @@ export function ToolRow({
   const { openExternal } = useNativeStore()
   const presentation = toolPresentation(tool)
   const CategoryIcon = categoryIcons[presentation.category]
-  const { label: statusLabel, Icon: StatusIcon, className: statusClass, trace: traceStatus } = toolStatus[tool.status]
+  const status = toolStatus[tool.status]
+  const orchestration = presentation.category === 'delegation'
+  const staticRunning = orchestration && tool.status === 'running'
+  const StatusIcon = staticRunning ? Clock3Icon : status.Icon
   const url = safeToolUrl(presentation.url)
   return (
     <TraceCollapsible open={open} onOpenChange={changeOpen} className="text-xs">
-      <TraceCollapsibleTrigger className="max-w-full" aria-label={`${tool.name}: ${statusLabel}`}>
-        <TraceLine status={traceStatus} className="text-xs">
+      <TraceCollapsibleTrigger
+        className="max-w-full"
+        aria-label={orchestration ? presentation.label : `${tool.name}: ${status.label}`}
+      >
+        <TraceLine status={staticRunning ? undefined : status.trace} className="text-xs">
           <TraceIcon>
             <CategoryIcon className="size-3.5" />
           </TraceIcon>
@@ -109,7 +116,12 @@ export function ToolRow({
             <TextTooltip
               label={presentation.detail}
               trigger={
-                <span className="text-muted-foreground/70 min-w-0 truncate font-mono text-[11px]">
+                <span
+                  className={cn(
+                    'min-w-0 truncate text-[11px]',
+                    orchestration ? 'text-destructive' : 'text-muted-foreground/70 font-mono',
+                  )}
+                >
                   {presentation.detail}
                 </span>
               }
@@ -120,7 +132,7 @@ export function ToolRow({
           )}
           {tool.status !== 'completed' && (
             <TraceIcon>
-              <StatusIcon className={cn('size-3', statusClass)} />
+              <StatusIcon className={cn('size-3', !staticRunning && status.className)} />
             </TraceIcon>
           )}
         </TraceLine>
@@ -240,7 +252,7 @@ export function WorkGroupRow({
       onOpenChange={next => {
         if (groupKey && turnId) onDisclosureChange?.(groupKey, next, turnId, withinFold)
       }}
-      active={group.tools.some(tool => tool.status === 'running')}
+      active={group.tools.some(tool => tool.status === 'running' && toolCategoryFor(tool) !== 'delegation')}
     >
       {group.tools.map(tool => (
         <ToolRow
@@ -292,8 +304,12 @@ function WorkLogCollapsible({
               <ListChecksIcon className="size-3.5" />
             )}
           </TraceIcon>
-          <TraceTitle>{label ?? summary.label}</TraceTitle>
-          {label !== undefined && <TraceDescription>{summary.toolCount} tool calls</TraceDescription>}
+          <TraceTitle>{summary.delegatedTaskCount ? summary.label : (label ?? summary.label)}</TraceTitle>
+          {label !== undefined && (
+            <TraceDescription>
+              {summary.delegatedTaskCount ? label : `${summary.toolCount} tool calls`}
+            </TraceDescription>
+          )}
           <FailureMarker count={summary.failedCount} />
         </TraceLine>
       </TraceCollapsibleTrigger>

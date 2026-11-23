@@ -435,9 +435,9 @@ export function projectConversationView(
       if (sessionId) previousNativeSessionId = sessionId
       if (context?.connectionId) previousConnectionId = context.connectionId
     }
-    // A delegation wake is data the parent Agent reads, so it renders as a notice, never as a user message.
-    if (item.userMessage?.origin === 'delegation') {
-      const wake = item.userMessage
+    const message = item.userMessage
+    if (message?.origin === 'delegation' && message.delegation?.childTaskId !== event.taskId) {
+      const wake = message
       if (!wakes.has(wake.id)) {
         wakes.add(wake.id)
         entries.push({
@@ -450,14 +450,14 @@ export function projectConversationView(
         })
         lastTurn.current = null
       }
-    } else if (item.userMessage && !users.has(item.userMessage.id)) {
+    } else if (message && !users.has(message.id)) {
       const user: ConversationUserMessage = {
         kind: 'user',
-        id: `message:${item.userMessage.id}`,
+        id: `message:${message.id}`,
         sequence: event.sequence,
-        message: item.userMessage,
+        message,
       }
-      users.set(item.userMessage.id, user)
+      users.set(message.id, user)
       entries.push(user)
       lastTurn.current = null
     }

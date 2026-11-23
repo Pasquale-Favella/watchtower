@@ -1,4 +1,4 @@
-import { Folder, PanelRight, SquareMenu, SquareTerminal } from 'lucide-react'
+import { ChevronRight, Folder, PanelRight, SquareMenu, SquareTerminal } from 'lucide-react'
 import type { ComponentProps, ReactNode } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
@@ -6,12 +6,14 @@ import { PopoverTrigger } from '@/renderer/components/ui/popover'
 import { SidebarTrigger } from '@/renderer/components/ui/sidebar'
 import { TextTooltip, Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 
+import type { ParentTaskLink } from './delegation/chat-delegation-hooks.js'
 import { submitModifier } from './platform-labels.js'
 import type { ConversationDetailsMode } from './use-conversation-details-layout.js'
 
 interface Props {
   readonly project: ReactNode
   readonly title: string
+  readonly parentTask?: ParentTaskLink | null
   readonly terminalOpen?: boolean
   readonly onToggleTerminal?: (() => void) | undefined
   readonly panelOpen?: boolean
@@ -34,6 +36,7 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
         <span aria-hidden="true" className="text-muted-foreground/50">
           /
         </span>
+        {props.parentTask && <ParentTaskBreadcrumb parent={props.parentTask} />}
         <TextTooltip label={props.title} trigger={<h1 className="min-w-0 truncate font-medium">{props.title}</h1>} />
       </div>
       <div className="flex shrink-0 items-center gap-0.5">
@@ -67,6 +70,30 @@ export function WorkspaceChatHeader(props: Props): React.JSX.Element {
         </HeaderToggle>
       </div>
     </header>
+  )
+}
+
+function ParentTaskBreadcrumb({ parent }: { readonly parent: ParentTaskLink }): React.JSX.Element {
+  const label = `Open parent task: ${parent.title}`
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            <button
+              type="button"
+              className="text-muted-foreground hover:text-foreground focus-visible:ring-ring max-w-[30%] min-w-0 truncate rounded-sm focus-visible:ring-2"
+              aria-label={label}
+              onClick={parent.open}
+            />
+          }
+        >
+          {parent.title}
+        </TooltipTrigger>
+        <TooltipContent>{label}</TooltipContent>
+      </Tooltip>
+      <ChevronRight aria-hidden className="text-muted-foreground/50 size-3 shrink-0" />
+    </>
   )
 }
 

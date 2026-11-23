@@ -1,4 +1,5 @@
 import type { ConversationAssistantTurn, ConversationRun, ConversationTurnBlock } from '../conversation-view.js'
+import { delegationStartId } from './delegation-tools.js'
 import { elapsedBetween, formatRunDuration } from './duration.js'
 import { planCopyText } from './plan-text.js'
 import { isDelegateTool, summarizeToolCalls, type ToolBlock, type WorkSummary } from './work-log.js'
@@ -118,6 +119,7 @@ export function buildTurnSegments(
   // Routine groups move into the fold row, which takes the place of the first of them.
   // Failed calls keep their position.
   const groups: WorkGroup[] = []
+  const delegationIds = new Set<string>()
   const segments: Array<TurnSegment | null> = []
   let foldIndex = -1
   for (const segment of raw) {
@@ -125,6 +127,8 @@ export function buildTurnSegments(
       segments.push(blockSegment(segment.block))
     } else if (segment.kind === 'delegate') {
       segments.push(delegateSegment(segment.tool))
+      const id = delegationStartId(segment.tool)
+      if (id) delegationIds.add(id)
     } else if (segment.failed) {
       segments.push(workSegment(segment.tools))
     } else {
@@ -141,7 +145,10 @@ export function buildTurnSegments(
       key: `fold:${turn.id}`,
       label: foldLabel,
       groups,
-      summary: summarizeToolCalls(routineTools(turn.blocks)),
+      summary: summarizeToolCalls(
+        groups.flatMap(group => group.tools),
+        delegationIds.size,
+      ),
     }
   }
   return segments.filter((segment): segment is TurnSegment => segment !== null)

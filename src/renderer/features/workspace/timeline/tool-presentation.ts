@@ -1,5 +1,6 @@
 import * as Schema from 'effect/Schema'
 
+import { delegationToolSentence } from './delegation-tools.js'
 import type { ToolBlock, ToolCategory } from './work-log.js'
 import { toolCategoryFor, toolPath } from './work-log.js'
 
@@ -10,6 +11,16 @@ const hintsSchema = Schema.Struct({
   pattern: Schema.optional(Schema.NullOr(Schema.String)),
   url: Schema.optional(Schema.NullOr(Schema.String)),
 })
+
+const delegationErrorMessage = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ message: Schema.String })),
+)
+
+function delegationErrorDetail(tool: ToolBlock): string | null {
+  if (tool.status !== 'failed') return null
+  const output = delegationErrorMessage(tool.output)
+  return (output._tag === 'Some' && output.value.message.trim()) || tool.error
+}
 
 function inputHints(input: string | null): Schema.Schema.Type<typeof hintsSchema> | null {
   if (!input || input.length > 262_144) return null
@@ -44,6 +55,16 @@ export interface ToolPresentation {
 
 export function toolPresentation(tool: ToolBlock): ToolPresentation {
   const category = toolCategoryFor(tool)
+  if (category === 'delegation') {
+    return {
+      category,
+      label: delegationToolSentence(tool) ?? categoryLabels.delegation,
+      detail: delegationErrorDetail(tool),
+      command: null,
+      paths: [],
+      url: null,
+    }
+  }
   const hints = inputHints(tool.input)
   const nativeCommand = hints?.command
   const command =

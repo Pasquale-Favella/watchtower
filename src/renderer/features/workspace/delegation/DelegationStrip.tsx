@@ -1,10 +1,10 @@
-import { ArrowUpRight, CircleStopIcon, NetworkIcon } from 'lucide-react'
+import { CircleStopIcon, NetworkIcon } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
-import type { DelegationRecord, DelegationStatus } from '@/shared/schemas/delegation.js'
+import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 
 import { useWorkspaceConnections } from '../connection-hooks.js'
@@ -13,7 +13,6 @@ import { formatRunDuration } from '../timeline/duration.js'
 import { useElapsedMs } from '../timeline/use-elapsed.js'
 import {
   delegateWaitingLabel,
-  delegationStatusLabel,
   delegationStatusTone,
   delegationTally,
   delegationTallyLabel,
@@ -23,13 +22,7 @@ import {
 } from './delegation-status.js'
 import { delegationView } from './delegation-view.js'
 import { DelegationTooltip } from './DelegationTooltip.js'
-import {
-  useCancelDelegation,
-  useDelegatedFrom,
-  useDelegations,
-  useOpenDelegatedTask,
-  useParentRunActive,
-} from './hooks.js'
+import { useCancelDelegation, useDelegations, useOpenDelegatedTask, useParentRunActive } from './hooks.js'
 import { toneDotClass } from './tone-classes.js'
 
 /** Rows above this count collapse to a tally with an expand control. */
@@ -39,36 +32,16 @@ export interface DelegationStripViewProps {
   /** Live delegations and settled ones whose wake is held. */
   readonly records: readonly DelegationRecord[]
   readonly heldWake: boolean
-  /** Set when this Task is itself a Delegated Task. */
-  readonly child: { readonly status: DelegationStatus } | null
   readonly connectionLabels?: ReadonlyMap<string, string>
   readonly isStopPending: (delegationId: string) => boolean
   readonly error?: string | null
   readonly onOpen: (record: DelegationRecord) => void
   readonly onStop: (record: DelegationRecord) => void
-  readonly onOpenParent?: (() => void) | undefined
 }
 
-/** The strip above the composer: live Delegated Tasks of this Task, or the context of a child Task. */
+/** Live Delegated Tasks and held wakes above the composer. */
 export function DelegationStripView(props: DelegationStripViewProps): React.JSX.Element | null {
   const [expanded, setExpanded] = useState(false)
-  if (props.child) {
-    return (
-      <section
-        aria-label="Delegated task context"
-        className="text-muted-foreground flex min-w-0 items-center gap-2 border-t px-3 py-1.5 text-xs"
-      >
-        <NetworkIcon aria-hidden="true" className="size-3.5 shrink-0" />
-        <span className="min-w-0 flex-1 truncate">Runs on its own · {delegationStatusLabel(props.child.status)}</span>
-        {props.onOpenParent && (
-          <Button type="button" size="xs" variant="ghost" onClick={props.onOpenParent}>
-            Open parent
-            <ArrowUpRight aria-hidden="true" />
-          </Button>
-        )}
-      </section>
-    )
-  }
   if (props.records.length === 0 && !props.heldWake) return null
 
   const tally = delegationTallyLabel(delegationTally(props.records)) ?? `${props.records.length} delegated tasks`
@@ -197,17 +170,14 @@ function DelegationStripRow({
   )
 }
 
-/** Live wiring for the strip. It renders nothing unless this Task has delegations or is a delegated child. */
 export function DelegationStrip({
   taskId,
-  projectId,
 }: {
   readonly taskId: TaskId
   readonly projectId: ProjectId
 }): React.JSX.Element | null {
   const delegations = useDelegations(taskId)
   const parentRunActive = useParentRunActive(taskId)
-  const delegatedFrom = useDelegatedFrom(projectId, taskId)
   const openTask = useOpenDelegatedTask()
   const cancel = useCancelDelegation()
   const connections = useWorkspaceConnections()
@@ -221,7 +191,6 @@ export function DelegationStrip({
     <DelegationStripView
       records={records}
       heldWake={records.some(record => heldWake(record, parentRunActive))}
-      child={delegatedFrom ? { status: delegatedFrom.status } : null}
       connectionLabels={connectionLabels}
       isStopPending={cancel.isPending}
       error={delegations.error}
@@ -229,7 +198,6 @@ export function DelegationStrip({
       onStop={record => {
         void cancel.stop(record)
       }}
-      onOpenParent={delegatedFrom ? () => openTask(delegatedFrom.parentTaskId) : undefined}
     />
   )
 }

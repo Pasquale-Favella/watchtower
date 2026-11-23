@@ -1,15 +1,21 @@
-import { ArrowUpRight, NetworkIcon } from 'lucide-react'
+import { BotIcon, ChevronRightIcon, CircleAlertIcon } from 'lucide-react'
 
-import { Button } from '@/renderer/components/ui/button'
-import type { DelegationWakeMessage } from '@/shared/schemas/delegation.js'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
+import type { DelegationStatus, DelegationWakeMessage } from '@/shared/schemas/delegation.js'
 
-import { delegationStatusLabel } from './delegation-status.js'
 import { useOpenDelegatedTask } from './hooks.js'
 
-/**
- * The note a settled Delegated Task leaves in its parent. It is a notice, never a user message:
- * the result text is data for the parent Agent and is not shown as something the user wrote.
- */
+const statusPhrases: Record<DelegationStatus, string> = {
+  queued: 'is queued',
+  running: 'is running',
+  waiting: 'is waiting',
+  completed: 'completed',
+  failed: 'failed',
+  interrupted: 'was stopped',
+  cancelled: 'was stopped',
+  uncertain: 'needs attention',
+}
+
 export function DelegationWakeNotice({
   delegation,
 }: {
@@ -29,22 +35,31 @@ export function DelegationWakeNoticeView({
   readonly delegation: DelegationWakeMessage | undefined
   readonly onOpen: () => void
 }): React.JSX.Element {
-  const summary = delegation
-    ? `Delegated task ${delegation.title} settled as ${delegationStatusLabel(delegation.status).toLowerCase()}`
-    : 'A delegated task settled'
+  const className =
+    'text-muted-foreground flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs'
+  if (!delegation) {
+    return (
+      <div className={className}>
+        <BotIcon aria-hidden className="size-3.5 shrink-0" />A delegated task settled
+      </div>
+    )
+  }
+  const summary = `${delegation.title} ${statusPhrases[delegation.status]}`
+  const Icon = delegation.status === 'completed' ? BotIcon : CircleAlertIcon
   return (
-    <article
-      aria-label="Delegated task settled"
-      className="text-muted-foreground flex min-w-0 items-center gap-2 border-y px-1 py-2 text-xs"
-    >
-      <NetworkIcon aria-hidden="true" className="size-3.5 shrink-0" />
-      <p className="min-w-0 flex-1 truncate">{summary}</p>
-      {delegation && (
-        <Button type="button" size="xs" variant="ghost" aria-label={`Open ${delegation.title}`} onClick={onOpen}>
-          Open
-          <ArrowUpRight aria-hidden="true" />
-        </Button>
-      )}
-    </article>
+    <TextTooltip
+      label={summary}
+      trigger={
+        <button
+          type="button"
+          className={`${className} hover:bg-muted/50 hover:text-foreground focus-visible:ring-ring focus-visible:ring-2`}
+          onClick={onOpen}
+        >
+          <Icon aria-hidden className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">{summary}</span>
+          <ChevronRightIcon aria-hidden className="size-3.5 shrink-0" />
+        </button>
+      }
+    />
   )
 }

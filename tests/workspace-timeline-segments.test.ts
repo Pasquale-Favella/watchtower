@@ -202,10 +202,10 @@ describe('work log grouping', () => {
     expect(segments[0]).toMatchObject({ kind: 'fold', summary: { toolCount: 2 } })
   })
 
-  it('classifies a delegation by name when the driver sends no category', () => {
-    const named = tool(1, 'mcp__watchtower-orchestrator__delegation_list', 'completed')
+  it('folds an orchestration call that started no delegated task, even without a category', () => {
+    const named = tool(1, 'mcp__watchtower-orchestrator__delegation_status', 'completed')
     const segments = buildTurnSegments(turn('active', [named]))
-    expect(segments.map(segment => segment.kind)).toEqual(['delegate'])
+    expect(segments.map(segment => segment.kind)).toEqual(['work'])
   })
 
   it('uses native child statuses over an early completed call status', () => {

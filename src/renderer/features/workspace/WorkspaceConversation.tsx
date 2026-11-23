@@ -1,9 +1,12 @@
+import { BotIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
+import { Button } from '@/renderer/components/ui/button'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { useWorkspaceConnections } from '@/renderer/features/workspace/connection-hooks.js'
 import {
   useWorkspaceConversation,
@@ -12,7 +15,7 @@ import {
 } from '@/renderer/features/workspace/hooks.js'
 import type { WorkspaceRequest } from '@/renderer/features/workspace/lib.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
-import type { ConversationId } from '@/shared/schemas/workspace.js'
+import type { ConversationId, ProjectId } from '@/shared/schemas/workspace.js'
 import type {
   WorkspaceConversationPageItem,
   WorkspaceExecutionEvent,
@@ -37,6 +40,7 @@ import {
   messagePayloadReference,
   projectConversationView,
 } from './conversation-view.js'
+import { type ParentTaskLink, useChatDelegationsById, useParentTaskLink } from './delegation/chat-delegation-hooks.js'
 import { DelegationWakeNotice } from './delegation/DelegationWakeNotice.js'
 import { useMarkdownImageLoader } from './markdown-navigation-hooks.js'
 import {
@@ -53,6 +57,7 @@ import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
 import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
 import { DelegateRow } from './timeline/DelegateRow.js'
+import { delegationStartId } from './timeline/delegation-tools.js'
 import { DelegationRow } from './timeline/DelegationRow.js'
 import { MediaBlock } from './timeline/MediaBlock.js'
 import { MessageActions } from './timeline/MessageActions.js'
@@ -64,7 +69,6 @@ import { buildTimelineRows, timelineRowType } from './timeline/timeline-rows.js'
 import { TimelineHistoryControl } from './timeline/TimelineHistoryControl.js'
 import { TimelineScroller } from './timeline/TimelineScroller.js'
 import { turnCopyText } from './timeline/turn-segments.js'
-import { isOrchestrationTool } from './timeline/work-log.js'
 import { TurnFoldRow, WorkGroupRow } from './timeline/WorkLog.js'
 import { usePendingStart } from './use-pending-start.js'
 
@@ -135,6 +139,7 @@ export function WorkspaceConversation({
       <WorkspaceConversationView
         key={conversationId}
         conversationId={conversationId}
+        projectId={scope?.projectId}
         sessionIdsByRunId={sessionIdsByRunId}
         runContextsByRunId={runContextsByRunId}
         promptCommands={promptCommands}
@@ -146,18 +151,19 @@ export function WorkspaceConversation({
 
 function WorkspaceConversationView({
   conversationId,
+  projectId,
   sessionIdsByRunId = new Map(),
   runContextsByRunId = new Map(),
   promptCommands = [],
   leading,
 }: {
   readonly conversationId: ConversationId
+  readonly projectId?: ProjectId | undefined
   readonly sessionIdsByRunId?: ReadonlyMap<string, string | null>
   readonly runContextsByRunId?: ReadonlyMap<string, WorkspaceRunContext>
   readonly promptCommands?: readonly string[]
   readonly leading?: React.ReactNode
 }): React.JSX.Element {
-  const hasLeading = leading !== undefined && leading !== null
   const { projection, stream } = useWorkspaceEvents()
   const connections = useWorkspaceConnections()
   const connectionLabels = useMemo(
@@ -165,9 +171,19 @@ function WorkspaceConversationView({
       new Map(connections.data?.items.map(connection => [connection.connectionId, connection.label] as const) ?? []),
     [connections.data?.items],
   )
+  const harnessKinds = useMemo(
+    () =>
+      new Map(connections.data?.items.map(connection => [connection.connectionId, connection.harnessKind] as const)),
+    [connections.data?.items],
+  )
   const { submissions, messageKeys, reconcile } = usePendingStart()
   const submission = submissions[conversationId] ?? null
   const [transcript, setTranscript] = useState<Transcript>({ conversationId, items: [] })
+  const items = transcript.items
+  const taskId = items[0]?.event.taskId ?? null
+  const parentTask = useParentTaskLink(projectId ?? null, leading == null ? taskId : null)
+  const hasLeading = leading != null || parentTask !== null
+  const delegationsById = useChatDelegationsById(taskId)
   const [openingAnchor] = useState(() => readScrollAnchor(conversationId))
   const restoredAnchor = useRef(openingAnchor === null)
   const [highWatermark, setHighWatermark] = useState(0)
@@ -207,6 +223,10 @@ function WorkspaceConversationView({
       disclosureChoices,
       preservedWorkTurns,
       promptCommands,
+      parentTask,
+      delegationsById,
+      connectionLabels,
+      harnessKinds,
     }),
     [
       activePayload,
@@ -216,6 +236,10 @@ function WorkspaceConversationView({
       disclosureChoices,
       preservedWorkTurns,
       promptCommands,
+      parentTask,
+      delegationsById,
+      connectionLabels,
+      harnessKinds,
     ],
   )
 
@@ -384,7 +408,6 @@ function WorkspaceConversationView({
     payloadRequestKey,
   ])
 
-  const items = transcript.items
   useEffect(() => reconcile(conversationId, items), [conversationId, items, reconcile])
   const rows = useMemo(() => {
     const hydratedEvents = new Map<number, WorkspaceExecutionEvent>()
@@ -560,7 +583,7 @@ function WorkspaceConversationView({
             />
           }
           renderRow={row => {
-            if (row.kind === 'leading') return leading
+            if (row.kind === 'leading') return leading ?? (parentTask && <DelegatedByDivider parent={parentTask} />)
             if (row.kind === 'user') {
               const entry = row.entry
               const reference = messagePayloadReference(entry.message)
@@ -592,13 +615,20 @@ function WorkspaceConversationView({
                   onDisclosureChange={onDisclosureChange}
                 />
               )
-            else if (segment.kind === 'delegate')
-              content = isOrchestrationTool(segment.tool) ? (
-                <DelegationRow tool={segment.tool} />
+            else if (segment.kind === 'delegate') {
+              const delegationId = delegationStartId(segment.tool)
+              const delegation = delegationId ? delegationsById.get(delegationId) : undefined
+              content = delegationId ? (
+                <DelegationRow
+                  tool={segment.tool}
+                  delegation={delegation ?? null}
+                  connectionLabels={connectionLabels}
+                  harnessKind={delegation ? harnessKinds.get(delegation.connectionId) : undefined}
+                />
               ) : (
                 <DelegateRow tool={segment.tool} />
               )
-            else if (segment.kind === 'fold') {
+            } else if (segment.kind === 'fold') {
               content = (
                 <TurnFoldRow
                   label={segment.label}
@@ -628,6 +658,23 @@ function WorkspaceConversationView({
         />
       )}
     </section>
+  )
+}
+
+function DelegatedByDivider({ parent }: { readonly parent: ParentTaskLink }): React.JSX.Element {
+  return (
+    <div className="text-muted-foreground flex min-w-0 items-center gap-2 px-3 py-2 text-xs">
+      <span className="bg-border h-px min-w-2 flex-1" />
+      <BotIcon aria-hidden className="size-3.5 shrink-0" />
+      <TextTooltip
+        label={`Delegated by ${parent.title}`}
+        trigger={<span className="min-w-0 truncate">Delegated by {parent.title}</span>}
+      />
+      <Button type="button" size="xs" variant="ghost" className="shrink-0" onClick={parent.open}>
+        Open parent
+      </Button>
+      <span className="bg-border h-px min-w-2 flex-1" />
+    </div>
   )
 }
 

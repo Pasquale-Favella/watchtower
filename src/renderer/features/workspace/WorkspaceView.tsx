@@ -8,6 +8,7 @@ import { type DraftTerminalTarget, terminalOwnerKey, type TerminalTarget } from 
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { currentConversationRuns, isRunActive } from './composer-state.js'
+import { useParentTaskLink } from './delegation/chat-delegation-hooks.js'
 import { useDelegations } from './delegation/hooks.js'
 import {
   useWorkspaceNativeAgentSessions,
@@ -127,6 +128,7 @@ function TaskConversation({
     [nativeSessions.data?.items, conversation?.id],
   )
   const project = useWorkspaceProject(detail.data ? { projectId: detail.data.task.projectId } : null)
+  const parentTask = useParentTaskLink(detail.data?.task.projectId ?? null, taskId)
 
   useEffect(() => {
     const conversations = detail.data?.conversations
@@ -144,6 +146,7 @@ function TaskConversation({
     <WorkspaceChatHeader
       project={project.data?.project.name ?? 'Loading project…'}
       title={detail.data?.task.title ?? 'Loading chat…'}
+      parentTask={parentTask}
       terminalOpen={terminal.open}
       onToggleTerminal={detail.data ? terminal.toggle : undefined}
       panelOpen={panel.open}

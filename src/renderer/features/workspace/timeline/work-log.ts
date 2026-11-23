@@ -1,4 +1,5 @@
 import type { ConversationTurnBlock } from '../conversation-view.js'
+import { delegationStartId, delegationToolVerb } from './delegation-tools.js'
 
 export type ToolBlock = Extract<ConversationTurnBlock, { readonly kind: 'tool' }>
 export type ToolCategory = 'command' | 'search' | 'read' | 'edit' | 'web' | 'subagent' | 'delegation' | 'mcp' | 'other'
@@ -8,13 +9,13 @@ export interface WorkSummary {
   readonly label: string
   readonly toolCount: number
   readonly failedCount: number
+  readonly delegatedTaskCount?: number
 }
 
 /** Classify a tool by the name its driver reports. Unrecognized names stay `other`. */
 export function toolCategory(name: string): ToolCategory {
   const normalized = name.toLowerCase()
-  // Orchestration tools (watchtower-orchestrator) start or inspect Delegated Tasks.
-  if (/^(?:mcp__watchtower-orchestrator__)?delegation_/.test(normalized)) return 'delegation'
+  if (delegationToolVerb(normalized)) return 'delegation'
   if (/^mcp(?:[._:/-]|$)|mcptoolcall/.test(normalized)) return 'mcp'
   if (/subagent|collabagent|spawn_agent|delegate|^task$|^agent$/.test(normalized)) return 'subagent'
   if (/web.?search|browse|fetch|open.?url/.test(normalized)) return 'web'
@@ -41,15 +42,9 @@ export function toolCategoryFor(tool: ToolBlock): ToolCategory {
   return tool.category ? metadataCategories[tool.category] : toolCategory(tool.name)
 }
 
-/** Native harness subagents and orchestration delegations: both render as delegates, never as routine activity. */
+/** Native delegated agents and orchestration calls that started a Delegated Task get dedicated rows. */
 export function isDelegateTool(tool: ToolBlock): boolean {
-  const category = toolCategoryFor(tool)
-  return category === 'subagent' || category === 'delegation'
-}
-
-/** Orchestration calls that start or inspect a Delegated Task. */
-export function isOrchestrationTool(tool: ToolBlock): boolean {
-  return toolCategoryFor(tool) === 'delegation'
+  return Boolean(delegationStartId(tool)) || toolCategoryFor(tool) === 'subagent'
 }
 
 export function delegateChildStatusLabel(status: string): string {
@@ -112,7 +107,7 @@ function plural(count: number, noun: string): string {
  * Summarize a run of tool calls. Edits count distinct files when their input names a path,
  * otherwise one per call. Without a recognized category the summary is the call count.
  */
-export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
+export function summarizeToolCalls(tools: readonly ToolBlock[], delegationCardCount = 0): WorkSummary {
   let commands = 0
   let searches = 0
   let reads = 0
@@ -120,6 +115,7 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
   let webSearches = 0
   let agents = 0
   let integrations = 0
+  let delegatedTaskCount = delegationCardCount
   const editedPaths = new Set<string>()
   let unnamedEdits = 0
   let failedCount = 0
@@ -147,8 +143,11 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
         webSearches += 1
         break
       case 'subagent':
-      case 'delegation':
         agents += 1
+        break
+      case 'delegation':
+        if (tool.status === 'completed' && delegationToolVerb(tool.name) === 'start') delegatedTaskCount += 1
+        else integrations += 1
         break
       case 'mcp':
         integrations += 1
@@ -160,6 +159,7 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
   }
   const edits = editedPaths.size + unnamedEdits
   const parts: string[] = []
+  if (delegatedTaskCount > 0) parts.push(`delegated ${plural(delegatedTaskCount, 'task')}`)
   if (commands > 0) parts.push(`ran ${plural(commands, 'command')}`)
   if (searches > 0) parts.push(plural(searches, 'search'))
   if (reads > 0) parts.push(`read ${plural(reads, 'file')}`)
@@ -167,10 +167,9 @@ export function summarizeToolCalls(tools: readonly ToolBlock[]): WorkSummary {
   if (webSearches > 0) parts.push(`${plural(webSearches, 'web lookup')}`)
   if (agents > 0) parts.push(`${plural(agents, 'agent call')}`)
   if (integrations > 0) parts.push(`${plural(integrations, 'MCP call')}`)
-  if (others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`)
+  if (parts.length > 0 && others > 0) parts.push(`${others} other tool ${others === 1 ? 'call' : 'calls'}`)
   const toolCount = tools.length
-  const onlyOthers = commands + searches + reads + edits + webSearches + agents + integrations === 0
-  const text = onlyOthers ? plural(toolCount, 'tool call') : parts.join(', ')
+  const text = parts.length === 0 ? plural(toolCount, 'tool call') : parts.join(', ')
   const label = text.length > 0 ? text.charAt(0).toUpperCase() + text.slice(1) : 'Tool activity'
-  return { label, toolCount, failedCount }
+  return { label, toolCount, failedCount, ...(delegatedTaskCount > 0 ? { delegatedTaskCount } : {}) }
 }
