@@ -27,14 +27,12 @@ import { cn } from '@/renderer/shared/lib/utils'
 import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceProjectReadPage, WorkspaceTaskReadPage } from '@/shared/schemas/workspace-store.js'
 
-import { useWorkspaceConnectionCatalog, useWorkspaceConnections } from './connection-hooks.js'
+import { useWorkspaceConnections } from './connection-hooks.js'
 import {
-  delegatedChildTotal,
-  delegateSignalLabel,
-  hasDelegateAttention,
-  isDelegatedChild,
+  resolveSidebarTaskSelection,
+  sidebarTaskPresentation,
+  type TaskSectionId,
 } from './delegation/sidebar-delegation.js'
-import { SidebarDelegateChildren, SidebarDelegateToggle } from './delegation/SidebarDelegates.js'
 import { showErrorToast } from './error-toast.js'
 import {
   useRenameTask,
@@ -44,8 +42,11 @@ import {
   useWorkspaceSidebarTasks,
   type WorkspaceRequest,
 } from './hooks.js'
-import { catalogView, modelDisplayName } from './model-picker/catalog.js'
+import { modelDisplayName } from './model-picker/catalog.js'
 import { appendUniquePage, compareTaskActivity, taskActivityAt } from './project-ui.js'
+import { SidebarTaskRowContent } from './sidebar/SidebarTaskRowContent.js'
+import { useSidebarDelegatedParent } from './sidebar/use-sidebar-delegated-parent.js'
+import { useSidebarModels } from './sidebar/use-sidebar-models.js'
 import { useWorkspaceProjectDialog } from './use-project-dialog.js'
 
 const PAGE_SIZE = 30
@@ -107,7 +108,7 @@ function taskStatusClass(status: WorkspaceTaskReadPage['items'][number]['status'
 }
 
 type SidebarTask = SidebarTaskPage['items'][number]
-type TaskSectionId = 'attention' | 'working' | 'open' | 'inProgress' | 'blocked' | 'inReview' | 'completed' | 'archived'
+type SidebarModels = ReturnType<typeof useSidebarModels>
 
 const TASK_SECTIONS: ReadonlyArray<{ readonly id: TaskSectionId; readonly label: string }> = [
   { id: 'attention', label: 'Needs attention' },
@@ -120,55 +121,14 @@ const TASK_SECTIONS: ReadonlyArray<{ readonly id: TaskSectionId; readonly label:
   { id: 'archived', label: 'Archived' },
 ]
 
-function taskSection(task: SidebarTask): TaskSectionId {
-  if (
-    task.runtime?.pendingRequestKind ||
-    task.runtime?.runStatus === 'awaitingInput' ||
-    task.runtime?.runStatus === 'uncertain' ||
-    task.runtime?.runStatus === 'recoveryRequired' ||
-    hasDelegateAttention(task)
-  )
-    return 'attention'
-  if (
-    task.runtime?.runStatus === 'queued' ||
-    task.runtime?.runStatus === 'starting' ||
-    task.runtime?.runStatus === 'running' ||
-    task.runtime?.runStatus === 'interruptRequested'
-  )
-    return 'working'
-  return task.status
+const SIGNAL_COLORS = {
+  amber: { dot: 'bg-amber-500', label: 'text-amber-700 dark:text-amber-300' },
+  indigo: { dot: 'bg-indigo-500', label: 'text-indigo-700 dark:text-indigo-300' },
+  blue: { dot: 'bg-blue-500', label: 'text-blue-700 dark:text-blue-300' },
 }
 
 function taskSectionIsCollapsedByDefault(sectionId: TaskSectionId): boolean {
   return sectionId === 'completed' || sectionId === 'archived'
-}
-
-/** The parent's own signal first, then what its delegated Tasks are doing. */
-function taskSignalLabel(task: SidebarTask): string | null {
-  return ownTaskSignalLabel(task) ?? delegateSignalLabel(task)
-}
-
-function ownTaskSignalLabel(task: SidebarTask): string | null {
-  if (task.runtime?.pendingRequestKind === 'approval') return 'Approval needed'
-  if (task.runtime?.pendingRequestKind === 'question') return 'Answer needed'
-  switch (task.runtime?.runStatus) {
-    case 'uncertain':
-      return 'Delivery is uncertain'
-    case 'recoveryRequired':
-      return 'Recovery needed'
-    case 'queued':
-      return 'Queued'
-    case 'starting':
-      return 'Starting'
-    case 'running':
-      return 'Running'
-    case 'awaitingInput':
-      return 'Waiting for input'
-    case 'interruptRequested':
-      return 'Stopping'
-    default:
-      return null
-  }
 }
 
 function taskLifecycleLabel(status: SidebarTask['status']): string {
@@ -219,12 +179,24 @@ export function WorkspaceProjects({
   const [search, setSearch] = useState('')
   const [initializedDefaultProject, setInitializedDefaultProject] = useState(false)
   const projectDialog = useWorkspaceProjectDialog()
+  const delegatedParentId = useSidebarDelegatedParent(selectedProjectId, selectedTaskId)
   const connectionsQuery = useWorkspaceConnections()
   const connectionsById = useMemo(
     () => new Map((connectionsQuery.data?.items ?? []).map(connection => [connection.connectionId, connection])),
     [connectionsQuery.data?.items],
   )
   const projectPage = projectsQuery.data
+  const catalogConnectionIds = useMemo(() => {
+    const ids = new Set<string>()
+    for (const group of Object.values(loadedTasks)) {
+      for (const task of group.items) {
+        const id = task.runtime.latestRun?.connectionId
+        if (id && connectionsById.has(id)) ids.add(id)
+      }
+    }
+    return [...ids].sort()
+  }, [connectionsById, loadedTasks])
+  const modelsByConnection = useSidebarModels(catalogConnectionIds)
 
   useEffect(() => {
     const page = projectsQuery.data
@@ -258,7 +230,7 @@ export function WorkspaceProjects({
   useEffect(() => {
     if (!selectedGroupId) return
     setExpandedGroupIds(current => (current.has(selectedGroupId) ? current : new Set([...current, selectedGroupId])))
-  }, [selectedGroupId])
+  }, [selectedGroupId, selectedTaskId, delegatedParentId])
 
   useEffect(() => {
     if (initializedDefaultProject || selectedProjectId || regularProjects.length === 0) return
@@ -323,18 +295,21 @@ export function WorkspaceProjects({
   )
 
   const projectCanLoadMore = Boolean(projectPage?.nextAfterId)
-  const noProjectMatches = scratchProjects.some(project => {
-    const tasks = loadedTasks[project.id]?.items
-    return (
-      !tasks ||
-      loadedTasks[project.id]?.nextAfterId !== null ||
-      tasks.some(task => task.title.toLocaleLowerCase().includes(searchTerm))
-    )
-  })
+  const noProjectMatches =
+    Boolean(delegatedParentId && selectedGroupId === NO_PROJECT_GROUP) ||
+    scratchProjects.some(project => {
+      const tasks = loadedTasks[project.id]?.items
+      return (
+        !tasks ||
+        loadedTasks[project.id]?.nextAfterId !== null ||
+        tasks.some(task => task.title.toLocaleLowerCase().includes(searchTerm))
+      )
+    })
   const searchHasMatches =
     regularProjects.some(
       project =>
         project.name.toLocaleLowerCase().includes(searchTerm) ||
+        (project.id === selectedProjectId && Boolean(delegatedParentId)) ||
         loadedTasks[project.id]?.items.some(task => task.title.toLocaleLowerCase().includes(searchTerm)),
     ) || noProjectMatches
   const searchStillLoading =
@@ -432,6 +407,7 @@ export function WorkspaceProjects({
                 expanded={searching || expandedGroupIds.has(project.id)}
                 visible={
                   !searching ||
+                  (project.id === selectedProjectId && Boolean(delegatedParentId)) ||
                   project.name.toLocaleLowerCase().includes(searchTerm) ||
                   !loadedTasks[project.id] ||
                   loadedTasks[project.id].nextAfterId !== null ||
@@ -441,6 +417,7 @@ export function WorkspaceProjects({
                 projectMatchesSearch={project.name.toLocaleLowerCase().includes(searchTerm)}
                 loadedTaskGroup={loadedTasks[project.id]}
                 selectedTaskId={selectedTaskId}
+                delegatedParentId={project.id === selectedProjectId ? delegatedParentId : undefined}
                 onToggle={() => {
                   if (!searching) toggleProject(project.id)
                 }}
@@ -448,6 +425,7 @@ export function WorkspaceProjects({
                 onSelectTask={(taskId, projectId) => selectTask(taskId, projectId)}
                 onTasksPage={rememberTasksPage}
                 connectionsById={connectionsById}
+                modelsByConnection={modelsByConnection}
               />
             ))}
 
@@ -480,8 +458,10 @@ export function WorkspaceProjects({
                         projectMatchesSearch={false}
                         loadedTaskGroup={loadedTasks[project.id]}
                         selectedTaskId={selectedTaskId}
+                        delegatedParentId={project.id === selectedProjectId ? delegatedParentId : undefined}
                         accessibleLabel="No project chats"
                         connectionsById={connectionsById}
+                        modelsByConnection={modelsByConnection}
                         onSelectTask={selectTask}
                         onTasksPage={rememberTasksPage}
                       />
@@ -527,11 +507,13 @@ function ProjectFolder({
   projectMatchesSearch,
   loadedTaskGroup,
   selectedTaskId,
+  delegatedParentId,
   onToggle,
   onNewChat,
   onSelectTask,
   onTasksPage,
   connectionsById,
+  modelsByConnection,
 }: {
   readonly project: WorkspaceProjectReadPage['items'][number]
   readonly expanded: boolean
@@ -540,6 +522,7 @@ function ProjectFolder({
   readonly projectMatchesSearch: boolean
   readonly loadedTaskGroup: LoadedTaskGroup | undefined
   readonly selectedTaskId: TaskId | null
+  readonly delegatedParentId: TaskId | undefined
   readonly onToggle: () => void
   readonly onNewChat: () => void
   readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
@@ -549,6 +532,7 @@ function ProjectFolder({
     page: SidebarTaskPage,
   ) => void
   readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
+  readonly modelsByConnection: SidebarModels
 }) {
   const attentionCount = project.runtime?.attentionCount ?? 0
   const workingCount = project.runtime?.workingCount ?? 0
@@ -634,10 +618,12 @@ function ProjectFolder({
             projectMatchesSearch={projectMatchesSearch}
             loadedTaskGroup={loadedTaskGroup}
             selectedTaskId={selectedTaskId}
+            delegatedParentId={delegatedParentId}
             accessibleLabel={`Chats in ${project.name}`}
             onSelectTask={onSelectTask}
             onTasksPage={onTasksPage}
             connectionsById={connectionsById}
+            modelsByConnection={modelsByConnection}
           />
         </div>
       )}
@@ -651,16 +637,19 @@ function SidebarTaskGroup({
   projectMatchesSearch,
   loadedTaskGroup,
   selectedTaskId,
+  delegatedParentId,
   accessibleLabel,
   onSelectTask,
   onTasksPage,
   connectionsById,
+  modelsByConnection,
 }: {
   readonly projectId: ProjectId
   readonly searchTerm: string
   readonly projectMatchesSearch: boolean
   readonly loadedTaskGroup: LoadedTaskGroup | undefined
   readonly selectedTaskId: TaskId | null
+  readonly delegatedParentId: TaskId | undefined
   readonly accessibleLabel: string
   readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
   readonly onTasksPage: (
@@ -669,6 +658,7 @@ function SidebarTaskGroup({
     page: SidebarTaskPage,
   ) => void
   readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
+  readonly modelsByConnection: SidebarModels
 }) {
   const [request, setRequest] = useState<WorkspaceRequest<'workspace:listTasks'>>({
     projectId,
@@ -678,10 +668,18 @@ function SidebarTaskGroup({
     () =>
       new Set(TASK_SECTIONS.filter(section => taskSectionIsCollapsedByDefault(section.id)).map(section => section.id)),
   )
-  const [pageCursors, setPageCursors] = useState<ReadonlyArray<TaskId | null>>([null])
+  const [pageCursors, setPageCursors] = useState<ReadonlyArray<string | null>>(() => [
+    null,
+    ...Object.keys(loadedTaskGroup?.pages ?? {}).filter(key => key !== FIRST_TASK_PAGE_KEY),
+  ])
   const [nowMs, setNowMs] = useState(() => Date.now())
   const query = useWorkspaceSidebarTasks(projectId, request)
   const page = query.data
+  const tasks = loadedTaskGroup?.items ?? []
+  const activeTaskId = resolveSidebarTaskSelection(selectedTaskId, delegatedParentId, tasks)
+  const activeTask = tasks.find(task => task.id === activeTaskId)
+  const revealSection = delegatedParentId && activeTask ? sidebarTaskPresentation(activeTask).section : undefined
+  const nextAfterId = loadedTaskGroup?.nextAfterId ?? page?.nextAfterId
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 60_000)
@@ -696,28 +694,51 @@ function SidebarTaskGroup({
     })
   }, [onTasksPage, page, projectId, query.status, request])
 
-  const loadMore = () => {
-    const nextAfterId = loadedTaskGroup?.nextAfterId ?? page?.nextAfterId
-    if (nextAfterId) {
+  const loadMore = useCallback(() => {
+    if (nextAfterId && !pageCursors.includes(nextAfterId)) {
       setPageCursors(current => (current.includes(nextAfterId) ? current : [...current, nextAfterId]))
       setRequest({ projectId, options: { afterId: nextAfterId, limit: PAGE_SIZE, includeArchived: true } })
     }
-  }
+  }, [nextAfterId, pageCursors, projectId])
+
+  useEffect(() => {
+    if (delegatedParentId && !activeTask && query.status === 'ready' && !query.error) loadMore()
+  }, [activeTask, delegatedParentId, loadMore, query.error, query.status])
+
+  useEffect(() => {
+    if (!revealSection) return
+    setCollapsedSections(current => {
+      if (!current.has(revealSection)) return current
+      const next = new Set(current)
+      next.delete(revealSection)
+      return next
+    })
+  }, [revealSection, selectedTaskId])
 
   const activeCursor = request.options?.afterId ?? null
-
-  // Child Tasks belong under their parent; they never appear as top-level rows.
-  const tasks = (loadedTaskGroup?.items ?? []).filter(task => !isDelegatedChild(task))
   const projectLabel = accessibleLabel.startsWith('Chats in ')
     ? accessibleLabel.slice('Chats in '.length)
     : 'No project'
   const visibleTasks =
     searchTerm && !projectMatchesSearch
-      ? tasks.filter(task => task.title.toLocaleLowerCase().includes(searchTerm))
+      ? tasks.filter(
+          task =>
+            (delegatedParentId && task.id === activeTaskId) || task.title.toLocaleLowerCase().includes(searchTerm),
+        )
       : tasks
+  const tasksBySection = new Map<
+    TaskSectionId,
+    { task: SidebarTask; presentation: ReturnType<typeof sidebarTaskPresentation> }[]
+  >()
+  for (const task of visibleTasks) {
+    const presentation = sidebarTaskPresentation(task)
+    const bucket = tasksBySection.get(presentation.section)
+    if (bucket) bucket.push({ task, presentation })
+    else tasksBySection.set(presentation.section, [{ task, presentation }])
+  }
   const visibleTasksBySection = TASK_SECTIONS.map(section => ({
     ...section,
-    tasks: visibleTasks.filter(task => taskSection(task) === section.id).sort(compareTaskActivity),
+    tasks: tasksBySection.get(section.id)?.sort((left, right) => compareTaskActivity(left.task, right.task)) ?? [],
   })).filter(section => section.tasks.length > 0)
 
   const toggleSection = (sectionId: TaskSectionId) => {
@@ -727,32 +748,6 @@ function SidebarTaskGroup({
       else next.add(sectionId)
       return next
     })
-  }
-
-  const renderTask = (task: SidebarTask) => {
-    const selected = selectedTaskId === task.id
-    const signal = taskSignalLabel(task)
-    const section = taskSection(task)
-    const sectionLabel = TASK_SECTIONS.find(item => item.id === section)?.label ?? taskLifecycleLabel(task.status)
-    const tooltipState =
-      section === 'attention' || section === 'working'
-        ? `${sectionLabel} · ${signal ?? 'Active'}`
-        : `Task lifecycle · ${taskLifecycleLabel(task.status)}`
-    return (
-      <SidebarTaskRow
-        key={task.id}
-        task={task}
-        projectId={projectId}
-        projectLabel={projectLabel}
-        selected={selected}
-        tooltipState={tooltipState}
-        nowMs={nowMs}
-        section={section}
-        connectionsById={connectionsById}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={onSelectTask}
-      />
-    )
   }
 
   return (
@@ -780,7 +775,7 @@ function SidebarTaskGroup({
         <div aria-label={accessibleLabel} className="space-y-1">
           {visibleTasksBySection.map(section => {
             const collapsed = !searchTerm && collapsedSections.has(section.id)
-            const selectedTask = section.tasks.find(task => task.id === selectedTaskId)
+            const selectedTask = section.tasks.find(({ task }) => task.id === activeTaskId)
             const displayedTasks = collapsed ? (selectedTask ? [selectedTask] : []) : section.tasks
             return (
               <section key={section.id} aria-label={`${section.label}, ${section.tasks.length} loaded`}>
@@ -796,7 +791,28 @@ function SidebarTaskGroup({
                   <span className="min-w-0 flex-1 truncate">{section.label}</span>
                   <span className="tabular-nums">{section.tasks.length}</span>
                 </button>
-                {displayedTasks.length > 0 && <ul className="space-y-0.5">{displayedTasks.map(renderTask)}</ul>}
+                {displayedTasks.length > 0 && (
+                  <ul className="space-y-0.5">
+                    {displayedTasks.map(({ task, presentation }) => (
+                      <SidebarTaskRow
+                        key={task.id}
+                        task={task}
+                        projectId={projectId}
+                        projectLabel={projectLabel}
+                        selected={task.id === activeTaskId}
+                        revealForTaskId={
+                          !collapsed && delegatedParentId && task.id === activeTaskId ? selectedTaskId : null
+                        }
+                        presentation={presentation}
+                        sectionLabel={section.label}
+                        nowMs={nowMs}
+                        connectionsById={connectionsById}
+                        modelsByConnection={modelsByConnection}
+                        onSelectTask={onSelectTask}
+                      />
+                    ))}
+                  </ul>
+                )}
               </section>
             )
           })}
@@ -822,62 +838,66 @@ function SidebarTaskRow({
   projectId,
   projectLabel,
   selected,
-  tooltipState,
+  revealForTaskId,
+  presentation,
+  sectionLabel,
   nowMs,
-  section,
   connectionsById,
-  selectedTaskId,
+  modelsByConnection,
   onSelectTask,
 }: {
   readonly task: SidebarTask
   readonly projectId: ProjectId
   readonly projectLabel: string
   readonly selected: boolean
-  readonly tooltipState: string
+  readonly revealForTaskId: TaskId | null
+  readonly presentation: ReturnType<typeof sidebarTaskPresentation>
+  readonly sectionLabel: string
   readonly nowMs: number
-  readonly section: TaskSectionId
   readonly connectionsById: ReadonlyMap<string, { readonly label: string; readonly harnessKind: string }>
-  readonly selectedTaskId: TaskId | null
+  readonly modelsByConnection: SidebarModels
   readonly onSelectTask: (taskId: TaskId, projectId: ProjectId) => void
 }) {
   const renameTask = useRenameTask()
   const setTaskArchived = useSetTaskArchived()
   const [editing, setEditing] = useState(false)
-  const [delegatesOpen, setDelegatesOpen] = useState(false)
-  const delegatedTotal = delegatedChildTotal(task)
   const [draft, setDraft] = useState(task.title)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const rowRef = useRef<HTMLLIElement>(null)
   const committing = useRef(false)
   const settled = useRef(false)
   const latestRun = task.runtime.latestRun
-  const catalog = useWorkspaceConnectionCatalog(latestRun?.connectionId ?? '')
-  const modelView = catalogView({ inspection: catalog.inspection, failed: catalog.failed })
-  const modelName = latestRun?.modelId
-    ? modelDisplayName(
-        latestRun.modelId,
-        modelView.kind === 'listed' || modelView.kind === 'session' ? modelView.models : [],
-      )
+  const modelName = latestRun
+    ? modelDisplayName(latestRun.modelId, modelsByConnection.get(latestRun.connectionId ?? '') ?? [])
     : null
   const activityAt = taskActivityAt(task)
   const activityTime = formatTaskUpdatedAt(activityAt)
   const elapsedTime = compactElapsedTime(activityAt, nowMs)
   const connection = latestRun?.connectionId ? connectionsById.get(latestRun.connectionId) : undefined
-  const harnessKind = latestRun?.driverId ?? 'unknown'
+  const harnessKind = latestRun ? (connection?.harnessKind ?? latestRun.driverId ?? 'unknown') : null
   const cannotArchive = Boolean(
     task.runtime.pendingRequestKind ||
     ['queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired'].includes(
       task.runtime.runStatus ?? '',
     ),
   )
-  const statusColor =
-    section === 'attention' ? 'bg-amber-500' : section === 'working' ? 'bg-blue-500' : taskStatusClass(task.status)
+  const { section, label, tone } = presentation
+  const slim = section === 'completed' || section === 'archived'
+  const statusColor = tone ? SIGNAL_COLORS[tone].dot : taskStatusClass(task.status)
+  let tooltipState = `Task lifecycle · ${taskLifecycleLabel(task.status)}`
+  if (label) tooltipState = sectionLabel === label ? label : `${sectionLabel} · ${label}`
+  const statusText = slim ? elapsedTime : (label ?? elapsedTime)
 
   useEffect(() => {
     if (!editing) return
     inputRef.current?.focus()
     inputRef.current?.select()
   }, [editing])
+
+  useEffect(() => {
+    if (revealForTaskId) rowRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [revealForTaskId])
 
   const cancelRename = () => {
     settled.current = true
@@ -921,16 +941,8 @@ function SidebarTaskRow({
   }
 
   return (
-    <li className="group/task relative list-none rounded-md">
+    <li ref={rowRef} className="group/task relative list-none rounded-md">
       <div className="relative flex min-h-9 items-center">
-        {!editing && delegatedTotal > 0 && (
-          <SidebarDelegateToggle
-            title={task.title}
-            total={delegatedTotal}
-            expanded={delegatesOpen}
-            onToggle={() => setDelegatesOpen(open => !open)}
-          />
-        )}
         {editing ? (
           <Input
             ref={inputRef}
@@ -959,20 +971,34 @@ function SidebarTaskRow({
                   onClick={() => onSelectTask(task.id, projectId)}
                   aria-current={selected ? 'page' : undefined}
                   aria-label={`${task.title}, ${tooltipState}, last activity ${activityTime}`}
-                  className={`focus-visible:ring-ring flex min-h-9 min-w-0 flex-1 items-center gap-2 rounded-md py-1 pr-16 pl-2.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2 ${selected ? 'bg-sidebar-accent text-sidebar-accent-foreground' : 'text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground'}`}
+                  className={cn(
+                    'focus-visible:ring-ring grid min-w-0 flex-1 items-center rounded-md px-2 py-1.5 text-left text-[13px] transition-colors outline-none focus-visible:ring-2',
+                    slim ? 'min-h-8' : 'min-h-12',
+                    selected
+                      ? 'bg-sidebar-accent text-sidebar-accent-foreground'
+                      : 'text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground',
+                  )}
                 />
               }
             >
-              <span className={`size-1.5 shrink-0 rounded-full ${statusColor}`} aria-hidden="true" />
-              {latestRun && <HarnessIcon kind={connection?.harnessKind ?? harnessKind} className="size-3.5 shrink-0" />}
-              <span className="min-w-0 flex-1 truncate">{task.title}</span>
+              <SidebarTaskRowContent
+                slim={slim}
+                title={task.title}
+                statusColor={statusColor}
+                statusText={statusText}
+                statusTextColor={!slim && tone ? SIGNAL_COLORS[tone].label : 'text-sidebar-muted-foreground'}
+                harnessKind={harnessKind}
+                modelName={modelName}
+                branch={latestRun?.branch ?? null}
+                activeDelegates={task.runtime.delegatedChildren?.active ?? 0}
+              />
             </TooltipTrigger>
             <TooltipContent side="right" sideOffset={8} className="max-w-64 flex-col items-start gap-0.5">
               <span className="max-w-full truncate font-medium">{task.title}</span>
               <span className="text-background/75">{projectLabel}</span>
-              {latestRun && (
+              {harnessKind && (
                 <span className="text-background/75 flex items-center gap-1.5">
-                  <HarnessIcon kind={connection?.harnessKind ?? harnessKind} className="size-3.5 shrink-0" />
+                  <HarnessIcon kind={harnessKind} className="size-3.5 shrink-0" />
                   {connection?.label ?? harnessKind}
                 </span>
               )}
@@ -984,16 +1010,13 @@ function SidebarTaskRow({
             </TooltipContent>
           </Tooltip>
         )}
-        {!editing && elapsedTime && (
-          <span
-            aria-hidden="true"
-            className="text-sidebar-muted-foreground pointer-events-none absolute right-2 text-[10px] tabular-nums transition-opacity group-hover/task:opacity-0 group-has-[:focus-visible]/task:opacity-0 pointer-coarse:opacity-0"
-          >
-            {elapsedTime}
-          </span>
-        )}
         {!editing && (
-          <div className="pointer-events-none absolute inset-y-0 right-1 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/task:pointer-events-auto group-hover/task:opacity-100 has-[:focus-visible]:pointer-events-auto has-[:focus-visible]:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100">
+          <div
+            className={cn(
+              'pointer-events-none absolute right-1 flex h-7 items-center gap-0.5 opacity-0 transition-opacity group-hover/task:pointer-events-auto group-hover/task:opacity-100 group-has-[:focus-visible]/task:pointer-events-auto group-has-[:focus-visible]/task:opacity-100 pointer-coarse:pointer-events-auto pointer-coarse:opacity-100',
+              slim ? 'top-1/2 -translate-y-1/2' : 'top-0.5',
+            )}
+          >
             <Tooltip>
               <TooltipTrigger
                 render={
@@ -1048,14 +1071,6 @@ function SidebarTaskRow({
           </div>
         )}
       </div>
-      {delegatesOpen && delegatedTotal > 0 && (
-        <SidebarDelegateChildren
-          taskId={task.id}
-          projectId={projectId}
-          selectedTaskId={selectedTaskId}
-          onSelectTask={onSelectTask}
-        />
-      )}
     </li>
   )
 }
@@ -1066,7 +1081,7 @@ function SidebarTaskPageRefresh({
   onTasksPage,
 }: {
   readonly projectId: ProjectId
-  readonly afterId: TaskId | null
+  readonly afterId: string | null
   readonly onTasksPage: (
     projectId: ProjectId,
     request: WorkspaceRequest<'workspace:listTasks'>,

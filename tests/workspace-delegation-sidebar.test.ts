@@ -1,65 +1,68 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  delegatedChildTotal,
-  delegateSignalLabel,
-  hasDelegateAttention,
-  isDelegatedChild,
-} from '../src/renderer/features/workspace/delegation/sidebar-delegation.js'
+  resolveSidebarTaskSelection,
+  sidebarTaskPresentation,
+} from '@/renderer/features/workspace/delegation/sidebar-delegation.js'
+import type { TaskId } from '@/shared/schemas/workspace.js'
+import type { WorkspaceTaskRuntimeSummary } from '@/shared/schemas/workspace-store.js'
 
-type Runtime = NonNullable<Parameters<typeof isDelegatedChild>[0]['runtime']>
+const childId = 'child' as TaskId
+const parentId = 'parent' as TaskId
 
-function task(id: string, status: 'open' | 'inProgress' = 'open', runtime: Partial<Runtime> = {}) {
-  return {
-    id,
-    title: `Task ${id}`,
-    status,
-    runtime: {
-      runStatus: null,
-      pendingRequestKind: null,
-      latestRun: null,
-      ...runtime,
-    },
-  } as unknown as Parameters<typeof isDelegatedChild>[0]
+function runtime(overrides: Partial<WorkspaceTaskRuntimeSummary> = {}): WorkspaceTaskRuntimeSummary {
+  return { runStatus: null, pendingRequestKind: null, latestRun: null, ...overrides }
 }
 
 describe('sidebar delegation rows', () => {
-  it('treats a Task with a delegatedFrom summary as a child that never shows top-level', () => {
-    const child = task('child', 'open', {
-      delegatedFrom: { delegationId: 'delegation-1', parentTaskId: 'parent', status: 'running' },
-    } as Partial<Runtime>)
-    expect(isDelegatedChild(child)).toBe(true)
-    expect(isDelegatedChild(task('parent'))).toBe(false)
+  it('puts a delegated approval ahead of a delegated question and the parent Run', () => {
+    const state = sidebarTaskPresentation({
+      status: 'open',
+      runtime: runtime({
+        pendingRequestKind: 'question',
+        delegatedChildren: { total: 2, active: 2, attention: 2, approvals: 1, questions: 1 },
+      }),
+    })
+    expect(state).toEqual({ section: 'attention', label: 'Pending approval', tone: 'amber' })
   })
 
-  it('moves a parent with a waiting delegate into Needs attention, with a delegate signal', () => {
-    const parent = task('parent', 'inProgress', {
-      delegatedChildren: { total: 2, active: 1, attention: 1 },
-    } as Partial<Runtime>)
-    expect(hasDelegateAttention(parent)).toBe(true)
-    expect(delegateSignalLabel(parent)).toBe('Delegate needs attention')
+  it('shows a delegated question while the parent is running', () => {
+    const state = sidebarTaskPresentation({
+      status: 'inProgress',
+      runtime: runtime({
+        runStatus: 'running',
+        delegatedChildren: { total: 2, active: 1, attention: 1, approvals: 0, questions: 1 },
+      }),
+    })
+    expect(state).toEqual({ section: 'attention', label: 'Awaiting input', tone: 'indigo' })
   })
 
-  it('reads running delegates when nothing needs attention', () => {
-    const running = task('parent', 'inProgress', {
-      delegatedChildren: { total: 3, active: 2, attention: 0 },
-    } as Partial<Runtime>)
-    expect(hasDelegateAttention(running)).toBe(false)
-    expect(delegateSignalLabel(running)).toBe('2 delegates running')
+  it('shows Working when only Delegated Tasks are active', () => {
+    const delegatedChildren = { total: 3, active: 2, attention: 0, approvals: 0, questions: 0 }
+    expect(sidebarTaskPresentation({ status: 'blocked', runtime: runtime({ delegatedChildren }) })).toEqual({
+      section: 'working',
+      label: 'Working',
+      tone: 'blue',
+    })
     expect(
-      delegateSignalLabel(
-        task('one', 'open', { delegatedChildren: { total: 1, active: 1, attention: 0 } } as Partial<Runtime>),
-      ),
-    ).toBe('1 delegate running')
-    expect(delegateSignalLabel(task('idle'))).toBeNull()
+      sidebarTaskPresentation({ status: 'blocked', runtime: runtime({ delegatedChildren, runStatus: 'starting' }) }),
+    ).toMatchObject({ section: 'working', label: 'Starting' })
   })
 
-  it('reports how many children a parent can expand', () => {
-    expect(delegatedChildTotal(task('none'))).toBe(0)
+  it('keeps archived parents in Archived even when their Delegated Tasks need attention', () => {
     expect(
-      delegatedChildTotal(
-        task('some', 'open', { delegatedChildren: { total: 4, active: 0, attention: 0 } } as Partial<Runtime>),
-      ),
-    ).toBe(4)
+      sidebarTaskPresentation({
+        status: 'archived',
+        runtime: runtime({ delegatedChildren: { total: 1, active: 1, attention: 1, approvals: 1, questions: 0 } }),
+      }),
+    ).toMatchObject({ section: 'archived', label: null })
+  })
+
+  it('selects the parent row for a hidden Delegated Task and the child row when it is listed', () => {
+    expect(resolveSidebarTaskSelection(childId, parentId, [{ id: parentId, status: 'open' }])).toBe(parentId)
+    expect(resolveSidebarTaskSelection(childId, parentId, [{ id: parentId, status: 'archived' }])).toBe(childId)
+    expect(resolveSidebarTaskSelection(childId, parentId, [{ id: childId, status: 'open' }])).toBe(childId)
+    expect(resolveSidebarTaskSelection(childId, parentId, [])).toBe(childId)
+    expect(resolveSidebarTaskSelection(childId, undefined, [])).toBe(childId)
   })
 })
