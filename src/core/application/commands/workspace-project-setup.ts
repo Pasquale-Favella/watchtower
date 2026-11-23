@@ -45,7 +45,7 @@ export const WorkspaceProjectSetupLive = Layer.effect(
       const { publish, ...registration } = yield* Schema.decodeUnknownEffect(createWorkspaceProjectSchema)(input).pipe(
         Effect.mapError(invalid),
       )
-      yield* provisioner.initialize(registration.path)
+      yield* provisioner.initialize(registration.path, registration.name)
       if (publish === 'github-private') yield* provisioner.publishToGitHub(registration.path, registration.name)
       return yield* projects.register(registration)
     })

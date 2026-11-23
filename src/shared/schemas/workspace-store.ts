@@ -114,7 +114,7 @@ export const registerProjectCommandSchema = Schema.Struct({
   project: Schema.Struct({
     id: projectIdSchema,
     name: text,
-    repositoryIdentity: text,
+    repositoryIdentity: optionalText,
     isScratch: Schema.optional(Schema.Boolean),
     isCoach: Schema.optional(Schema.Boolean),
     createdAt: timestamp,
@@ -122,12 +122,18 @@ export const registerProjectCommandSchema = Schema.Struct({
   }),
   mainCheckout: Schema.Struct({
     id: workspaceCheckoutIdSchema,
-    kind: Schema.Literal('main'),
+    kind: Schema.Literals(['main', 'directory']),
     path: text,
     branch: optionalText,
     createdAt: timestamp,
   }),
-})
+}).check(
+  Schema.makeFilter(
+    ({ project, mainCheckout }) =>
+      (project.repositoryIdentity !== undefined) === (mainCheckout.kind === 'main') &&
+      (mainCheckout.kind === 'main' || mainCheckout.branch === undefined),
+  ),
+)
 export type RegisterProjectCommand = Schema.Schema.Type<typeof registerProjectCommandSchema>
 
 /** Registers an isolated worktree created for a Project. The main checkout is only registered with its Project. */

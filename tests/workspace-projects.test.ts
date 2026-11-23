@@ -1,7 +1,17 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve as resolvePath, sep } from 'node:path'
 
+import * as NodePath from '@effect/platform-node/NodePath'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
@@ -10,6 +20,7 @@ import { describe, expect, it } from 'vitest'
 
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import { makeRecordingCommandRunner } from '@/core/ports/process.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
@@ -30,7 +41,7 @@ const main: ResolvedCheckout = {
   dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
 }
 
-function fixture(resolve: CheckoutResolver['Service']['resolve']) {
+function fixture(resolve: CheckoutResolver['Service']['resolve'], pathLayer = NodePath.layer) {
   return ManagedRuntime.make(
     WorkspaceProjectsLive.pipe(
       Layer.provideMerge(
@@ -46,6 +57,8 @@ function fixture(resolve: CheckoutResolver['Service']['resolve']) {
           ),
         ),
       ),
+      Layer.provide(pathLayer),
+      Layer.provide(NodePlatformLive),
     ),
   )
 }
@@ -61,6 +74,48 @@ function request(suffix = '1', path = '/alias/project') {
 }
 
 describe('workspace project registration', () => {
+  it('validates paths before resolving them and allows an existing UNC folder without creation', async () => {
+    const unc = String.raw`\\server\share\folder`
+    const seen: string[] = []
+    const runtime = fixture(
+      path =>
+        Effect.sync(() => {
+          seen.push(path)
+          return { ...main, canonicalPath: unc, mainCheckoutPath: unc }
+        }),
+      NodePath.layerWin32,
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      for (const path of ['project', String.raw`C:project`]) {
+        expect(
+          await runtime.runPromise(
+            projects.register({ ...request('relative', path), createIfMissing: true }).pipe(Effect.flip),
+          ),
+        ).toMatchObject({ code: 'invalid-input', message: 'Choose an absolute folder path.' })
+      }
+      expect(
+        await runtime.runPromise(projects.register(request('relative', 'project')).pipe(Effect.flip)),
+      ).toMatchObject({
+        code: 'invalid-input',
+      })
+      for (const path of [unc, String.raw`\\?\C:\folder`, String.raw`\\.\C:\folder`, '//server/share/folder']) {
+        expect(
+          await runtime.runPromise(
+            projects.register({ ...request('remote', path), createIfMissing: true }).pipe(Effect.flip),
+          ),
+        ).toMatchObject({ code: 'not-local-folder', message: 'Choose a folder on this computer.' })
+      }
+      expect(seen).toEqual([])
+      expect(await runtime.runPromise(projects.register(request('unc', unc)))).toMatchObject({
+        mainCheckout: { path: unc },
+      })
+      expect(seen).toEqual([unc])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('persists the resolved canonical identity and admits runs against that exact path', async () => {
     const seen: string[] = []
     const runtime = fixture(path =>
@@ -127,7 +182,7 @@ describe('workspace project registration', () => {
     }
   })
 
-  it('rejects an ordinary directory and a disappeared checkout before registering a project', async () => {
+  it('registers an ordinary directory and reports a missing folder', async () => {
     const runtime = fixture(path =>
       path === '/missing'
         ? Effect.fail(new CheckoutResolverError({ code: 'path-missing', message: 'Checkout is missing.' }))
@@ -143,14 +198,80 @@ describe('workspace project registration', () => {
     )
     try {
       const projects = await runtime.runPromise(WorkspaceProjects)
-      expect(await runtime.runPromise(projects.register(request()).pipe(Effect.flip))).toMatchObject({
-        code: 'not-a-repository',
+      expect(await runtime.runPromise(projects.register(request()))).toMatchObject({
+        mainCheckout: { kind: 'directory', path: '/alias/project' },
       })
       expect(await runtime.runPromise(projects.register(request('2', '/missing')).pipe(Effect.flip))).toMatchObject({
         code: 'path-missing',
+        message: 'This folder does not exist.',
       })
     } finally {
       await runtime.dispose()
+    }
+  })
+
+  it('registers existing and newly created folders without invoking Git', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const folder = mkdtempSync(join(cache, 'workspace-directory-projects-'))
+    if (!resolvePath(folder).startsWith(`${cache}${sep}`)) throw new Error('Unexpected fixture cleanup path')
+    const runner = makeRecordingCommandRunner(() => Effect.die('Unexpected Git command'))
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            WorkspaceStoreLive({ filename: ':memory:' }),
+            CheckoutResolverLive.pipe(Layer.provide(runner.layer)),
+          ),
+        ),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const first = await runtime.runPromise(projects.register(request('existing', folder)))
+      expect(first.project.repositoryIdentity).toBeUndefined()
+      expect(first.mainCheckout).toMatchObject({ kind: 'directory', path: realpathSync.native(folder) })
+      expect(first.mainCheckout.branch).toBeUndefined()
+      const repeat = await runtime.runPromise(projects.register(request('repeat', folder)))
+      expect(repeat.reused).toBe(true)
+      expect(repeat.project).toEqual(first.project)
+      expect(repeat.mainCheckout).toEqual(first.mainCheckout)
+      expect(repeat.project).not.toHaveProperty('repositoryIdentity')
+      expect(repeat.mainCheckout).not.toHaveProperty('branch')
+
+      const missing = join(realpathSync.native(folder), 'nested', 'missing')
+      const created = await runtime.runPromise(
+        projects.register({ ...request('create', missing), createIfMissing: true }),
+      )
+      expect(created.mainCheckout).toMatchObject({ kind: 'directory', path: realpathSync.native(missing) })
+      expect(existsSync(join(missing, '.git'))).toBe(false)
+      rmdirSync(missing)
+      expect(
+        await runtime.runPromise(projects.register({ ...request('create', missing), createIfMissing: true })),
+      ).toEqual({ ...created, replayed: true })
+      expect(existsSync(missing)).toBe(false)
+
+      const conflicting = join(folder, 'another', 'missing')
+      expect(
+        await runtime.runPromise(
+          projects.register({ ...request('create', conflicting), createIfMissing: true }).pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'command-conflict' })
+      expect(existsSync(join(folder, 'another'))).toBe(false)
+
+      const file = join(folder, 'file.txt')
+      writeFileSync(file, '')
+      expect(
+        await runtime.runPromise(
+          projects.register({ ...request('file', file), createIfMissing: true }).pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'not-a-directory', message: 'This path is not a folder.' })
+      expect(runner.calls).toEqual([])
+      expect(runner.starts).toEqual([])
+    } finally {
+      await runtime.dispose()
+      rmSync(folder, { recursive: true, force: true })
     }
   })
 
@@ -173,6 +294,7 @@ describe('workspace project registration', () => {
     const runtime = ManagedRuntime.make(
       WorkspaceProjectsLive.pipe(
         Layer.provideMerge(Layer.merge(WorkspaceStoreLive({ filename: ':memory:' }), resolver)),
+        Layer.provide(NodePlatformLive),
       ),
     )
     try {

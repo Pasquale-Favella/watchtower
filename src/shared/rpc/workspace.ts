@@ -43,6 +43,11 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'unsupported-access-mode',
     'checkout-busy',
     'conversation-in-use',
+    'path-missing',
+    'not-a-directory',
+    'not-a-repository',
+    'not-local-folder',
+    'managed-folder',
   ]),
   message: Schema.Literals([
     'Workspace is unavailable.',
@@ -56,6 +61,11 @@ export class WorkspaceRpcError extends Schema.TaggedError<WorkspaceRpcError>()('
     'The selected access mode is not available for this agent connection.',
     'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
     'This conversation already has an active agent turn. Wait for it to finish or stop it.',
+    'This folder does not exist.',
+    'This path is not a folder.',
+    'This folder is not a Git repository.',
+    'Choose a folder on this computer.',
+    'This folder is managed by Watchtower.',
   ]),
 }) {}
 
@@ -213,6 +223,7 @@ export const WorkspaceRpcGroup = RpcGroup.make(
       commandId,
       path: registerWorkspaceProjectSchema.fields.path,
       name: registerWorkspaceProjectSchema.fields.name,
+      createIfMissing: registerWorkspaceProjectSchema.fields.createIfMissing,
     }),
     success: workspaceProjectRegistrationSchema,
     error,

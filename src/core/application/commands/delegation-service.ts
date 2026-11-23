@@ -427,12 +427,17 @@ export class DelegationService extends Context.Service<
 
           let checkoutId = parentContext.checkoutId
           if (isolation === 'worktree') {
+            const project = yield* store.getProject(caller.projectId).pipe(Effect.mapError(storeFailure))
+            if (project.mainCheckout.kind === 'directory')
+              return yield* new DelegationError({
+                code: 'checkout-unavailable',
+                message: 'Worktree isolation requires a Git repository.',
+              })
             if (!options.createWorktree)
               return yield* new DelegationError({
                 code: 'checkout-unavailable',
                 message: 'Worktree isolation is not available.',
               })
-            const project = yield* store.getProject(caller.projectId).pipe(Effect.mapError(storeFailure))
             const parentCheckout = [project.mainCheckout, ...project.otherCheckouts].find(
               checkout => checkout.id === parentContext.checkoutId,
             )

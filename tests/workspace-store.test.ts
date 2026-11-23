@@ -256,6 +256,7 @@ describe('WorkspaceStore', () => {
           project: { ...project, name: 'Different' },
           mainCheckout: checkout,
         }),
+        store.registerProject({ commandId: 'create', project, mainCheckout: checkout }),
         store.createTask({ commandId: 'create', task: { ...task, title: 'Different' }, conversation }),
       ].map(effect => effect as Effect.Effect<unknown, WorkspaceStoreError>)) {
         expect(await runtime.runPromise(effect.pipe(Effect.flip))).toMatchObject({ code: 'command-conflict' })
@@ -264,6 +265,95 @@ describe('WorkspaceStore', () => {
       await runtime.dispose()
       rmSync(directory, { recursive: true, force: true })
     }
+  })
+
+  it('reuses a directory by path even if the folder becomes a Git repository', async () => {
+    await withStore(async (store, run) => {
+      const registration = {
+        commandId: 'register-directory',
+        project: { ...project, repositoryIdentity: undefined },
+        mainCheckout: { ...checkout, kind: 'directory' as const },
+      }
+      const registered = await run(store.registerProject(registration))
+      expect(registered.project.repositoryIdentity).toBeUndefined()
+      expect(registered.mainCheckout.kind).toBe('directory')
+      expect(await run(store.getProject(project.id))).toMatchObject({ mainCheckout: registered.mainCheckout })
+      expect(await run(store.registerProject(registration))).toEqual({ ...registered, replayed: true })
+      expect(await run(store.registerProject({ ...registration, commandId: 'reuse-directory' }))).toEqual({
+        ...registered,
+        commandId: 'reuse-directory',
+        reused: true,
+      })
+      expect(await run(store.registerProject({ ...registration, project, mainCheckout: checkout }))).toEqual({
+        ...registered,
+        replayed: true,
+      })
+      expect(
+        await run(store.registerProject({ commandId: 'reuse-after-init', project, mainCheckout: checkout })),
+      ).toEqual({
+        ...registered,
+        commandId: 'reuse-after-init',
+        reused: true,
+      })
+      expect((await run(store.listProjects())).total).toBe(1)
+    })
+  })
+
+  it.each(['scratch', 'coach'] as const)('refuses user registrations at a managed %s checkout path', async kind => {
+    await withStore(async (store, run) => {
+      const marker = kind === 'scratch' ? 'isScratch' : 'isCoach'
+      await run(
+        store.registerProject({
+          project: { ...project, id: `workspace-${kind}-project` as never, [marker]: true },
+          mainCheckout: checkout,
+        }),
+      )
+      for (const repositoryIdentity of [undefined, 'another-repository', project.repositoryIdentity]) {
+        const registration = {
+          commandId: 'user-registration',
+          project: { ...project, repositoryIdentity },
+          mainCheckout: { ...checkout, kind: repositoryIdentity ? ('main' as const) : ('directory' as const) },
+        }
+        expect(await run(store.registerProject(registration).pipe(Effect.flip))).toMatchObject({
+          code: 'membership-conflict',
+          message: 'This folder is managed by Watchtower.',
+        })
+      }
+    })
+  })
+
+  it.each(['scratch', 'coach'] as const)('refuses to attach managed %s to a user directory project', async kind => {
+    await withStore(async (store, run) => {
+      const user = await run(
+        store.registerProject({
+          project: { ...project, repositoryIdentity: undefined },
+          mainCheckout: { ...checkout, kind: 'directory' },
+        }),
+      )
+      const marker = kind === 'scratch' ? 'isScratch' : 'isCoach'
+      expect(
+        await run(
+          store
+            .registerProject({
+              project: { ...project, id: `workspace-${kind}-project` as never, [marker]: true },
+              mainCheckout: { ...checkout, id: `workspace-${kind}-checkout` as never },
+            })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'membership-conflict' })
+      const stored = await run(store.getProject(user.project.id))
+      expect(stored.project).toEqual(user.project)
+      expect(stored.mainCheckout).toEqual(user.mainCheckout)
+    })
+  })
+
+  it.each([
+    { project: { ...project, repositoryIdentity: undefined }, mainCheckout: checkout },
+    { project, mainCheckout: { ...checkout, kind: 'directory' as const } },
+  ])('rejects a mismatch between repository identity and checkout kind', async registration => {
+    await withStore(async (store, run) => {
+      expect(await run(store.registerProject(registration).pipe(Effect.flip))).toMatchObject({ code: 'invalid-data' })
+    })
   })
 
   it('reuses one active repository under concurrent registrations and refuses implicit relocation', async () => {

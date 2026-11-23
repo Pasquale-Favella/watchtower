@@ -39,6 +39,7 @@ import {
   type WorkspaceCheckout,
   workspaceCheckoutSchema,
 } from '@/shared/schemas/workspace.js'
+import { MANAGED_PROJECT_FOLDER, type RegisterProjectWithPreparation } from '@/shared/schemas/workspace-projects.js'
 import {
   type CreateDelegationCommand,
   createDelegationCommandSchema,
@@ -463,7 +464,9 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
       commandId: registration.commandId,
       project: {
         name: registration.project.name,
-        repositoryIdentity: registration.project.repositoryIdentity,
+        ...(registration.project.repositoryIdentity === undefined
+          ? {}
+          : { repositoryIdentity: registration.project.repositoryIdentity }),
         ...(registration.project.isCoach ? { isCoach: true } : {}),
       },
       mainCheckout: { path: registration.mainCheckout.path },
@@ -615,26 +618,81 @@ const makeService = Effect.gen(function* () {
     }
   })
 
-  const registerProject = (command: Parameters<WorkspaceStore['Service']['registerProject']>[0]) =>
+  const registerProject = ({ prepareDirectory, ...registration }: RegisterProjectWithPreparation) =>
     guard(
       Effect.gen(function* () {
-        yield* Schema.decodeUnknownEffect(registerProjectCommandSchema)(command).pipe(
+        yield* Schema.decodeUnknownEffect(registerProjectCommandSchema)(registration).pipe(
           Effect.mapError(() => safeError('invalid-data', 'Project registration data is invalid')),
         )
+        const { project: requestedProject } = registration
+        const scratch = requestedProject.isScratch || requestedProject.id === 'workspace-scratch-project'
+        const coach = requestedProject.isCoach || requestedProject.id === 'workspace-coach-project'
+        const managed = scratch || coach
+        const membershipConflict = safeError(
+          'membership-conflict',
+          managed ? 'Chat checkout identity is invalid.' : MANAGED_PROJECT_FOLDER,
+        )
+        const matchesMembership = (project: typeof requestedProject) =>
+          Boolean(project.isScratch) === scratch &&
+          Boolean(project.isCoach) === coach &&
+          (!managed || project.id === requestedProject.id)
+
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const commandId = command.commandId ?? `internal:registerProject:${command.project.id}`
+            const commandId = registration.commandId ?? `internal:registerProject:${requestedProject.id}`
             const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            const repositoryIdentity = requestedProject.repositoryIdentity ?? null
             if (prior[0]) {
-              if (!matchesReceipt(String(prior[0].fingerprint), 'registerProject', command))
+              const savedFingerprint = String(prior[0].fingerprint)
+              const matches = matchesReceipt(savedFingerprint, 'registerProject', registration)
+              // A directory registration remains replayable if a retry now resolves the same path as Git.
+              const matchesDirectoryIntent =
+                !matches &&
+                repositoryIdentity !== null &&
+                matchesReceipt(savedFingerprint, 'registerProject', {
+                  ...registration,
+                  project: { ...requestedProject, repositoryIdentity: undefined },
+                })
+              if (!matches && !matchesDirectoryIntent)
                 return yield* safeError('command-conflict', 'Command ID was already used with different input')
-              return {
-                ...(yield* decodeJson(projectRegistrationReceiptSchema)(String(prior[0].payload))),
-                replayed: true,
-              }
+              const receipt = yield* decodeJson(projectRegistrationReceiptSchema)(String(prior[0].payload))
+              if (!matches && receipt.mainCheckout.kind !== 'directory')
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              if (!matchesMembership(receipt.project)) return yield* membershipConflict
+              return { ...receipt, replayed: true }
             }
-            const existing =
-              yield* sql`SELECT id, payload FROM workspace_project WHERE json_extract(payload, '$.repositoryIdentity') = ${command.project.repositoryIdentity} AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 1`
+            const command = prepareDirectory
+              ? {
+                  ...registration,
+                  mainCheckout: { ...registration.mainCheckout, path: yield* prepareDirectory },
+                }
+              : registration
+            const conflictingPath = yield* sql`
+              SELECT 1 FROM workspace_checkout c JOIN workspace_project p ON p.id = c.project_id
+              WHERE json_extract(c.payload, '$.path') = ${command.mainCheckout.path}
+                AND (
+                  COALESCE(json_extract(p.payload, '$.isScratch'), 0) <> ${Number(scratch)}
+                  OR COALESCE(json_extract(p.payload, '$.isCoach'), 0) <> ${Number(coach)}
+                  OR (${Number(managed)} = 1 AND p.id <> ${requestedProject.id})
+                )
+              LIMIT 1`
+            if (conflictingPath.length > 0) return yield* membershipConflict
+
+            const existing = yield* sql`
+              SELECT p.id, p.payload FROM workspace_project p
+              WHERE json_extract(p.payload, '$.archivedAt') IS NULL AND (
+                json_extract(p.payload, '$.repositoryIdentity') = ${repositoryIdentity}
+                OR EXISTS (
+                  SELECT 1 FROM workspace_checkout c
+                  WHERE c.project_id = p.id
+                    AND json_extract(c.payload, '$.kind') IN ('main', 'directory')
+                    AND (${repositoryIdentity} IS NULL OR json_extract(c.payload, '$.kind') = 'directory')
+                    AND json_extract(c.payload, '$.archivedAt') IS NULL
+                    AND json_extract(c.payload, '$.path') = ${command.mainCheckout.path}
+                )
+              )
+              ORDER BY (json_extract(p.payload, '$.repositoryIdentity') = ${repositoryIdentity}) DESC, p.id
+              LIMIT 1`
             let project = yield* Schema.decodeUnknownEffect(projectSchema)(command.project)
             let mainCheckout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)({
               ...command.mainCheckout,
@@ -642,10 +700,9 @@ const makeService = Effect.gen(function* () {
             })
             if (existing[0]) {
               project = yield* decodeJson(projectSchema)(String(existing[0].payload))
-              if (Boolean(project.isCoach) !== Boolean(command.project.isCoach))
-                return yield* safeError('membership-conflict', 'Repository is registered with a different project kind')
+              if (!matchesMembership(project)) return yield* membershipConflict
               const checkouts =
-                yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') = 'main' AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
+                yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') IN ('main', 'directory') AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
               if (checkouts.length !== 1)
                 return yield* safeError('membership-conflict', 'Repository has no unambiguous active main checkout')
               mainCheckout = yield* decodeJson(workspaceCheckoutSchema)(String(checkouts[0].payload))
@@ -3046,7 +3103,7 @@ const makeService = Effect.gen(function* () {
             if (project.id !== projectRows[0].id)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
             const mainRows =
-              yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') = 'main' ELSE 0 END LIMIT 2`
+              yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') IN ('main', 'directory') ELSE 0 END LIMIT 2`
             if (mainRows.length !== 1)
               return yield* Effect.fail(safeError('invalid-data', 'Project must have exactly one main checkout'))
             const mainCheckout = summarize(
@@ -3059,7 +3116,7 @@ const makeService = Effect.gen(function* () {
               mainCheckout.id !== mainRows[0].id ||
               mainCheckout.projectId !== projectId ||
               mainCheckout.projectId !== mainRows[0].project_id ||
-              mainCheckout.kind !== 'main'
+              mainCheckout.kind !== (project.repositoryIdentity === undefined ? 'directory' : 'main')
             )
               return yield* Effect.fail(safeError('invalid-data', 'Stored main checkout membership failed validation'))
             const counts =

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve as resolvePath, sep } from 'node:path'
 
 import * as Effect from 'effect/Effect'
@@ -12,7 +12,7 @@ import {
   WorkspaceProjectSetupLive,
 } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
-import { type CommandResult, makeRecordingCommandRunner } from '@/core/ports/process.js'
+import { CommandError, type CommandResult, CommandRunner, makeRecordingCommandRunner } from '@/core/ports/process.js'
 import { ProjectProvisioner } from '@/core/ports/project-provisioner.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
 import {
@@ -36,7 +36,40 @@ const git = (cwd: string, ...args: string[]) =>
     .toString()
     .trim()
 
-const liveProvisioner = ProjectProvisionerLive.pipe(Layer.provide(CommandRunnerLive), Layer.provide(NodePlatformLive))
+const liveProvisioner = (commitFails = false) =>
+  ProjectProvisionerLive.pipe(
+    Layer.provide(
+      Layer.effect(
+        CommandRunner,
+        Effect.map(CommandRunner, runner =>
+          CommandRunner.of({
+            ...runner,
+            run: (command, args, options) =>
+              commitFails && args[0] === 'commit'
+                ? Effect.succeed({ stdout: '', exitCode: 128 })
+                : runner.run(
+                    command,
+                    [
+                      '-c',
+                      'init.defaultBranch=trunk',
+                      '-c',
+                      'user.name=Test',
+                      '-c',
+                      'user.email=test@example.invalid',
+                      '-c',
+                      'commit.gpgSign=false',
+                      '-c',
+                      'core.hooksPath=/dev/null',
+                      ...args,
+                    ],
+                    options,
+                  ),
+          }),
+        ),
+      ).pipe(Layer.provide(CommandRunnerLive)),
+    ),
+    Layer.provide(NodePlatformLive),
+  )
 const fakeProvisioner = (respond: (command: string, args: readonly string[]) => CommandResult) => {
   const runner = makeRecordingCommandRunner((command, args) => Effect.succeed(respond(command, args)))
   return {
@@ -52,18 +85,23 @@ const provisioner = <A, E, UseError>(
 describe('ProjectProvisionerLive with real Git', () => {
   it('creates a missing folder as a repository and leaves an existing repository alone', async () => {
     const target = join(root, 'created', 'nested')
-    await provisioner(liveProvisioner, service => service.initialize(target))
+    await provisioner(liveProvisioner(), service => service.initialize(target, 'Project heading'))
     expect(git(target, 'rev-parse', '--is-inside-work-tree')).toBe('true')
+    expect(git(target, 'branch', '--show-current')).toBe('trunk')
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Project heading\n')
+    expect(git(target, 'log', '--format=%s')).toBe('Initial commit')
     writeFileSync(join(target, 'kept.txt'), 'kept')
-    await provisioner(liveProvisioner, service => service.initialize(target))
+    await provisioner(liveProvisioner(), service => service.initialize(target, 'Ignored heading'))
     expect(existsSync(join(target, 'kept.txt'))).toBe(true)
+    expect(git(target, 'log', '--format=%s')).toBe('Initial commit')
+    expect(readFileSync(join(target, 'README.md'), 'utf8')).toBe('# Project heading\n')
   })
 
   it('initializes an existing folder without touching its files', async () => {
     const target = join(root, 'plain')
     mkdirSync(target)
     writeFileSync(join(target, 'notes.md'), 'notes')
-    await provisioner(liveProvisioner, service => service.initialize(target))
+    await provisioner(liveProvisioner(), service => service.initialize(target, 'Plain'))
     expect(git(target, 'status', '--porcelain')).toBe('?? notes.md')
   })
 
@@ -83,25 +121,38 @@ describe('ProjectProvisionerLive with real Git', () => {
       'Initial',
     )
     const destination = join(root, 'clones', 'copy')
-    await provisioner(liveProvisioner, service => service.clone({ _tag: 'git', remoteUrl: remote }, destination))
+    await provisioner(liveProvisioner(), service => service.clone({ _tag: 'git', remoteUrl: remote }, destination))
     expect(git(destination, 'log', '--format=%s')).toBe('Initial')
     // A repeated command finds its own clone; another repository at the destination is refused.
-    await provisioner(liveProvisioner, service => service.clone({ _tag: 'git', remoteUrl: remote }, destination))
+    await provisioner(liveProvisioner(), service => service.clone({ _tag: 'git', remoteUrl: remote }, destination))
     const other = join(root, 'clones', 'other')
     mkdirSync(other)
     git(other, 'init', '--quiet')
     expect(
-      await provisioner(liveProvisioner, service =>
+      await provisioner(liveProvisioner(), service =>
         service.clone({ _tag: 'git', remoteUrl: remote }, other).pipe(Effect.flip),
       ),
     ).toMatchObject({ code: 'target-not-empty' })
     const occupied = join(root, 'occupied')
     mkdirSync(occupied)
     writeFileSync(join(occupied, 'file.txt'), '')
-    const refused = await provisioner(liveProvisioner, service =>
+    const refused = await provisioner(liveProvisioner(), service =>
       service.clone({ _tag: 'git', remoteUrl: remote }, occupied).pipe(Effect.flip),
     )
     expect(refused).toMatchObject({ code: 'target-not-empty' })
+  })
+
+  it('returns the install message when Git cannot start', async () => {
+    const runner = CommandRunner.layerWithRunner(() =>
+      Effect.fail(new CommandError({ reason: 'spawn', command: 'git', message: 'ENOENT' })),
+    )
+    const layer = ProjectProvisionerLive.pipe(Layer.provide(runner), Layer.provide(NodePlatformLive))
+    expect(
+      await provisioner(layer, service => service.initialize(join(root, 'no-git'), 'Project').pipe(Effect.flip)),
+    ).toMatchObject({
+      code: 'git-unavailable',
+      message: "Git isn't installed on this machine. Install Git to create a project.",
+    })
   })
 })
 
@@ -168,31 +219,32 @@ describe('ProjectProvisionerLive with gh', () => {
 })
 
 describe('WorkspaceProjectSetup', () => {
-  const runtime = (calls: string[]) =>
+  const runtime = (
+    calls: string[],
+    provisionerLayer = Layer.succeed(
+      ProjectProvisioner,
+      ProjectProvisioner.of({
+        initialize: path =>
+          Effect.sync(() => {
+            calls.push(`init ${path}`)
+            mkdirSync(path, { recursive: true })
+            git(path, 'init', '--quiet')
+          }),
+        clone: (source, path) =>
+          Effect.sync(() => {
+            calls.push(`clone ${source._tag} ${path}`)
+            mkdirSync(path, { recursive: true })
+            git(path, 'init', '--quiet')
+          }),
+        publishToGitHub: (path, name) => Effect.sync(() => void calls.push(`publish ${name}`)),
+        lookupGitHubRepository: () => Effect.die('unused'),
+        readiness: Effect.succeed({ github: 'ready' }),
+      }),
+    ),
+  ) =>
     ManagedRuntime.make(
       WorkspaceProjectSetupLive.pipe(
-        Layer.provide(
-          Layer.succeed(
-            ProjectProvisioner,
-            ProjectProvisioner.of({
-              initialize: path =>
-                Effect.sync(() => {
-                  calls.push(`init ${path}`)
-                  mkdirSync(path, { recursive: true })
-                  git(path, 'init', '--quiet')
-                }),
-              clone: (source, path) =>
-                Effect.sync(() => {
-                  calls.push(`clone ${source._tag} ${path}`)
-                  mkdirSync(path, { recursive: true })
-                  git(path, 'init', '--quiet')
-                }),
-              publishToGitHub: (path, name) => Effect.sync(() => void calls.push(`publish ${name}`)),
-              lookupGitHubRepository: () => Effect.die('unused'),
-              readiness: Effect.succeed({ github: 'ready' }),
-            }),
-          ),
-        ),
+        Layer.provide(provisionerLayer),
         Layer.provideMerge(WorkspaceProjectsLive),
         Layer.provideMerge(
           Layer.merge(
@@ -200,6 +252,7 @@ describe('WorkspaceProjectSetup', () => {
             CheckoutResolverLive.pipe(Layer.provide(CommandRunnerLive), Layer.provide(NodePlatformLive)),
           ),
         ),
+        Layer.provide(NodePlatformLive),
       ),
     )
   const ids = (suffix: string) => ({
@@ -220,6 +273,22 @@ describe('WorkspaceProjectSetup', () => {
       expect(calls).toEqual([`init ${path}`, 'publish setup-new'])
       expect(await app.runPromise(setup.create({ ...request, publish: 'none' }))).toMatchObject({ replayed: true })
       expect(calls).toEqual([`init ${path}`, 'publish setup-new', `init ${path}`])
+    } finally {
+      await app.dispose()
+    }
+  })
+
+  it('registers a new repository with a staged README when the initial commit fails', async () => {
+    const app = runtime([], liveProvisioner(true))
+    try {
+      const setup = await app.runPromise(WorkspaceProjectSetup)
+      const path = join(root, 'setup-uncommitted')
+      const created = await app.runPromise(
+        setup.create({ ...ids('uncommitted'), path, name: 'Uncommitted', publish: 'none' }),
+      )
+      expect(created.mainCheckout).toMatchObject({ kind: 'main', branch: 'trunk' })
+      expect(git(path, 'status', '--porcelain')).toBe('A  README.md')
+      expect(readFileSync(join(path, 'README.md'), 'utf8')).toBe('# Uncommitted\n')
     } finally {
       await app.dispose()
     }

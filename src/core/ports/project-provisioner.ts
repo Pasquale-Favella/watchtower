@@ -16,8 +16,8 @@ export { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
 export class ProjectProvisioner extends Context.Service<
   ProjectProvisioner,
   {
-    /** Creates the folder when missing and runs `git init` unless it already is a repository. */
-    readonly initialize: (path: string) => Effect.Effect<void, ProjectSetupError>
+    /** Initializes a new repository with a README and attempts its first commit. */
+    readonly initialize: (path: string, name: string) => Effect.Effect<void, ProjectSetupError>
     /** Clones into a missing or empty destination. */
     readonly clone: (source: ProjectRemoteSource, destinationPath: string) => Effect.Effect<void, ProjectSetupError>
     /** Creates a private GitHub repository as `origin`; a checkout that already has `origin` is left alone. */

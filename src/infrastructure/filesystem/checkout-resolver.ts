@@ -36,8 +36,18 @@ export const CheckoutResolverLive = Layer.effect(
           ),
         catch: () => failure('filesystem-unavailable', 'Cannot canonicalize the checkout path'),
       })
+    const asDirectory = (directory: string): ResolvedCheckout => ({
+      canonicalPath: directory,
+      kind: 'directory',
+      repositoryIdentity: null,
+      mainCheckoutPath: null,
+      branch: null,
+      headRevision: null,
+      dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+    })
     const resolve = Effect.fn('CheckoutResolver.resolve')(function* (
       input: string,
+      mode?: 'registration' | 'directory',
     ): Effect.fn.Return<ResolvedCheckout, CheckoutResolverError> {
       yield* Schema.decodeUnknownEffect(resolveCheckoutRequestSchema)({ path: input }).pipe(
         Effect.mapError(() => failure('invalid-input', 'Invalid checkout path')),
@@ -55,17 +65,15 @@ export const CheckoutResolverLive = Layer.effect(
         )
       if (stat.type !== 'Directory') return yield* failure('not-a-directory', 'Checkout path is not a directory')
       const directory = yield* canonical(absolute)
+      if (mode === 'directory') return asDirectory(directory)
+      if (mode === 'registration') {
+        const hasGitMarker = yield* fs
+          .exists(path.join(directory, '.git'))
+          .pipe(Effect.mapError(() => failure('filesystem-unavailable', 'Cannot inspect checkout path')))
+        if (!hasGitMarker) return asDirectory(directory)
+      }
       const inside = yield* runGit(directory, ['rev-parse', '--is-inside-work-tree'])
-      if (inside.exitCode !== 0 || inside.stdout.trim() !== 'true')
-        return {
-          canonicalPath: directory,
-          kind: 'directory',
-          repositoryIdentity: null,
-          mainCheckoutPath: null,
-          branch: null,
-          headRevision: null,
-          dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
-        }
+      if (inside.exitCode !== 0 || inside.stdout.trim() !== 'true') return asDirectory(directory)
       const canonicalPath = yield* canonical(yield* gitText(directory, ['rev-parse', '--show-toplevel']))
       const repositoryIdentity = yield* canonical(
         yield* gitText(directory, ['rev-parse', '--path-format=absolute', '--git-common-dir']),

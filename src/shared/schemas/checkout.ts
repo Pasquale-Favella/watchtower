@@ -14,6 +14,7 @@ export const checkoutResolverErrorCodeSchema = Schema.Literals([
   'invalid-input',
   'filesystem-unavailable',
   'git-failed',
+  'not-local-folder',
 ])
 export type CheckoutResolverErrorCode = Schema.Schema.Type<typeof checkoutResolverErrorCodeSchema>
 

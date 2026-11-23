@@ -272,7 +272,6 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
 
     const revalidateCheckout = Effect.fn('ExecutionService.revalidateCheckout')(
       function* (claim: DispatchClaim) {
-        const resolved = yield* checkouts.resolve(claim.workspacePath)
         let detail = yield* store.getProject(claim.projectId)
         let registered =
           detail.mainCheckout.id === claim.checkoutId
@@ -282,15 +281,19 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           detail = yield* store.getProject(claim.projectId, { afterCheckoutId: detail.nextAfterCheckoutId })
           registered = detail.otherCheckouts.find(checkout => checkout.id === claim.checkoutId)
         }
+        const resolved = yield* checkouts.resolve(
+          claim.workspacePath,
+          registered?.kind === 'directory' ? 'directory' : undefined,
+        )
         if (
           !registered ||
           registered.projectId !== claim.projectId ||
           registered.path !== claim.workspacePath ||
           resolved.canonicalPath !== claim.workspacePath ||
-          resolved.kind === 'directory' ||
-          resolved.repositoryIdentity !== detail.project.repositoryIdentity ||
-          resolved.kind !== registered.kind ||
-          resolved.mainCheckoutPath !== detail.mainCheckout.path
+          (registered.kind !== 'directory' &&
+            (resolved.kind !== registered.kind ||
+              resolved.repositoryIdentity !== detail.project.repositoryIdentity ||
+              resolved.mainCheckoutPath !== detail.mainCheckout.path))
         ) {
           return yield* new ExecutionServiceError({
             reason: 'background-failure',

@@ -29,11 +29,10 @@ export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(fu
     .getProject(projectId)
     .pipe(Effect.catch(error => (error.code === 'not-found' ? Effect.succeed(null) : Effect.fail(error))))
   if (existing) {
-    const checkout = yield* resolver.resolve(directory)
+    const checkout = existing.project[marker] ? yield* resolver.resolve(directory) : null
     if (
-      !existing.project[marker] ||
       (kind === 'coach' && existing.mainCheckout.id !== checkoutId) ||
-      checkout.kind !== 'main' ||
+      checkout?.kind !== 'main' ||
       existing.mainCheckout.path !== checkout.canonicalPath ||
       existing.project.repositoryIdentity !== checkout.repositoryIdentity
     )

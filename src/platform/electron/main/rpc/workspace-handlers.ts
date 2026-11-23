@@ -43,7 +43,11 @@ import {
   taskIdSchema,
   workspaceCheckoutIdSchema,
 } from '@/shared/schemas/workspace.js'
-import { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
+import {
+  CHOOSE_LOCAL_PROJECT_FOLDER,
+  MANAGED_PROJECT_FOLDER,
+  ProjectSetupError,
+} from '@/shared/schemas/workspace-projects.js'
 import * as Store from '@/shared/schemas/workspace-store.js'
 
 const messages = {
@@ -59,6 +63,11 @@ const messages = {
   'checkout-busy':
     'Git refused the change. Commit or stash conflicting changes, or pick a branch no other worktree uses.',
   'conversation-in-use': 'This conversation already has an active agent turn. Wait for it to finish or stop it.',
+  'path-missing': 'This folder does not exist.',
+  'not-a-directory': 'This path is not a folder.',
+  'not-a-repository': 'This folder is not a Git repository.',
+  'not-local-folder': CHOOSE_LOCAL_PROJECT_FOLDER,
+  'managed-folder': MANAGED_PROJECT_FOLDER,
 } as const
 function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
@@ -78,6 +87,8 @@ function sanitize(error: unknown): WorkspaceRpcError {
         return failure('stale')
       case 'invalid-data':
         return failure('invalid-request')
+      case 'membership-conflict':
+        return failure(error.message === MANAGED_PROJECT_FOLDER ? 'managed-folder' : 'conflict')
       default:
         return failure('conflict')
     }
@@ -99,6 +110,13 @@ function sanitize(error: unknown): WorkspaceRpcError {
     )
   if (Schema.is(UnsupportedAgentOperation)(error)) return failure('invalid-request')
   if (Schema.is(CheckoutResolverError)(error)) {
+    if (
+      error.code === 'path-missing' ||
+      error.code === 'not-a-directory' ||
+      error.code === 'not-a-repository' ||
+      error.code === 'not-local-folder'
+    )
+      return failure(error.code)
     if (error.code === 'filesystem-unavailable' || error.code === 'git-unavailable') return failure('unavailable')
     if (error.code === 'dirty-checkout' || error.code === 'worktree-conflict') return failure('checkout-busy')
     return failure('invalid-request')
@@ -120,7 +138,8 @@ function setupSafe<A, E, R>(
   return effect.pipe(
     Effect.catchCause((cause): Effect.Effect<never, WorkspaceRpcError | ProjectSetupError> => {
       const found = Cause.findError(cause)
-      if (found._tag === 'Success' && Schema.is(ProjectSetupError)(found.success)) return Effect.fail(found.success)
+      if (found._tag === 'Success' && Schema.is(ProjectSetupError)(found.success))
+        return Effect.fail(ProjectSetupError.of(found.success.code))
       return Effect.fail(found._tag === 'Success' ? sanitize(found.success) : failure('failed'))
     }),
   )
@@ -400,10 +419,8 @@ export function workspaceHandlers<R = never>(
           mutation(
             Effect.suspend(() =>
               projects.register({
-                commandId: request.commandId,
+                ...request,
                 ...registrationIds(request.commandId),
-                name: request.name,
-                path: request.path,
               }),
             ),
           ),

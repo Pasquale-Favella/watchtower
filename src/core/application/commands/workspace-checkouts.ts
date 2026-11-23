@@ -70,6 +70,11 @@ export const WorkspaceCheckoutsLive = (worktreesDirectory: string) =>
           item => item.id === (checkoutId ?? detail.mainCheckout.id) && !item.archivedAt,
         )
         if (!checkout) return yield* new WorkspaceStoreError({ code: 'not-found', message: 'Checkout was not found' })
+        if (detail.mainCheckout.kind === 'directory')
+          return yield* new CheckoutResolverError({
+            code: 'not-a-repository',
+            message: 'This folder is not a Git repository.',
+          })
         return { detail, checkout }
       })
 

@@ -1,7 +1,12 @@
+import type * as Effect from 'effect/Effect'
 import * as Schema from 'effect/Schema'
 
 import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
-import { projectRegistrationReceiptSchema } from '@/shared/schemas/workspace-store.js'
+import {
+  projectRegistrationReceiptSchema,
+  type RegisterProjectCommand,
+  type WorkspaceStoreError,
+} from '@/shared/schemas/workspace-store.js'
 
 const workspaceProjectTargetFields = {
   commandId: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1)),
@@ -11,13 +16,21 @@ const workspaceProjectTargetFields = {
   path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32_768), Schema.isPattern(/^[^\0]+$/)),
 }
 
-/** Registers any local folder as a Project, Git repository or not; never runs Git.
+/** Registers an absolute folder path as a Project without initializing Git.
  * `createIfMissing` creates a missing folder (recursively) before registering it. */
 export const registerWorkspaceProjectSchema = Schema.Struct({
   ...workspaceProjectTargetFields,
   createIfMissing: Schema.optional(Schema.Boolean),
 })
 export type RegisterWorkspaceProject = Schema.Schema.Type<typeof registerWorkspaceProjectSchema>
+
+/** For a missing folder, defer creation and canonicalization until the store has checked the command receipt. */
+export type RegisterProjectWithPreparation = RegisterProjectCommand & {
+  readonly prepareDirectory?: Effect.Effect<string, WorkspaceStoreError>
+}
+
+export const CHOOSE_LOCAL_PROJECT_FOLDER = 'Choose a folder on this computer.'
+export const MANAGED_PROJECT_FOLDER = 'This folder is managed by Watchtower.'
 
 export const workspaceProjectRegistrationSchema = projectRegistrationReceiptSchema
 export type WorkspaceProjectRegistration = Schema.Schema.Type<typeof workspaceProjectRegistrationSchema>
@@ -100,7 +113,7 @@ export type ProjectSetupErrorCode = Schema.Schema.Type<typeof projectSetupErrorC
 /** Fixed per code: Git and gh output can carry credentials or local paths, so it never crosses the boundary. */
 export const PROJECT_SETUP_MESSAGES = {
   'target-not-empty': 'The destination folder is not empty.',
-  'git-unavailable': 'Git is not installed or not on PATH.',
+  'git-unavailable': "Git isn't installed on this machine. Install Git to create a project.",
   'gh-unavailable': 'GitHub CLI (gh) is not installed or not on PATH.',
   'gh-unauthenticated': 'GitHub CLI is not signed in. Run gh auth login.',
   'remote-not-found': 'The repository was not found or is not accessible.',

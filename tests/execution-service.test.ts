@@ -423,6 +423,61 @@ describe('ExecutionService', () => {
     }
   })
 
+  it.each(['directory', 'main'] as const)(
+    'dispatches a directory checkout resolved as %s at the same path',
+    async kind => {
+      const submitted = Deferred.makeUnsafe<undefined>()
+      const resolved: ResolvedCheckout =
+        kind === 'main'
+          ? resolvedCheckout
+          : {
+              ...resolvedCheckout,
+              kind,
+              repositoryIdentity: null,
+              mainCheckoutPath: null,
+              branch: null,
+              headRevision: null,
+            }
+      const runtime = makeRuntime(
+        () =>
+          Effect.succeed(
+            makeConnection(
+              makeSession({
+                events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+                submit: () =>
+                  Deferred.succeed(submitted, undefined).pipe(
+                    Effect.as({ nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }),
+                  ),
+              }),
+            ),
+          ),
+        {},
+        undefined,
+        [],
+        fakeResolverLayer(),
+        checkoutResolverLayer(() => Effect.succeed(resolved)),
+      )
+      try {
+        const store = await runtime.runPromise(WorkspaceStore)
+        await runtime.runPromise(
+          store.registerProject({
+            project: { ...project, repositoryIdentity: undefined },
+            mainCheckout: { ...checkout, kind: 'directory' },
+          }),
+        )
+        await runtime.runPromise(store.createTask({ task, conversation }))
+        const service = await runtime.runPromise(ExecutionService)
+        await runtime.runPromise(service.start(command))
+        await runtime.runPromise(Deferred.await(submitted).pipe(Effect.timeout('2 seconds')))
+        await expect
+          .poll(async () => (await runtime.runPromise(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+          .toBe('completed')
+      } finally {
+        await runtime.dispose()
+      }
+    },
+  )
+
   it.each([
     ['canonical path changed', Effect.succeed({ ...resolvedCheckout, canonicalPath: 'C:/different-checkout' })],
     ['repository identity changed', Effect.succeed({ ...resolvedCheckout, repositoryIdentity: 'repo:replacement' })],

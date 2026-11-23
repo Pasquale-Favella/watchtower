@@ -82,14 +82,26 @@ export const ProjectProvisionerLive = Layer.effect(
       if (entries.length > 0) return yield* fail('target-not-empty')
     })
 
-    const initialize = Effect.fn('ProjectProvisioner.initialize')(function* (input: string) {
+    const initialize = Effect.fn('ProjectProvisioner.initialize')(function* (input: string, name: string) {
       const target = path.resolve(input)
       if (yield* isRepository(target)) return
       yield* fs
         .makeDirectory(target, { recursive: true })
         .pipe(Effect.mapError(() => ProjectSetupError.of('init-failed')))
-      const result = yield* exec('git', ['init', '--quiet', '--', target], { timeoutMs: LOCAL_TIMEOUT_MS })
+      const options = { cwd: target, timeoutMs: LOCAL_TIMEOUT_MS }
+      const setupGit = (args: readonly string[]) => exec('git', args, options)
+      const configuredBranch = yield* setupGit(['config', '--get', 'init.defaultBranch'])
+      const branch = configuredBranch.exitCode === 0 ? configuredBranch.stdout.trim() || 'main' : 'main'
+      const result = yield* setupGit(['init', '--quiet', `--initial-branch=${branch}`])
       if (result.exitCode !== 0) return yield* fail('init-failed')
+      yield* fs
+        .writeFileString(path.join(target, 'README.md'), `# ${name}\n`, { flag: 'wx' })
+        .pipe(Effect.catch(error => (error.reason._tag === 'AlreadyExists' ? Effect.void : fail('init-failed'))))
+      const added = yield* setupGit(['add', 'README.md'])
+      if (added.exitCode !== 0) return yield* fail('init-failed')
+      const commit = yield* Effect.result(setupGit(['commit', '-m', 'Initial commit']))
+      if (commit._tag === 'Failure' || commit.success.exitCode !== 0)
+        yield* Effect.logWarning('Git could not create the initial project commit.')
     })
 
     /** A repeated clone command finds its own finished clone: a repository whose `origin` is this source. */

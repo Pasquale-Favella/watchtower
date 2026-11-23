@@ -1,4 +1,5 @@
 import { NodeServices } from '@effect/platform-node'
+import * as NodePath from '@effect/platform-node/NodePath'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -13,10 +14,13 @@ import * as SubscriptionRef from 'effect/SubscriptionRef'
 import { describe, expect, it } from 'vitest'
 
 import { ExecutionService } from '@/core/application/commands/execution-service.js'
+import { WorkspaceCheckoutsLive } from '@/core/application/commands/workspace-checkouts.js'
+import { WorkspaceProjectSetup } from '@/core/application/commands/workspace-project-setup.js'
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { AgentDriver, type AgentDriverSession } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
-import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import { CheckoutBranches } from '@/core/ports/checkout-branches.js'
+import { CheckoutResolver, CheckoutResolverError } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
@@ -24,6 +28,7 @@ import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handle
 import { WorkspaceHost, type WorkspaceHostStatus } from '@/platform/electron/main/workspace/host.js'
 import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
 import type { AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
+import { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 const failure = new WorkspaceStoreError({ code: 'database-unavailable', message: 'secret C:\\private\\db stack' })
@@ -56,6 +61,96 @@ const failingHost = (mode: 'typed' | 'failure' | 'defect' | 'throw') =>
 const failingProjects = Layer.succeed(WorkspaceProjects, { register: () => Effect.fail(failure) })
 
 describe('Workspace renderer RPC', () => {
+  it('uses the fixed install message for a Git setup failure', async () => {
+    const workspace = makeWorkspace({
+      projectSetup: {
+        create: () =>
+          Effect.fail(new ProjectSetupError({ code: 'git-unavailable', message: 'Private Git subprocess error' })),
+        clone: () => Effect.die('Unexpected clone'),
+        lookupGitHubRepository: () => Effect.die('Unexpected lookup'),
+        readiness: Effect.die('Unexpected readiness check'),
+      },
+    })
+    try {
+      const result = await workspace.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            return yield* client['workspace:createProject']({
+              commandId: 'no-git',
+              name: 'Project',
+              path: 'C:/folder',
+              publish: 'none',
+            }).pipe(Effect.flip)
+          }),
+        ),
+      )
+      expect(result).toMatchObject({
+        code: 'git-unavailable',
+        message: "Git isn't installed on this machine. Install Git to create a project.",
+      })
+    } finally {
+      await workspace.runtime.dispose()
+    }
+  })
+
+  it('reports folder errors and refuses Git operations on a directory Project', async () => {
+    const workspace = makeWorkspace({
+      checkoutResolver: {
+        ...resolver,
+        resolve: (path, mode) => {
+          if (path === 'C:/missing' && mode !== 'directory')
+            return Effect.fail(new CheckoutResolverError({ code: 'path-missing', message: 'Private path' }))
+          if (path === 'C:/file.txt')
+            return Effect.fail(new CheckoutResolverError({ code: 'not-a-directory', message: 'Private path' }))
+          return Effect.succeed({
+            kind: 'directory',
+            canonicalPath: path,
+            repositoryIdentity: null,
+            mainCheckoutPath: null,
+            branch: null,
+            headRevision: null,
+            dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+          })
+        },
+      },
+    })
+    try {
+      const result = await workspace.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            const register = (commandId: string, path: string) =>
+              client['workspace:registerProject']({ commandId, name: 'Folder', path })
+            const missing = yield* register('missing', 'C:/missing').pipe(Effect.flip)
+            const file = yield* register('file', 'C:/file.txt').pipe(Effect.flip)
+            const project = yield* register('directory', 'C:/folder')
+            const projectId = project.project.id
+            const branches = yield* client['workspace:listBranches']({ projectId }).pipe(Effect.flip)
+            const switched = yield* client['workspace:switchBranch']({
+              commandId: 'switch',
+              projectId,
+              checkoutId: project.mainCheckout.id,
+              branch: 'main',
+            }).pipe(Effect.flip)
+            const worktree = yield* client['workspace:createWorktree']({
+              commandId: 'worktree',
+              projectId,
+              baseBranch: 'main',
+            }).pipe(Effect.flip)
+            return { missing, file, branches, switched, worktree }
+          }),
+        ),
+      )
+      expect(result.missing).toMatchObject({ code: 'path-missing', message: 'This folder does not exist.' })
+      expect(result.file).toMatchObject({ code: 'not-a-directory', message: 'This path is not a folder.' })
+      for (const error of [result.branches, result.switched, result.worktree])
+        expect(error).toMatchObject({ code: 'not-a-repository', message: 'This folder is not a Git repository.' })
+    } finally {
+      await workspace.runtime.dispose()
+    }
+  })
+
   it('returns durable repository reuse across new commands without duplicating projects', async () => {
     const workspace = makeWorkspace()
     try {
@@ -166,7 +261,13 @@ const resolver = CheckoutResolver.of({
   removeWorktree: () => Effect.die('unused'),
 })
 
-function makeWorkspace(options: { readonly respondGate?: Deferred.Deferred<undefined> } = {}) {
+function makeWorkspace(
+  options: {
+    readonly respondGate?: Deferred.Deferred<undefined>
+    readonly checkoutResolver?: CheckoutResolver['Service']
+    readonly projectSetup?: WorkspaceProjectSetup['Service']
+  } = {},
+) {
   const nativeEvents = Effect.runSync(Queue.unbounded<AgentDriverEvent>())
   const highWatermark = Effect.runSync(SubscriptionRef.make(0))
   const submitted = Effect.runSync(Deferred.make<undefined>())
@@ -206,7 +307,11 @@ function makeWorkspace(options: { readonly respondGate?: Deferred.Deferred<undef
   }
   const base = Layer.mergeAll(
     WorkspaceStoreLive({ filename: ':memory:' }),
-    Layer.succeed(CheckoutResolver, resolver),
+    Layer.succeed(CheckoutResolver, options.checkoutResolver ?? resolver),
+    Layer.succeed(CheckoutBranches, {
+      list: () => Effect.die('Unexpected Git branch listing'),
+      switchBranch: () => Effect.die('Unexpected Git branch switch'),
+    }),
     Layer.succeed(HarnessConnectionResolver, { resolve: connectionId => Effect.succeed({ connectionId }) }),
     Layer.succeed(
       AgentDriverRegistry,
@@ -257,7 +362,11 @@ function makeWorkspace(options: { readonly respondGate?: Deferred.Deferred<undef
       })
     }),
   ).pipe(Layer.provideMerge(execution))
-  const application = WorkspaceProjectsLive.pipe(Layer.provideMerge(host))
+  const application = Layer.mergeAll(
+    WorkspaceProjectsLive,
+    WorkspaceCheckoutsLive('C:/worktrees'),
+    options.projectSetup ? Layer.succeed(WorkspaceProjectSetup, options.projectSetup) : Layer.empty,
+  ).pipe(Layer.provideMerge(host), Layer.provide(NodePath.layerWin32))
   const runtime = ManagedRuntime.make(
     workspaceHandlers().pipe(Layer.provideMerge(application), Layer.provideMerge(NodeServices.layer)),
   )

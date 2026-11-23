@@ -29,7 +29,7 @@ export type AgentRunId = Schema.Schema.Type<typeof agentRunIdSchema>
 export const projectSchema = Schema.Struct({
   id: projectIdSchema,
   name: nonBlank,
-  repositoryIdentity: nonBlank,
+  repositoryIdentity: Schema.optional(nonBlank),
   isScratch: Schema.optional(Schema.Boolean),
   isCoach: Schema.optional(Schema.Boolean),
   createdAt: timestamp,

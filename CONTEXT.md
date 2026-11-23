@@ -71,8 +71,9 @@ sending (ADR 0021, ADR 0045).
 _Avoid_: coach section, skills section, coach workspace
 
 **Project**:
-A registered local work context with a stable repository identity. Its name,
-path leaf or remote URL alone does not identify it.
+A registered local folder. A Git Project has a stable repository identity.
+A directory Project is identified by its canonical folder path. A display
+name or path leaf is not an identity.
 _Avoid_: repository name
 
 **Workspace Checkout**:
