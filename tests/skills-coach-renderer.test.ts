@@ -49,6 +49,24 @@ vi.mock('@/renderer/components/ui/button.js', async importOriginal => {
   }
 })
 
+// The confirm dialog renders inline so server rendering sees its copy and captures its confirm handler.
+vi.mock('@/renderer/components/ui/alert-dialog.js', () => {
+  const block = ({ children }: { children?: ReactNode }) => createElement('div', null, children)
+  return {
+    AlertDialog: block,
+    AlertDialogContent: block,
+    AlertDialogHeader: block,
+    AlertDialogFooter: block,
+    AlertDialogTitle: block,
+    AlertDialogDescription: block,
+    AlertDialogCancel: block,
+    AlertDialogAction: ({ children, onClick }: { children?: ReactNode; onClick?: () => void }) => {
+      if (typeof children === 'string' && onClick) userActions.click.set(children, onClick)
+      return createElement('button', { type: 'button' }, children)
+    },
+  }
+})
+
 vi.mock('@/renderer/components/ui/tooltip.js', async importOriginal => {
   const actual = await importOriginal<typeof import('@/renderer/components/ui/tooltip.js')>()
   return {
@@ -217,7 +235,7 @@ describe('Coach & Skills Workspace chat', () => {
     }
   })
 
-  it('restores the RPC chat and discards its Task through New chat', async () => {
+  it('restores the RPC chat and discards its Task once New chat is confirmed', async () => {
     const registry = AtomRegistry.make({
       initialValues: [
         [coachChatQuery.requestAtom, coachChatRequest],
@@ -244,7 +262,10 @@ describe('Coach & Skills Workspace chat', () => {
       expect(workspace).toContain('aria-label="Conversation details"')
       expect(workspace).toContain('aria-label="Terminal"')
       expect(workspace).toContain('aria-label="Right panel"')
+      expect(markup).toContain('Start a new chat?')
       await userActions.click.get('New chat')?.()
+      expect(userActions.discard).not.toHaveBeenCalled()
+      await userActions.click.get('Discard and start new')?.()
       expect(userActions.discard).toHaveBeenCalledExactlyOnceWith({ payload: { taskId: identity.taskId } })
     } finally {
       registry.dispose()
@@ -268,7 +289,8 @@ describe('Coach & Skills Workspace chat', () => {
       expect(userActions.discard).not.toHaveBeenCalled()
       registry.set(coachChatStartingAtom, false)
       render(registry, createElement(CoachSkillsView))
-      await userActions.click.get('New chat')?.()
+      expect(userActions.click.has('New chat')).toBe(true)
+      await userActions.click.get('Discard and start new')?.()
       expect(userActions.discard).toHaveBeenCalledExactlyOnceWith({ payload: { taskId: identity.taskId } })
     } finally {
       registry.dispose()
@@ -304,7 +326,6 @@ describe('Coach & Skills Workspace chat', () => {
     const onStarted = vi.fn()
     let welcome: ReactNode = null
     const coach = {
-      onConnectionChange: () => undefined,
       onStartingChange: () => undefined,
       Welcome: (props: { onSeed: (prompt: string) => void; disabled: boolean }) => {
         welcome = CoachWelcome(props)

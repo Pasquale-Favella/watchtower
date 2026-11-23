@@ -159,7 +159,7 @@ picker and Harness Connections work as they do in Workspace.
 - **Streaming.** Answers stream live: thinking, tool calls, then the answer. **Stop** interrupts the running answer.
 - **Switching harness** applies to the next message. That message starts a new session on the new harness with a
   bounded handoff of the chat so far. Nothing is cleared and no confirmation is asked.
-- **New chat** (header) interrupts a running answer, then discards the chat and its history. The chat stays while you
+- **New chat** (above an active chat) asks for confirmation, then interrupts a running answer and discards the chat and its history. The chat stays while you
   move between sections, but it is not kept across a Watchtower restart.
 - Workspace features that need a project folder are hidden in the chat: the checkout strip, @file mentions, the
   terminal, the details panel, the file preview, diff, review, browser and pull-request panels, and side chats.

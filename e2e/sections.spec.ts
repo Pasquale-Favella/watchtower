@@ -61,8 +61,8 @@ test('every section renders without errors', async () => {
       await waitForAnyVisible(MARKERS[nav](window))
       if (nav === 'Coach & Skills') {
         const coach = window.getByRole('region', { name: 'Coach & Skills' })
-        await expect(coach.getByRole('heading', { name: 'Coach & Skills', level: 1 })).toBeVisible()
-        await expect(coach.getByRole('button', { name: 'New chat' })).toBeDisabled()
+        // A new coach chat has no in-chat header: the top bar carries the title and New chat appears once a chat exists.
+        await expect(coach.getByRole('button', { name: 'New chat' })).toHaveCount(0)
         await expect(coach.getByRole('button', { name: 'Agent and model' })).toBeVisible()
         await expect(coach.getByRole('button', { name: /conversation details|terminal|right panel/i })).toHaveCount(0)
       }

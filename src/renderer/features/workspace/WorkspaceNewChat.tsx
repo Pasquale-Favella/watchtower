@@ -71,7 +71,6 @@ type Props = {
   readonly onStarted: (projectId: ProjectId, taskId: TaskId, conversationId: ConversationId) => void
   readonly onProjectChange?: (projectId: ProjectId | null) => void
   readonly coach?: {
-    readonly onConnectionChange: (connectionId: string) => void
     /** True while the first message is being created and admitted, so New chat cannot discard it mid-start. */
     readonly onStartingChange: (starting: boolean) => void
     /** Replaces the generic new-chat heading and renders above the composer; its controls seed the composer. */
@@ -136,8 +135,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
     accessMode,
     setAccessMode,
   } = useWorkspaceAgentPreferences()
-  const onConnectionChange = coach?.onConnectionChange
-  useEffect(() => onConnectionChange?.(connectionId), [connectionId, onConnectionChange])
   const inspectedConnection = useRef('')
   const [projectCursor, setProjectCursor] = useState<string | undefined>()
   const [priorProjectPages, setPriorProjectPages] = useState<WorkspaceProjectReadPage['items']>([])

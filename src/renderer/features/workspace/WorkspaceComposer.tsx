@@ -127,7 +127,8 @@ type WorkspaceComposerProps = {
   readonly task: Task
   readonly conversationId: ConversationId
   readonly allowInitialCheckoutChoice?: boolean | undefined
-  readonly coach?: { readonly onConnectionChange: (connectionId: string) => void } | undefined
+  /** Coach & Skills chat: hides folder-bound controls, side chats and delegations. */
+  readonly coach?: boolean | undefined
   readonly onSideChatCreated?: ((id: string) => void) | undefined
   /** A side chat's own composer: it shares the parent's checkout, starts no side chat and takes no focus. */
   readonly embedded?: boolean | undefined
@@ -285,8 +286,6 @@ function WorkspaceComposerContent({
   const switchBranch = useSwitchBranch()
   const [branchError, setBranchError] = useState<string | null>(null)
   const connectionId = (resumeMode && selectedSession?.connectionId) || preferredConnectionId
-  const onConnectionChange = coach?.onConnectionChange
-  useEffect(() => onConnectionChange?.(connectionId), [connectionId, onConnectionChange])
   const selectedConnection = connections.data?.items.find(item => item.connectionId === connectionId) ?? null
   const inspection = inspect.data?.connectionId === connectionId ? inspect.data : null
   const observedSession = useMemo(() => {

@@ -50,7 +50,6 @@ export function WorkspaceChatColumn({
   coach?:
     | {
         readonly assistantAction: (markdown: string) => React.ReactNode
-        readonly onConnectionChange: (connectionId: string) => void
       }
     | undefined
 }) {
@@ -248,7 +247,7 @@ export function WorkspaceChatColumn({
                   task={task}
                   conversationId={conversation.id}
                   onSideChatCreated={coach ? undefined : id => panel.addSurface('side-chat', id)}
-                  coach={coach}
+                  coach={coach !== undefined}
                 />
               </div>
             )}

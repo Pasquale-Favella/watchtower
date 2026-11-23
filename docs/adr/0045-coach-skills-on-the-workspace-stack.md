@@ -38,7 +38,7 @@ the coach coordinator, the `coach:*` IPC and RPC, and the coach-only renderer co
 - The Project never appears in Project pickers, Task or Project listings, search, delegation capabilities or side
   chats. A Coach Task cannot have side chats.
 - There is exactly one live Coach Task. It survives navigation between sections.
-- New chat interrupts every active Run of the Task and waits for them to end, then purges the Task. The purge is
+- New chat, after a confirmation dialog, interrupts every active Run of the Task and waits for them to end, then purges the Task. The purge is
   fail-closed: a purge that cannot finish is reported as a failed discard, not as a fresh chat. The purged events
   become tombstones, so the workspace event feed stays contiguous.
 - Opening the Workspace host runs a startup sweep that purges any Coach chat left by an earlier process.

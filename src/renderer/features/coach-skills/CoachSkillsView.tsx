@@ -1,20 +1,22 @@
 import { useMemo, useState } from 'react'
 
 import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons.js'
-import { Button } from '@/renderer/components/ui/button.js'
-import { TextTooltip } from '@/renderer/components/ui/tooltip.js'
 import {
-  useWorkspaceConnectionCatalog,
-  useWorkspaceConnections,
-} from '@/renderer/features/workspace/connection-hooks.js'
-import { connectionDetail, connectionStatus } from '@/renderer/features/workspace/model-picker/catalog.js'
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/renderer/components/ui/alert-dialog.js'
+import { Button } from '@/renderer/components/ui/button.js'
 import { WorkspaceChatColumn } from '@/renderer/features/workspace/WorkspaceChatColumn.js'
 import { WorkspaceNewChat } from '@/renderer/features/workspace/WorkspaceNewChat.js'
 
 import { useCoachChat, useCoachChatStarting, useDiscardCoachChat, useSetCoachChatStarting } from './coach-chat-hooks.js'
 import { CoachWelcome } from './CoachWelcome.js'
-import { HarnessStatusDot } from './harness-status.js'
-import { statusLabel } from './lib.js'
 import { SaveSkillButton } from './SaveSkillButton.js'
 
 function renderAssistantAction(markdown: string) {
@@ -26,13 +28,12 @@ export function CoachSkillsView(): React.JSX.Element {
   const { discard, discarding } = useDiscardCoachChat()
   const starting = useCoachChatStarting()
   const setStarting = useSetCoachChatStarting()
-  const [connectionId, setConnectionId] = useState('')
+  const [confirmingNewChat, setConfirmingNewChat] = useState(false)
   const activeChat = chat.data
 
   const composer = useMemo(
     () => ({
       assistantAction: renderAssistantAction,
-      onConnectionChange: setConnectionId,
       onStartingChange: setStarting,
       Welcome: CoachWelcome,
     }),
@@ -41,21 +42,21 @@ export function CoachSkillsView(): React.JSX.Element {
 
   return (
     <section className="flex min-h-0 w-full flex-1 flex-col overflow-hidden" aria-label="Coach & Skills">
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b px-3">
-        <h1 className="min-w-0 flex-1 truncate text-sm font-medium">Coach &amp; Skills</h1>
-        <CoachConnectionStatus connectionId={connectionId} />
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          disabled={!activeChat || discarding || starting}
-          onClick={() => activeChat && void discard(activeChat.taskId)}
-        >
-          New chat
-        </Button>
-      </header>
       {activeChat ? (
         <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" inert={discarding}>
+          {/* The section title lives in the top bar, so an active chat only carries a quiet New chat action. */}
+          <div className="flex shrink-0 justify-end px-3 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={discarding || starting}
+              onClick={() => setConfirmingNewChat(true)}
+              className="text-foreground h-7 gap-1.5 text-[11.5px] font-medium"
+            >
+              New chat
+            </Button>
+          </div>
           <WorkspaceChatColumn
             key={activeChat.taskId}
             taskId={activeChat.taskId}
@@ -77,37 +78,28 @@ export function CoachSkillsView(): React.JSX.Element {
       ) : (
         <WorkspaceNewChat projectId={null} onStarted={reload} coach={composer} />
       )}
+      <AlertDialog open={confirmingNewChat} onOpenChange={setConfirmingNewChat}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Start a new chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The current coaching chat is discarded and can&apos;t be recovered. A running reply is stopped first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingNewChat(false)
+                if (activeChat) void discard(activeChat.taskId)
+              }}
+            >
+              Discard and start new
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
-  )
-}
-
-function CoachConnectionStatus({ connectionId }: { readonly connectionId: string }): React.JSX.Element {
-  const connections = useWorkspaceConnections()
-  const reading = useWorkspaceConnectionCatalog(connectionId)
-  const connection = connections.data?.items.find(item => item.connectionId === connectionId)
-  const className = 'text-muted-foreground flex min-w-0 items-center gap-1.5 truncate text-xs'
-  if (!connection) {
-    return (
-      <span className={className} role="status">
-        {connections.status === 'loading'
-          ? 'Checking connections…'
-          : connections.data?.items.length
-            ? 'Choose an agent'
-            : 'No agent detected'}
-      </span>
-    )
-  }
-  const status = connectionStatus(reading)
-  return (
-    <TextTooltip
-      label={connectionDetail(reading) ?? statusLabel(status)}
-      trigger={
-        <span className={className} role="status">
-          <HarnessStatusDot status={status} />
-          <span className="truncate">{connection.label}</span>
-          <span className="sr-only">{statusLabel(status)}</span>
-        </span>
-      }
-    />
   )
 }
