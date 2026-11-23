@@ -14,6 +14,7 @@ import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
 import {
   unexpectedCheckoutInspectionHandlers,
+  unexpectedSourceControlHandlers,
   unexpectedTerminalHandlers,
   unexpectedShellRpcs,
   unexpectedWorkspaceHandlers,
@@ -61,6 +62,7 @@ export function makeSettingsRpcTestClient(
     unexpectedWorkspaceHandlers,
     unexpectedWorkspacePanelHandlers,
     unexpectedCheckoutInspectionHandlers,
+    unexpectedSourceControlHandlers,
     unexpectedTerminalHandlers,
     ShellRpcGroup.toLayer({ ...unexpectedShellRpcs, 'shell:open-settings': shellOverrides.openSettings ?? unexpected }),
     analyticsHandlers({ request }),

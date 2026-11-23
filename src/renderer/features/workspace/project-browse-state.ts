@@ -169,15 +169,18 @@ export function githubDescription(readiness: RemoteSourceReadiness['github'] | n
   }
 }
 
+/** `githubOffered` is the Source control preference: when off, GitHub is not listed as a way to add a project. */
 export function projectSources(
   readiness: RemoteSourceReadiness['github'] | null,
+  githubOffered = true,
 ): readonly { readonly id: ProjectSourceId; readonly title: string; readonly description: string }[] {
-  return [
+  const sources = [
     { id: 'new', title: 'New project', description: 'Start a new Git repository from a name' },
     { id: 'local', title: 'Local folder', description: 'Browse a folder on disk' },
     { id: 'git', title: 'Clone from Git URL', description: 'Clone from a remote URL' },
     { id: 'github', title: 'Clone from GitHub', description: githubDescription(readiness) },
-  ]
+  ] as const
+  return githubOffered ? sources : sources.filter(source => source.id !== 'github')
 }
 
 /** Keys of the add-project palette's input. */

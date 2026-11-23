@@ -13,6 +13,7 @@ import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import type { SkillsThresholds } from '../src/shared/schemas/skills.js'
 import {
   unexpectedCheckoutInspectionHandlers,
+  unexpectedSourceControlHandlers,
   unexpectedShellHandlers,
   unexpectedTerminalHandlers,
   unexpectedWorkspaceHandlers,
@@ -74,6 +75,7 @@ export function makeApplicationRpcTestClient(
     unexpectedWorkspaceHandlers,
     unexpectedWorkspacePanelHandlers,
     unexpectedCheckoutInspectionHandlers,
+    unexpectedSourceControlHandlers,
     unexpectedTerminalHandlers,
     analyticsHandlers({ request: workerRequest }),
     configHandlers({ request: workerRequest }, Effect.succeed(0)),

@@ -26,6 +26,7 @@ import type {
   WorkspacePullRequestReviewRequest,
 } from '@/shared/schemas/workspace-pull-requests.js'
 
+import { useSourceControlPreferences } from '../source-control-preferences.js'
 import { usePullRequestReviewDraft } from './use-pull-request-preferences.js'
 import { usePullRequestCommands } from './use-pull-requests.js'
 
@@ -40,7 +41,9 @@ export function PullRequestActions(props: Props): React.JSX.Element {
   const commands = usePullRequestCommands()
   const [mergeOpen, setMergeOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
-  const [mergeMethod, setMergeMethod] = useState<'merge' | 'squash' | 'rebase'>('squash')
+  const preferences = useSourceControlPreferences()
+  const [chosenMergeMethod, setMergeMethod] = useState<'merge' | 'squash' | 'rebase' | null>(null)
+  const mergeMethod = chosenMergeMethod ?? preferences.mergeMethod
   const action = (value: 'close' | 'reopen' | 'ready' | 'draft' | 'update-branch') => {
     void commands
       .execute({

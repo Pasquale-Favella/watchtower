@@ -15,7 +15,10 @@ export const SETTINGS_PANES = {
     { id: 'export', label: 'Export' },
     { id: 'skills', label: 'Skills detection' },
   ],
-  workspace: [{ id: 'workspace', label: 'Agent defaults' }],
+  workspace: [
+    { id: 'workspace', label: 'Agent defaults' },
+    { id: 'source-control', label: 'Source control' },
+  ],
 } as const
 
 export type SettingsPane = (typeof SETTINGS_PANES)[SettingsGroup][number]['id']

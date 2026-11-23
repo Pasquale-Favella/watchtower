@@ -23,6 +23,7 @@ import { PricingPane } from './pricing-pane'
 import { PrivacyPane } from './privacy-pane'
 import { ProvidersPane } from './providers-pane'
 import { SkillsPane } from './skills-pane'
+import { SourceControlPane } from './source-control-pane'
 import { useSettingsDialogStore } from './use-settings-dialog-store'
 import { WorkspacePane } from './workspace-pane'
 
@@ -50,6 +51,8 @@ function SettingsPaneContent({ pane }: { readonly pane: SettingsPane }): React.J
       return <McpPane />
     case 'workspace':
       return <WorkspacePane />
+    case 'source-control':
+      return <SourceControlPane />
   }
 }
 

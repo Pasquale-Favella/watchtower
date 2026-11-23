@@ -12,14 +12,17 @@ import {
   remoteRepositorySchema,
 } from '@/shared/schemas/workspace-projects.js'
 
-const LOCAL_TIMEOUT_MS = 10_000
+export const LOCAL_TIMEOUT_MS = 10_000
 const NETWORK_TIMEOUT_MS = 60_000
 const CLONE_TIMEOUT_MS = 10 * 60_000
 /** gh's documented exit status when a command needs authentication. */
 const GH_AUTH_REQUIRED = 4
 
+/** gh reads this host's sign-in state; readiness and Source control discovery share the same probe. */
+export const GH_AUTH_STATUS_ARGS = ['auth', 'status', '--hostname', 'github.com'] as const
+
 // No terminal is attached, and ambient Git overrides must not redirect writes to another checkout.
-const env = {
+export const commandEnvironment = {
   GIT_DIR: undefined,
   GIT_WORK_TREE: undefined,
   GIT_COMMON_DIR: undefined,
@@ -30,6 +33,7 @@ const env = {
   GH_PROMPT_DISABLED: '1',
   GH_NO_UPDATE_NOTIFIER: '1',
 }
+const env = commandEnvironment
 const decodeRepository = Schema.decodeUnknownEffect(Schema.fromJsonString(remoteRepositorySchema))
 const fail = (code: ProjectSetupErrorCode) => Effect.fail(ProjectSetupError.of(code))
 
@@ -154,9 +158,7 @@ export const ProjectProvisionerLive = Layer.effect(
     })
 
     // Suspended so each read spawns `gh` again; sign-in state changes outside the application.
-    const readiness = Effect.suspend(() =>
-      exec('gh', ['auth', 'status', '--hostname', 'github.com'], { timeoutMs: LOCAL_TIMEOUT_MS }),
-    ).pipe(
+    const readiness = Effect.suspend(() => exec('gh', GH_AUTH_STATUS_ARGS, { timeoutMs: LOCAL_TIMEOUT_MS })).pipe(
       Effect.map(result => ({ github: result.exitCode === 0 ? ('ready' as const) : ('unauthenticated' as const) })),
       Effect.catch(error =>
         Effect.succeed({

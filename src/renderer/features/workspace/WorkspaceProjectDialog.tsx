@@ -17,6 +17,7 @@ import {
   useLookupGitHubRepository,
   useRemoteSourceReadiness,
 } from './project-directory-hooks.js'
+import { useSourceControlPreferences } from './source-control-preferences.js'
 import { useWorkspaceProjectDialog } from './use-project-dialog.js'
 import { useWorkspaceNavigation } from './use-workspace-navigation.js'
 import { FooterAction } from './WorkspaceAddProjectFrame.js'
@@ -81,6 +82,7 @@ function AddProjectPalette() {
   const lookup = useLookupGitHubRepository()
   const picker = useChooseWorkspaceProjectDirectory()
   const readiness = useRemoteSourceReadiness().data?.github ?? null
+  const { githubOffered } = useSourceControlPreferences()
   const [view, setView] = useState<View>({ kind: 'sources' })
   const [browseQuery, setBrowseQuery] = useState(INITIAL_BROWSE_QUERY)
   const [error, setError] = useState<string | null>(null)
@@ -157,6 +159,7 @@ function AddProjectPalette() {
       return (
         <SourcesView
           readiness={readiness}
+          githubOffered={githubOffered}
           error={error}
           footerTrailing={fileManager}
           onLocal={() => go({ kind: 'browse' })}
@@ -190,6 +193,7 @@ function AddProjectPalette() {
         <NewProjectView
           baseQuery={browseQuery}
           readiness={readiness}
+          githubOffered={githubOffered}
           busy={busy}
           error={error}
           onBack={back}

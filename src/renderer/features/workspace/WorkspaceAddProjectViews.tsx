@@ -58,6 +58,7 @@ const SOURCE_ICONS: Record<ProjectSourceId, ReactNode> = {
 
 export function SourcesView({
   readiness,
+  githubOffered,
   error,
   footerTrailing,
   onLocal,
@@ -65,6 +66,7 @@ export function SourcesView({
   onRemote,
 }: {
   readonly readiness: RemoteSourceReadiness['github'] | null
+  readonly githubOffered: boolean
   readonly error: string | null
   readonly footerTrailing: ReactNode
   readonly onLocal: () => void
@@ -78,7 +80,7 @@ export function SourcesView({
     git: () => onRemote('git'),
     github: () => onRemote('github'),
   }
-  const rows: PaletteRow[] = projectSources(readiness).map(source => ({
+  const rows: PaletteRow[] = projectSources(readiness, githubOffered).map(source => ({
     id: source.id,
     icon: SOURCE_ICONS[source.id],
     title: source.title,
@@ -214,6 +216,7 @@ export function BrowseView({
 export function NewProjectView({
   baseQuery,
   readiness,
+  githubOffered,
   busy,
   error,
   onBack,
@@ -221,6 +224,7 @@ export function NewProjectView({
 }: {
   readonly baseQuery: string
   readonly readiness: RemoteSourceReadiness['github'] | null
+  readonly githubOffered: boolean
   readonly busy: boolean
   readonly error: string | null
   readonly onBack: () => void
@@ -236,17 +240,19 @@ export function NewProjectView({
   const path = parentPath && isValidFolderName(trimmed) ? joinBrowsePath(parentPath, trimmed) : null
   const taken = Boolean(listing.data?.entries.some(entry => entry.name.toLowerCase() === trimmed.toLowerCase()))
   const canPublish = readiness === 'ready'
-  const rows: PaletteRow[] = [
-    {
-      id: 'publish',
-      icon: <Github />,
-      title: 'Create private repository on GitHub',
-      description: canPublish ? 'Adds it as origin through GitHub CLI' : githubDescription(readiness),
-      disabled: !canPublish || busy,
-      trailing: publish && canPublish ? <SquareCheck /> : <Square />,
-      onActivate: () => setPublish(value => !value),
-    },
-  ]
+  const rows: PaletteRow[] = githubOffered
+    ? [
+        {
+          id: 'publish',
+          icon: <Github />,
+          title: 'Create private repository on GitHub',
+          description: canPublish ? 'Adds it as origin through GitHub CLI' : githubDescription(readiness),
+          disabled: !canPublish || busy,
+          trailing: publish && canPublish ? <SquareCheck /> : <Square />,
+          onActivate: () => setPublish(value => !value),
+        },
+      ]
+    : []
   return (
     <WorkspaceAddProjectFrame
       inputLabel="Project name"
@@ -262,7 +268,7 @@ export function NewProjectView({
       submit={{
         label: busy ? 'Creating' : 'Create',
         disabled: busy || path === null || taken,
-        onSubmit: () => path && onSubmit(path, trimmed, publish && canPublish),
+        onSubmit: () => path && onSubmit(path, trimmed, githubOffered && publish && canPublish),
       }}
       header={
         <p className="text-muted-foreground border-b px-3 py-2 text-xs">

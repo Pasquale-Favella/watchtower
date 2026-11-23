@@ -7,6 +7,7 @@ import { CheckoutActionsRpcGroup } from '../../src/shared/rpc/checkout-actions.j
 import { CheckoutInspectionRpcGroup } from '../../src/shared/rpc/checkout-inspection.js'
 import { CheckoutNavigationRpcGroup } from '../../src/shared/rpc/checkout-navigation.js'
 import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
+import { SourceControlRpcGroup } from '../../src/shared/rpc/source-control.js'
 import { TerminalRpcGroup } from '../../src/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '../../src/shared/rpc/workspace.js'
 import { WorkspaceDelegationRpcGroup } from '../../src/shared/rpc/workspace-delegations.js'
@@ -33,6 +34,10 @@ export const unexpectedCheckoutInspectionHandlers = CheckoutInspectionRpcGroup.t
   'checkout:listEntries': unexpected,
   'checkout:readFile': unexpected,
   'checkout:writeFile': unexpected,
+})
+
+export const unexpectedSourceControlHandlers = SourceControlRpcGroup.toLayer({
+  'sourceControl:discover': unexpected,
 })
 
 export const unexpectedTerminalHandlers = TerminalRpcGroup.toLayer({
@@ -195,6 +200,7 @@ export const unexpectedNativeHandlers = Layer.mergeAll(
   unexpectedShellHandlers,
   unexpectedWorkspaceHandlers,
   unexpectedCheckoutInspectionHandlers,
+  unexpectedSourceControlHandlers,
   unexpectedTerminalHandlers,
   unexpectedWorkspacePanelHandlers,
 )
