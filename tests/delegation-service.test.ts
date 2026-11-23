@@ -205,12 +205,12 @@ function buildHarness(options: HarnessOptions = {}) {
 type Built = ReturnType<typeof buildHarness>
 
 /** Opens the store and seeds a live parent Run, which the start path requires. */
-async function openParent(built: Built) {
+async function openParent(built: Built, isCoach = false) {
   const store = await built.runtime.runPromise(WorkspaceStore)
   const service = await built.runtime.runPromise(DelegationService)
   built.lifecycle.coordinator = await built.runtime.runPromise(DelegationCoordinator)
   built.lifecycle.service = service
-  await built.runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
+  await built.runtime.runPromise(store.registerProject({ project: { ...project, isCoach }, mainCheckout: checkout }))
   await built.runtime.runPromise(store.createTask({ task: parentTask, conversation: parentConversation }))
   await built.runtime.runPromise(acceptRun(store, parentCommand))
   return { store, service }
@@ -243,6 +243,28 @@ describe('model search', () => {
 })
 
 describe('DelegationService', () => {
+  it('offers no delegation capability or child listing for a Coach Run', async () => {
+    const built = buildHarness()
+    try {
+      const { service } = await openParent(built, true)
+      await expect(built.runtime.runPromise(service.capabilities(parentCaller))).resolves.toMatchObject({
+        remainingDepth: 0,
+        maxActive: 0,
+        connections: [],
+      })
+      await expect(built.runtime.runPromise(service.list(parentCaller, 10))).resolves.toEqual({
+        items: [],
+        truncated: false,
+      })
+      await expect(built.runtime.runPromise(service.start(parentCaller, request()))).rejects.toMatchObject({
+        code: 'parent-not-active',
+      })
+      expect(built.starts).toEqual([])
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
   it('filters each catalog by search before any cap and counts the matches', async () => {
     const built = buildHarness()
     try {

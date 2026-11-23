@@ -84,6 +84,9 @@ export class WorkspaceStore extends Context.Service<
       command: RegisterCheckoutCommand,
     ) => Effect.Effect<CheckoutRegistrationReceipt, WorkspaceStoreError>
     readonly createTask: (command: CreateTaskCommand) => Effect.Effect<TaskCreationReceipt, WorkspaceStoreError>
+    readonly listActiveCoachRuns: (taskId: TaskId) => Effect.Effect<ReadonlyArray<AgentRunId>, WorkspaceStoreError>
+    readonly purgeCoachChat: (taskId: TaskId) => Effect.Effect<void, WorkspaceStoreError>
+    readonly sweepCoachChats: () => Effect.Effect<void, WorkspaceStoreError>
     readonly renameTask: (command: RenameTaskCommand) => Effect.Effect<TaskMutationReceipt, WorkspaceStoreError>
     readonly setTaskArchived: (
       command: SetTaskArchivedCommand,

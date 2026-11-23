@@ -296,6 +296,9 @@ export class DelegationService extends Context.Service<
           const parentContext = snapshot.runContexts?.find(context => context.runId === caller.runId)
           if (!parentRun || !parentContext || !LIVE_PARENT_STATUSES.includes(parentRun.status))
             return yield* new DelegationError({ code: 'parent-not-active', message: 'This run is not active.' })
+          const project = yield* store.getProject(snapshot.task.projectId).pipe(Effect.mapError(storeFailure))
+          if (project.project.isCoach)
+            return yield* new DelegationError({ code: 'parent-not-active', message: 'This run cannot delegate.' })
           return parentContext
         })
 
@@ -303,6 +306,16 @@ export class DelegationService extends Context.Service<
           caller: DelegationCallerScope,
           search?: string,
         ) {
+          const project = yield* store.getProject(caller.projectId).pipe(Effect.mapError(storeFailure))
+          if (project.project.isCoach)
+            return {
+              parentAccessMode: caller.accessMode,
+              depth: 0,
+              remainingDepth: 0,
+              activeCount: 0,
+              maxActive: 0,
+              connections: [],
+            } satisfies DelegationCapabilities
           const link = yield* store.getDelegationByChildTask(caller.taskId).pipe(Effect.mapError(storeFailure))
           const active = yield* store
             .listDelegations({

@@ -300,6 +300,66 @@ const seed = Effect.gen(function* () {
   }
 })
 
+it('interrupts a Coach run and waits for its terminal event before purging the chat', async () => {
+  const { runtime, observations, submitted, nativeEvents } = makeWorkspace()
+  try {
+    await runtime.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const { request } = yield* seed
+          const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+          const store = yield* WorkspaceStore
+          const regular = yield* client['workspace:discardCoachChat']({ taskId: request.taskId }).pipe(Effect.flip)
+          expect(regular.code).toBe('conflict')
+          const registration = yield* store.registerProject({
+            project: {
+              id: 'coach-project' as never,
+              name: 'Coach',
+              repositoryIdentity: 'c:/coach',
+              isCoach: true,
+              createdAt: '2026-10-29T10:00:00Z',
+              updatedAt: '2026-10-29T10:00:00Z',
+            },
+            mainCheckout: {
+              id: 'coach-checkout' as never,
+              kind: 'main',
+              path: 'C:/coach',
+              createdAt: '2026-10-29T10:00:00Z',
+            },
+          })
+          const coach = yield* client['workspace:createTask']({
+            commandId: 'coach-create',
+            projectId: registration.project.id,
+            title: 'Coach',
+            description: '',
+          })
+          const started = yield* client['workspace:startRun']({
+            ...request,
+            commandId: 'coach-start',
+            taskId: coach.taskId,
+            conversationId: coach.conversationId,
+            checkoutId: registration.mainCheckout.id,
+          })
+          yield* Deferred.await(submitted).pipe(Effect.timeout('2 seconds'))
+          const discard = yield* Effect.forkScoped(client['workspace:discardCoachChat']({ taskId: coach.taskId }))
+          yield* Effect.gen(function* () {
+            while (observations.interruptions === 0) yield* Effect.sleep('10 millis')
+          }).pipe(Effect.timeout('2 seconds'))
+          const beforeStop = yield* store.readTaskSnapshot(coach.taskId, 1)
+          expect(beforeStop.runs).toMatchObject([{ id: started.runId, status: 'interruptRequested' }])
+          yield* Queue.offer(nativeEvents, { kind: 'turnInterrupted', nativeTurnId: 'native-turn' })
+          yield* Fiber.join(discard).pipe(Effect.timeout('2 seconds'))
+          const removed = yield* store.readTaskDetail(coach.taskId).pipe(Effect.flip)
+          expect(removed.code).toBe('not-found')
+          yield* client['workspace:discardCoachChat']({ taskId: coach.taskId })
+        }),
+      ),
+    )
+  } finally {
+    await runtime.dispose()
+  }
+})
+
 it('explains an active Conversation turn without reporting a command identity conflict', async () => {
   const { runtime, close } = makeWorkspace()
   try {

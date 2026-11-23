@@ -44,8 +44,11 @@ const command: BeginRunCommand = {
   prompt: 'Fix the bug',
 }
 
-const withStore = async (use: (store: WorkspaceStore['Service'], run: RunEffect) => Promise<void>) => {
-  const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+const withStore = async (
+  use: (store: WorkspaceStore['Service'], run: RunEffect) => Promise<void>,
+  filename = ':memory:',
+) => {
+  const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
   try {
     await use(await runtime.runPromise(WorkspaceStore), effect => runtime.runPromise(effect))
   } finally {
@@ -3990,6 +3993,277 @@ describe('side chat storage', () => {
       await setup(store, run)
       await run(store.deleteSideChatTask({ sideChatId: 'side-chat:none', sideTaskId: task.id, onlyIfUnused: false }))
       await expect(run(store.readTaskSnapshot(task.id, 10))).resolves.toMatchObject({ task: { id: task.id } })
+    })
+  })
+})
+
+describe('Coach chat storage', () => {
+  const coach = { ...project, id: 'coach-project' as never, repositoryIdentity: 'repo:coach', isCoach: true }
+  const coachCheckout = { ...checkout, id: 'coach-checkout' as never, path: 'C:/coach' }
+  const coachTask = { ...task, id: 'coach-task' as never, projectId: coach.id, title: 'Private coaching' }
+  const coachConversation = { ...conversation, id: 'coach-conversation' as never, title: coachTask.title }
+  const creation = { commandId: 'create-coach', task: coachTask, conversation: coachConversation }
+  const coachRun = {
+    ...command,
+    commandId: 'start-coach',
+    runId: 'coach-run' as never,
+    taskId: coachTask.id,
+    conversationId: coachConversation.id,
+    checkoutId: coachCheckout.id,
+    attachments: [
+      { id: 'a'.repeat(64), name: 'notes.txt', mediaType: 'text/plain', size: 10, source: 'reference' as const },
+    ],
+  }
+
+  async function createCoachChat(store: WorkspaceStore['Service'], run: RunEffect): Promise<void> {
+    await run(store.registerProject({ project: coach, mainCheckout: coachCheckout }))
+    await run(store.createTask(creation))
+  }
+
+  it('requires a JSON boolean true for both discard and startup sweep', async () => {
+    const directory = mkdtempSync(join(process.cwd(), 'watchtower-coach-marker-'))
+    const filename = join(directory, 'workspace.sqlite')
+    try {
+      await withStore(async (store, run) => {
+        await createCoachChat(store, run)
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`UPDATE workspace_project SET payload = json_set(payload, '$.isCoach', 1) WHERE id = ${coach.id}`
+          }).pipe(Effect.provide(Sqlite.SqliteClient.layer({ filename }))),
+        )
+        await expect(run(store.listActiveCoachRuns(coachTask.id))).rejects.toMatchObject({
+          code: 'membership-conflict',
+        })
+        await expect(run(store.purgeCoachChat(coachTask.id))).rejects.toMatchObject({ code: 'membership-conflict' })
+        await run(store.sweepCoachChats())
+        await expect(run(store.readTaskDetail(coachTask.id))).resolves.toMatchObject({ task: { id: coachTask.id } })
+      }, filename)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['parent', 'side'] as const)('refuses a Coach bring-back with a regular %s Conversation', async end => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createCoachChat(store, run)
+      const record = {
+        id: 'cross-project-bring-back',
+        parentTaskId: coachTask.id,
+        parentConversationId: end === 'parent' ? conversation.id : coachConversation.id,
+        sideChatId: 'side-chat:legacy',
+        sideTaskId: coachTask.id,
+        sideConversationId: end === 'side' ? conversation.id : coachConversation.id,
+        sourceRunId: coachRun.runId,
+        title: 'Legacy side chat',
+        digest: 'Private digest',
+        truncated: false,
+        status: 'pending' as const,
+        createdAt: command.issuedAt,
+        consumedRunId: null,
+        consumedAt: null,
+      }
+      await expect(run(store.recordSideChatBringBack(record))).resolves.toMatchObject({ _tag: 'recorded' })
+      await expect(run(store.purgeCoachChat(coachTask.id))).rejects.toMatchObject({ code: 'membership-conflict' })
+      await expect(run(store.sweepCoachChats())).rejects.toMatchObject({ code: 'membership-conflict' })
+      await expect(run(store.readPendingSideChatBringBack(record.parentConversationId))).resolves.toEqual(record)
+      await expect(run(store.readTaskDetail(coachTask.id))).resolves.toMatchObject({ task: { id: coachTask.id } })
+      await expect(run(store.readTaskDetail(task.id))).resolves.toMatchObject({ task: { id: task.id } })
+    })
+  })
+
+  it('preserves both chats when a regular Conversation has a handoff from a Coach Run', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createCoachChat(store, run)
+      await acceptRun(store, run, coachRun)
+      await run(
+        store.recordDriverEvent(coachRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'coach-finished',
+          occurredAt: command.issuedAt,
+          event: { kind: 'turnCompleted' },
+        }),
+      )
+      await run(store.beginRun({ ...command, provisionalAgentSessionId: 'regular-session' }))
+      await run(store.claimDispatch(command.runId, 7, command.issuedAt))
+      await run(
+        store.recordConversationHandoff(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          handoff: {
+            sourceRunId: coachRun.runId,
+            sourceConnectionId: coachRun.connectionId,
+            targetConnectionId: command.connectionId,
+            highWatermark: 0,
+            truncated: false,
+          },
+        }),
+      )
+      const before = await run(store.pageEvents(0, 100))
+      await expect(run(store.purgeCoachChat(coachTask.id))).rejects.toMatchObject({ code: 'membership-conflict' })
+      await expect(run(store.sweepCoachChats())).rejects.toMatchObject({ code: 'membership-conflict' })
+      await expect(run(store.pageEvents(0, 100))).resolves.toEqual(before)
+    })
+  })
+
+  it('keeps Coach addressable while excluding it from paginated lists and conversation search', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createCoachChat(store, run)
+      await expect(run(store.getProject(coach.id))).resolves.toMatchObject({ project: { isCoach: true } })
+      await expect(run(store.listProjects({ limit: 1 }))).resolves.toMatchObject({
+        total: 1,
+        items: [{ id: project.id }],
+        nextAfterId: null,
+      })
+      await expect(run(store.listTasks(coach.id, { includeArchived: true, includeDelegated: true }))).resolves.toEqual({
+        total: 0,
+        items: [],
+        nextAfterId: null,
+      })
+      const search = store.searchPromptConversations
+      if (!search) throw new Error('Conversation search was not installed')
+      expect(await run(search({ query: 'Private coaching' }))).toEqual([])
+      expect(await run(search({ query: 'Conversation' }))).toMatchObject([{ conversationId: conversation.id }])
+      await expect(run(store.readTaskDetail(coachTask.id))).resolves.toMatchObject({ task: { id: coachTask.id } })
+      await expect(
+        run(
+          store.createTask({
+            task: { ...coachTask, id: 'second-coach-task' as never },
+            conversation: { ...coachConversation, id: 'second-coach-conversation' as never },
+          }),
+        ),
+      ).rejects.toMatchObject({ code: 'admission-conflict' })
+    })
+  })
+
+  it('refuses a regular Task and purges a settled Coach chat with its execution and receipts', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createCoachChat(store, run)
+      await expect(run(store.purgeCoachChat(task.id))).rejects.toMatchObject({ code: 'membership-conflict' })
+      await acceptRun(store, run, coachRun)
+      await expect(run(store.listActiveCoachRuns(coachTask.id))).resolves.toEqual([coachRun.runId])
+      await expect(run(store.purgeCoachChat(coachTask.id))).rejects.toMatchObject({ code: 'admission-conflict' })
+      const followUp = {
+        commandId: 'coach-follow-up',
+        taskId: coachTask.id,
+        conversationId: coachConversation.id,
+        prompt: 'One more question',
+        issuedAt: command.issuedAt,
+      }
+      await run(store.enqueueFollowUp(followUp))
+      await run(
+        store.recordDriverEvent(coachRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'coach-approval',
+          occurredAt: command.issuedAt,
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'coach-request',
+              runId: coachRun.runId,
+              sessionId: 'session-1' as never,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Approve?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      await run(
+        store.recordRequestResponse({
+          commandId: 'coach-response',
+          issuedAt: command.issuedAt,
+          runId: coachRun.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          requestId: 'coach-request',
+          decision: { kind: 'approve' },
+        }),
+      )
+      await run(
+        store.recordSteer({
+          commandId: 'coach-steer',
+          issuedAt: command.issuedAt,
+          runId: coachRun.runId,
+          ownerEpoch: 7,
+          generation: 1,
+          message: 'Focus',
+        }),
+      )
+      await run(
+        store.recordDriverEvent(coachRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'coach-interrupted',
+          occurredAt: command.issuedAt,
+          event: { kind: 'turnInterrupted' },
+        }),
+      )
+      const { events, highWatermark } = await run(store.pageEvents(0, 100))
+      const firstCoachEvent = events[0]
+      if (!firstCoachEvent) throw new Error('Coach run produced no events')
+      const reference = {
+        kind: 'event' as const,
+        id: String(firstCoachEvent.sequence),
+        digest: legacyFingerprint(firstCoachEvent),
+      }
+      await expect(run(store.readWorkspacePayload(reference, 0, 10))).resolves.toMatchObject({ truncated: true })
+      await run(store.purgeCoachChat(coachTask.id))
+      await run(store.purgeCoachChat(coachTask.id))
+      await expect(run(store.readTaskDetail(coachTask.id))).rejects.toMatchObject({ code: 'not-found' })
+      await expect(run(store.readConversationPage(coachConversation.id, 0, 10))).rejects.toMatchObject({
+        code: 'not-found',
+      })
+      await expect(run(store.readWorkspacePayload(reference, 0, 10))).rejects.toMatchObject({
+        code: 'not-found',
+      })
+      await run(store.beginRun({ ...command, provisionalAgentSessionId: 'regular-session' }))
+      const first = await run(store.pageEvents(0, 1))
+      expect(first).toMatchObject({ highWatermark: highWatermark + 1, nextAfterSequence: 1, hasMore: true })
+      const remaining = await run(store.pageEvents(1, 100))
+      const replay = [...first.events, ...remaining.events]
+      expect(replay.map(event => event.sequence)).toEqual([...events.map(event => event.sequence), highWatermark + 1])
+      expect(replay.slice(0, -1)).toEqual(
+        events.map(({ sequence }) => ({
+          sequence,
+          schemaVersion: 1,
+          kind: 'driverEvent',
+          runId: 'purged',
+          taskId: 'purged',
+          generation: 1,
+          occurredAt: '1970-01-01T00:00:00Z',
+          data: { purged: true },
+        })),
+      )
+      expect(replay.at(-1)).toMatchObject({ taskId: task.id, kind: 'runQueued' })
+      await expect(run(store.readTaskDetail(task.id))).resolves.toMatchObject({ task: { id: task.id } })
+      await expect(run(store.createTask(creation))).resolves.toMatchObject({ replayed: false })
+      await expect(run(store.enqueueFollowUp(followUp))).resolves.toMatchObject({ replayed: false })
+      await acceptRun(store, run, coachRun)
+    })
+  })
+
+  it('sweeps an abandoned active chat and keeps the Coach project and checkout', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await createCoachChat(store, run)
+      await acceptRun(store, run, coachRun)
+      await run(store.recoverWorker(7, command.issuedAt))
+      await expect(run(store.listActiveCoachRuns(coachTask.id))).resolves.toEqual([])
+      await expect(run(store.purgeCoachChat(coachTask.id))).rejects.toMatchObject({ code: 'admission-conflict' })
+      await run(store.sweepCoachChats())
+      await run(store.sweepCoachChats())
+      await expect(run(store.readTaskDetail(coachTask.id))).rejects.toMatchObject({ code: 'not-found' })
+      await expect(run(store.readTaskDetail(task.id))).resolves.toMatchObject({ task: { id: task.id } })
+      await expect(run(store.getProject(coach.id))).resolves.toMatchObject({ mainCheckout: { id: coachCheckout.id } })
+      await expect(run(store.createTask(creation))).resolves.toMatchObject({ replayed: false })
     })
   })
 })

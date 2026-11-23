@@ -221,6 +221,10 @@ export function applyWorkspaceFrame(state: WorkspaceProjection, frame: Workspace
       resubscribe = true
       break
     }
+    if (event.kind === 'driverEvent' && event.data.purged === true) {
+      state = { ...state, lastAppliedSequence: event.sequence }
+      continue
+    }
     state = applyEvent(state, event)
     applied.push(event)
   }

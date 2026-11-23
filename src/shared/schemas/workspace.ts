@@ -31,6 +31,7 @@ export const projectSchema = Schema.Struct({
   name: nonBlank,
   repositoryIdentity: nonBlank,
   isScratch: Schema.optional(Schema.Boolean),
+  isCoach: Schema.optional(Schema.Boolean),
   createdAt: timestamp,
   updatedAt: timestamp,
   archivedAt: optionalTimestamp,

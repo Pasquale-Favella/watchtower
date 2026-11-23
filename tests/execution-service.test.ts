@@ -2820,6 +2820,55 @@ describe('ExecutionService', () => {
     }
   })
 
+  it('interrupts the native turn when the request arrives after queueing but before launch', async () => {
+    const claimStarted = Effect.runSync(Deferred.make<undefined>())
+    const releaseClaim = Effect.runSync(Deferred.make<undefined>())
+    const nativeInterrupted = Effect.runSync(Deferred.make<undefined>())
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    const session = makeSession({
+      interrupt: () =>
+        Deferred.succeed(nativeInterrupted, undefined).pipe(
+          Effect.as({ acknowledged: true, termination: 'stillRunning' as const }),
+        ),
+      events: () =>
+        Stream.fromEffect(Deferred.await(nativeInterrupted)).pipe(Stream.as({ kind: 'turnInterrupted' } as const)),
+    })
+    const runtime = makeRuntime(
+      () => Effect.succeed(makeConnection(session)),
+      {},
+      WorkspaceStore.of({
+        ...store,
+        claimDispatch: (...args) =>
+          Deferred.succeed(claimStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseClaim)),
+            Effect.andThen(store.claimDispatch(...args)),
+          ),
+      }),
+    )
+
+    try {
+      await setup(store, runStore)
+      const service = await runtime.runPromise(ExecutionService)
+      const start = runtime.runFork(service.start(command))
+      await runStore(Deferred.await(claimStarted))
+      expect((await runStore(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('queued')
+      const interrupt = Effect.runFork(service.interrupt(command.runId))
+      await runStore(Deferred.succeed(releaseClaim, undefined))
+      await Effect.runPromise(Fiber.join(start))
+      await Effect.runPromise(Fiber.join(interrupt))
+      await runStore(Deferred.await(nativeInterrupted).pipe(Effect.timeout('2 seconds')))
+      await expect
+        .poll(async () => (await runStore(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+        .toBe('interrupted')
+    } finally {
+      await runStore(Deferred.succeed(releaseClaim, undefined))
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
   it('persists an interrupt requested during submit and ingests a terminal event after the native ack', async () => {
     const submitStarted = await Effect.runPromise(Deferred.make<undefined>())
     const releaseSubmit = await Effect.runPromise(Deferred.make<undefined>())

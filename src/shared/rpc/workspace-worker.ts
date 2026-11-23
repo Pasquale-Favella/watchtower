@@ -1,6 +1,7 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
+import { workspaceCoachWorkerRpcs } from '@/shared/rpc/workspace.js'
 import { delegationListSchema, delegationRecordSchema } from '@/shared/schemas/delegation.js'
 import { promptConversationMatchesSchema, promptConversationSearchSchema } from '@/shared/schemas/prompt-context.js'
 import { agentRunIdSchema, conversationIdSchema, projectIdSchema, taskIdSchema } from '@/shared/schemas/workspace.js'
@@ -92,6 +93,7 @@ export const nativeTurnAcknowledgementSchema = Schema.Struct({
 const error = WorkspaceStoreError
 
 export const WorkspaceWorkerRpcGroup = RpcGroup.make(
+  ...workspaceCoachWorkerRpcs,
   Rpc.make('workspace-worker:ready', { success: workspaceWorkerReadySchema, error }),
   Rpc.make('workspace-worker:registerProject', {
     payload: registerProjectCommandSchema,

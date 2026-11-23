@@ -29,6 +29,7 @@ export const searchPromptConversations = Effect.fn('WorkspaceStore.searchPromptC
     JOIN workspace_task t ON t.id = c.task_id
     JOIN workspace_project p ON p.id = t.project_id
     WHERE t.archived = 0 AND json_extract(p.payload, '$.archivedAt') IS NULL
+      AND COALESCE(json_extract(p.payload, '$.isCoach'), 0) = 0
       AND c.id != ${request.excludeConversationId ?? ''}
   `
   const needle = normalizeSearchQuery(request.query)

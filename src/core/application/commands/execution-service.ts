@@ -1158,10 +1158,10 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
       | import('@/core/ports/agent-driver.js').AgentDriverError
       | import('@/core/ports/agent-driver.js').UnsupportedAgentOperation
     > {
-      const state = workers.get(runId)
       return yield* runOwnedControl(
         Effect.uninterruptibleMask(restoreNative =>
           Effect.gen(function* () {
+            const state = workers.get(runId)
             let failure: Cause.Cause<WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation> | undefined
             const held = state
               ? yield* Effect.exit(store.holdQueuedFollowUps(state.claim.conversationId, parsedOptions.ownerEpoch))

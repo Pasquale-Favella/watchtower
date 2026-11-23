@@ -1,5 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as SqlClient from 'effect/sql/SqlClient'
 import { describe, expect, it } from 'vitest'
 
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
@@ -74,8 +80,8 @@ const createCommand: CreateDelegationCommand = {
   limits: { maxDepth: 1, maxActivePerParentRun: 4 },
 }
 
-const withStore = async (use: (store: WorkspaceStore['Service']) => Promise<void>) => {
-  const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+const withStore = async (use: (store: WorkspaceStore['Service']) => Promise<void>, filename = ':memory:') => {
+  const runtime = ManagedRuntime.make(WorkspaceStoreLive({ filename }))
   try {
     const store = await runtime.runPromise(WorkspaceStore)
     await runtime.runPromise(store.registerProject({ project, mainCheckout: checkout }))
@@ -107,6 +113,119 @@ describe('delegation store', () => {
       expect(replay).toMatchObject({ delegationId: 'dlg-1', replayed: true })
       expect(await run(store.getDelegationByChildTask(childTask.id), store)).toMatchObject({ id: 'dlg-1', depth: 1 })
     })
+  })
+
+  it('purges the Coach Task graph even when side chat and delegation rows exist', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'watchtower-coach-graph-'))
+    const filename = join(directory, 'workspace.sqlite')
+    try {
+      await withStore(async store => {
+        await run(store.createDelegation(createCommand), store)
+        await run(
+          store.recordDriverEvent(parentRun.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: 'graph-completed',
+            occurredAt: ts,
+            event: { kind: 'turnCompleted' },
+          }),
+          store,
+        )
+        const sideTask = { ...parentTask, id: 'side-task:legacy' as never }
+        const sideConversation = { ...parentConversation, id: 'side-conversation:legacy' as never }
+        await run(
+          store.createTask({
+            task: {
+              ...sideTask,
+              sideChat: { parentTaskId: parentTask.id, parentConversationId: parentConversation.id },
+            },
+            conversation: sideConversation,
+          }),
+          store,
+        )
+        const bringBack = {
+          id: 'bring-back-legacy',
+          parentTaskId: parentTask.id,
+          parentConversationId: parentConversation.id,
+          sideChatId: 'side-chat:legacy',
+          sideTaskId: sideTask.id,
+          sideConversationId: sideConversation.id,
+          sourceRunId: 'side-run-legacy' as never,
+          title: 'Side chat',
+          digest: 'Assistant: A finding',
+          truncated: false,
+          status: 'pending' as const,
+          createdAt: ts,
+          consumedRunId: null,
+          consumedAt: null,
+        }
+        await expect(run(store.recordSideChatBringBack(bringBack), store)).resolves.toMatchObject({ _tag: 'recorded' })
+        // Normal Coach admission forbids both links. Mark the populated Project to exercise defensive deletion.
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`UPDATE workspace_project SET payload = json_set(payload, '$.isCoach', json('true')) WHERE id = ${project.id}`
+          }).pipe(Effect.provide(Sqlite.SqliteClient.layer({ filename }))),
+        )
+        await expect(run(store.listDelegations({}), store)).resolves.toEqual({ items: [], truncated: false })
+        await run(store.purgeCoachChat(parentTask.id), store)
+        await expect(run(store.getDelegation(record.id), store)).resolves.toBeNull()
+        await expect(run(store.readPendingSideChatBringBack(parentConversation.id), store)).resolves.toBeNull()
+        for (const id of [parentTask.id, childTask.id, sideTask.id]) {
+          await expect(run(store.readTaskDetail(id), store)).rejects.toMatchObject({ code: 'not-found' })
+        }
+      }, filename)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it.each(['parent', 'child'] as const)('refuses to purge a Coach %s of a cross-project Delegation', async end => {
+    const directory = mkdtempSync(join(tmpdir(), 'watchtower-coach-delegation-'))
+    const filename = join(directory, 'workspace.sqlite')
+    const otherProject = { ...project, id: 'p-other' as never, repositoryIdentity: 'repo:other' }
+    const otherCheckout = { ...checkout, id: 'co-other' as never, path: 'C:/other' }
+    const coachProjectId = end === 'parent' ? project.id : otherProject.id
+    const coachTaskId = end === 'parent' ? parentTask.id : childTask.id
+    try {
+      await withStore(async store => {
+        await run(store.registerProject({ project: otherProject, mainCheckout: otherCheckout }), store)
+        await run(
+          store.createDelegation({
+            ...createCommand,
+            task: { ...createCommand.task, projectId: otherProject.id },
+            record: { ...record, projectId: otherProject.id, checkoutId: otherCheckout.id },
+          }),
+          store,
+        )
+        await run(
+          store.recordDriverEvent(parentRun.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: 'cross-project-parent-completed',
+            occurredAt: ts,
+            event: { kind: 'turnCompleted' },
+          }),
+          store,
+        )
+        await Effect.runPromise(
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient
+            yield* sql`UPDATE workspace_project SET payload = json_set(payload, '$.isCoach', json('true')) WHERE id = ${coachProjectId}`
+          }).pipe(Effect.provide(Sqlite.SqliteClient.layer({ filename }))),
+        )
+        await expect(run(store.purgeCoachChat(coachTaskId), store)).rejects.toMatchObject({
+          code: 'membership-conflict',
+        })
+        await expect(run(store.sweepCoachChats(), store)).rejects.toMatchObject({ code: 'membership-conflict' })
+        await expect(run(store.getDelegation(record.id), store)).resolves.toMatchObject({ id: record.id })
+        for (const id of [parentTask.id, childTask.id]) {
+          await expect(run(store.readTaskDetail(id), store)).resolves.toMatchObject({ task: { id } })
+        }
+      }, filename)
+    } finally {
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 
   it('refuses a child when the parent Run is not active', async () => {

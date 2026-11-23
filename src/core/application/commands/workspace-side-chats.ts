@@ -449,6 +449,11 @@ export const WorkspaceSideChatsLive = Layer.effect(
             const project = yield* store
               .getProject(detail.task.projectId, { limit: 50 })
               .pipe(Effect.mapError(unavailable))
+            if (project.project.isCoach)
+              return yield* new SideChatError({
+                code: 'invalid-request',
+                message: 'Coach chats cannot have side chats.',
+              })
             // A side chat shares the checkout of the parent's latest Run, falling back to the main checkout.
             const checkoutId =
               snapshot.runContexts?.find(item => item.conversationId === request.parentConversationId)?.checkoutId ??
@@ -575,12 +580,17 @@ export const WorkspaceSideChatsLive = Layer.effect(
       create,
       get: id => Effect.map(requireRecord(id), record => record.binding),
       list: parentTaskId =>
-        Effect.map(persistence.list(), records =>
-          records
+        Effect.gen(function* () {
+          const records = yield* persistence.list()
+          const bindings = records
             .filter(record => record.binding.parentTaskId === parentTaskId)
             .map(record => record.binding)
-            .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-        ),
+          const first = bindings[0]
+          if (!first) return []
+          const project = yield* store.getProject(first.projectId).pipe(Effect.mapError(unavailable))
+          if (project.project.isCoach) return []
+          return bindings.sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        }),
       bringBack,
       delete: deleteSideChat,
       enrichPrompt: (taskId, prompt, nativeSessionId) =>

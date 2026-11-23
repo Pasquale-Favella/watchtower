@@ -179,6 +179,12 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       execute('workspace-worker:registerCheckout', command, () => options.store.registerCheckout(command), true),
     'workspace-worker:createTask': command =>
       execute('workspace-worker:createTask', command, () => options.store.createTask(command), true),
+    'workspace-worker:listActiveCoachRuns': request =>
+      execute('workspace-worker:listActiveCoachRuns', request, () => options.store.listActiveCoachRuns(request.taskId)),
+    'workspace-worker:purgeCoachChat': request =>
+      execute('workspace-worker:purgeCoachChat', request, () => options.store.purgeCoachChat(request.taskId), true),
+    'workspace-worker:sweepCoachChats': request =>
+      execute('workspace-worker:sweepCoachChats', request, () => options.store.sweepCoachChats(), true),
     'workspace-worker:renameTask': command =>
       execute('workspace-worker:renameTask', command, () => options.store.renameTask(command), true),
     'workspace-worker:setTaskArchived': command =>

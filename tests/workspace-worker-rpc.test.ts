@@ -65,6 +65,38 @@ const withWorkspaceStore = <A, E, R>(
   )
 
 describe('workspace worker RPC server', () => {
+  it('routes Coach active-run reads, purge, and startup sweep through the workspace writer', async () => {
+    const result = await Effect.runPromise(
+      withWorkspaceStore((store, sqlScope) =>
+        Effect.gen(function* () {
+          const client = yield* RpcTest.makeClient(WorkspaceWorkerRpcGroup)
+          yield* client['workspace-worker:registerProject']({
+            project: { ...project, isCoach: true },
+            mainCheckout: checkout,
+          })
+          yield* client['workspace-worker:createTask']({ task, conversation })
+          yield* client['workspace-worker:beginRun'](command)
+          const active = yield* client['workspace-worker:listActiveCoachRuns']({ taskId: task.id })
+          const busy = yield* client['workspace-worker:purgeCoachChat']({ taskId: task.id }).pipe(Effect.flip)
+          yield* client['workspace-worker:sweepCoachChats']({})
+          const afterSweep = yield* client['workspace-worker:listActiveCoachRuns']({ taskId: task.id })
+          yield* client['workspace-worker:createTask']({ task, conversation })
+          yield* client['workspace-worker:purgeCoachChat']({ taskId: task.id })
+          const missing = yield* client['workspace-worker:readTaskSnapshot']({ taskId: task.id, runLimit: 1 }).pipe(
+            Effect.flip,
+          )
+          return { active, busy, afterSweep, missing }
+        }).pipe(Effect.provide(workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) }))),
+      ),
+    )
+    expect(result).toMatchObject({
+      active: [command.runId],
+      busy: { code: 'admission-conflict' },
+      afterSweep: [],
+      missing: { code: 'not-found' },
+    })
+  })
+
   it('round-trips durable context handoff metadata and run model selections', async () => {
     const result = await Effect.runPromise(
       withWorkspaceStore((store, sqlScope) =>

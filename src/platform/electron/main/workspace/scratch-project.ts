@@ -10,14 +10,14 @@ import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
-const projectId = Schema.decodeUnknownSync(projectIdSchema)('workspace-scratch-project')
-const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)('workspace-scratch-checkout')
-
-/** The no-project context owns a persistent checkout under the application profile. */
-export const ensureScratchProject = Effect.fn('ensureScratchProject')(function* (
+export const ensureManagedChatProject = Effect.fn('ensureManagedChatProject')(function* (
   store: WorkspaceStore['Service'],
   directory: string,
+  kind: 'scratch' | 'coach',
 ) {
+  const marker = kind === 'coach' ? 'isCoach' : 'isScratch'
+  const projectId = Schema.decodeUnknownSync(projectIdSchema)(`workspace-${kind}-project`)
+  const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)(`workspace-${kind}-checkout`)
   const fs = yield* FileSystem.FileSystem
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner
   const resolver = yield* CheckoutResolver
@@ -27,7 +27,8 @@ export const ensureScratchProject = Effect.fn('ensureScratchProject')(function* 
   if (existing) {
     const checkout = yield* resolver.resolve(directory)
     if (
-      !existing.project.isScratch ||
+      !existing.project[marker] ||
+      (kind === 'coach' && existing.mainCheckout.id !== checkoutId) ||
       checkout.kind !== 'main' ||
       existing.mainCheckout.path !== checkout.canonicalPath ||
       existing.project.repositoryIdentity !== checkout.repositoryIdentity
@@ -83,9 +84,9 @@ export const ensureScratchProject = Effect.fn('ensureScratchProject')(function* 
   return yield* store.registerProject({
     project: {
       id: projectId,
-      name: 'No project',
+      name: kind === 'coach' ? 'Coach' : 'No project',
       repositoryIdentity: checkout.repositoryIdentity,
-      isScratch: true,
+      [marker]: true,
       createdAt: at,
       updatedAt: at,
     },
@@ -98,3 +99,7 @@ export const ensureScratchProject = Effect.fn('ensureScratchProject')(function* 
     },
   })
 })
+
+/** The no-project context owns a persistent checkout under the application profile. */
+export const ensureScratchProject = (store: WorkspaceStore['Service'], directory: string) =>
+  ensureManagedChatProject(store, directory, 'scratch')

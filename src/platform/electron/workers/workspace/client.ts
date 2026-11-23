@@ -324,6 +324,20 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           ),
         createTask: (command: CreateTaskCommand) =>
           invoke('workspace-worker:createTask', command, () => rawClient['workspace-worker:createTask'](command)),
+        listActiveCoachRuns: taskId => {
+          const payload = { taskId }
+          return invoke('workspace-worker:listActiveCoachRuns', payload, () =>
+            rawClient['workspace-worker:listActiveCoachRuns'](payload),
+          )
+        },
+        purgeCoachChat: taskId => {
+          const payload = { taskId }
+          return invoke('workspace-worker:purgeCoachChat', payload, () =>
+            rawClient['workspace-worker:purgeCoachChat'](payload),
+          )
+        },
+        sweepCoachChats: () =>
+          invoke('workspace-worker:sweepCoachChats', {}, () => rawClient['workspace-worker:sweepCoachChats']({})),
         renameTask: (command: RenameTaskCommand) =>
           invoke('workspace-worker:renameTask', command, () => rawClient['workspace-worker:renameTask'](command)),
         setTaskArchived: (command: SetTaskArchivedCommand) =>

@@ -60,6 +60,20 @@ it('stops at a gap and resumes from the last contiguous event on overflow or dis
   expect(resumed.resubscribe).toBe(false)
 })
 
+it('advances past a purged sequence without projecting it', () => {
+  const purged = {
+    ...event(2, 'driverEvent', { purged: true }),
+    taskId: 'purged' as WorkspaceExecutionEvent['taskId'],
+  }
+  const first = applyWorkspaceFrame(createWorkspaceProjection(), frame([event(1), purged], 3, true))
+  expect(first.state.lastAppliedSequence).toBe(2)
+  expect(first.state.tasks.purged).toBeUndefined()
+  expect(first.applied).toEqual([event(1)])
+  const resumed = applyWorkspaceFrame(first.state, frame([event(3)], 3))
+  expect(resumed.state.tasks['task-1']?.transcript).toEqual([event(1), event(3)])
+  expect(resumed.resubscribe).toBe(false)
+})
+
 it('detects an incomplete final page but accepts an empty caught-up snapshot', () => {
   expect(applyWorkspaceFrame(createWorkspaceProjection(), frame([], 2)).resubscribe).toBe(true)
   expect(applyWorkspaceFrame(createWorkspaceProjection(), frame([])).resubscribe).toBe(false)

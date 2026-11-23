@@ -152,6 +152,9 @@ export function workspaceHandlers<R = never>(
     readonly prepareScratchProject?: (
       store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
     ) => Effect.Effect<import('@/shared/schemas/workspace-projects.js').WorkspaceProjectRegistration, unknown, R>
+    readonly prepareCoachProject?: (
+      store: import('@/core/ports/workspace-store.js').WorkspaceStore['Service'],
+    ) => Effect.Effect<import('@/shared/schemas/workspace-projects.js').WorkspaceProjectRegistration, unknown, R>
   } = {},
 ) {
   const attachmentStore = options.attachments
@@ -341,6 +344,51 @@ export function workspaceHandlers<R = never>(
           options.prepareScratchProject
             ? mutation(options.prepareScratchProject(store))
             : Effect.fail(failure('unavailable')),
+        'workspace:ensureCoachProject': () =>
+          options.prepareCoachProject
+            ? mutation(options.prepareCoachProject(store))
+            : Effect.fail(failure('unavailable')),
+        'workspace:discardCoachChat': ({ taskId }) =>
+          read(() =>
+            Effect.gen(function* () {
+              const interrupted = new Set<string>()
+              while (true) {
+                const active = yield* store.listActiveCoachRuns(taskId)
+                for (const runId of active) {
+                  if (interrupted.has(runId)) continue
+                  yield* host
+                    .withExecution(execution => execution.interrupt(runId))
+                    .pipe(
+                      Effect.catch(error =>
+                        Effect.gen(function* () {
+                          if ((yield* store.listActiveCoachRuns(taskId)).includes(runId))
+                            return yield* Effect.fail(error)
+                        }),
+                      ),
+                    )
+                  interrupted.add(runId)
+                }
+                if (active.length === 0) {
+                  const purged = yield* Effect.uninterruptible(
+                    store.purgeCoachChat(taskId).pipe(
+                      Effect.tap(() => referenceIndex.invalidate),
+                      Effect.as(true),
+                      Effect.catch(error =>
+                        error.code === 'admission-conflict' ? Effect.succeed(false) : Effect.fail(error),
+                      ),
+                    ),
+                  )
+                  if (purged) return
+                }
+                yield* Effect.sleep('100 millis')
+              }
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: '10 seconds',
+                orElse: () => Effect.fail(failure('conversation-in-use')),
+              }),
+            ),
+          ),
         'workspace:listConnections': () =>
           safe(Effect.map(host.listConnections ?? Effect.succeed([]), items => ({ items }))),
         'workspace:inspectConnection': ({ connectionId, refresh }) =>

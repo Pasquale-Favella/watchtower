@@ -28,6 +28,7 @@ import {
 import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
 import {
   type AgentRunId,
+  agentRunIdSchema,
   agentSessionIdSchema,
   type ConversationId,
   projectIdSchema,
@@ -459,7 +460,11 @@ const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
     const registration = command as RegisterProjectCommand
     intent = {
       commandId: registration.commandId,
-      project: { name: registration.project.name, repositoryIdentity: registration.project.repositoryIdentity },
+      project: {
+        name: registration.project.name,
+        repositoryIdentity: registration.project.repositoryIdentity,
+        ...(registration.project.isCoach ? { isCoach: true } : {}),
+      },
       mainCheckout: { path: registration.mainCheckout.path },
     }
   } else if (kind === 'registerCheckout') {
@@ -636,6 +641,8 @@ const makeService = Effect.gen(function* () {
             })
             if (existing[0]) {
               project = yield* decodeJson(projectSchema)(String(existing[0].payload))
+              if (Boolean(project.isCoach) !== Boolean(command.project.isCoach))
+                return yield* safeError('membership-conflict', 'Repository is registered with a different project kind')
               const checkouts =
                 yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') = 'main' AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
               if (checkouts.length !== 1)
@@ -709,9 +716,18 @@ const makeService = Effect.gen(function* () {
                 return yield* safeError('command-conflict', 'Command ID was already used with different input')
               return { ...(yield* decodeJson(taskCreationReceiptSchema)(String(prior[0].payload))), replayed: true }
             }
-            const projects = yield* sql`SELECT id FROM workspace_project WHERE id = ${command.task.projectId}`
-            if (projects.length === 0) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const projects = yield* sql`
+              SELECT json_extract(payload, '$.isCoach') AS coach
+              FROM workspace_project WHERE id = ${command.task.projectId}
+            `
+            if (!projects[0]) return yield* safeError('not-found', 'Project does not exist')
             const { sideChat, ...task } = command.task
+            if (projects[0].coach === 1) {
+              if (sideChat) return yield* safeError('membership-conflict', 'Coach chats cannot have side chats')
+              const existing = yield* sql`SELECT 1 FROM workspace_task WHERE project_id = ${task.projectId} LIMIT 1`
+              if (existing.length > 0)
+                return yield* safeError('admission-conflict', 'Discard the current Coach chat before creating another')
+            }
             yield* sql`INSERT INTO workspace_task (id, project_id, archived, side_chat, payload) VALUES (${task.id}, ${task.projectId}, 0, ${sideChat ? 1 : 0}, ${encode({ ...task, status: 'open', updatedAt: task.createdAt })})`
             yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${command.task.id}, ${encode({ ...command.conversation, taskId: command.task.id })})`
             const result = {
@@ -725,6 +741,207 @@ const makeService = Effect.gen(function* () {
           }),
         )
       }),
+    )
+
+  const findCoachChatTasks = Effect.fnUntraced(function* (taskId: Task['id']) {
+    const matches = yield* sql`
+      SELECT t.project_id, t.side_chat, json_type(p.payload, '$.isCoach') AS coach
+      FROM workspace_task t JOIN workspace_project p ON p.id = t.project_id
+      WHERE t.id = ${taskId}
+    `
+    const target = matches[0]
+    if (!target) return []
+    if (target.coach !== 'true') return yield* safeError('membership-conflict', 'Task does not belong to Coach')
+    const tasks = yield* sql`
+      WITH RECURSIVE chat_tasks(id) AS (
+        SELECT id FROM workspace_task
+        WHERE id = ${taskId}
+          OR (project_id = ${target.project_id} AND side_chat = 1 AND ${target.side_chat} = 0)
+        UNION
+        SELECT child.id FROM chat_tasks parent
+        JOIN workspace_delegation d ON d.parent_task_id = parent.id
+        JOIN workspace_task child ON child.id = d.child_task_id AND child.project_id = ${target.project_id}
+      )
+      SELECT id FROM chat_tasks
+    `
+    return tasks.map(row => String(row.id))
+  })
+
+  const assertCoachDependencies = Effect.fnUntraced(function* (taskIds: ReadonlyArray<string>) {
+    if (taskIds.length === 0) return
+    const conflicts = yield* sql`
+      WITH coach_tasks(id) AS (SELECT value FROM json_each(${encode(taskIds)})),
+      dependencies(task_ids, checkout_id) AS (
+        SELECT json_array(d.parent_task_id, d.child_task_id, parent.task_id, child.task_id, r.task_id,
+            child_run.task_id), json_extract(d.payload, '$.checkoutId')
+        FROM workspace_delegation d
+        JOIN workspace_conversation parent ON parent.id = d.parent_conversation_id
+        JOIN workspace_conversation child ON child.id = d.child_conversation_id
+        JOIN workspace_agent_run r ON r.id = d.parent_run_id
+        LEFT JOIN workspace_agent_run child_run ON child_run.id = json_extract(d.payload, '$.childRunId')
+        UNION ALL
+        SELECT json_array(parent.task_id, json_extract(b.payload, '$.parentTaskId'),
+            json_extract(b.payload, '$.sideTaskId'), parent_payload.task_id, side.task_id,
+            source.task_id, consumed.task_id, consumed_payload.task_id), NULL
+        FROM workspace_side_chat_bring_back b
+        JOIN workspace_conversation parent ON parent.id = b.parent_conversation_id
+        LEFT JOIN workspace_conversation parent_payload ON parent_payload.id = json_extract(b.payload, '$.parentConversationId')
+        LEFT JOIN workspace_conversation side ON side.id = json_extract(b.payload, '$.sideConversationId')
+        LEFT JOIN workspace_agent_run source ON source.id = json_extract(b.payload, '$.sourceRunId')
+        LEFT JOIN workspace_agent_run consumed ON consumed.id = b.consumed_run_id
+        LEFT JOIN workspace_agent_run consumed_payload ON consumed_payload.id = json_extract(b.payload, '$.consumedRunId')
+        UNION ALL
+        SELECT json_array(r.task_id, c.task_id, d.parent_task_id, d.child_task_id), NULL
+        FROM workspace_message m
+        JOIN workspace_agent_run r ON r.id = m.run_id
+        JOIN workspace_conversation c ON c.id = m.conversation_id
+        LEFT JOIN workspace_delegation d ON d.id = m.delegation_id
+        UNION ALL
+        SELECT json_array(q.task_id, c.task_id), NULL
+        FROM workspace_follow_up_queue q JOIN workspace_conversation c ON c.id = q.conversation_id
+        UNION ALL
+        SELECT json_array(i.task_id, r.task_id, c.task_id), i.checkout_id
+        FROM workspace_dispatch_intent i
+        JOIN workspace_agent_run r ON r.id = i.run_id
+        LEFT JOIN workspace_conversation c ON c.id = i.conversation_id
+        UNION ALL
+        SELECT json_array(s.task_id, c.task_id), s.checkout_id
+        FROM workspace_agent_session s JOIN workspace_conversation c ON c.id = s.conversation_id
+        UNION ALL
+        SELECT json_array(r.task_id, s.task_id), r.checkout_id
+        FROM workspace_agent_run r LEFT JOIN workspace_agent_session s ON s.id = r.session_id
+        UNION ALL
+        SELECT json_array(e.task_id, r.task_id), NULL
+        FROM workspace_execution_event e JOIN workspace_agent_run r ON r.id = e.run_id
+        WHERE e.task_id <> r.task_id
+        UNION ALL
+        SELECT json_array(e.task_id, r.task_id), NULL
+        FROM workspace_driver_event_identity i
+        JOIN workspace_execution_event e ON e.sequence = i.sequence
+        JOIN workspace_agent_run r ON r.id = i.run_id
+        WHERE e.task_id <> r.task_id
+        UNION ALL
+        SELECT json_array(e.task_id, source.task_id), NULL
+        FROM workspace_execution_event e
+        JOIN workspace_agent_run source ON source.id = CASE
+          WHEN e.kind IN ('contextHandoff', 'sideChatBringBack') THEN json_extract(e.payload, '$.sourceRunId')
+        END
+        WHERE e.task_id <> source.task_id
+      )
+      SELECT 1 FROM dependencies d
+      JOIN json_each(d.task_ids) AS member
+      JOIN workspace_task coach ON coach.id = member.value
+      LEFT JOIN workspace_checkout checkout ON checkout.id = d.checkout_id
+      WHERE coach.id IN (SELECT id FROM coach_tasks)
+        AND (checkout.project_id <> coach.project_id OR EXISTS (
+          SELECT 1 FROM json_each(d.task_ids) AS related
+          JOIN workspace_task other ON other.id = related.value
+          WHERE other.project_id <> coach.project_id
+        ))
+      LIMIT 1
+    `
+    if (conflicts.length > 0)
+      return yield* safeError('membership-conflict', 'Coach chat has dependencies outside its Project')
+  })
+
+  const liveCoachRuns = Effect.fnUntraced(function* (taskIds: ReadonlyArray<string>) {
+    const active: AgentRun['id'][] = []
+    for (const taskId of taskIds) {
+      const rows = yield* sql`
+        SELECT id FROM workspace_agent_run
+        WHERE task_id = ${taskId} AND status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+      `
+      for (const row of rows) active.push(yield* Schema.decodeUnknownEffect(agentRunIdSchema)(row.id))
+    }
+    return active
+  })
+
+  const deleteCoachTask = Effect.fnUntraced(function* (taskId: string) {
+    const runs = sql`SELECT id FROM workspace_agent_run WHERE task_id = ${taskId}`
+    const conversations = sql`SELECT id FROM workspace_conversation WHERE task_id = ${taskId}`
+    const delegations = sql`SELECT id FROM workspace_delegation WHERE parent_task_id = ${taskId} OR child_task_id = ${taskId}`
+    // Receipts can outlive their queue entries and must not replay deleted identities.
+    yield* sql`
+      WITH receipts AS (
+        SELECT command_id,
+          CASE WHEN json_valid(payload) THEN payload END AS payload,
+          CASE WHEN json_valid(promotion_payload) THEN promotion_payload END AS promotion_payload
+        FROM workspace_command_receipt
+      )
+      DELETE FROM workspace_command_receipt
+      WHERE command_id IN (
+        SELECT command_id FROM receipts
+        WHERE json_extract(payload, '$.taskId') = ${taskId}
+          OR json_extract(payload, '$.conversationId') IN (${conversations})
+          OR json_extract(payload, '$.runId') IN (${runs})
+          OR json_extract(promotion_payload, '$.receipt.runId') IN (${runs})
+          OR json_extract(payload, '$.delegationId') IN (${delegations})
+      )
+    `
+    yield* sql`
+      DELETE FROM workspace_side_chat_bring_back
+      WHERE parent_conversation_id IN (${conversations}) OR consumed_run_id IN (${runs})
+        OR json_extract(payload, '$.parentTaskId') = ${taskId}
+        OR json_extract(payload, '$.parentConversationId') IN (${conversations})
+        OR json_extract(payload, '$.sideTaskId') = ${taskId}
+        OR json_extract(payload, '$.sideConversationId') IN (${conversations})
+        OR json_extract(payload, '$.sourceRunId') IN (${runs})
+        OR json_extract(payload, '$.consumedRunId') IN (${runs})
+    `
+    yield* sql`DELETE FROM workspace_delegation WHERE id IN (${delegations})`
+    yield* sql`DELETE FROM workspace_driver_event_identity WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_driver_request_state WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_request_response_intent WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_steer_intent WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_message WHERE run_id IN (${runs}) OR conversation_id IN (${conversations})`
+    yield* sql`DELETE FROM workspace_follow_up_queue WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_dispatch_intent WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_execution_event WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_agent_run WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_agent_session WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_conversation WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_task WHERE id = ${taskId}`
+  })
+
+  const listActiveCoachRuns: WorkspaceStore['Service']['listActiveCoachRuns'] = taskId =>
+    guard(sql.withTransaction(Effect.flatMap(findCoachChatTasks(taskId), liveCoachRuns)))
+
+  const purgeCoachChat: WorkspaceStore['Service']['purgeCoachChat'] = taskId =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const tasks = yield* findCoachChatTasks(taskId)
+          yield* assertCoachDependencies(tasks)
+          for (const id of tasks) {
+            const blocking = yield* sql`
+              SELECT 1 FROM workspace_agent_run r
+              LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              WHERE r.task_id = ${id}
+                AND (r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                  OR (r.status IN ('uncertain', 'recoveryRequired') AND i.state NOT IN ('settled', 'failed')))
+              LIMIT 1
+            `
+            if (blocking.length > 0)
+              return yield* safeError('admission-conflict', 'Wait for the Coach Run to stop before discarding the chat')
+          }
+          for (const id of tasks) yield* deleteCoachTask(id)
+        }),
+      ),
+    )
+
+  const sweepCoachChats: WorkspaceStore['Service']['sweepCoachChats'] = () =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const tasks = yield* sql`
+            SELECT t.id FROM workspace_task t JOIN workspace_project p ON p.id = t.project_id
+            WHERE json_type(CASE WHEN json_valid(p.payload) THEN p.payload END, '$.isCoach') = 'true'
+          `
+          const taskIds = tasks.map(task => String(task.id))
+          yield* assertCoachDependencies(taskIds)
+          for (const id of taskIds) yield* deleteCoachTask(id)
+        }),
+      ),
     )
 
   const renameTask: WorkspaceStore['Service']['renameTask'] = (command: RenameTaskCommand) =>
@@ -2614,7 +2831,8 @@ const makeService = Effect.gen(function* () {
         }).pipe(Effect.mapError(() => safeError('invalid-data', 'Event cursor or page limit is invalid')))
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
+            const high =
+              yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
             const latestSequence = Number(high[0]?.high ?? 0)
             if (throughSequence !== undefined && throughSequence > latestSequence)
               return yield* Effect.fail(safeError('invalid-data', 'Event high watermark is invalid'))
@@ -2622,32 +2840,36 @@ const makeService = Effect.gen(function* () {
             const events: Array<WorkspaceExecutionEvent> = []
             let cursor = afterSequence
             let encodedBytes = 1024
-            let hasMore = false
-            for (let index = 0; index < limit; index += 1) {
+            for (let index = 0; index < limit && cursor < highWatermark; index += 1) {
               const rows =
-                yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence > ${cursor} AND sequence <= ${highWatermark} ORDER BY sequence LIMIT 1`
+                yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence = ${cursor + 1}`
               const row = rows[0] as Record<string, unknown> | undefined
-              if (!row) break
-              const storedEvent = yield* decodeStoredEvent(row)
-              const event = summarize(storedEvent, 'event', String(storedEvent.sequence))
+              // Purges remove the event and its identities. A missing allocated sequence still occupies a feed slot.
+              const event: WorkspaceExecutionEvent = row
+                ? summarize(yield* decodeStoredEvent(row), 'event', String(row.sequence))
+                : {
+                    sequence: cursor + 1,
+                    schemaVersion: 1,
+                    kind: 'driverEvent',
+                    runId: agentRunIdSchema.make('purged'),
+                    taskId: taskIdSchema.make('purged'),
+                    generation: 1,
+                    occurredAt: '1970-01-01T00:00:00Z',
+                    data: { purged: true },
+                  }
               const nextBytes = Buffer.byteLength(JSON.stringify(event), 'utf8') + 1
               if (encodedBytes + nextBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
                 if (events.length === 0)
                   return yield* Effect.fail(
                     safeError('invalid-data', 'Stored workspace event exceeds the read page byte limit'),
                   )
-                hasMore = true
                 break
               }
               events.push(event)
               encodedBytes += nextBytes
               cursor = event.sequence
             }
-            if (!hasMore && cursor < highWatermark) {
-              const more =
-                yield* sql`SELECT 1 AS found FROM workspace_execution_event WHERE sequence > ${cursor} AND sequence <= ${highWatermark} LIMIT 1`
-              hasMore = more.length > 0
-            }
+            const hasMore = cursor < highWatermark
             return { events, highWatermark, nextAfterSequence: hasMore ? cursor : null, hasMore }
           }),
         )
@@ -2685,7 +2907,8 @@ const makeService = Effect.gen(function* () {
         const { afterId, limit } = yield* decodeEntityPageOptions(options)
         return yield* sql.withTransaction(
           Effect.gen(function* () {
-            const counts = yield* sql`SELECT COUNT(*) AS total FROM workspace_project`
+            const listed = sql`COALESCE(json_extract(CASE WHEN json_valid(payload) THEN payload END, '$.isCoach'), 0) = 0`
+            const counts = yield* sql`SELECT COUNT(*) AS total FROM workspace_project WHERE ${listed}`
             const total = Number(counts[0]?.total ?? 0)
             const taskRuntimeRows = yield* sql`
               WITH ranked_runs AS (
@@ -2747,7 +2970,7 @@ const makeService = Effect.gen(function* () {
             let hasMore = false
             for (let index = 0; index < limit; index += 1) {
               const rows =
-                yield* sql`SELECT id, payload FROM workspace_project WHERE id > ${cursor} ORDER BY id LIMIT 1`
+                yield* sql`SELECT id, payload FROM workspace_project WHERE ${listed} AND id > ${cursor} ORDER BY id LIMIT 1`
               const row = rows[0]
               if (!row) break
               const project = summarize(
@@ -2768,7 +2991,8 @@ const makeService = Effect.gen(function* () {
               cursor = project.id
             }
             if (!hasMore) {
-              const more = yield* sql`SELECT 1 AS found FROM workspace_project WHERE id > ${cursor} LIMIT 1`
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_project WHERE ${listed} AND id > ${cursor} LIMIT 1`
               hasMore = more.length > 0
             }
             return yield* Schema.decodeUnknownEffect(workspaceProjectReadPageSchema)({
@@ -2903,6 +3127,7 @@ const makeService = Effect.gen(function* () {
             const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
             if (project.id !== projectId)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+            if (project.isCoach) return { items: [], total: 0, nextAfterId: null }
             const counts = yield* sql`
               SELECT COUNT(*) AS total FROM workspace_task task
               WHERE task.project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR task.archived = 0)
@@ -3327,7 +3552,8 @@ const makeService = Effect.gen(function* () {
             const conversation = yield* decodeJson(workspaceConversationReadSchema)(String(conversations[0].payload))
             if (conversation.id !== conversationId || conversation.taskId !== conversations[0].task_id)
               return yield* Effect.fail(safeError('invalid-data', 'Stored Conversation membership failed validation'))
-            const highs = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
+            const highs =
+              yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
             const latestSequence = Number(highs[0]?.high ?? 0)
             if (throughSequence !== undefined && throughSequence > latestSequence)
               return yield* Effect.fail(safeError('invalid-data', 'Conversation high watermark is invalid'))
@@ -3461,7 +3687,8 @@ const makeService = Effect.gen(function* () {
                 status: Schema.String,
               }),
             )(String(taskRow.payload))
-            const high = yield* sql`SELECT COALESCE(MAX(sequence), 0) AS high FROM workspace_execution_event`
+            const high =
+              yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
             const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
             const runRows = yield* sql`
               SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, i.access_mode, json_extract(c.payload, '$.path') AS workspace_path
@@ -3653,8 +3880,10 @@ const makeService = Effect.gen(function* () {
               return { ...saved, replayed: true }
             }
             const parents = yield* sql`
-              SELECT r.status, r.task_id, i.conversation_id
+              SELECT r.status, r.task_id, i.conversation_id, json_extract(p.payload, '$.isCoach') AS coach
               FROM workspace_agent_run r
+              JOIN workspace_task t ON t.id = r.task_id
+              JOIN workspace_project p ON p.id = t.project_id
               LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
               WHERE r.id = ${command.parentRunId}
             `
@@ -3676,8 +3905,13 @@ const makeService = Effect.gen(function* () {
               yield* sql`SELECT COUNT(*) AS total FROM workspace_delegation WHERE parent_run_id = ${command.parentRunId} AND settled_at IS NULL`
             if (Number(active[0]?.total ?? 0) >= command.limits.maxActivePerParentRun)
               return yield* Effect.fail(safeError('admission-conflict', 'Parent Run has too many active delegations'))
-            const projects = yield* sql`SELECT id FROM workspace_project WHERE id = ${command.task.projectId}`
-            if (!projects[0]) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const projects = yield* sql`
+              SELECT json_extract(payload, '$.isCoach') AS coach
+              FROM workspace_project WHERE id = ${command.task.projectId}
+            `
+            if (!projects[0]) return yield* safeError('not-found', 'Project does not exist')
+            if (parent.coach === 1 || projects[0].coach === 1)
+              return yield* safeError('membership-conflict', 'Coach cannot participate in delegation')
             const task = { ...command.task, status: 'open', updatedAt: command.task.createdAt }
             yield* sql`INSERT INTO workspace_task (id, project_id, archived, payload) VALUES (${task.id}, ${task.projectId}, 0, ${encode(task)})`
             yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${task.id}, ${encode({ ...command.conversation, taskId: task.id })})`
@@ -3709,6 +3943,11 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  const listedDelegations = sql`NOT EXISTS (
+    SELECT 1 FROM workspace_task t JOIN workspace_project p ON p.id = t.project_id
+    WHERE t.id IN (d.parent_task_id, d.child_task_id) AND json_extract(p.payload, '$.isCoach') = 1
+  )`
+
   const listDelegations: WorkspaceStore['Service']['listDelegations'] = query =>
     guard(
       Effect.gen(function* () {
@@ -3720,8 +3959,8 @@ const makeService = Effect.gen(function* () {
         const parentTaskId = request.parentTaskId ?? null
         const activeOnly = request.activeOnly === true ? 1 : 0
         const rows = yield* sql`
-          SELECT payload FROM workspace_delegation
-          WHERE (${parentRunId} IS NULL OR parent_run_id = ${parentRunId})
+          SELECT payload FROM workspace_delegation d
+          WHERE ${listedDelegations} AND (${parentRunId} IS NULL OR parent_run_id = ${parentRunId})
             AND (${parentTaskId} IS NULL OR parent_task_id = ${parentTaskId})
             AND (${activeOnly} = 0 OR settled_at IS NULL)
           ORDER BY created_at DESC, id DESC
@@ -3877,7 +4116,7 @@ const makeService = Effect.gen(function* () {
     guard(
       Effect.gen(function* () {
         const rows =
-          yield* sql`SELECT payload FROM workspace_delegation WHERE wake_state = 'pending' ORDER BY created_at, id LIMIT ${limit}`
+          yield* sql`SELECT payload FROM workspace_delegation d WHERE wake_state = 'pending' AND ${listedDelegations} ORDER BY created_at, id LIMIT ${limit}`
         return yield* decodeDelegationRows(rows)
       }),
     )
@@ -3887,6 +4126,9 @@ const makeService = Effect.gen(function* () {
     registerProject,
     registerCheckout,
     createTask,
+    listActiveCoachRuns,
+    purgeCoachChat,
+    sweepCoachChats,
     renameTask,
     setTaskArchived,
     beginRun,
