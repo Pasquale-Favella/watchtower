@@ -93,7 +93,7 @@ describe('killProcessTree', () => {
 })
 
 describe('killProcessTreeSync', () => {
-  it('runs taskkill /T /F synchronously and swallows its failure', () => {
+  it('runs taskkill /T /F synchronously on Windows and swallows its failure', () => {
     const calls: unknown[][] = []
     const run = new Proxy(childProcess.execFileSync, {
       apply(_target, _thisArg, args) {
@@ -101,9 +101,23 @@ describe('killProcessTreeSync', () => {
         throw new Error('not found')
       },
     })
-    expect(() => killProcessTreeSync(4321, run)).not.toThrow()
+    expect(() => killProcessTreeSync(4321, run, 'win32')).not.toThrow()
     expect(calls).toHaveLength(1)
     expect(calls[0]?.slice(0, 2)).toEqual([TASKKILL_COMMAND, TASKKILL_ARGS])
     expect(calls[0]?.[2]).toMatchObject({ windowsHide: true })
+  })
+
+  it('signals the process group on POSIX, then the root alone when there is no group', () => {
+    const signals: Array<readonly [number, NodeJS.Signals]> = []
+    const run = vi.fn()
+    killProcessTreeSync(4321, run as never, 'linux', (target, signal) => {
+      signals.push([target, signal])
+      if (target < 0) throw Object.assign(new Error('no such process'), { code: 'ESRCH' })
+    })
+    expect(signals).toEqual([
+      [-4321, 'SIGKILL'],
+      [4321, 'SIGKILL'],
+    ])
+    expect(run).not.toHaveBeenCalled()
   })
 })
