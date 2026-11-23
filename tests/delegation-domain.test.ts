@@ -18,10 +18,24 @@ const ALL: ReadonlyArray<AgentAccessMode> = ['approval-required', 'auto-accept-e
 describe('child access narrowing', () => {
   it.each([
     ['full-access', undefined, ALL, 'granted', 'full-access', null],
-    ['auto', undefined, ['approval-required', 'auto-accept-edits', 'full-access'], 'granted', 'auto-accept-edits', 'auto'],
+    [
+      'auto',
+      undefined,
+      ['approval-required', 'auto-accept-edits', 'full-access'],
+      'granted',
+      'auto-accept-edits',
+      'auto',
+    ],
     ['approval-required', undefined, ['approval-required', 'auto-accept-edits'], 'granted', 'approval-required', null],
     ['auto-accept-edits', 'full-access', ALL, 'refused', 'access-escalation-denied', null],
-    ['full-access', 'auto', ['approval-required', 'auto-accept-edits', 'full-access'], 'refused', 'unsupported-access-mode', null],
+    [
+      'full-access',
+      'auto',
+      ['approval-required', 'auto-accept-edits', 'full-access'],
+      'refused',
+      'unsupported-access-mode',
+      null,
+    ],
     ['full-access', 'approval-required', ALL, 'granted', 'approval-required', null],
   ] as const)(
     'parent %s, requested %s, supported %j -> %s %s',
@@ -58,9 +72,12 @@ describe('delegation status', () => {
     ['uncertain', false, false, 'uncertain'],
     ['recoveryRequired', false, false, 'uncertain'],
   ]
-  it.each(cases)('maps run %s (cancel %s, pending %s) to %s', (runStatus, cancelRequested, pendingRequest, expected) => {
-    expect(delegationStatusFromRun({ runStatus, cancelRequested, pendingRequest })).toBe(expected)
-  })
+  it.each(cases)(
+    'maps run %s (cancel %s, pending %s) to %s',
+    (runStatus, cancelRequested, pendingRequest, expected) => {
+      expect(delegationStatusFromRun({ runStatus, cancelRequested, pendingRequest })).toBe(expected)
+    },
+  )
 
   it('treats only terminal delegation statuses as settled', () => {
     expect(isSettledDelegationStatus('completed')).toBe(true)

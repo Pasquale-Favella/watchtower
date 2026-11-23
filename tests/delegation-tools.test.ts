@@ -54,17 +54,25 @@ describe('orchestration tool inputs', () => {
     expect(Schema.decodeUnknownResult(delegationToolStatusInputSchema)({ limit: 51 })._tag).toBe('Failure')
     expect(Schema.decodeUnknownResult(delegationToolStatusInputSchema)({})._tag).toBe('Success')
     expect(Schema.decodeUnknownResult(delegationToolReadInputSchema)({ id: 'dlg-1', limit: 21 })._tag).toBe('Failure')
-    expect(Schema.decodeUnknownResult(delegationToolSendInputSchema)({ id: 'dlg-1', message: ' ' })._tag).toBe('Failure')
+    expect(Schema.decodeUnknownResult(delegationToolSendInputSchema)({ id: 'dlg-1', message: ' ' })._tag).toBe(
+      'Failure',
+    )
     expect(
-      Schema.decodeUnknownResult(delegationToolSendInputSchema)({ id: 'dlg-1', message: 'Use v2', answers: { q1: 'yes' } })
-        ._tag,
+      Schema.decodeUnknownResult(delegationToolSendInputSchema)({
+        id: 'dlg-1',
+        message: 'Use v2',
+        answers: { q1: 'yes' },
+      })._tag,
     ).toBe('Success')
   })
 
   it('advertises the same contract as its decoder', () => {
     const advertised = Schema.toStandardJSONSchemaV1(delegationToolStartInputSchema)['~standard'].jsonSchema.input({
       target: 'draft-2020-12',
-    }) as { readonly required?: ReadonlyArray<string>; readonly properties?: Record<string, { readonly enum?: unknown }> }
+    }) as {
+      readonly required?: ReadonlyArray<string>
+      readonly properties?: Record<string, { readonly enum?: unknown }>
+    }
     expect(advertised.required).toContain('task')
     expect(advertised.required).not.toContain('mode')
     expect(advertised.properties?.['mode']?.enum).toEqual(['async', 'wait'])

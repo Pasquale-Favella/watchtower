@@ -282,4 +282,3 @@ export const acquireBrowserMcp = Effect.fn('acquireBrowserMcp')(function* (
   })
   return { ...scope.context, mcpEndpoints: [{ name: 'watchtower-browser' as const, ...endpoint }] }
 })
-

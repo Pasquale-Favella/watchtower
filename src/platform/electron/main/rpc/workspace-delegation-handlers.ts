@@ -31,18 +31,18 @@ export const workspaceDelegationHandlers = Layer.unwrap(
         ),
       'delegation:get': ({ delegationId }) =>
         ready(
-          host.store.getDelegation(delegationId).pipe(
-            Effect.flatMap(record =>
-              record
-                ? Effect.succeed(record)
-                : Effect.fail(new DelegationError({ code: 'not-found', message: 'Delegation was not found.' })),
+          host.store
+            .getDelegation(delegationId)
+            .pipe(
+              Effect.flatMap(record =>
+                record
+                  ? Effect.succeed(record)
+                  : Effect.fail(new DelegationError({ code: 'not-found', message: 'Delegation was not found.' })),
+              ),
             ),
-          ),
         ),
       'delegation:cancel': ({ delegationId }) =>
-        ready(
-          host.withExecution((_execution, _ownerEpoch, delegations) => delegations.cancelFromUser(delegationId)),
-        ),
+        ready(host.withExecution((_execution, _ownerEpoch, delegations) => delegations.cancelFromUser(delegationId))),
     })
   }),
 )

@@ -139,7 +139,11 @@ interface Harness {
   readonly interrupts: Array<string>
 }
 
-async function harness(wake: 'always' | 'settledOnly' = 'always', seeded = true, childClaimed = true): Promise<Harness> {
+async function harness(
+  wake: 'always' | 'settledOnly' = 'always',
+  seeded = true,
+  childClaimed = true,
+): Promise<Harness> {
   const followUps: Array<string> = []
   const interrupts: Array<string> = []
   const runtime = coordinatorRuntime(followUps, interrupts)
@@ -163,10 +167,7 @@ const childEvent = (
   runId: typeof childRunId = childRunId,
 ) => store.recordDriverEvent(runId, { ownerEpoch: 7, generation: 1, eventId, occurredAt: ts, event })
 
-const childTerminal = (
-  h: Harness,
-  terminal: AgentDriverEvent,
-): Effect.Effect<DelegationRecord | null, unknown> =>
+const childTerminal = (h: Harness, terminal: AgentDriverEvent): Effect.Effect<DelegationRecord | null, unknown> =>
   Effect.gen(function* () {
     yield* childEvent(h.store, 'child-start', { kind: 'turnStarted', nativeTurnId: 'native-turn' })
     yield* childEvent(h.store, 'child-text', { kind: 'textDelta', text: 'Audit done' })
@@ -179,7 +180,9 @@ describe('DelegationCoordinator settlement', () => {
   it('settles a completed child with its captured result and queues one wake for the parent', async () => {
     const h = await harness()
     try {
-      const record = await h.runtime.runPromise(childTerminal(h, { kind: 'turnCompleted', nativeTurnId: 'native-turn' }))
+      const record = await h.runtime.runPromise(
+        childTerminal(h, { kind: 'turnCompleted', nativeTurnId: 'native-turn' }),
+      )
       expect(record).toMatchObject({ status: 'completed', resultText: 'Audit done', wakeState: 'pending' })
       expect(record?.settledAt).not.toBeNull()
       expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
@@ -330,7 +333,11 @@ describe('DelegationCoordinator settlement', () => {
     const h = await harness('always', true, false)
     try {
       const record = await h.runtime.runPromise(h.coordinator.cancel('dlg-1' as never))
-      expect(record).toMatchObject({ status: 'cancelled', wakeState: 'disposed', cancelRequestedAt: expect.any(String) })
+      expect(record).toMatchObject({
+        status: 'cancelled',
+        wakeState: 'disposed',
+        cancelRequestedAt: expect.any(String),
+      })
       expect(record.settledAt).not.toBeNull()
       expect(h.interrupts).toEqual([])
       expect(h.followUps).toEqual([])
@@ -394,7 +401,11 @@ describe('DelegationCoordinator settlement', () => {
     try {
       await h.runtime.runPromise(h.coordinator.recover(8))
       const record = await h.runtime.runPromise(h.store.getDelegation('dlg-1'))
-      expect(record).toMatchObject({ status: 'failed', wakeState: 'pending', resultText: 'The delegated task could not start.' })
+      expect(record).toMatchObject({
+        status: 'failed',
+        wakeState: 'pending',
+        resultText: 'The delegated task could not start.',
+      })
       expect(record?.settledAt).not.toBeNull()
       const snapshot = await h.runtime.runPromise(h.store.readTaskSnapshot(childTask.id, 20))
       expect(snapshot.runs.find(run => run.id === childRunId)?.status).toBe('failed')

@@ -110,37 +110,37 @@ export async function seedWorkspaceDelegation(profile: string, checkoutPath: str
       readonly runId: string
     }): DelegationRecord =>
       Schema.decodeUnknownSync(delegationRecordSchema)({
-      id: input.id,
-      commandId: `delegation:${input.id}`,
-      projectId,
-      parentTaskId,
-      parentConversationId,
-      parentRunId,
-      childTaskId: input.taskId,
-      childConversationId: input.conversationId,
-      childRunId: input.runId,
-      checkoutId,
-      depth: 1,
-      title: input.title,
-      driverId: 'fixture',
-      connectionId: 'fixture',
-      modelId: null,
-      modeId: null,
-      accessMode: 'approval-required',
-      accessModeRequested: null,
-      accessModeSteppedDownFrom: null,
-      isolation: 'shared',
-      status: 'queued',
-      wake: 'always',
-      wakeState: 'notDue',
-      pendingRequest: null,
-      resultText: null,
-      resultTruncated: false,
-      cancelRequestedAt: null,
-      resultReadAt: null,
-      createdAt: at,
-      settledAt: null,
-    })
+        id: input.id,
+        commandId: `delegation:${input.id}`,
+        projectId,
+        parentTaskId,
+        parentConversationId,
+        parentRunId,
+        childTaskId: input.taskId,
+        childConversationId: input.conversationId,
+        childRunId: input.runId,
+        checkoutId,
+        depth: 1,
+        title: input.title,
+        driverId: 'fixture',
+        connectionId: 'fixture',
+        modelId: null,
+        modeId: null,
+        accessMode: 'approval-required',
+        accessModeRequested: null,
+        accessModeSteppedDownFrom: null,
+        isolation: 'shared',
+        status: 'queued',
+        wake: 'always',
+        wakeState: 'notDue',
+        pendingRequest: null,
+        resultText: null,
+        resultTruncated: false,
+        cancelRequestedAt: null,
+        resultReadAt: null,
+        createdAt: at,
+        settledAt: null,
+      })
     const createChild = (record: DelegationRecord) =>
       run(
         store.createDelegation(
@@ -219,7 +219,13 @@ export async function seedWorkspaceDelegation(profile: string, checkoutPath: str
 
     const parentEvent = (eventId: string, event: AgentDriverEvent) =>
       run(
-        store.recordDriverEvent(parent, { ownerEpoch: owner.ownerEpoch, generation: 1, eventId, occurredAt: at, event }),
+        store.recordDriverEvent(parent, {
+          ownerEpoch: owner.ownerEpoch,
+          generation: 1,
+          eventId,
+          occurredAt: at,
+          event,
+        }),
       )
     await parentEvent('parent-turn', { kind: 'turnStarted', nativeTurnId: 'delegation-turn' })
     await parentEvent('parent-start-tool', {

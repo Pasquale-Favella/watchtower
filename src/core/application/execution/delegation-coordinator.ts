@@ -395,31 +395,32 @@ export class DelegationCoordinator extends Context.Service<
           })
       })
 
-      const runFinished = Effect.fn('DelegationCoordinator.runFinished')(function* (claim: {
-        readonly runId: AgentRunId
-        readonly taskId: TaskId
-      }) {
-        const child = yield* store.getDelegationByChildTask(claim.taskId)
-        if (child && child.childRunId === claim.runId) {
-          yield* withLock(
-            child.id,
-            Effect.gen(function* () {
-              const current = yield* store.getDelegation(child.id)
-              if (!current || current.settledAt !== null) return
-              const runStatus = yield* childRunStatus(current)
-              if (runStatus === null || !RUN_TERMINAL.has(runStatus)) return
-              yield* settleFromRun(current, runStatus)
-            }),
-          )
-        }
-        // A stopped parent Run cancels the Delegations it started. A parent that completed keeps them running, and
-        // their wakes start the parent again later.
-        const started = yield* store.listDelegations({ parentRunId: claim.runId, activeOnly: true, limit: 50 })
-        if (started.items.length === 0) return
-        const snapshot = yield* store.readTaskSnapshot(claim.taskId, RECOVERY_BATCH)
-        if (snapshot.runs.find(run => run.id === claim.runId)?.status !== 'interrupted') return
-        for (const delegation of started.items) yield* cancelRecord(delegation.id).pipe(Effect.catch(() => Effect.void))
-      }, Effect.catchCause(() => Effect.void))
+      const runFinished = Effect.fn('DelegationCoordinator.runFinished')(
+        function* (claim: { readonly runId: AgentRunId; readonly taskId: TaskId }) {
+          const child = yield* store.getDelegationByChildTask(claim.taskId)
+          if (child && child.childRunId === claim.runId) {
+            yield* withLock(
+              child.id,
+              Effect.gen(function* () {
+                const current = yield* store.getDelegation(child.id)
+                if (!current || current.settledAt !== null) return
+                const runStatus = yield* childRunStatus(current)
+                if (runStatus === null || !RUN_TERMINAL.has(runStatus)) return
+                yield* settleFromRun(current, runStatus)
+              }),
+            )
+          }
+          // A stopped parent Run cancels the Delegations it started. A parent that completed keeps them running, and
+          // their wakes start the parent again later.
+          const started = yield* store.listDelegations({ parentRunId: claim.runId, activeOnly: true, limit: 50 })
+          if (started.items.length === 0) return
+          const snapshot = yield* store.readTaskSnapshot(claim.taskId, RECOVERY_BATCH)
+          if (snapshot.runs.find(run => run.id === claim.runId)?.status !== 'interrupted') return
+          for (const delegation of started.items)
+            yield* cancelRecord(delegation.id).pipe(Effect.catch(() => Effect.void))
+        },
+        Effect.catchCause(() => Effect.void),
+      )
 
       /** Upgrades a `settledOnly` wake to `always`, so the settled result still reaches the parent. */
       const upgradeWake = Effect.fn('DelegationCoordinator.upgradeWake')(function* (delegationId: DelegationId) {

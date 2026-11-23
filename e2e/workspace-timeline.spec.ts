@@ -129,16 +129,59 @@ test('chat virtualizes variable heights and holds the reader through streaming, 
     await page.evaluate(() => {
       const w = window as unknown as { dbg: string[] }
       w.dbg = []
-      document.addEventListener('pointerup', event => {
-        const b = document.querySelector<HTMLElement>('[aria-label="Previous message"]')
-        const s = b && getComputedStyle(b)
-        w.dbg.push('UP pe=' + s?.pointerEvents + ' disp=' + s?.display + ' vis=' + s?.visibility + ' tf=' + s?.transform + ' stack=' + document.elementsFromPoint(event.clientX, event.clientY).slice(0, 4).map(e => e.tagName + '.' + (e.getAttribute('data-slot') ?? e.getAttribute('aria-label') ?? '')).join('|') + ' cap=' + String((event.target as Element).hasPointerCapture?.(event.pointerId)))
-      }, true)
+      document.addEventListener(
+        'pointerup',
+        event => {
+          const b = document.querySelector<HTMLElement>('[aria-label="Previous message"]')
+          const s = b && getComputedStyle(b)
+          w.dbg.push(
+            'UP pe=' +
+              s?.pointerEvents +
+              ' disp=' +
+              s?.display +
+              ' vis=' +
+              s?.visibility +
+              ' tf=' +
+              s?.transform +
+              ' stack=' +
+              document
+                .elementsFromPoint(event.clientX, event.clientY)
+                .slice(0, 4)
+                .map(e => e.tagName + '.' + (e.getAttribute('data-slot') ?? e.getAttribute('aria-label') ?? ''))
+                .join('|') +
+              ' cap=' +
+              String((event.target as Element).hasPointerCapture?.(event.pointerId)),
+          )
+        },
+        true,
+      )
       for (const type of ['pointerover', 'pointerdown', 'mousedown', 'pointerup', 'click'])
-        document.addEventListener(type, event => w.dbg.push(type + ':' + ((event.target as HTMLElement).getAttribute?.('aria-label') ?? (event.target as HTMLElement).tagName + '.' + String((event.target as HTMLElement).className).slice(0, 60) + '#' + ((event.target as HTMLElement).dataset?.slot ?? '')) + ':' + (event as MouseEvent).clientX + ',' + (event as MouseEvent).clientY), true)
+        document.addEventListener(
+          type,
+          event =>
+            w.dbg.push(
+              type +
+                ':' +
+                ((event.target as HTMLElement).getAttribute?.('aria-label') ??
+                  (event.target as HTMLElement).tagName +
+                    '.' +
+                    String((event.target as HTMLElement).className).slice(0, 60) +
+                    '#' +
+                    ((event.target as HTMLElement).dataset?.slot ?? '')) +
+                ':' +
+                (event as MouseEvent).clientX +
+                ',' +
+                (event as MouseEvent).clientY,
+            ),
+          true,
+        )
     })
     await pressWithoutShifting(previous)
-    console.log('DBG4', JSON.stringify(await page.evaluate(() => (window as unknown as { dbg: string[] }).dbg)), JSON.stringify(await previous.boundingBox()))
+    console.log(
+      'DBG4',
+      JSON.stringify(await page.evaluate(() => (window as unknown as { dbg: string[] }).dbg)),
+      JSON.stringify(await previous.boundingBox()),
+    )
     await expect.poll(aligned).not.toBeNull()
     const first = Number(await aligned())
     // Rapid presses keep stepping from the destination instead of re-targeting mid-glide.

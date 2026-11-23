@@ -25,7 +25,9 @@ export function useParentTaskLink(projectId: ProjectId | null, taskId: TaskId | 
     [projectId, taskId],
   )
   const items = useWorkspaceTasks(request).data?.items
-  const parentTaskId = taskId ? items?.find(task => task.id === taskId)?.runtime?.delegatedFrom?.parentTaskId : undefined
+  const parentTaskId = taskId
+    ? items?.find(task => task.id === taskId)?.runtime?.delegatedFrom?.parentTaskId
+    : undefined
   const title = items?.find(task => task.id === parentTaskId)?.title ?? 'Parent task'
   const openTask = useOpenDelegatedTask()
   return useMemo(

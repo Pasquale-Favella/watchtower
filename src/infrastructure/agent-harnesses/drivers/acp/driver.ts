@@ -645,11 +645,7 @@ function toolContentText(update: ToolCallUpdate): string | undefined {
   return raw ?? (update.content != null ? text : undefined)
 }
 
-function translateTool(
-  update: ToolCallUpdate,
-  started: boolean,
-  orchestration: boolean,
-): readonly AgentDriverEvent[] {
+function translateTool(update: ToolCallUpdate, started: boolean, orchestration: boolean): readonly AgentDriverEvent[] {
   const metadata = toolMetadata(update, orchestration)
   const input = displayValue(update.rawInput)
   const output = toolContentText(update)
@@ -2225,9 +2221,10 @@ function createConnection(
           false,
         )
         // A loaded session gets it too: it may predate the guidance, and its agent process is new to this endpoint.
-        state.orchestrationInstructionsPending = sessionMcpServers(context, connectionState.browserMcpHttpSupported).some(
-          server => server.name === 'watchtower-orchestrator',
-        )
+        state.orchestrationInstructionsPending = sessionMcpServers(
+          context,
+          connectionState.browserMcpHttpSupported,
+        ).some(server => server.name === 'watchtower-orchestrator')
           ? connectionState.orchestrationHarness
           : null
         state.liveCapabilities = {

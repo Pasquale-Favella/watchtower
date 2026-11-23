@@ -156,5 +156,4 @@ describe('delegation contracts', () => {
       expect(ApplicationRpcGroup.requests.has(method)).toBe(true)
     }
   })
-
 })

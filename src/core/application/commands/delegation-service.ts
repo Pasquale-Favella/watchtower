@@ -93,13 +93,21 @@ export interface DelegationServiceOptions {
 /** A bounded view of a Delegated Task's Conversation, newest messages last. */
 export interface DelegationTranscript {
   readonly summary: DelegationSummary
-  readonly messages: ReadonlyArray<{ readonly role: 'task' | 'agent'; readonly text: string; readonly truncated: boolean }>
+  readonly messages: ReadonlyArray<{
+    readonly role: 'task' | 'agent'
+    readonly text: string
+    readonly truncated: boolean
+  }>
   readonly earlierOmitted: boolean
   readonly pendingRequest?:
     | {
         readonly kind: 'approval' | 'question'
         readonly prompt: string
-        readonly questions: ReadonlyArray<{ readonly id: string; readonly prompt: string; readonly options: ReadonlyArray<string> }>
+        readonly questions: ReadonlyArray<{
+          readonly id: string
+          readonly prompt: string
+          readonly options: ReadonlyArray<string>
+        }>
       }
     | undefined
 }
@@ -176,7 +184,10 @@ const writeFailure = (error: WorkspaceStoreError): DelegationError => {
 const notFound = () => new DelegationError({ code: 'not-found', message: 'Delegation was not found.' })
 
 /** A Delegation is visible only to the Task that started it, so a grandparent or a sibling sees not-found. */
-const ownedBy = (record: DelegationRecord | null, caller: DelegationCallerScope): Effect.Effect<DelegationRecord, DelegationError> =>
+const ownedBy = (
+  record: DelegationRecord | null,
+  caller: DelegationCallerScope,
+): Effect.Effect<DelegationRecord, DelegationError> =>
   record && record.parentTaskId === caller.taskId ? Effect.succeed(record) : Effect.fail(notFound())
 
 export class DelegationService extends Context.Service<
@@ -294,7 +305,11 @@ export class DelegationService extends Context.Service<
         ) {
           const link = yield* store.getDelegationByChildTask(caller.taskId).pipe(Effect.mapError(storeFailure))
           const active = yield* store
-            .listDelegations({ parentRunId: caller.runId, activeOnly: true, limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN })
+            .listDelegations({
+              parentRunId: caller.runId,
+              activeOnly: true,
+              limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
+            })
             .pipe(Effect.mapError(storeFailure))
           const loaded = yield* options.loadConnections()
           const connections: Array<DelegationTargetChoice> = []
@@ -349,7 +364,11 @@ export class DelegationService extends Context.Service<
             })
 
           const active = yield* store
-            .listDelegations({ parentRunId: caller.runId, activeOnly: true, limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN })
+            .listDelegations({
+              parentRunId: caller.runId,
+              activeOnly: true,
+              limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
+            })
             .pipe(Effect.mapError(storeFailure))
           if (active.items.length >= DELEGATION_MAX_ACTIVE_PER_PARENT_RUN)
             return yield* new DelegationError({
@@ -361,7 +380,10 @@ export class DelegationService extends Context.Service<
           const connectionId = request.target?.connectionId ?? parentContext.connectionId
           const choice = connections.find(connection => connection.id === connectionId)
           if (!choice)
-            return yield* new DelegationError({ code: 'connection-unavailable', message: 'That connection is not available.' })
+            return yield* new DelegationError({
+              code: 'connection-unavailable',
+              message: 'That connection is not available.',
+            })
           // A named model that the catalog lists must offer the requested effort. An unlisted model is passed through.
           const listedModel = choice.models?.find(model => model.id === request.target?.modelId)
           if (
@@ -393,7 +415,10 @@ export class DelegationService extends Context.Service<
           let checkoutId = parentContext.checkoutId
           if (isolation === 'worktree') {
             if (!options.createWorktree)
-              return yield* new DelegationError({ code: 'checkout-unavailable', message: 'Worktree isolation is not available.' })
+              return yield* new DelegationError({
+                code: 'checkout-unavailable',
+                message: 'Worktree isolation is not available.',
+              })
             const project = yield* store.getProject(caller.projectId).pipe(Effect.mapError(storeFailure))
             const parentCheckout = [project.mainCheckout, ...project.otherCheckouts].find(
               checkout => checkout.id === parentContext.checkoutId,
@@ -408,7 +433,11 @@ export class DelegationService extends Context.Service<
               })
               .pipe(
                 Effect.mapError(
-                  () => new DelegationError({ code: 'checkout-unavailable', message: 'The worktree could not be created.' }),
+                  () =>
+                    new DelegationError({
+                      code: 'checkout-unavailable',
+                      message: 'The worktree could not be created.',
+                    }),
                 ),
               )
             checkoutId = created.id
@@ -492,16 +521,19 @@ export class DelegationService extends Context.Service<
             })
             .pipe(
               Effect.catch(() =>
-                coordinator.settleLaunchFailure(id).pipe(
-                  Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())),
-                ),
+                coordinator
+                  .settleLaunchFailure(id)
+                  .pipe(Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure()))),
               ),
               Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())),
             )
 
           if (!request.wait) {
             yield* launch
-            return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), false)
+            return yield* summaryOf(
+              yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller),
+              false,
+            )
           }
           // The waiter is registered before launch, so a child that settles during launch still reaches this caller.
           const watch = yield* coordinator
@@ -512,14 +544,20 @@ export class DelegationService extends Context.Service<
             Effect.ensuring(watch.release()),
           )
           if (settled) return yield* summaryOf(settled, false)
-          return yield* summaryOf(yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller), true)
+          return yield* summaryOf(
+            yield* ownedBy(yield* store.getDelegation(id).pipe(Effect.mapError(storeFailure)), caller),
+            true,
+          )
         })
 
         const status = Effect.fn('DelegationService.status')(function* (
           caller: DelegationCallerScope,
           delegationId: DelegationId,
         ) {
-          const record = yield* ownedBy(yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)), caller)
+          const record = yield* ownedBy(
+            yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)),
+            caller,
+          )
           // Reading a settled result marks it read; the wake is the first delivery, this is the explicit one.
           const current =
             record.settledAt !== null && record.resultReadAt === null
@@ -529,7 +567,9 @@ export class DelegationService extends Context.Service<
         })
 
         const list = Effect.fn('DelegationService.list')(function* (caller: DelegationCallerScope, limit: number) {
-          const page = yield* store.listDelegations({ parentTaskId: caller.taskId, limit }).pipe(Effect.mapError(storeFailure))
+          const page = yield* store
+            .listDelegations({ parentTaskId: caller.taskId, limit })
+            .pipe(Effect.mapError(storeFailure))
           const items: Array<DelegationSummary> = []
           for (const record of page.items) items.push(yield* summaryOf(record, false))
           return { items, truncated: page.truncated }
@@ -551,7 +591,10 @@ export class DelegationService extends Context.Service<
           delegationId: DelegationId,
           limit: number,
         ) {
-          const owned = yield* ownedBy(yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)), caller)
+          const owned = yield* ownedBy(
+            yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)),
+            caller,
+          )
           const page = yield* store
             .readConversationPage(owned.childConversationId, 0, READ_PAGE, undefined, { direction: 'backward' })
             .pipe(Effect.mapError(storeFailure))
@@ -642,7 +685,8 @@ export class DelegationService extends Context.Service<
             .listPendingRuntimeRequests(record.childTaskId, 0, 20)
             .pipe(Effect.mapError(storeFailure))
           const open = requests.items.find(item => item.request.requestId === pending.requestId)
-          if (!open) return yield* new DelegationError({ code: 'conflict', message: 'That question was already answered.' })
+          if (!open)
+            return yield* new DelegationError({ code: 'conflict', message: 'That question was already answered.' })
           yield* execution
             .respond({
               commandId: `delegation-answer:${key}`,
@@ -654,7 +698,10 @@ export class DelegationService extends Context.Service<
               decision: {
                 kind: 'answers',
                 answers: Object.fromEntries(
-                  open.request.questions.map(question => [question.id, request.answers?.[question.id] ?? request.message]),
+                  open.request.questions.map(question => [
+                    question.id,
+                    request.answers?.[question.id] ?? request.message,
+                  ]),
                 ),
               },
             })
@@ -669,7 +716,11 @@ export class DelegationService extends Context.Service<
         ) {
           yield* liveParent(caller)
           const active = yield* store
-            .listDelegations({ parentRunId: caller.runId, activeOnly: true, limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN })
+            .listDelegations({
+              parentRunId: caller.runId,
+              activeOnly: true,
+              limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
+            })
             .pipe(Effect.mapError(storeFailure))
           if (active.items.length >= DELEGATION_MAX_ACTIVE_PER_PARENT_RUN)
             return yield* new DelegationError({
@@ -684,7 +735,9 @@ export class DelegationService extends Context.Service<
           const narrowing = narrowChildAccessMode({
             parent: caller.accessMode,
             requested:
-              ACCESS_MODE_RANK[record.accessMode] <= ACCESS_MODE_RANK[caller.accessMode] ? record.accessMode : undefined,
+              ACCESS_MODE_RANK[record.accessMode] <= ACCESS_MODE_RANK[caller.accessMode]
+                ? record.accessMode
+                : undefined,
             supported: yield* accessModesOf(driverId),
           })
           if (narrowing.outcome === 'refused')
@@ -737,7 +790,11 @@ export class DelegationService extends Context.Service<
                 delegationId: record.id,
               },
             )
-            .pipe(Effect.mapError(error => (error instanceof WorkspaceStoreError ? writeFailure(error) : sendFailure(error))))
+            .pipe(
+              Effect.mapError(error =>
+                error instanceof WorkspaceStoreError ? writeFailure(error) : sendFailure(error),
+              ),
+            )
           if (resumed === null)
             return yield* new DelegationError({
               code: 'conflict',
@@ -746,7 +803,10 @@ export class DelegationService extends Context.Service<
           return resumed
         })
 
-        const alreadySent = Effect.fn('DelegationService.alreadySent')(function* (record: DelegationRecord, key: string) {
+        const alreadySent = Effect.fn('DelegationService.alreadySent')(function* (
+          record: DelegationRecord,
+          key: string,
+        ) {
           if (record.childRunId === `run-${key}`) return true
           const [snapshot, steers, answers] = yield* Effect.all([
             store.readTaskSnapshot(record.childTaskId, RUN_SCAN),
@@ -765,10 +825,14 @@ export class DelegationService extends Context.Service<
           delegationId: DelegationId,
           request: SendDelegationRequest,
         ) {
-          const record = yield* ownedBy(yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)), caller)
+          const record = yield* ownedBy(
+            yield* store.getDelegation(delegationId).pipe(Effect.mapError(storeFailure)),
+            caller,
+          )
           const key = token(`${caller.runId}:send:${request.clientRequestId ?? randomUUID()}`)
           // A retry repeats the action its first call took, whatever state the child is in now.
-          if (request.clientRequestId !== undefined && (yield* alreadySent(record, key))) return yield* summaryOf(record, false)
+          if (request.clientRequestId !== undefined && (yield* alreadySent(record, key)))
+            return yield* summaryOf(record, false)
           if (isSettledDelegationStatus(yield* liveStatus(record))) {
             if (record.cancelRequestedAt !== null && record.status === 'cancelled')
               return yield* new DelegationError({
@@ -801,9 +865,9 @@ export class DelegationService extends Context.Service<
               })
               .pipe(Effect.mapError(storeFailure)),
           cancelFromUser: delegationId =>
-            coordinator.cancel(delegationId).pipe(
-              Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure())),
-            ),
+            coordinator
+              .cancel(delegationId)
+              .pipe(Effect.mapError(error => (error instanceof DelegationError ? error : storeFailure()))),
         })
       }),
     )

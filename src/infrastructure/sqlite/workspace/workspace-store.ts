@@ -3826,7 +3826,8 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(safeError('invalid-transition', 'Delegation is still running'))
             // Admission is checked in the same transaction as the write, as creation does, so a parent that stops or
             // reaches its limit meanwhile cannot gain a resumed child.
-            const parents = yield* sql`SELECT status, task_id FROM workspace_agent_run WHERE id = ${command.parentRunId}`
+            const parents =
+              yield* sql`SELECT status, task_id FROM workspace_agent_run WHERE id = ${command.parentRunId}`
             const parent = parents[0]
             if (!parent || String(parent.task_id) !== current.parentTaskId)
               return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))

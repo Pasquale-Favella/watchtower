@@ -1809,7 +1809,9 @@ function handleEvent(
       !supportedMethod ||
       !run.nativeTurnId ||
       // An elicitation may arrive without a turn; it then belongs to the thread's active Run.
-      (elicitation ? details.turnId != null && details.turnId !== run.nativeTurnId : details.turnId !== run.nativeTurnId) ||
+      (elicitation
+        ? details.turnId != null && details.turnId !== run.nativeTurnId
+        : details.turnId !== run.nativeTurnId) ||
       (event.method === 'item/permissions/requestApproval' &&
         Schema.decodeUnknownOption(PermissionRequestDetails)(details.permissions)._tag !== 'Some') ||
       requests.size >= MAX_PENDING_NATIVE_REQUESTS
@@ -1888,23 +1890,23 @@ function handleEvent(
             { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const, decision: { kind: 'cancel' as const } },
           ]
         : [
-          {
-            id: 'allow-once',
-            label: 'Allow once',
-            scope: 'once' as const,
-            kind: 'allow' as const,
-            decision: { kind: 'approve' as const, optionId: 'allow-once' },
-          },
-          {
-            id: 'allow-session',
-            label: 'Allow for this session',
-            scope: 'session' as const,
-            kind: 'allowAlways' as const,
-            decision: { kind: 'approve' as const, optionId: 'allow-session' },
-          },
-          { id: 'decline', label: 'Decline', kind: 'deny' as const, decision: { kind: 'deny' as const } },
-          { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const, decision: { kind: 'cancel' as const } },
-        ]
+            {
+              id: 'allow-once',
+              label: 'Allow once',
+              scope: 'once' as const,
+              kind: 'allow' as const,
+              decision: { kind: 'approve' as const, optionId: 'allow-once' },
+            },
+            {
+              id: 'allow-session',
+              label: 'Allow for this session',
+              scope: 'session' as const,
+              kind: 'allowAlways' as const,
+              decision: { kind: 'approve' as const, optionId: 'allow-session' },
+            },
+            { id: 'decline', label: 'Decline', kind: 'deny' as const, decision: { kind: 'deny' as const } },
+            { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const, decision: { kind: 'cancel' as const } },
+          ]
     const pending: AgentDriverEvent = {
       kind: 'requestPending',
       request: {

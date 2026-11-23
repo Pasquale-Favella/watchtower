@@ -49,7 +49,8 @@ export const acquireLoopbackMcp = Effect.fn('acquireLoopbackMcp')(function* (opt
     }),
   )
   yield* Effect.callback<undefined, AgentDriverError>(resume => {
-    const failed = () => resume(Effect.fail(new AgentDriverError({ code: 'invalid-state', message: options.startFailure })))
+    const failed = () =>
+      resume(Effect.fail(new AgentDriverError({ code: 'invalid-state', message: options.startFailure })))
     http.once('error', failed)
     http.listen(0, '127.0.0.1', () => {
       http.off('error', failed)
