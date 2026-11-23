@@ -1,5 +1,5 @@
 import { ArrowUp } from 'lucide-react'
-import { type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
+import { type ComponentType, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Popover } from '@/renderer/components/ui/popover'
@@ -74,7 +74,8 @@ type Props = {
     readonly onConnectionChange: (connectionId: string) => void
     /** True while the first message is being created and admitted, so New chat cannot discard it mid-start. */
     readonly onStartingChange: (starting: boolean) => void
-    readonly suggestedPrompts: (seedDraft: (prompt: string) => void, disabled: boolean) => ReactNode
+    /** Replaces the generic new-chat heading and renders above the composer; its controls seed the composer. */
+    readonly Welcome: ComponentType<{ readonly onSeed: (prompt: string) => void; readonly disabled: boolean }>
   }
 }
 
@@ -370,6 +371,16 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
     }
   }
 
+  const seedPrompt = (prompt: string) => {
+    const text = prompt.slice(0, NEW_CHAT_DRAFT_MAX_LENGTH)
+    if (promptRef.current) {
+      promptRef.current.setValue(text)
+      promptRef.current.focus()
+    } else {
+      writeDraft(text)
+    }
+  }
+
   const submit = () => {
     const promptCommand = parseWorkspacePromptCommand(draft, [])
     if (promptCommand?.kind === 'model') {
@@ -498,52 +509,53 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
           >
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-8">
               <section className="max-w-chat w-full" aria-label="New chat">
-                <div className="mb-8 flex flex-col items-center gap-2 text-center">
-                  {coach ? (
-                    <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
-                  ) : projectId && selectedProject && !archivedProject ? (
-                    <>
-                      <h2 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
-                        <span>What should we build in</span>
-                        <WorkspaceProjectPicker
-                          projectId={projectId}
-                          label={selectedProject.name}
-                          projects={pickerProjects}
-                          hasMore={Boolean(projects.data?.nextAfterId)}
+                {coach && <coach.Welcome onSeed={seedPrompt} disabled={creating || starting || Boolean(intent)} />}
+                {!coach && (
+                  <div className="mb-8 flex flex-col items-center gap-2 text-center">
+                    {projectId && selectedProject && !archivedProject ? (
+                      <>
+                        <h2 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
+                          <span>What should we build in</span>
+                          <WorkspaceProjectPicker
+                            projectId={projectId}
+                            label={selectedProject.name}
+                            projects={pickerProjects}
+                            hasMore={Boolean(projects.data?.nextAfterId)}
+                            disabled={creating || starting}
+                            onSelect={selectProject}
+                            onLoadMore={loadMoreProjects}
+                            onRefresh={projects.refresh}
+                          />
+                          <span>?</span>
+                        </h2>
+                        <button
+                          type="button"
                           disabled={creating || starting}
-                          onSelect={selectProject}
-                          onLoadMore={loadMoreProjects}
-                          onRefresh={projects.refresh}
-                        />
-                        <span>?</span>
-                      </h2>
-                      <button
-                        type="button"
-                        disabled={creating || starting}
-                        className="text-muted-foreground hover:text-foreground rounded text-sm outline-none focus-visible:ring-2"
-                        onClick={() => selectProject(null)}
-                      >
-                        or start without a project
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
-                      <div className="text-muted-foreground text-sm">
-                        <WorkspaceProjectPicker
-                          projectId={null}
-                          label="No project"
-                          projects={pickerProjects}
-                          hasMore={Boolean(projects.data?.nextAfterId)}
-                          disabled={creating || starting}
-                          onSelect={selectProject}
-                          onLoadMore={loadMoreProjects}
-                          onRefresh={projects.refresh}
-                        />
-                      </div>
-                    </>
-                  )}
-                </div>
+                          className="text-muted-foreground hover:text-foreground rounded text-sm outline-none focus-visible:ring-2"
+                          onClick={() => selectProject(null)}
+                        >
+                          or start without a project
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
+                        <div className="text-muted-foreground text-sm">
+                          <WorkspaceProjectPicker
+                            projectId={null}
+                            label="No project"
+                            projects={pickerProjects}
+                            hasMore={Boolean(projects.data?.nextAfterId)}
+                            disabled={creating || starting}
+                            onSelect={selectProject}
+                            onLoadMore={loadMoreProjects}
+                            onRefresh={projects.refresh}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
                 <WorkspacePromptInput
                   onOpenFile={coach ? undefined : panel.openFile}
                   reviewOwnerKey={coach ? undefined : panelContext.key}
@@ -629,18 +641,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
                     />
                   }
                 />
-                {coach?.suggestedPrompts(
-                  prompt => {
-                    const text = prompt.slice(0, NEW_CHAT_DRAFT_MAX_LENGTH)
-                    if (promptRef.current) {
-                      promptRef.current.setValue(text)
-                      promptRef.current.focus()
-                    } else {
-                      writeDraft(text)
-                    }
-                  },
-                  creating || starting || Boolean(intent),
-                )}
                 {attachmentBlocked && (
                   <p className="text-muted-foreground mt-2 text-xs" role="status">
                     The selected agent has not confirmed support for these attachments. Choose a compatible agent or

@@ -20,7 +20,7 @@ export function SuggestedSkillChips({
     return (
       <LoadingRegion
         label="Loading detected patterns…"
-        className="mt-4 flex flex-wrap justify-center gap-2"
+        className="flex flex-wrap justify-center gap-2"
         aria-label="Suggested skills"
       >
         <SkeletonPills />
@@ -41,7 +41,7 @@ export function SuggestedSkillChips({
     )
   }
   return (
-    <div className="mt-4 flex flex-wrap justify-center gap-2" aria-label="Suggested skills">
+    <div className="flex flex-wrap justify-center gap-2" aria-label="Suggested skills">
       {drafts.slice(0, 8).map(draft => (
         <Tooltip key={candidateKey(draft)}>
           <TooltipTrigger

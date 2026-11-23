@@ -44,8 +44,10 @@ const MARKERS: Record<SectionName, (window: Page) => Locator[]> = {
     window.getByRole('combobox', { name: 'First model' }),
     window.getByText('Need at least two models with usage in this range to compare.'),
   ],
-  'Coach & Skills': window => [window.getByRole('heading', { name: 'What should we work on?' })],
-  Settings: window => [window.getByRole('navigation', { name: 'Settings sections' })],
+  'Coach & Skills': window => [
+    window.getByRole('region', { name: 'Coach & Skills' }).getByRole('heading', { name: 'Coach & Skills', level: 2 }),
+  ],
+  Settings: window => [window.getByRole('navigation', { name: 'Settings groups' })],
 }
 
 test('every section renders without errors', async () => {
@@ -59,7 +61,7 @@ test('every section renders without errors', async () => {
       await waitForAnyVisible(MARKERS[nav](window))
       if (nav === 'Coach & Skills') {
         const coach = window.getByRole('region', { name: 'Coach & Skills' })
-        await expect(coach.getByRole('heading', { name: 'Coach & Skills' })).toBeVisible()
+        await expect(coach.getByRole('heading', { name: 'Coach & Skills', level: 1 })).toBeVisible()
         await expect(coach.getByRole('button', { name: 'New chat' })).toBeDisabled()
         await expect(coach.getByRole('button', { name: 'Agent and model' })).toBeVisible()
         await expect(coach.getByRole('button', { name: /conversation details|terminal|right panel/i })).toHaveCount(0)

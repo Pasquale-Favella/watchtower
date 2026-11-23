@@ -12,17 +12,13 @@ import { WorkspaceChatColumn } from '@/renderer/features/workspace/WorkspaceChat
 import { WorkspaceNewChat } from '@/renderer/features/workspace/WorkspaceNewChat.js'
 
 import { useCoachChat, useCoachChatStarting, useDiscardCoachChat, useSetCoachChatStarting } from './coach-chat-hooks.js'
+import { CoachWelcome } from './CoachWelcome.js'
 import { HarnessStatusDot } from './harness-status.js'
 import { statusLabel } from './lib.js'
 import { SaveSkillButton } from './SaveSkillButton.js'
-import { SuggestedSkillChips } from './SuggestedSkillChips.js'
 
 function renderAssistantAction(markdown: string) {
   return <SaveSkillButton markdown={markdown} />
-}
-
-function renderSuggestedPrompts(onSeed: (prompt: string) => void, disabled: boolean) {
-  return <SuggestedSkillChips onSeed={onSeed} disabled={disabled} />
 }
 
 export function CoachSkillsView(): React.JSX.Element {
@@ -38,7 +34,7 @@ export function CoachSkillsView(): React.JSX.Element {
       assistantAction: renderAssistantAction,
       onConnectionChange: setConnectionId,
       onStartingChange: setStarting,
-      suggestedPrompts: renderSuggestedPrompts,
+      Welcome: CoachWelcome,
     }),
     [setStarting],
   )
