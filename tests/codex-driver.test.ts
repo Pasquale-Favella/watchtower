@@ -1226,6 +1226,58 @@ describe('Codex native App Server driver', () => {
           })
           yield* Effect.tryPromise({ try: () => iterator.next(), catch: () => new Error('event stream failed') })
 
+          // Codex asks before an MCP tool call with a field-less form, sometimes without a turn id.
+          yield* server.send({
+            id: 'native-mcp-approval-1',
+            method: 'mcpServer/elicitation/request',
+            params: {
+              threadId: 'thread-native-1',
+              turnId: null,
+              serverName: 'watchtower-orchestrator',
+              mode: 'form',
+              message: 'Allow the watchtower-orchestrator MCP server to run tool "delegation_start"?',
+              requestedSchema: { type: 'object', properties: {} },
+            },
+          })
+          const mcpEvent = yield* Effect.tryPromise({
+            try: () => iterator.next(),
+            catch: () => new Error('event stream failed'),
+          })
+          const mcpApproval = mcpEvent.value?.kind === 'requestPending' ? mcpEvent.value.request : undefined
+          expect(mcpApproval).toMatchObject({
+            kind: 'approval',
+            prompt: 'Allow the watchtower-orchestrator MCP server to run tool "delegation_start"?',
+            tool: { category: 'delegation' },
+          })
+          expect(mcpApproval?.options?.map((option: { readonly id: string }) => option.id)).toEqual([
+            'allow-once',
+            'decline',
+            'cancel',
+          ])
+          expect(yield* Queue.size(server.output)).toBe(0)
+          if (!mcpApproval) throw new Error('Expected a pending MCP tool approval')
+          yield* session.respond(runId, mcpApproval.requestId, context.generation, { kind: 'approve' })
+          expect(yield* server.read).toEqual({
+            id: 'native-mcp-approval-1',
+            result: { action: 'accept', content: {} },
+          })
+          yield* Effect.tryPromise({ try: () => iterator.next(), catch: () => new Error('event stream failed') })
+
+          // A form that wants values is not a consent request, so it is refused rather than answered for the user.
+          yield* server.send({
+            id: 'native-mcp-form-1',
+            method: 'mcpServer/elicitation/request',
+            params: {
+              threadId: 'thread-native-1',
+              turnId: accepted.nativeTurnId,
+              serverName: 'other-server',
+              mode: 'form',
+              message: 'Your email?',
+              requestedSchema: { type: 'object', properties: { email: { type: 'string' } } },
+            },
+          })
+          expect(yield* server.read).toMatchObject({ id: 'native-mcp-form-1', error: { code: -32600 } })
+
           yield* server.send({
             method: 'turn/completed',
             params: { threadId: 'thread-native-1', turn: { id: 'turn-native-1', status: 'completed' } },

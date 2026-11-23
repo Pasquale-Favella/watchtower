@@ -36,7 +36,7 @@ import {
   workspaceCheckoutIdSchema,
 } from '../src/shared/schemas/workspace.js'
 
-type PromptMode = 'events' | 'permission' | 'question' | 'cancel' | 'block' | 'overflow'
+type PromptMode = 'events' | 'permission' | 'question' | 'toolApproval' | 'cancel' | 'block' | 'overflow'
 
 interface FakeAcpState {
   driver: ReturnType<typeof makeAcpDriver>
@@ -359,6 +359,21 @@ function makeFakeAcp(mode: PromptMode = 'events', allowLoad = false): FakeAcpSta
           })
         }
         return { stopReason: response?.outcome.outcome === 'cancelled' ? 'cancelled' : 'end_turn' }
+      }
+      if (state.mode === 'toolApproval') {
+        const response = await peer?.extMethod('elicitation/create', {
+          mode: 'form',
+          message: 'Allow the watchtower-orchestrator MCP server to run tool "delegation_start"?',
+          sessionId: params.sessionId,
+          requestedSchema: { type: 'object', properties: {} },
+          _meta: {
+            codex_approval_kind: 'mcp_tool_call',
+            tool_name: 'delegation_start',
+            persist: ['session', 'always'],
+          },
+        })
+        state.questionOutcomes.push(response)
+        return { stopReason: 'end_turn' }
       }
       if (state.mode === 'question') {
         const response = await peer?.extMethod('elicitation/create', {
@@ -1113,6 +1128,47 @@ describe('generic ACP driver', () => {
     ])
   })
 
+  it.each([
+    { accessMode: 'auto' as const, asks: false },
+    { accessMode: 'approval-required' as const, asks: true },
+  ])(
+    'answers an MCP tool approval for an orchestration tool in $accessMode (asks: $asks)',
+    async ({ accessMode, asks }) => {
+      const fake = makeFakeAcp('toolApproval')
+      const seen = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* fake.driver.connect({ connectionId: 'acp-tool-approval' })
+            const session = yield* connection.openSession({ ...context, accessMode })
+            const promptRunId = runId('run-tool-approval')
+            const fiber = yield* Effect.forkScoped(
+              session.submit({
+                runId: promptRunId,
+                messages: [{ role: 'user', content: 'delegate' }],
+                attachmentIds: [],
+              }),
+            )
+            const kinds: string[] = []
+            yield* Stream.runForEach(session.events(promptRunId), event => {
+              kinds.push(event.kind)
+              if (event.kind !== 'requestPending') return Effect.void
+              expect(event.request).toMatchObject({ kind: 'approval', tool: { category: 'delegation' } })
+              expect(event.request.options?.map(option => option.id)).toEqual(['allow-once', 'decline', 'cancel'])
+              return session
+                .respond(promptRunId, event.request.requestId, context.generation, { kind: 'approve' })
+                .pipe(Effect.asVoid)
+            })
+            yield* Fiber.join(fiber)
+            yield* connection.close(1000)
+            return kinds
+          }),
+        ),
+      )
+      expect(seen.includes('requestPending')).toBe(asks)
+      expect(fake.questionOutcomes).toEqual([{ action: 'accept', content: {} }])
+    },
+  )
+
   it('waits for a human permission decision and defaults to allow-once even when allow-always is first', async () => {
     const fake = makeFakeAcp('permission')
     const result = await Effect.runPromise(
@@ -1351,7 +1407,9 @@ describe('generic ACP driver', () => {
           const connection = yield* fake.driver.connect({ connectionId: 'acp-browser-unsupported' })
           const session = yield* connection.openSession({
             ...context,
-            mcpEndpoints: [{ name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' }],
+            mcpEndpoints: [
+              { name: 'watchtower-browser' as const, url: 'http://127.0.0.1:43123/mcp', token: 'run-token' },
+            ],
           })
           const run = runId('run-browser-unsupported')
           const reading = yield* Effect.forkScoped(Stream.runCollect(session.events(run)))
@@ -1689,10 +1747,30 @@ describe('generic ACP driver', () => {
     { accessMode: 'auto' as const, kind: 'edit', expected: 'allow-once' },
     { accessMode: 'auto' as const, kind: 'execute', expected: undefined },
     { accessMode: 'full-access' as const, kind: 'execute', expected: 'allow-once' },
-    { accessMode: 'auto' as const, kind: 'other', title: 'watchtower-orchestrator_delegation_start', expected: 'allow-once' },
-    { accessMode: 'auto-accept-edits' as const, kind: 'other', title: 'delegation_send (watchtower-orchestrator)', expected: 'allow-once' },
-    { accessMode: 'approval-required' as const, kind: 'other', title: 'mcp__watchtower-orchestrator__delegation_status', expected: 'allow-once' },
-    { accessMode: 'approval-required' as const, kind: 'other', title: 'watchtower-orchestrator: delegation_start', expected: undefined },
+    {
+      accessMode: 'auto' as const,
+      kind: 'other',
+      title: 'watchtower-orchestrator_delegation_start',
+      expected: 'allow-once',
+    },
+    {
+      accessMode: 'auto-accept-edits' as const,
+      kind: 'other',
+      title: 'delegation_send (watchtower-orchestrator)',
+      expected: 'allow-once',
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'mcp__watchtower-orchestrator__delegation_status',
+      expected: 'allow-once',
+    },
+    {
+      accessMode: 'approval-required' as const,
+      kind: 'other',
+      title: 'watchtower-orchestrator: delegation_start',
+      expected: undefined,
+    },
     { accessMode: 'auto' as const, kind: 'other', title: 'other_server_delegation_start', expected: undefined },
   ])('answers a $kind $title request in $accessMode with $expected', ({ accessMode, kind, title, expected }) => {
     const options: PermissionOption[] = [

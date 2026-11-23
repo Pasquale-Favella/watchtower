@@ -286,7 +286,8 @@ const PlanNotification = Schema.Struct({
 })
 const RequestDetails = Schema.Struct({
   threadId: Schema.String,
-  turnId: Schema.optional(Schema.String),
+  // An MCP elicitation sends null when Codex could not tie it to a turn.
+  turnId: Schema.optional(Schema.NullOr(Schema.String)),
   itemId: Schema.optional(Schema.String),
   cwd: Schema.optional(Schema.String),
   path: Schema.optional(Schema.String),
@@ -312,7 +313,34 @@ const RequestDetails = Schema.Struct({
     ),
   ),
   prompt: Schema.optional(Schema.String),
+  serverName: Schema.optional(Schema.String),
+  message: Schema.optional(Schema.String),
+  mode: Schema.optional(Schema.String),
+  requestedSchema: Schema.optional(Schema.Unknown),
+  _meta: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
 })
+
+const ELICITATION_METHOD = 'mcpServer/elicitation/request'
+const ApprovalFormSchema = Schema.Struct({ properties: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)) })
+
+/**
+ * An MCP elicitation that asks only for consent: a form with no fields, which is how Codex asks before an MCP tool
+ * call. A form that wants values or a URL is not an approval and is refused rather than answered for the user.
+ */
+function approvalElicitation(
+  details: Schema.Schema.Type<typeof RequestDetails>,
+): { readonly serverName: string; readonly message: string; readonly params?: string } | undefined {
+  if (!details.serverName || details.message === undefined) return undefined
+  if (details.mode !== 'form' && details.mode !== 'openai/form' && details.mode !== 'openaiForm') return undefined
+  const form = Schema.decodeUnknownOption(ApprovalFormSchema)(details.requestedSchema ?? {})
+  if (form._tag === 'None' || Object.keys(form.value.properties ?? {}).length > 0) return undefined
+  const params = details._meta?.['tool_params']
+  return {
+    serverName: details.serverName,
+    message: details.message,
+    ...(params !== undefined ? { params: JSON.stringify(params) } : {}),
+  }
+}
 const PermissionRequestDetails = Schema.Struct({
   fileSystem: Schema.optional(
     Schema.NullOr(
@@ -1394,6 +1422,13 @@ function respond(
 }
 
 function responseFor(pending: PendingRequest, decision: AgentRequestDecision): unknown | undefined {
+  if (pending.method === ELICITATION_METHOD) {
+    if (decision.kind === 'approve' && (decision.optionId === undefined || decision.optionId === 'allow-once'))
+      return { action: 'accept', content: {} }
+    if (decision.kind === 'deny') return { action: 'decline' }
+    if (decision.kind === 'cancel') return { action: 'cancel' }
+    return undefined
+  }
   if (pending.method === 'item/permissions/requestApproval') {
     if (decision.kind === 'approve' && (decision.optionId === undefined || decision.optionId === 'allow-once'))
       return { permissions: pending.permissions, scope: 'turn' }
@@ -1759,20 +1794,22 @@ function handleEvent(
           .pipe(Effect.ignore)
       return
     }
+    const elicitation = details && event.method === ELICITATION_METHOD ? approvalElicitation(details) : undefined
     const supportedMethod =
       event.method === 'item/commandExecution/requestApproval' ||
       event.method === 'item/fileChange/requestApproval' ||
       event.method === 'item/permissions/requestApproval' ||
-      event.method === 'item/tool/requestUserInput'
+      event.method === 'item/tool/requestUserInput' ||
+      elicitation !== undefined
     if (
       !details ||
       !state ||
       !run ||
       run.failed ||
       !supportedMethod ||
-      !details.turnId ||
       !run.nativeTurnId ||
-      details.turnId !== run.nativeTurnId ||
+      // An elicitation may arrive without a turn; it then belongs to the thread's active Run.
+      (elicitation ? details.turnId != null && details.turnId !== run.nativeTurnId : details.turnId !== run.nativeTurnId) ||
       (event.method === 'item/permissions/requestApproval' &&
         Schema.decodeUnknownOption(PermissionRequestDetails)(details.permissions)._tag !== 'Some') ||
       requests.size >= MAX_PENDING_NATIVE_REQUESTS
@@ -1827,10 +1864,30 @@ function handleEvent(
           })),
         }))
       : []
-    const requestTool = codexRequestTool(event.method, details)
+    const requestTool = elicitation
+      ? {
+          category: elicitation.serverName === ORCHESTRATOR_MCP_SERVER ? ('delegation' as const) : ('mcp' as const),
+          description: boundedNativeText(
+            elicitation.params ? `${elicitation.message}\n${elicitation.params}` : elicitation.message,
+            2048,
+          ),
+        }
+      : codexRequestTool(event.method, details)
     const approvalOptions = questionRequest
       ? undefined
-      : [
+      : elicitation
+        ? [
+            {
+              id: 'allow-once',
+              label: 'Allow once',
+              scope: 'once' as const,
+              kind: 'allow' as const,
+              decision: { kind: 'approve' as const, optionId: 'allow-once' },
+            },
+            { id: 'decline', label: 'Decline', kind: 'deny' as const, decision: { kind: 'deny' as const } },
+            { id: 'cancel', label: 'Cancel turn', kind: 'deny' as const, decision: { kind: 'cancel' as const } },
+          ]
+        : [
           {
             id: 'allow-once',
             label: 'Allow once',
@@ -1856,6 +1913,7 @@ function handleEvent(
         generation: run.generation,
         kind: questionRequest ? 'question' : 'approval',
         prompt:
+          elicitation?.message ??
           details.prompt ??
           details.reason ??
           (typeof details.command === 'string'

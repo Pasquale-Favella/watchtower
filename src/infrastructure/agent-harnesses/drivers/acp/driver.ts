@@ -48,6 +48,7 @@ import type { AcpMcpServer } from '@/infrastructure/agent-harnesses/harnesses/ty
 import {
   isOrchestratorToolTitle,
   isReadOnlyOrchestratorToolTitle,
+  ORCHESTRATOR_MCP_SERVER,
   orchestrationAutoApproved,
   orchestrationReferenceFromRaw,
 } from '@/infrastructure/agent-harnesses/orchestration.js'
@@ -219,7 +220,13 @@ interface PendingQuestion extends Omit<PendingPermission, 'kind' | 'options' | '
   readonly resolve: (response: CreateElicitationResponse) => void
 }
 
-type PendingRequest = PendingPermission | PendingQuestion
+/** An MCP tool approval sent as a field-less elicitation; it takes consent, not answers. */
+interface PendingConsent extends Omit<PendingPermission, 'kind' | 'options' | 'resolve'> {
+  readonly kind: 'consent'
+  readonly resolve: (response: CreateElicitationResponse) => void
+}
+
+type PendingRequest = PendingPermission | PendingQuestion | PendingConsent
 
 interface ReplayRecord {
   readonly cursor: string
@@ -396,7 +403,103 @@ const elicitationRequestSchema = Schema.Struct({
   requestId: Schema.optional(Schema.String),
   toolCallId: Schema.optional(Schema.NullOr(Schema.String)),
   requestedSchema: Schema.optional(Schema.Unknown),
+  _meta: Schema.optional(Schema.NullOr(Schema.Record(Schema.String, Schema.Unknown))),
 })
+
+const fieldlessFormSchema = Schema.Struct({ properties: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)) })
+
+/**
+ * Codex wrapped as an ACP agent asks before an MCP tool call with a field-less form tagged `mcp_tool_call`. Anything
+ * else stays a question or is declined.
+ */
+function mcpToolApproval(
+  request: Schema.Schema.Type<typeof elicitationRequestSchema>,
+): { readonly toolName: string; readonly orchestration: boolean } | undefined {
+  if (request._meta?.['codex_approval_kind'] !== 'mcp_tool_call') return undefined
+  const form = Schema.decodeUnknownOption(fieldlessFormSchema)(request.requestedSchema)
+  if (form._tag === 'None' || Object.keys(form.value.properties ?? {}).length > 0) return undefined
+  const toolName = typeof request._meta['tool_name'] === 'string' ? request._meta['tool_name'] : ''
+  return {
+    toolName,
+    orchestration: isOrchestratorToolTitle(toolName) && request.message.includes(ORCHESTRATOR_MCP_SERVER),
+  }
+}
+
+/**
+ * Answers an MCP tool approval by the Run's access mode, as tool permissions are: orchestration tools outside
+ * approval-required, reading orchestration tools always, and any tool under full access. Otherwise the user decides.
+ */
+async function requestToolConsent(
+  stateRef: AcpStateRef,
+  request: Schema.Schema.Type<typeof elicitationRequestSchema>,
+  approval: { readonly toolName: string; readonly orchestration: boolean },
+): Promise<CreateElicitationResponse> {
+  const state = stateRef.current
+  const run = state?.activeRun
+  if (
+    !state ||
+    !run ||
+    state.closed ||
+    !state.acceptRequests ||
+    (request.sessionId != null && request.sessionId !== state.nativeSessionId)
+  ) {
+    return { action: 'cancel' }
+  }
+  const accessMode = state.context.accessMode ?? DEFAULT_AGENT_ACCESS_MODE
+  const automatic =
+    accessMode === 'full-access' ||
+    (approval.orchestration &&
+      (orchestrationAutoApproved(accessMode) || isReadOnlyOrchestratorToolTitle(approval.toolName)))
+  if (automatic) return { action: 'accept', content: {} }
+  const id = `acp-request-${++state.requestSequence}`
+  let resolve!: (response: CreateElicitationResponse) => void
+  const response = new Promise<CreateElicitationResponse>(res => {
+    resolve = res
+  })
+  state.permissions.set(id, {
+    kind: 'consent',
+    id,
+    runId: run.id,
+    generation: state.context.generation,
+    nativeSessionId: state.nativeSessionId,
+    resolve,
+    answered: false,
+  })
+  try {
+    await emitEvent(state, {
+      kind: 'requestPending',
+      request: {
+        requestId: id,
+        runId: run.id,
+        sessionId: state.context.sessionId,
+        generation: state.context.generation,
+        kind: 'approval',
+        prompt: request.message,
+        options: [
+          {
+            id: 'allow-once',
+            label: 'Allow once',
+            scope: 'once',
+            kind: 'allow',
+            decision: { kind: 'approve', optionId: 'allow-once' },
+          },
+          { id: 'decline', label: 'Decline', kind: 'deny', decision: { kind: 'deny' } },
+          { id: 'cancel', label: 'Cancel turn', kind: 'deny', decision: { kind: 'cancel' } },
+        ],
+        questions: [],
+        tool: { category: approval.orchestration ? 'delegation' : 'mcp', description: request.message },
+        ...(request.toolCallId ? { toolCallId: request.toolCallId } : {}),
+        ...(request.requestId ? { nativeRequestId: request.requestId } : {}),
+      },
+    })
+  } catch {
+    state.permissions.delete(id)
+    return { action: 'cancel' }
+  }
+  return response.finally(() => {
+    state.permissions.delete(id)
+  })
+}
 type CreateElicitationResponse =
   | { readonly action: 'accept'; readonly content?: Record<string, string | number | boolean | ReadonlyArray<string>> }
   | { readonly action: 'decline' }
@@ -1438,6 +1541,8 @@ function makeClient(stateRef: AcpStateRef): Client {
       const decoded = Schema.decodeUnknownOption(elicitationRequestSchema)(params)
       if (decoded._tag === 'None' || decoded.value.mode !== 'form' || decoded.value.requestedSchema === undefined)
         return { action: 'decline' }
+      const toolApproval = mcpToolApproval(decoded.value)
+      if (toolApproval) return requestToolConsent(stateRef, decoded.value, toolApproval)
       const form = Schema.decodeUnknownOption(elicitationFormSchema)(decoded.value.requestedSchema)
       if (form._tag === 'None') return { action: 'decline' }
       const questions = questionFields(form.value, decoded.value.message)
@@ -1853,7 +1958,23 @@ function sessionInterface(
             message: 'ACP elicitation needs answers, a denial, or a cancellation.',
           })
         }
-        if (pending.kind === 'permission') {
+        if (pending.kind === 'consent') {
+          const response: CreateElicitationResponse | undefined =
+            decision.kind === 'approve' && (decision.optionId === undefined || decision.optionId === 'allow-once')
+              ? { action: 'accept', content: {} }
+              : decision.kind === 'deny'
+                ? { action: 'decline' }
+                : decision.kind === 'cancel'
+                  ? { action: 'cancel' }
+                  : undefined
+          if (!response)
+            return yield* new AgentDriverError({
+              code: 'invalid-state',
+              message: 'An MCP tool approval takes allow, decline or cancel.',
+            })
+          pending.answered = true
+          pending.resolve(response)
+        } else if (pending.kind === 'permission') {
           const response = choosePermissionResponse(pending, decision)
           if (!response)
             return yield* new AgentDriverError({
