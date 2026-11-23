@@ -16,7 +16,7 @@ test('Workspace opens by default and the vertical switcher scopes Analytics comm
     await switchVertical(window, 'Workspace')
     const workspace = window.getByRole('main', { name: 'Agent workspace' })
     await expect(workspace).toBeVisible()
-    await expect(window.getByRole('button', { name: 'Open Project', exact: true })).toBeVisible()
+    await expect(window.getByRole('button', { name: 'Add project', exact: true })).toBeVisible()
     await expect(window.getByRole('button', { name: 'Overview', exact: true })).toHaveCount(0)
 
     await window.keyboard.press('ControlOrMeta+1')
@@ -26,7 +26,7 @@ test('Workspace opens by default and the vertical switcher scopes Analytics comm
     await expect(window.getByPlaceholder('Go to a section or run an action...')).toHaveCount(0)
 
     await window.keyboard.press('ControlOrMeta+b')
-    await expect(window.getByRole('button', { name: 'Open Project', exact: true })).toBeHidden()
+    await expect(window.getByRole('button', { name: 'Add project', exact: true })).toBeHidden()
     const switcher = window.getByRole('button', { name: 'Switch application, Workspace' })
     await expect(switcher).toHaveCSS('width', '32px')
     const logoFits = await switcher.evaluate(button => {
@@ -53,7 +53,7 @@ test('Workspace opens by default and the vertical switcher scopes Analytics comm
     await window.setViewportSize({ width: 720, height: 800 })
     await window.getByRole('button', { name: 'Toggle workspace navigation', exact: true }).click()
     await expect(window.getByRole('dialog', { name: 'Sidebar', exact: true })).toBeVisible()
-    await expect(window.getByRole('button', { name: 'Open Project', exact: true })).toBeVisible()
+    await expect(window.getByRole('button', { name: 'Add project', exact: true })).toBeVisible()
     await window.keyboard.press('Escape')
     await expect(workspace).toBeVisible()
     await window.setViewportSize({ width: 1280, height: 900 })

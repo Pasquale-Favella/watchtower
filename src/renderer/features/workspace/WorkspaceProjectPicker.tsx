@@ -2,7 +2,8 @@ import { Command as CommandPrimitive } from 'cmdk'
 import { Folder, FolderPlus, MessageSquare, SearchIcon } from 'lucide-react'
 import { useState } from 'react'
 
-import { Command, CommandEmpty, CommandItem, CommandList } from '@/renderer/components/ui/command.js'
+import { displayShortcutForAction } from '@/renderer/app/shortcuts'
+import { Command, CommandEmpty, CommandItem, CommandList, CommandShortcut } from '@/renderer/components/ui/command.js'
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover.js'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { ProjectId } from '@/shared/schemas/workspace.js'
@@ -36,6 +37,8 @@ export function WorkspaceProjectPicker({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const registration = useWorkspaceProjectDialog()
+  const addProjectShortcut = displayShortcutForAction('addProject')
+  const withoutProjectShortcut = displayShortcutForAction('newChatWithoutProject')
   function select(id: ProjectId | null) {
     onSelect(id)
     setOpen(false)
@@ -96,6 +99,7 @@ export function WorkspaceProjectPicker({
             >
               <MessageSquare className="text-muted-foreground" />
               No project
+              {withoutProjectShortcut && <CommandShortcut>{withoutProjectShortcut}</CommandShortcut>}
             </CommandItem>
             {projects.map(project => (
               <CommandItem
@@ -128,6 +132,7 @@ export function WorkspaceProjectPicker({
               >
                 <FolderPlus className="text-muted-foreground" />
                 Add project
+                {addProjectShortcut && <CommandShortcut>{addProjectShortcut}</CommandShortcut>}
               </CommandItem>
             )}
           </CommandList>

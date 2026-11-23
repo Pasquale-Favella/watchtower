@@ -71,6 +71,17 @@ describe('shortcut registry', () => {
     expect(displayShortcutForAction('summonOrb', 'windows')).toBe('Ctrl+Alt+O')
   })
 
+  it('declares Add project and New chat without a project as workspace-scoped, outside the numbered range', () => {
+    const workspace = SHORTCUTS.filter(def => def.scope === 'workspace')
+    expect(workspace.map(def => [def.action, def.hotkey])).toEqual([
+      ['addProject', 'Mod+O'],
+      ['newChatWithoutProject', 'Mod+Alt+N'],
+    ])
+    expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.scope === 'workspace')).toBe(false)
+    expect(displayShortcutForAction('addProject', 'windows')).toBe('Ctrl+O')
+    expect(displayShortcutForAction('newChatWithoutProject', 'windows')).toBe('Ctrl+Alt+N')
+  })
+
   it('maps a registry hotkey to an Electron accelerator', () => {
     expect(acceleratorFor('Mod+Alt+O')).toBe('CommandOrControl+Alt+O')
     expect(acceleratorFor('Mod+,')).toBe('CommandOrControl+,')

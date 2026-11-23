@@ -15,10 +15,12 @@ import {
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { displayShortcutForAction } from '@/renderer/app/shortcuts'
 import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
 import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
 import { Input } from '@/renderer/components/ui/input'
+import { Kbd } from '@/renderer/components/ui/kbd'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
@@ -48,6 +50,7 @@ import { SidebarTaskRowContent } from './sidebar/SidebarTaskRowContent.js'
 import { useSidebarDelegatedParent } from './sidebar/use-sidebar-delegated-parent.js'
 import { useSidebarModels } from './sidebar/use-sidebar-models.js'
 import { useWorkspaceProjectDialog } from './use-project-dialog.js'
+import { shouldShowNoProjectsWelcome } from './WorkspaceNoProjectsWelcome.js'
 
 const PAGE_SIZE = 30
 const NO_PROJECT_GROUP = 'no-project'
@@ -179,6 +182,7 @@ export function WorkspaceProjects({
   const [search, setSearch] = useState('')
   const [initializedDefaultProject, setInitializedDefaultProject] = useState(false)
   const projectDialog = useWorkspaceProjectDialog()
+  const addProjectShortcut = displayShortcutForAction('addProject')
   const delegatedParentId = useSidebarDelegatedParent(selectedProjectId, selectedTaskId)
   const connectionsQuery = useWorkspaceConnections()
   const connectionsById = useMemo(
@@ -221,6 +225,7 @@ export function WorkspaceProjects({
 
   const scratchProjects = useMemo(() => projects.filter(isScratchProject), [projects])
   const regularProjects = useMemo(() => projects.filter(project => !isScratchProject(project)), [projects])
+  const showNoProjects = shouldShowNoProjectsWelcome(projects, Boolean(projectPage?.nextAfterId))
   const searchTerm = search.trim().toLocaleLowerCase()
   const searching = searchTerm.length > 0
   const selectedGroupId =
@@ -371,14 +376,25 @@ export function WorkspaceProjects({
             </Button>
           }
         />
-        <TextTooltip
-          label="Open Project"
-          trigger={
-            <Button type="button" size="icon-sm" variant="ghost" aria-label="Open Project" onClick={projectDialog.open}>
-              <FolderPlus className="size-4" />
-            </Button>
-          }
-        />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                type="button"
+                size="icon-sm"
+                variant="ghost"
+                aria-label="Add project"
+                onClick={projectDialog.open}
+              >
+                <FolderPlus className="size-4" />
+              </Button>
+            }
+          />
+          <TooltipContent>
+            Add project
+            {addProjectShortcut && <Kbd>{addProjectShortcut}</Kbd>}
+          </TooltipContent>
+        </Tooltip>
       </header>
 
       {projectDialog.notice && (
@@ -471,6 +487,16 @@ export function WorkspaceProjects({
               </li>
             )}
           </ul>
+        )}
+
+        {!searching && projectsQuery.status === 'ready' && showNoProjects && (
+          <div className="flex flex-col items-start gap-2 px-2 py-3">
+            <p className="text-sidebar-muted-foreground text-xs">No projects yet</p>
+            <Button type="button" variant="outline" size="sm" onClick={projectDialog.open}>
+              Add project
+              {addProjectShortcut && <Kbd>{addProjectShortcut}</Kbd>}
+            </Button>
+          </div>
         )}
 
         {searching && !searchHasMatches && !searchStillLoading && (

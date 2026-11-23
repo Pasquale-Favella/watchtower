@@ -103,7 +103,7 @@ test('workspace opens by default, persists project and task across reload, and c
     })
     await switchVertical(window, 'Workspace')
     await expect(window.getByRole('main', { name: 'Agent workspace' })).toBeVisible()
-    await window.getByRole('button', { name: 'Open Project', exact: true }).click()
+    await window.getByRole('button', { name: 'Add project', exact: true }).click()
     const addProject = window.getByRole('dialog', { name: 'Add project' })
     await expect(addProject).toBeVisible()
     await addProject.getByRole('option', { name: /^Local folder/ }).click()
