@@ -1,9 +1,9 @@
 import { ChevronLeft, ChevronRight, Maximize2, Minus, Plus, Scan, Shapes } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
+import { Streamdown } from 'streamdown'
 
 import { Markdown } from '@/renderer/components/Markdown'
+import { markdownRehypePlugins } from '@/renderer/components/markdown/markdown-rehype.js'
 import {
   isEmbeddedMarkdownImage,
   isExternalMarkdownUrl,
@@ -67,14 +67,17 @@ export function RenderedTextPreview({
   return (
     <MarkdownNavigationContext value={navigation}>
       <div className="watchtower-markdown typeset min-h-0 flex-1 overflow-auto px-4 py-3 text-sm">
-        <ReactMarkdown
+        <Streamdown
+          mode="static"
+          skipHtml
+          lineNumbers={false}
+          rehypePlugins={markdownRehypePlugins}
           urlTransform={(value, key, node) => {
             if (isExternalMarkdownUrl(value) || value.startsWith('#') || isEmbeddedMarkdownImage(value))
               return markdownUrlTransform(value, key, node)
             const resolved = resolvePreviewReference(path, value)
             return resolved ? markdownUrlTransform(resolved, key, node) : undefined
           }}
-          remarkPlugins={[remarkGfm]}
           components={{
             a: MarkdownLink,
             img: MarkdownImage,
@@ -100,7 +103,7 @@ export function RenderedTextPreview({
           }}
         >
           {content}
-        </ReactMarkdown>
+        </Streamdown>
       </div>
     </MarkdownNavigationContext>
   )
