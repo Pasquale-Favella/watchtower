@@ -3,12 +3,19 @@ import * as Schema from 'effect/Schema'
 import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 import { projectRegistrationReceiptSchema } from '@/shared/schemas/workspace-store.js'
 
-export const registerWorkspaceProjectSchema = Schema.Struct({
+const workspaceProjectTargetFields = {
   commandId: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1)),
   projectId: projectIdSchema,
   checkoutId: workspaceCheckoutIdSchema,
   name: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1), Schema.isMaxLength(512)),
   path: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(32_768), Schema.isPattern(/^[^\0]+$/)),
+}
+
+/** Registers any local folder as a Project, Git repository or not; never runs Git.
+ * `createIfMissing` creates a missing folder (recursively) before registering it. */
+export const registerWorkspaceProjectSchema = Schema.Struct({
+  ...workspaceProjectTargetFields,
+  createIfMissing: Schema.optional(Schema.Boolean),
 })
 export type RegisterWorkspaceProject = Schema.Schema.Type<typeof registerWorkspaceProjectSchema>
 
@@ -57,14 +64,14 @@ export type ProjectPublishTarget = Schema.Schema.Type<typeof projectPublishTarge
 
 /** Creates the folder when missing and initializes Git when absent; an existing checkout is only registered. */
 export const createWorkspaceProjectSchema = Schema.Struct({
-  ...registerWorkspaceProjectSchema.fields,
+  ...workspaceProjectTargetFields,
   publish: projectPublishTargetSchema,
 })
 export type CreateWorkspaceProject = Schema.Schema.Type<typeof createWorkspaceProjectSchema>
 
 /** The destination must be missing or empty unless it already holds the finished clone. */
 export const cloneWorkspaceProjectSchema = Schema.Struct({
-  ...registerWorkspaceProjectSchema.fields,
+  ...workspaceProjectTargetFields,
   source: projectRemoteSourceSchema,
 })
 export type CloneWorkspaceProject = Schema.Schema.Type<typeof cloneWorkspaceProjectSchema>

@@ -12,8 +12,9 @@ import { usePaletteStore } from '@/renderer/stores/hooks/use-palette-store.js'
 export function useAppHotkeys(): void {
   const { refreshScan: refresh, togglePalette } = usePaletteStore()
   useHotkeys(
-    // `global` shortcuts are the main process's (OS-wide), not this window's.
-    SHORTCUTS.filter(def => def.action !== 'toggleSidebar' && def.action !== 'settings' && def.scope !== 'global').map(
+    // `global` shortcuts are the main process's (OS-wide), not this window's;
+    // `workspace` shortcuts belong to the Workspace vertical.
+    SHORTCUTS.filter(def => def.action !== 'toggleSidebar' && def.action !== 'settings' && def.scope === undefined).map(
       def => ({
         hotkey: def.hotkey,
         callback: () => {
@@ -27,7 +28,9 @@ export function useAppHotkeys(): void {
             case 'toggleSidebar':
               break // owned by SidebarToggleShortcut, filtered above
             case 'summonOrb':
-              // Never reached (global entries are filtered above) — kept so the
+            case 'addProject':
+            case 'newChatWithoutProject':
+              // Never reached (global and workspace entries are filtered above) — kept so the
               // `default` branch's action narrows to a Section.
               break
             default:

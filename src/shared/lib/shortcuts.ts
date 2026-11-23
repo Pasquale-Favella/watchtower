@@ -23,6 +23,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   { action: 'refresh', hotkey: 'Mod+R', label: 'Refresh' },
   { action: 'toggleSidebar', hotkey: 'Mod+B', label: 'Toggle sidebar' },
   { action: 'commandPalette', hotkey: 'Mod+K', label: 'Command palette' },
+  { action: 'addProject', hotkey: 'Mod+O', label: 'Add project', scope: 'workspace' },
+  { action: 'newChatWithoutProject', hotkey: 'Mod+Alt+N', label: 'New chat without a project', scope: 'workspace' },
   { action: 'summonOrb', hotkey: 'Mod+Alt+O', label: 'Summon Watchtower', scope: 'global' },
 ]
 

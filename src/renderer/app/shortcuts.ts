@@ -37,6 +37,8 @@ const NON_NUMBERED: ReadonlySet<ShortcutAction> = new Set([
   'toggleSidebar',
   'commandPalette',
   'summonOrb',
+  'addProject',
+  'newChatWithoutProject',
 ])
 
 /** The numbered section shortcuts (settings excluded): `Mod+1`..`Mod+N` in nav order. */
