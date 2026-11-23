@@ -6,7 +6,6 @@ import { nativeHandlers } from '../../src/platform/electron/main/rpc/native-hand
 import { CheckoutActionsRpcGroup } from '../../src/shared/rpc/checkout-actions.js'
 import { CheckoutInspectionRpcGroup } from '../../src/shared/rpc/checkout-inspection.js'
 import { CheckoutNavigationRpcGroup } from '../../src/shared/rpc/checkout-navigation.js'
-import { CoachRpcGroup } from '../../src/shared/rpc/coach.js'
 import { ShellRpcGroup } from '../../src/shared/rpc/shell.js'
 import { TerminalRpcGroup } from '../../src/shared/rpc/terminal.js'
 import { WorkspaceRpcGroup } from '../../src/shared/rpc/workspace.js'
@@ -25,12 +24,6 @@ export const unexpectedShellRpcs = ShellRpcGroup.of({
   'shell:open-settings': unexpected,
 })
 export const unexpectedShellHandlers = ShellRpcGroup.toLayer(unexpectedShellRpcs)
-
-export const unexpectedCoachHandlers = CoachRpcGroup.toLayer({
-  'coach:run': () => Stream.die(new Error('Unexpected Coach run in a data-query test')),
-  'coach:cancel': unexpected,
-  'coach:reset': unexpected,
-})
 
 export const unexpectedCheckoutInspectionHandlers = CheckoutInspectionRpcGroup.toLayer({
   'checkout:diffPreview': unexpected,
@@ -198,12 +191,7 @@ export const unexpectedNativeHandlers = Layer.mergeAll(
     getAppVersion: unexpected,
     dismissSkill: unexpected,
     saveSkill: unexpected,
-    getCoachHarnesses: unexpected,
-    refreshCoachHarnesses: unexpected,
-    inspectCoachHarness: unexpected,
-    openCoachLoginTerminal: unexpected,
   }),
-  unexpectedCoachHandlers,
   unexpectedShellHandlers,
   unexpectedWorkspaceHandlers,
   unexpectedCheckoutInspectionHandlers,

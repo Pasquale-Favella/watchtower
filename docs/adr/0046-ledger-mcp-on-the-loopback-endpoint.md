@@ -38,7 +38,9 @@ The orchestrator and browser endpoints had already moved to an in-process bearer
    endpoint's token and invalidates copied configurations. The endpoint stays on 127.0.0.1, the token is never
    persisted, and copying is the only action that reveals it.
 6. **Lifetime.** An agent endpoint lives as long as its Driver Connection scope. The Settings endpoint lives while the
-   app runs and closes on quit. Starting, stopping or resetting a Coach chat (ADR 0045) never touches an endpoint.
+   app runs and closes on quit; that lifetime concerns the Settings › Local MCP endpoint only. Coach agent sessions
+   acquire their own Run-scoped ledger endpoint, so starting, stopping or resetting a Coach chat (ADR 0045) never
+   touches the Settings endpoint.
 
 ## Consequences
 

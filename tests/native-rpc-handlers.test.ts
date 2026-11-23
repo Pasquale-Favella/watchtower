@@ -36,10 +36,6 @@ function capabilities(overrides: Partial<NativeRpcCapabilities> = {}): NativeRpc
     getAppVersion: () => Effect.succeed('1.0.0'),
     dismissSkill: () => Effect.succeed({ ok: true }),
     saveSkill: () => Effect.succeed({ ok: false, error: 'cancelled' }),
-    getCoachHarnesses: () => Effect.succeed([]),
-    refreshCoachHarnesses: () => Effect.succeed([]),
-    inspectCoachHarness: () => Effect.succeed({ ok: false, error: 'unavailable' }),
-    openCoachLoginTerminal: () => Effect.succeed({ ok: false, error: 'cancelled' }),
     ...overrides,
   }
 }

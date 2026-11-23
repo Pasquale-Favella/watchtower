@@ -11,16 +11,6 @@ export function statusLabel(status: CoachHarnessRow['status']): string {
   }[status]
 }
 
-export function harnessBadge(row: CoachHarnessRow): string | null {
-  return row.status === 'warning'
-    ? 'Sign-in?'
-    : row.status === 'error'
-      ? 'Unavailable'
-      : row.status === 'pending'
-        ? 'Checking…'
-        : null
-}
-
 /** Composite candidate key: the same name can come from different sources
  *  (skill vs bash), so the chip key must be source\0name. */
 export function candidateKey(d: SkillCandidate): string {
@@ -38,10 +28,9 @@ export function candidateKey(d: SkillCandidate): string {
  *  It deliberately does NOT prescribe how a skill is shaped: the harness
  *  knows its own SKILL.md conventions better than a template here would, so
  *  the deliverable is the finished file in the format the harness itself
- *  reads. The same evidence-first stance rides the main-side ledger briefing
- *  (buildLedgerBriefing) — keep the two in sync: this inline prompt is what
- *  covers craft requests on later turns, where the first-run briefing is not
- *  restated. */
+ *  reads. The same evidence-first stance rides the ledger briefing
+ *  (buildLedgerBriefing) — keep the two in sync: this inline prompt carries it
+ *  on every turn, including those where no briefing is restated. */
 export function craftSkillPrompt(candidate: SkillCandidate): string {
   const kind = candidate.source === 'bash' ? 'command' : candidate.source === 'tool' ? 'tool' : 'skill'
   const sessions = `${candidate.spreadSessions} ${candidate.spreadSessions === 1 ? 'session' : 'sessions'}`

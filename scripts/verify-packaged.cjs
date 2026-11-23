@@ -728,7 +728,6 @@ async function main() {
         async ({ csv, json }) => ({
           csv: await window.rpcProbe.call('export', { format: 'csv', destination: csv }),
           json: await window.rpcProbe.call('export', { format: 'json', destination: json }),
-          harnesses: await window.rpcProbe.call('coach:harnesses'),
         }),
         { csv: exportFolder, json: jsonPath },
       )
@@ -742,7 +741,6 @@ async function main() {
       )
       assert.ok(fs.existsSync(path.join(exportFolder, '.watchtower-export')))
       assert.equal(fs.readdirSync(exportFolder).length, 11)
-      assert.ok(Array.isArray(exports.harnesses))
       const config = await window.evaluate(async () => {
         const name = 'watchtower-wave20-gate-model'
         const call = window.rpcProbe.call
@@ -822,22 +820,38 @@ async function main() {
       console.log(
         'Packaged configuration ports passed: cadence, aliases and price CRUD, zero price, dismissal, startup, source status and failed validation.',
       )
-      const inspection = await window.evaluate(async rows => {
-        const harness = rows.find(row => row.kind === 'codex') ?? rows.find(row => row.kind === 'claude')
-        if (!harness) return { skipped: true }
-        const result = await window.rpcProbe.call('coach:inspect', { request: { kind: harness.kind } })
-        return { kind: harness.kind, binaryPath: harness.binaryPath, result }
-      }, exports.harnesses)
-      assert.notEqual(inspection.skipped, true, 'Packaged Coach SDK inspection requires a detected bundled harness')
+      const inspection = await window.evaluate(async () => {
+        const call = window.rpcProbe.call
+        const { items } = await call('workspace:listConnections', {})
+        const connection =
+          items.find(item => item.provenance === 'bundled' && item.harnessKind === 'codex') ??
+          items.find(item => item.provenance === 'bundled' && item.harnessKind === 'claude') ??
+          items.find(item => item.provenance === 'bundled')
+        if (!connection) return { skipped: true }
+        const result = await call('workspace:inspectConnection', { connectionId: connection.connectionId }).then(
+          inspected => ({ ok: true, inspected }),
+          error => ({ ok: false, error: String(error?.rpcError?.message ?? error?.message ?? error) }),
+        )
+        return { kind: connection.harnessKind, connectionId: connection.connectionId, result }
+      })
+      assert.notEqual(
+        inspection.skipped,
+        true,
+        'Packaged Workspace connection inspection requires a detected bundled harness connection',
+      )
       assert.equal(typeof inspection.result.ok, 'boolean')
-      if (!inspection.result.ok) {
+      if (inspection.result.ok) {
+        const wire = JSON.stringify(inspection.result.inspected)
+        assert.equal(inspection.result.inspected.connectionId, inspection.connectionId)
+        assert.ok(wire.length < 64 * 1024)
+        assert.ok(!wire.includes('token='))
+      } else {
         assert.equal(typeof inspection.result.error, 'string')
         assert.ok(inspection.result.error.length < 700)
-        if (inspection.binaryPath) assert.ok(!inspection.result.error.includes(inspection.binaryPath))
         assert.ok(!inspection.result.error.includes('token='))
       }
       console.log(
-        'Packaged Coach SDK inspection settled with bounded wire data:',
+        'Packaged Workspace connection inspection settled with bounded wire data:',
         inspection.kind,
         inspection.result.ok ? 'success' : 'expected failure',
       )
@@ -853,7 +867,7 @@ async function main() {
       assert.equal(typeof refused.error, 'string')
       assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'untouched')
       console.log(
-        'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned harness RPC passed.',
+        'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned Workspace connection RPC passed.',
       )
       // This is the RPC Settings uses to copy the Local MCP config.
       const connection = await window.evaluate(() => window.rpcProbe.call('ledger-mcp:connection'))

@@ -18,12 +18,53 @@ import type { CommandRunner } from '@/core/ports/process.js'
 import { probeClaudeAuthStatus, runClaudeAuthProbe } from '@/infrastructure/agent-harnesses/auth-probe.js'
 import type { HarnessInfo } from '@/infrastructure/agent-harnesses/detect.js'
 import { probeTimeoutFor } from '@/infrastructure/agent-harnesses/harness-timeouts.js'
+import { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
 import {
   killProcessTree,
   PROBE_TEARDOWN_TIMEOUT_MS,
   type ProcessTreeTermination,
 } from '@/infrastructure/agent-harnesses/process-tree.js'
-import { createHarnessSpawn, type HarnessSpawn } from '@/infrastructure/agent-harnesses/runtime.js'
+import { platformSpawnCommand } from '@/infrastructure/process/executable.js'
+
+export interface HarnessSpawn {
+  command: string
+  args: string[]
+  env: Record<string, string>
+  cwd: string
+  windowsHide: boolean
+}
+
+/** The host env MINUS the spec's scrubEnv keys (ADR 0012): API keys are never
+ *  passed, so the agent falls back to its own stored login. */
+function scrubbedEnv(scrubEnv: readonly string[]): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || scrubEnv.includes(key)) continue
+    env[key] = value
+  }
+  return env
+}
+
+/** Builds the exact scrubbed ACP process descriptor the probe spawns.
+ *  A BUNDLED ACP server runs through the app's own Node (`process.execPath` +
+ *  ELECTRON_RUN_AS_NODE, the ledger-mcp pattern); PATH-resolved harnesses
+ *  spawn the spec command through the win32 shim handling. */
+export function createHarnessSpawn(
+  harness: HarnessInfo,
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+): HarnessSpawn {
+  const spec = harnessSpecs.find(candidate => candidate.kind === harness.kind)
+  if (!spec || spec.adapter.kind !== 'acp') throw new Error(`harness ${harness.kind} has no ACP adapter`)
+  const acp = spec.adapter.acpConfig
+  const spawn = harness.bundledEntry
+    ? { command: process.execPath, args: [harness.bundledEntry, ...(acp.args ?? [])] }
+    : platformSpawnCommand(acp.command, acp.args ?? [], platform)
+  const env = scrubbedEnv(harness.scrubEnv)
+  // Inert under real Node, so tests are unaffected.
+  if (harness.bundledEntry) env.ELECTRON_RUN_AS_NODE = '1'
+  return { command: spawn.command, args: spawn.args, env, cwd, windowsHide: true }
+}
 
 export type ProbeStatus = 'pending' | 'ready' | 'warning' | 'error' | 'disabled'
 export type ProbeAuthStatus = 'configured' | 'unauthenticated' | 'unknown'

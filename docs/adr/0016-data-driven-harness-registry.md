@@ -2,6 +2,10 @@
 
 Status: accepted (revised — SDK pivot: TanStack AI SDK → AI SDK v6 + ACP provider)
 
+> **Superseded in part (ADR 0045):** the `ai` + `@mcpc-tech/acp-ai-provider` dependency pair, the HarnessRuntime seam
+> (`runtime.ts`), and the CoachEvent derivation over AI SDK stream parts are removed. Harnesses run on the Workspace
+> AgentDriver registry. The data-driven spec registry, detection and the health probe described here are unchanged.
+
 The workspace contract in [ADR 0039](0039-agent-workspace-domain-and-execution.md) permits native session protocols alongside ACP. The registry and Coach implementation documented below remain until their explicit migration; supported transports and controls must be established by driver conformance rather than the Harness name.
 
 ## Context

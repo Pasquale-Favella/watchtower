@@ -55,7 +55,7 @@ Every release ships all three platforms. AppImage and `.deb` are the two Linux f
 | **Optimize** | `5` | Usage findings with evidence and assumptions, copyable suggestions, setup coverage, and delivery outcomes with associated spend |
 | **Models** | `6` | Per-model cost, tokens, and calls, broken down by task and audited down to the token, with inline quick-add pricing for unpriced models |
 | **Compare** | `7` | Pick two models and see one-shot rate, retry rate, cost per call, and cache-hit rate side by side |
-| **Coach & Skills** | `8` | A chat with your own coding-agent CLI about your usage — ask anything and the harness answers from the same ledger the dashboard shows, or craft a SKILL.md together by talking (suggested-skill chips start the conversation) |
+| **Coach & Skills** | `8` | A chat with your own coding-agent CLI about your usage — ask anything and the harness answers from the same ledger the dashboard shows, or craft a SKILL.md together by talking (suggested-skill chips fill the composer draft) |
 | **Settings** | `,` | Theme, refresh cadence, default period, provider info, model aliases, pricing overrides, export, and privacy controls |
 
 *\* Every section also shares a period switcher (Today, 7D, 30D, Month, 6M, Life, or a custom date range) and a provider filter. The Coach reads the current window as the suggested default for its answers. The full shortcut list and per-section details are in the [usage guide](docs/usage.md).*

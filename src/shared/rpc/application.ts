@@ -4,7 +4,6 @@ import { AnalyticsRpcGroup, GetOverview } from '@/shared/rpc/analytics.js'
 import { CheckoutInspectionRpcGroup } from '@/shared/rpc/checkout-inspection.js'
 import { CheckoutActionsRpcGroup } from '@/shared/rpc/checkout-actions.js'
 import { CheckoutNavigationRpcGroup } from '@/shared/rpc/checkout-navigation.js'
-import { CoachRpcGroup } from '@/shared/rpc/coach.js'
 import { ConfigRpcGroup } from '@/shared/rpc/config.js'
 import { LifecycleRpcGroup } from '@/shared/rpc/lifecycle.js'
 import { NativeRpcGroup, StartScan } from '@/shared/rpc/native.js'
@@ -18,7 +17,6 @@ import { WorkspacePullRequestRpcGroup } from '@/shared/rpc/workspace-pull-reques
 import { WorkspaceSideChatRpcGroup } from '@/shared/rpc/workspace-side-chats.js'
 
 export const ApplicationRpcGroup = AnalyticsRpcGroup.merge(ConfigRpcGroup)
-  .merge(CoachRpcGroup)
   .merge(WorkspaceRpcGroup)
   .merge(WorkspacePreviewRpcGroup)
   .merge(WorkspaceDeviceRpcGroup)

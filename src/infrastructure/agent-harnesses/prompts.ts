@@ -2,27 +2,19 @@ import { PERIOD_LABELS } from '@/shared/lib/period-labels.js'
 import type { OverviewScope } from '@/shared/schemas/overview.js'
 
 /**
- * Main-side prompt builders for the Coach harness run (ADR 0017, MCP-aware
- * since map 53/ADR 0020). Every run injects the in-app `watchtower-ledger`
- * MCP server into the harness session — a read-only server over the user's
- * REAL usage data that serves the FULL LIFETIME ledger (nothing is baked at
- * spawn). These builders give the agent the briefing that turns bare tool
- * names into usable capability: what the server covers (lifetime data), how
- * to filter it (each tool's optional `scope` argument), what the user is
+ * Prompt builders for the in-app `watchtower-ledger` MCP server — a read-only
+ * server over the user's REAL usage data that serves the FULL LIFETIME ledger
+ * (nothing is baked at spawn). The briefing gives an agent what turns bare
+ * tool names into usable capability: what the server covers (lifetime data),
+ * how to filter it (each tool's optional `scope` argument), what the user is
  * currently looking at (the same period/provider caption the UI shows, as a
  * suggested default), and the standing rule to ground answers in the ledger
  * rather than guessing.
  *
  * The briefing is the ONE role definition for the single coach agent — it
  * serves both scopes (coaching analysis AND skill authoring) off the same
- * ledger, so a skill request needs no separate prompt builder or mode.
- *
- * The briefing is ONLY included when the server is actually injected (the
- * composition root returns null on a fresh install — no ledger.db, no data,
- * no tools; then the prompt is the bare user text). It is also only prepended
- * to the FIRST run of a conversation (no sessionId): the harness resumes its
- * session with the briefing already in context, so restating it every turn
- * would just burn tokens — which this app exists to save.
+ * ledger. It backs the `coach-orient` MCP prompt; Workspace sessions get their
+ * ledger instructions from the agent drivers (`ledger-instructions.ts`).
  */
 
 /** "Last 30 days · claude" / "Lifetime · all providers" — the same shape the
@@ -34,10 +26,6 @@ export function scopeWindowLabel(scope: OverviewScope): string {
     ? `custom range ${scope.range.since} → ${scope.range.until}`
     : (PERIOD_LABELS[scope.period] ?? scope.period)
   return `${period} · ${scope.provider ?? 'all providers'}`
-}
-
-export function buildScopeUpdate(scope: OverviewScope): string {
-  return `The user has switched their view to ${scopeWindowLabel(scope)} — use it as the default window for ledger queries from now on.`
 }
 
 /** The shared MCP briefing: who the agent is (role, posture, and the TWO
@@ -111,12 +99,4 @@ export function buildLedgerBriefing(scope?: OverviewScope): string {
     '- Never pad an answer with generic advice when the data is silent — report what the data shows, and stop.',
   )
   return lines.join('\n')
-}
-
-/** The coach prompt: the MCP briefing, then the user's own question. Without a
- *  briefing (fresh install / resumed turn) the user's text passes through
- *  untouched — the agent keeps its own session context either way. */
-export function buildCoachPrompt(userPrompt: string, briefing: string): string {
-  if (!briefing) return userPrompt
-  return `${briefing}\n\nThe user's question:\n${userPrompt}`
 }

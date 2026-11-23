@@ -21,8 +21,7 @@ export const preferencesAtom = Atom.keepAlive(
         current.defaultPeriod === next.defaultPeriod &&
         current.onboarded === next.onboarded &&
         current.skillsFrequency === next.skillsFrequency &&
-        current.skillsSpread === next.skillsSpread &&
-        current.allowHarnessApiKeyEnv === next.allowHarnessApiKeyEnv,
+        current.skillsSpread === next.skillsSpread,
     ),
   ),
 )
@@ -65,7 +64,7 @@ export function hydratePreferences(registry: AtomRegistry.AtomRegistry, storage:
   }
 }
 
-/** Updates and persists the six preferences while preserving other window state. */
+/** Updates and persists the five preferences while preserving other window state. */
 export function updatePreferences(
   registry: AtomRegistry.AtomRegistry,
   storage: PreferenceStorage,

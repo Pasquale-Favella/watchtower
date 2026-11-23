@@ -1,11 +1,10 @@
 /**
  * Harness spec registry — collects all drivable harness specs.
  * A new harness is a new spec file here + an entry in this array.
- * No changes needed to detect.ts, runtime.ts, or the core seam.
+ * No changes needed to detect.ts or the core seam.
  *
  * Order follows the per-spec preference field (claude → … → pi); detection
- * iterates specs generically and `pickPreferredHarness` re-sorts by the
- * preference field, so array order is cosmetic only.
+ * iterates specs generically, so array order is cosmetic only.
  */
 import type { HarnessSpec } from '@/infrastructure/agent-harnesses/harnesses/types.js'
 import claude from '@/infrastructure/agent-harnesses/harnesses/claude.js'

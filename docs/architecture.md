@@ -118,7 +118,7 @@ flowchart TB
     subgraph main["Electron main process · MainRuntime"]
         ipc["RPC/IPC handlers and worker client"]
         shell["BackgroundShell<br/>Tray, orb, windows, subscriptions"]
-        coach["Coach harness coordination"]
+        coach["Workspace execution<br/>Coach chat Runs"]
         sdk["Loopback ledger MCP endpoint<br/>Tools, resources, prompts"]
     end
 
@@ -131,7 +131,7 @@ flowchart TB
         sql["One Effect SQL client<br/>Synchronous transactions, single writer"]
     end
 
-    harness["Coding-agent CLI<br/>ACP harness"]
+    harness["Coding-agent CLI<br/>Harness Connection"]
     proxy["Ledger MCP stdio proxy"]
     sources[("Tool session stores<br/>SQLite, JSONL, JSON")]
     cache[("Session cache<br/>Per-file fingerprints")]
@@ -158,8 +158,8 @@ flowchart TB
     scan -->|"Progress and scan outcome"| supervisor
     supervisor -->|"Progress and store:changed"| ipc
 
-    ipc -->|"Coach commands"| coach
-    coach <-->|"ACP requests and events"| harness
+    ipc -->|"Workspace RPCs"| coach
+    coach <-->|"Agent driver requests and events"| harness
     coach -->|"Acquire MCP attachment"| sdk
     harness <-->|"Bearer-authenticated loopback HTTP"| sdk
     harness <-->|"MCP over stdio"| proxy
@@ -209,14 +209,11 @@ and event paths are drawn explicitly.
    different window's earlier event cannot confirm the wrong write.
    Clear commands return a ledger generation; the renderer waits until its reset
    has been applied before rescanning, with one authoritative invalidation owner.
-4. A Coach request goes to main's harness integration. The coding-agent CLI
-   can call `watchtower-ledger` tools over bearer-authenticated loopback HTTP
-   or through the stdio proxy. The endpoint forwards read-only queries through
-   `DbWorkerClient`. A continuous RPC stream establishes the run
-   identity before delivering ordered text, tool and terminal events. Pending
-   output is bounded by event count and encoded bytes; overflow terminates the
-   stream visibly and drains the owning run. Disconnect and cancellation never
-   replay a prompt. The SDK owns protocol handling; Effect
+4. Coach starts runs and reads their events through the Workspace RPCs, the same path as any
+   Workspace chat. The coding-agent CLI can call `watchtower-ledger` tools over
+   bearer-authenticated loopback HTTP or through the stdio proxy. The endpoint
+   forwards read-only queries through `DbWorkerClient`. Disconnect and
+   cancellation never replay a prompt. The SDK owns protocol handling; Effect
    Schema owns Watchtower's tool arguments and result contracts. Tool scopes
    default to lifetime and can differ from the current dashboard scope.
 5. Cancellation and shutdown belong to the runtime that owns the work.
@@ -332,19 +329,19 @@ abort and per-provider progress.
 ## The coach surface
 
 The **Coach & Skills** section (ADR 0017) is a chat with the user's own
-coding-agent CLIs. The main process drives one harness per conversation over
-the Agent Client Protocol through a single `HarnessRuntime` seam (ADR 0016): a
-data-driven registry of one spec file per drivable CLI (`agents/harnesses/`),
-the AI SDK + `@mcpc-tech/acp-ai-provider` wired lazily, and a typed
-`CoachEvent` stream the renderer derives into bubbles (text, thinking, tool
-notices). Model/mode selection is progressive — the agent's handshake declares
-what it supports (ADR 0018). Every run attaches the in-app `watchtower-ledger`
-MCP server (ADRs 0019/0020): read-only access to the full lifetime ledger,
-filtered by the agent itself through each tool's optional `scope` argument.
-There is ONE agent with TWO scopes (ADR 0021) — a coaching question and a
-skill request are the same mode-less coach run; the suggested-skill chips on
-the welcome screen are plain chat-starters that ask the agent to author a
-SKILL.md grounded in the ledger.
+coding-agent CLIs. Since ADR 0045 it runs on the Workspace stack: the
+AgentDriver registry, ExecutionService and WorkspaceStore, with the Workspace
+composer, timeline and agent picker, as an ephemeral chat in a hidden Coach
+project. Harnesses come from the data-driven registry of one spec file per
+drivable CLI (`agents/harnesses/`, ADR 0016), surfaced as Harness Connections;
+model/mode selection follows the Workspace picker. A Coach chat attaches only
+the in-app `watchtower-ledger` MCP server (ADRs 0019/0020): read-only access
+to the full lifetime ledger, filtered by the agent itself through each tool's
+optional `scope` argument, with the coaching and skill-authoring guidance
+delivered by the drivers. There is ONE agent with TWO scopes (ADR 0021) — a
+coaching question and a skill request are the same chat; the suggested-skill
+chips on the empty state seed the composer with a prompt that asks the agent
+to author a SKILL.md grounded in the ledger.
 
 ## The Effect-first backend
 

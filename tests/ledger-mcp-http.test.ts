@@ -11,7 +11,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { openEngineRuntime } from '../src/infrastructure/runtime/engine-runtime.js'
 import { bearerHeaderValue } from '../src/platform/mcp/auth.js'
-import { ledgerMcpTransportFor } from '../src/platform/mcp/config.js'
 import { handleLedgerMcpHttpRequest } from '../src/platform/mcp/http-server.js'
 import { fixtureLedgerMcpQueries } from './fixtures/ledger-mcp-queries.js'
 
@@ -247,17 +246,5 @@ describe('ledger MCP loopback HTTP (stdio-rejecting harnesses)', () => {
         expect(req.listenerCount(event)).toBe(expected)
       }
     })
-  })
-})
-
-describe('ledger MCP transport policy (per-harness)', () => {
-  it('serves Copilot over HTTP (its CLI rejects client-provided stdio servers)', () => {
-    expect(ledgerMcpTransportFor('copilot')).toBe('http')
-  })
-
-  it('serves every other harness over agent-spawned stdio, including unknown keys', () => {
-    expect(ledgerMcpTransportFor('opencode')).toBe('stdio')
-    expect(ledgerMcpTransportFor('claude')).toBe('stdio')
-    expect(ledgerMcpTransportFor('no-such-harness')).toBe('stdio')
   })
 })

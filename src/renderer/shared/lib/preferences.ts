@@ -11,11 +11,12 @@ export const preferencesSchema = Schema.Struct({
   onboarded: Schema.Boolean,
   skillsFrequency: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
   skillsSpread: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
-  allowHarnessApiKeyEnv: Schema.Boolean,
 })
 
 export type Preferences = Schema.Schema.Type<typeof preferencesSchema>
 
+// Struct decoding ignores excess keys, so profiles that still carry the retired
+// `allowHarnessApiKeyEnv` preference decode unchanged; the key is dropped on the next write.
 const storedPreferencesSchema = Schema.Struct({
   state: Schema.Struct({
     theme: Schema.optional(preferencesSchema.fields.theme),
@@ -23,7 +24,6 @@ const storedPreferencesSchema = Schema.Struct({
     onboarded: Schema.optional(preferencesSchema.fields.onboarded),
     skillsFrequency: Schema.optional(preferencesSchema.fields.skillsFrequency),
     skillsSpread: Schema.optional(preferencesSchema.fields.skillsSpread),
-    allowHarnessApiKeyEnv: Schema.optional(preferencesSchema.fields.allowHarnessApiKeyEnv),
   }),
   version: Schema.Literal(0),
 })
@@ -34,7 +34,6 @@ export const defaultPreferences: Preferences = Object.freeze({
   onboarded: false,
   skillsFrequency: DEFAULT_SKILLS_THRESHOLDS.frequency,
   skillsSpread: DEFAULT_SKILLS_THRESHOLDS.spread,
-  allowHarnessApiKeyEnv: false,
 })
 
 export interface PreferenceStorage {
@@ -64,7 +63,7 @@ export function readPreferences(storage: PreferenceStorage): Preferences {
   }
 }
 
-/** Writes only the six persisted preferences in the current Zustand envelope. */
+/** Writes only the five persisted preferences in the current Zustand envelope. */
 export function writePreferences(storage: PreferenceStorage, value: Preferences): void {
   try {
     const validated = Schema.decodeUnknownResult(preferencesSchema)(value)

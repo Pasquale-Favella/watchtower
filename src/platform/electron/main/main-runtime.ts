@@ -8,13 +8,6 @@ import { CommandRunner } from '@/core/ports/process.js'
 import { detectHarnesses, type HarnessInfo, which } from '@/infrastructure/agent-harnesses/detect.js'
 import { resolveBundledEntry } from '@/infrastructure/agent-harnesses/harnesses/bundled.js'
 import type { ProbeResult } from '@/infrastructure/agent-harnesses/probe.js'
-import {
-  CoachHarnessExecution,
-  coachHarnessExecutionLayer,
-  type HarnessRuntimeOptions,
-  type HarnessSdk,
-  loadHarnessSdk,
-} from '@/infrastructure/agent-harnesses/runtime.js'
 import { HarnessProbe, HarnessSnapshot, harnessSnapshotLayer } from '@/infrastructure/agent-harnesses/snapshot.js'
 import { Env } from '@/infrastructure/config/environment.js'
 import { HttpFetch } from '@/infrastructure/ingestion/fetch-utils.js'
@@ -39,7 +32,6 @@ export type MainServices =
   | HarnessProbe
   | HarnessSnapshot
   | LocalLedgerMcp
-  | CoachHarnessExecution
 export type MainRuntime<Additional = never> = ManagedRuntime.ManagedRuntime<MainServices | Additional, never>
 
 export interface MainRuntimeOptions {
@@ -54,8 +46,6 @@ export interface MainRuntimeOverrides {
   readonly probe?: (info: HarnessInfo, clientVersion: string) => Effect.Effect<ProbeResult>
   readonly readPath?: () => string | undefined
   readonly configProvider?: ConfigProvider.ConfigProvider
-  readonly coachSdk?: () => Promise<HarnessSdk>
-  readonly coachRuntime?: HarnessRuntimeOptions
   readonly platform?: Layer.Layer<NodePlatformServices>
 }
 
@@ -117,11 +107,7 @@ export function makeMainLive(
     Effect.context<never>().pipe(Effect.map(context => localLedgerMcpLayer(Effect.runPromiseWith(context)))),
   ).pipe(Layer.provide(mainServices))
 
-  return Layer.mergeAll(
-    snapshot,
-    localLedgerMcp,
-    coachHarnessExecutionLayer(overrides.coachRuntime, overrides.coachSdk ?? loadHarnessSdk),
-  )
+  return Layer.mergeAll(snapshot, localLedgerMcp)
 }
 
 /** The only runtime constructor for this isolate. The root may add scoped

@@ -3,15 +3,15 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import { describe, expect, it, vi } from 'vitest'
 
 import { createCoachDetectionSlot } from '../src/renderer/features/coach-skills/skill-detection-atoms.js'
-import { candidateKey, craftSkillPrompt } from '../src/renderer/features/coach-skills/lib.js'
+import { candidateKey, craftSkillPrompt, statusLabel } from '../src/renderer/features/coach-skills/lib.js'
 import type { OverviewScope } from '../src/shared/schemas/overview.js'
 import type { SkillCandidate, SkillsPayload, SkillsThresholds } from '../src/shared/schemas/skills.js'
-import { makeCoachRpcTestClient } from './coach-rpc-test-helper.js'
+import { makeApplicationRpcTestClient } from './application-rpc-test-helper.js'
 
 function setup(getSkills: (scope: OverviewScope, thresholds?: SkillsThresholds) => Promise<SkillsPayload | null>) {
   const registry = AtomRegistry.make()
   const runtime = Atom.context()
-  const client = makeCoachRpcTestClient(runtime, { skills: getSkills })
+  const client = makeApplicationRpcTestClient(runtime, { skills: getSkills })
   const detection = createCoachDetectionSlot(client)
   registry.mount(detection.resultAtom)
   return { registry, detection }
@@ -146,5 +146,15 @@ describe('the suggested-skill chip chat-starter', () => {
     expect(lines).toHaveLength(1)
     expect(lines[0]).toMatch(/^- Sample: `[^`]+`$/)
     expect(lines[0]).toContain('git log --format="%h git branch --show-current"')
+  })
+})
+
+describe('harness status labels', () => {
+  it('derives a user-facing label for every harness status without a DOM', () => {
+    expect(statusLabel('ready')).toBe('Ready')
+    expect(statusLabel('warning')).toBe('Needs attention')
+    expect(statusLabel('error')).toBe('Unavailable')
+    expect(statusLabel('pending')).toBe('Checking…')
+    expect(statusLabel('disabled')).toBe('Disabled')
   })
 })

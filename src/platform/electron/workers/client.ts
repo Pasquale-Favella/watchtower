@@ -118,8 +118,7 @@ const defaultTransportFactory: DbWorkerTransportFactory = (worker, callbacks) =>
 }
 
 /**
- * Bounded graceful-close send — the drain-barrier shape from
- * `drainIteratorEffect` (`src/infrastructure/agent-harnesses/runtime.ts`): the worker's shutdown
+ * Bounded graceful-close send: the worker's shutdown
  * ack is awaited under an Effect Clock deadline instead of a raw
  * `setTimeout`, so `TestClock` governs the timeout in tests. Graceful ack,
  * deadline expiry, and send failure all collapse to void — termination rides

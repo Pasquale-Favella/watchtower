@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 
 import * as ConfigProvider from 'effect/ConfigProvider'
 import * as Context from 'effect/Context'
+import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
@@ -58,7 +59,6 @@ import {
   type BackgroundShellHandle,
   backgroundShellLayer,
 } from '@/platform/electron/main/background-shell.js'
-import { createApplicationAgents } from '@/platform/electron/main/coach/ipc.js'
 import { acquireElectronUpdates } from '@/platform/electron/main/electron-updates.js'
 import { type MainServices, makeMainRuntime } from '@/platform/electron/main/main-runtime.js'
 import { acquireBrowserMcp } from '@/platform/electron/main/preview/browser-mcp.js'
@@ -70,7 +70,6 @@ import { closeMainResources, createQuitCoordinator, settleWithin } from '@/platf
 import { checkoutActionsHandlers } from '@/platform/electron/main/rpc/checkout-actions-handlers.js'
 import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
 import { checkoutNavigationHandlers } from '@/platform/electron/main/rpc/checkout-navigation-handlers.js'
-import { coachHandlers } from '@/platform/electron/main/rpc/coach-handlers.js'
 import { registerElectronRpc, type RpcWindowRole } from '@/platform/electron/main/rpc/electron.js'
 import { analyticsHandlers, configHandlers } from '@/platform/electron/main/rpc/handlers.js'
 import {
@@ -98,8 +97,7 @@ import { createPromptReferenceFiles } from '@/platform/electron/main/workspace/p
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
 import { checkoutInspectionWorkerLayer } from '@/platform/electron/workers/checkout/client.js'
 import { DbWorkerClient } from '@/platform/electron/workers/client.js'
-import { ledgerMcpTransportFor } from '@/platform/mcp/config.js'
-import { acquireLedgerMcp, ledgerHttp, ledgerMcpWithStdio } from '@/platform/mcp/ledger-endpoint.js'
+import { acquireLedgerMcp, ledgerMcpWithStdio } from '@/platform/mcp/ledger-endpoint.js'
 import { LocalLedgerMcp } from '@/platform/mcp/local-ledger-mcp.js'
 import { createLedgerMcpQueries } from '@/platform/mcp/query-api.js'
 import { ApplicationRpcGroup, BeaconRpcGroup, PanelRpcGroup } from '@/shared/rpc/application.js'
@@ -119,8 +117,9 @@ import type { WorkspaceCheckout } from '@/shared/schemas/workspace.js'
  * capabilities are registered here; renderer data access uses versioned RPC.
  */
 
-/** Coach temp-workspace teardown (map 53): registered at IPC wiring, run on quit. */
-let agentsCleanup: { start: () => void; reset: () => Promise<void>; dispose: () => Promise<void> } | null = null
+/** The delayed harness-snapshot detection fiber: started once the main window shows, interrupted on quit. */
+let harnessSnapshotStartup: Fiber.Fiber<void> | undefined
+let harnessSnapshotDisposed = false
 /** The data-plane handle, set once the worker is spawned (quit path). */
 let dbClient: DbWorkerClient | null = null
 const rendererRoles = new WeakMap<Electron.WebContents, RpcWindowRole>()
@@ -395,35 +394,24 @@ function relayWorkerEvents(db: DbWorkerClient): void {
   })
 }
 
-function registerApplicationAgents(db: DbWorkerClient): ReturnType<typeof createApplicationAgents> {
-  const queries = createLedgerMcpQueries(db)
-  return createApplicationAgents({
-    runtime: mainRuntime,
-    ledgerMcpServer: harnessKind =>
-      Effect.gen(function* () {
-        yield* Effect.tryPromise({ try: () => db.ready, catch: error => error })
-        if (ledgerMcpTransportFor(harnessKind) === 'http') {
-          const local = yield* LocalLedgerMcp
-          const endpoint = yield* local.connection(queries)
-          return endpoint ? { server: ledgerHttp(endpoint), release: () => {} } : null
-        }
+/** Starts the connection catalog's harness detection shortly after the first paint. */
+function startHarnessSnapshot(): void {
+  if (harnessSnapshotDisposed || harnessSnapshotStartup) return
+  harnessSnapshotStartup = mainRuntime.runFork(
+    Effect.flatMap(HarnessSnapshot, snapshot =>
+      Effect.sleep(Duration.millis(1500)).pipe(
+        Effect.andThen(snapshot.start()),
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() => snapshot.shutdown()),
+      ),
+    ).pipe(Effect.catchCause(() => Effect.void)),
+  )
+}
 
-        const scope = yield* Scope.fork(mainRuntime.scope)
-        return yield* Effect.gen(function* () {
-          const endpoint = yield* acquireLedgerMcp(queries, request => mainRuntime.runPromise(request))
-          const { name, stdio } = ledgerMcpWithStdio(endpoint, process.execPath, join(__dirname, 'ledger-mcp-proxy.js'))
-          return {
-            server: { name, command: stdio.command, args: [...stdio.args], env: [...stdio.env] },
-            release: () => {
-              mainRuntime.runFork(Scope.close(scope, Exit.void))
-            },
-          }
-        }).pipe(
-          Scope.provide(scope),
-          Effect.onExit(exit => (Exit.isSuccess(exit) ? Effect.void : Scope.close(scope, exit))),
-        )
-      }),
-  })
+/** Runs during quit, before the main runtime is disposed. */
+async function stopHarnessSnapshot(): Promise<void> {
+  harnessSnapshotDisposed = true
+  if (harnessSnapshotStartup) await mainRuntime.runPromise(Fiber.interrupt(harnessSnapshotStartup))
 }
 
 // Dev/standalone windows get the generated brand icon (ADR 0015); packaged
@@ -449,7 +437,7 @@ function createWindow(): BrowserWindow {
   rendererRoles.set(mainWindow.webContents, 'app')
   mainWindow.on('ready-to-show', () => {
     mainWindow.show()
-    agentsCleanup?.start()
+    startHarnessSnapshot()
   })
   backgroundShell?.attachMainWindow(mainWindow)
 
@@ -492,29 +480,19 @@ app.whenReady().then(async () => {
   )
   relayWorkerEvents(db)
   dbClient = db
-  const agents = registerApplicationAgents(db)
-  agentsCleanup = agents
-  const nativeCapabilities = createNativeApplicationCapabilities(
-    {
-      worker: db,
-      version: app.getVersion(),
-      skillDirectory: join(homedir(), '.agents', 'skills'),
-      exportDirectory: () => {
-        try {
-          return app.getPath('documents')
-        } catch {
-          return homedir()
-        }
-      },
-      showSaveDialog: options => dialog.showSaveDialog(options),
+  const nativeCapabilities = createNativeApplicationCapabilities({
+    worker: db,
+    version: app.getVersion(),
+    skillDirectory: join(homedir(), '.agents', 'skills'),
+    exportDirectory: () => {
+      try {
+        return app.getPath('documents')
+      } catch {
+        return homedir()
+      }
     },
-    {
-      getCoachHarnesses: () => agents.native.list,
-      refreshCoachHarnesses: () => agents.native.refresh,
-      inspectCoachHarness: agents.native.inspect,
-      openCoachLoginTerminal: agents.native.openLoginTerminal,
-    },
-  )
+    showSaveDialog: options => dialog.showSaveDialog(options),
+  })
   disposeRendererRpc = registerElectronRpc({
     ipcMain,
     resolveRole: ({ webContents, url }) => {
@@ -566,7 +544,6 @@ app.whenReady().then(async () => {
           program = RpcServer.make(ApplicationRpcGroup, options).pipe(
             Effect.provide(
               Layer.mergeAll(
-                coachHandlers(agents.native),
                 workspaceHandlers<Effect.Services<ReturnType<typeof ensureScratchProject>>>({
                   attachments: createPromptAttachmentStore(join(app.getPath('userData'), 'workspace', 'attachments')),
                   promptReferences: createPromptReferenceFiles(
@@ -748,7 +725,7 @@ const quitCoordinator = createQuitCoordinator({
         stopCoach: () =>
           mainRuntime
             .runPromise(Effect.flatMap(LocalLedgerMcp, local => local.shutdown()))
-            .finally(() => agentsCleanup?.dispose()),
+            .finally(() => stopHarnessSnapshot()),
         stopWorker: () => dbClient?.shutdown() ?? Promise.resolve(),
         disposeRuntime: () => mainRuntime.dispose(),
       })

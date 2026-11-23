@@ -15,7 +15,6 @@ import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
 import {
   unexpectedCheckoutInspectionHandlers,
   unexpectedTerminalHandlers,
-  unexpectedCoachHandlers,
   unexpectedShellRpcs,
   unexpectedWorkspaceHandlers,
   unexpectedWorkspacePanelHandlers,
@@ -38,10 +37,6 @@ const defaultNativeCapabilities: NativeRpcCapabilities = {
   getAppVersion: unexpected,
   dismissSkill: unexpected,
   saveSkill: unexpected,
-  getCoachHarnesses: unexpected,
-  refreshCoachHarnesses: unexpected,
-  inspectCoachHarness: unexpected,
-  openCoachLoginTerminal: unexpected,
 }
 
 /** Uses the actual application group and its worker/main handlers in settings atom tests. */
@@ -63,7 +58,6 @@ export function makeSettingsRpcTestClient(
     },
   })
   const handlers = Layer.mergeAll(
-    unexpectedCoachHandlers,
     unexpectedWorkspaceHandlers,
     unexpectedWorkspacePanelHandlers,
     unexpectedCheckoutInspectionHandlers,

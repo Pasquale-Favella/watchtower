@@ -36,11 +36,6 @@ export interface NativeApplicationPorts {
   ) => Promise<{ readonly canceled: boolean; readonly filePath?: string }>
 }
 
-type HarnessCapabilities<R> = Pick<
-  NativeRpcCapabilities<R>,
-  'getCoachHarnesses' | 'refreshCoachHarnesses' | 'inspectCoachHarness' | 'openCoachLoginTerminal'
->
-
 export type NativeApplicationServices = FileSystem.FileSystem | LocalLedgerMcp | AppUpdates
 
 function connectionDetails(endpoint: LedgerMcpEndpoint): LedgerMcpConnection {
@@ -53,10 +48,9 @@ function connectionDetails(endpoint: LedgerMcpEndpoint): LedgerMcpConnection {
 }
 
 /** The existing main-owned operations are shared by RPC and the temporary legacy edge. */
-export function createNativeApplicationCapabilities<R>(
+export function createNativeApplicationCapabilities(
   ports: NativeApplicationPorts,
-  harnesses: HarnessCapabilities<R>,
-): NativeRpcCapabilities<R | NativeApplicationServices> {
+): NativeRpcCapabilities<NativeApplicationServices> {
   const request = <S extends Schema.ConstraintDecoder<unknown>>(operation: string, schema: S, ...args: unknown[]) =>
     Effect.tryPromise({ try: () => ports.worker.request(operation, ...args), catch: cause => cause }).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(schema)),
@@ -75,7 +69,6 @@ export function createNativeApplicationCapabilities<R>(
   })
 
   return {
-    ...harnesses,
     startScan: options => request('scan:start', scanResultSchema, options),
     isScanActive: () => request('scan:active', Schema.Boolean),
     getUpdateStatus: () => Effect.flatMap(AppUpdates, updates => updates.status),

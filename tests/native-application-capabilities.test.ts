@@ -15,7 +15,6 @@ import {
   createNativeApplicationCapabilities,
   type NativeApplicationPorts,
 } from '../src/platform/electron/main/application/native-capabilities.js'
-import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { nativeHandlers } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { AppUpdates } from '../src/platform/electron/main/updates.js'
 import type { LedgerMcpEndpoint } from '../src/platform/mcp/ledger-endpoint.js'
@@ -74,18 +73,6 @@ function provide<A, E>(effect: Effect.Effect<A, E, NativeApplicationServices>, l
   return Effect.provide(effect, layer)
 }
 
-function harnessCapabilities(): Pick<
-  NativeRpcCapabilities,
-  'getCoachHarnesses' | 'refreshCoachHarnesses' | 'inspectCoachHarness' | 'openCoachLoginTerminal'
-> {
-  return {
-    getCoachHarnesses: () => Effect.succeed([]),
-    refreshCoachHarnesses: () => Effect.succeed([]),
-    inspectCoachHarness: () => Effect.succeed({ ok: false, error: 'unavailable' }),
-    openCoachLoginTerminal: () => Effect.succeed({ ok: false, error: 'unavailable' }),
-  }
-}
-
 let tempRoot = ''
 
 function makeTempRoot(): string {
@@ -119,7 +106,7 @@ describe('native application capability owner', () => {
       exportDirectory: () => '/exports',
       showSaveDialog: async () => ({ canceled: true }),
     }
-    const capabilities = createNativeApplicationCapabilities(ports, harnessCapabilities())
+    const capabilities = createNativeApplicationCapabilities(ports)
     expect(worker.request).not.toHaveBeenCalled()
     expect(localCalls).toEqual([])
 
@@ -193,16 +180,13 @@ describe('native application capability owner', () => {
           return currentServer
         }),
     })
-    const capabilities = createNativeApplicationCapabilities(
-      {
-        worker,
-        version: '1.2.3',
-        skillDirectory: '/skills',
-        exportDirectory: () => '/exports',
-        showSaveDialog: async () => ({ canceled: true }),
-      },
-      harnessCapabilities(),
-    )
+    const capabilities = createNativeApplicationCapabilities({
+      worker,
+      version: '1.2.3',
+      skillDirectory: '/skills',
+      exportDirectory: () => '/exports',
+      showSaveDialog: async () => ({ canceled: true }),
+    })
     expect(events).toEqual([])
 
     await expect(Effect.runPromise(provide(capabilities.getLedgerMcpStatus(), serviceLayer(local)))).resolves.toEqual({
@@ -269,16 +253,13 @@ describe('native application capability owner', () => {
           return endpoint('ready-token')
         }),
     })
-    const capabilities = createNativeApplicationCapabilities(
-      {
-        worker: { ready, request: async () => undefined },
-        version: '1.2.3',
-        skillDirectory: '/skills',
-        exportDirectory: () => '/exports',
-        showSaveDialog: async () => ({ canceled: true }),
-      },
-      harnessCapabilities(),
-    )
+    const capabilities = createNativeApplicationCapabilities({
+      worker: { ready, request: async () => undefined },
+      version: '1.2.3',
+      skillDirectory: '/skills',
+      exportDirectory: () => '/exports',
+      showSaveDialog: async () => ({ canceled: true }),
+    })
 
     const pending = Effect.runPromise(provide(capabilities.getLedgerMcpConnection(), serviceLayer(local)))
     await new Promise<void>(resolve => setImmediate(resolve))
@@ -311,16 +292,13 @@ describe('native application capability owner', () => {
     const showSaveDialog = vi.fn(async () =>
       chooseCsv ? { canceled: false, filePath: chosenCsv } : { canceled: true },
     )
-    const capabilities = createNativeApplicationCapabilities(
-      {
-        worker,
-        version: '1.2.3',
-        skillDirectory: join(root, 'skills'),
-        exportDirectory: () => root,
-        showSaveDialog,
-      },
-      harnessCapabilities(),
-    )
+    const capabilities = createNativeApplicationCapabilities({
+      worker,
+      version: '1.2.3',
+      skillDirectory: join(root, 'skills'),
+      exportDirectory: () => root,
+      showSaveDialog,
+    })
     const layer = serviceLayer()
 
     await expect(
@@ -359,16 +337,13 @@ describe('native application capability owner', () => {
       shownOptions.push(options)
       return { canceled: false, filePath: approvedPath }
     }
-    const capabilities = createNativeApplicationCapabilities(
-      {
-        worker: { ready: Promise.resolve(), request: async () => undefined },
-        version: '1.2.3',
-        skillDirectory,
-        exportDirectory: () => root,
-        showSaveDialog,
-      },
-      harnessCapabilities(),
-    )
+    const capabilities = createNativeApplicationCapabilities({
+      worker: { ready: Promise.resolve(), request: async () => undefined },
+      version: '1.2.3',
+      skillDirectory,
+      exportDirectory: () => root,
+      showSaveDialog,
+    })
     const request = { name: 'Git Status!!', content: '# Reusable workflow' }
 
     await expect(Effect.runPromise(provide(capabilities.saveSkill(request)))).resolves.toEqual({
@@ -380,16 +355,13 @@ describe('native application capability owner', () => {
     expect(existsSync(join(skillDirectory, 'git-status', 'SKILL.md'))).toBe(false)
 
     const cancelledRoot = join(root, 'cancelled')
-    const cancelled = createNativeApplicationCapabilities(
-      {
-        worker: { ready: Promise.resolve(), request: async () => undefined },
-        version: '1.2.3',
-        skillDirectory: cancelledRoot,
-        exportDirectory: () => root,
-        showSaveDialog: async () => ({ canceled: true }),
-      },
-      harnessCapabilities(),
-    )
+    const cancelled = createNativeApplicationCapabilities({
+      worker: { ready: Promise.resolve(), request: async () => undefined },
+      version: '1.2.3',
+      skillDirectory: cancelledRoot,
+      exportDirectory: () => root,
+      showSaveDialog: async () => ({ canceled: true }),
+    })
     await expect(Effect.runPromise(provide(cancelled.saveSkill(request)))).resolves.toEqual({
       ok: false,
       error: 'cancelled',

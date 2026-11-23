@@ -2,7 +2,7 @@
  * Effect primitives contract for the Coach harness layer (ADR 0030, §4.3 slice).
  *
  * Each test pins a primitive that F0–F4 build on, against fakes mirroring the
- * current seam shapes (runtime.ts / detect.ts / snapshot.ts):
+ * current seam shapes (detect.ts / snapshot.ts):
  *  1. probe timeouts that degrade to `{ ok: false }` instead of hanging;
  *  2. parallel detect with per-probe timeout + bounded concurrency;
  *  3. Scope-based instance teardown (deterministic, LIFO, isolated scopes);
@@ -20,7 +20,7 @@ import { Env } from '../src/infrastructure/config/environment.js'
 import { HttpFetch } from '../src/infrastructure/ingestion/fetch-utils.js'
 
 // ---------------------------------------------------------------------------
-// Fakes mirroring the current seam shapes (runtime.ts / detect.ts)
+// Fakes mirroring the current seam shapes (detect.ts)
 // ---------------------------------------------------------------------------
 
 type ProbeError =

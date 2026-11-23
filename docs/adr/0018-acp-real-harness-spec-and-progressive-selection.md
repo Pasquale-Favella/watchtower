@@ -2,6 +2,10 @@
 
 Status: accepted
 
+> **Superseded in part (ADR 0045):** the `coach:run` wire with `modelId`/`modeId`, the `runtime.ts` seam and its
+> typed provider boundary, and the coach-only renderer components are removed. Model and mode selection now follows the
+> Workspace agent picker and Harness Connections.
+
 The general workspace execution model in [ADR 0039](0039-agent-workspace-domain-and-execution.md) amends the ACP-only Harness definition and separates native session identity from each execution attempt. The implementation described below remains the Coach path until its migration; workspace driver conformance remains separately gated.
 
 ## Context

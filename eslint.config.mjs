@@ -34,7 +34,6 @@ const EFFECT_COMPOSITION_ROOTS = [
   'src/platform/electron/preload/rpc.ts',
   'src/platform/electron/main/main-runtime.ts',
   'src/infrastructure/runtime/engine-runtime.ts',
-  'src/infrastructure/agent-harnesses/runtime.ts',
   'src/infrastructure/agent-harnesses/drivers/claude/driver.ts',
   'src/infrastructure/agent-harnesses/drivers/acp/driver.ts',
   'src/platform/mcp/sidecar.ts',

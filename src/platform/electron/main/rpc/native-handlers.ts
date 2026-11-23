@@ -1,12 +1,6 @@
 import * as Effect from 'effect/Effect'
 
 import { NativeRpcError, NativeRpcGroup } from '@/shared/rpc/native.js'
-import {
-  type CoachHarnessesResult,
-  type CoachInspectRequest,
-  type CoachInspectResult,
-  type CoachLoginTerminalResult,
-} from '@/shared/schemas/agents.js'
 import type { ExportResult } from '@/shared/schemas/export.js'
 import type { ScanResult } from '@/shared/schemas/ipc.js'
 import type { LedgerMcpConnection, LedgerMcpStartupMode, LedgerMcpStatus } from '@/shared/schemas/ledger-mcp.js'
@@ -38,10 +32,6 @@ export interface NativeRpcCapabilities<R = never> {
   readonly getAppVersion: () => Effect.Effect<AppVersion, unknown, R>
   readonly dismissSkill: (request: SkillsDismissalRequest) => Effect.Effect<SkillsDismissalResult, unknown, R>
   readonly saveSkill: (request: SkillsSaveRequest) => Effect.Effect<SkillsSaveResult, unknown, R>
-  readonly getCoachHarnesses: () => Effect.Effect<CoachHarnessesResult, unknown, R>
-  readonly refreshCoachHarnesses: () => Effect.Effect<CoachHarnessesResult, unknown, R>
-  readonly inspectCoachHarness: (request: CoachInspectRequest) => Effect.Effect<CoachInspectResult, unknown, R>
-  readonly openCoachLoginTerminal: (instanceId: string) => Effect.Effect<CoachLoginTerminalResult, unknown, R>
 }
 
 const operationFailed = new NativeRpcError({ code: 'operation-failed', message: 'Native operation failed' })
@@ -72,9 +62,5 @@ export function nativeHandlers<R>(capabilities: NativeRpcCapabilities<R>) {
     'app:version': () => invoke(capabilities.getAppVersion),
     'skills:dismiss': request => invoke(() => capabilities.dismissSkill(request)),
     'skills:save': request => invoke(() => capabilities.saveSkill(request)),
-    'coach:harnesses': () => invoke(capabilities.getCoachHarnesses),
-    'coach:harnesses-refresh': () => invoke(capabilities.refreshCoachHarnesses),
-    'coach:inspect': ({ request }) => invoke(() => capabilities.inspectCoachHarness(request)),
-    'coach:open-login-terminal': ({ instanceId }) => invoke(() => capabilities.openCoachLoginTerminal(instanceId)),
   })
 }
