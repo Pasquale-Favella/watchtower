@@ -40,9 +40,8 @@ test('closing a side chat that never ran removes it from the side chats list', a
     await expect(side).toBeHidden()
     const detailsTrigger = header.getByRole('button', { name: 'Conversation details', exact: true })
     if ((await detailsTrigger.getAttribute('aria-pressed')) !== 'true') await detailsTrigger.click()
-    await expect(
-      window.getByRole('region', { name: 'Side chats', exact: true }).getByText('No side chats', { exact: true }),
-    ).toBeVisible()
+    await expect(window.locator('#conversation-details-panel')).toBeVisible()
+    await expect(window.getByRole('region', { name: 'Side chats', exact: true })).toHaveCount(0)
   })
 })
 
@@ -75,9 +74,8 @@ test('deleting a side chat asks first: cancel keeps it, and confirming removes i
     await expect(panel.getByRole('tab', { name: title, exact: true })).toHaveCount(0)
     const detailsTrigger = header.getByRole('button', { name: 'Conversation details', exact: true })
     if ((await detailsTrigger.getAttribute('aria-pressed')) !== 'true') await detailsTrigger.click()
-    await expect(
-      window.getByRole('region', { name: 'Side chats', exact: true }).getByText('No side chats', { exact: true }),
-    ).toBeVisible()
+    await expect(window.locator('#conversation-details-panel')).toBeVisible()
+    await expect(window.getByRole('region', { name: 'Side chats', exact: true })).toHaveCount(0)
   })
 })
 

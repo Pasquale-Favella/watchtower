@@ -106,7 +106,7 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
             )}
           </section>
         )}
-      {props.visible.sideChats && props.taskId && (
+      {props.visible.sideChats && props.taskId && (sideChatItems.length > 0 || sideChats.error) && (
         <section aria-label="Side chats" className="space-y-1 p-2">
           <div className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
             <MessageSquare aria-hidden="true" className="size-3.5" />
@@ -116,21 +116,6 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
             <p role="alert" className="text-destructive px-1 text-xs">
               {sideChats.error}
             </p>
-          )}
-          {sideChats.status === 'loading' && !sideChats.error && (
-            <LoadingRegion label="Loading side chats…" className="flex flex-col gap-2 px-1 py-1">
-              <div className="flex items-center gap-2">
-                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
-                <Skeleton className="h-3 w-4/5" />
-              </div>
-              <div className="flex items-center gap-2">
-                <Skeleton className="size-3.5 shrink-0 rounded-sm" />
-                <Skeleton className="h-3 w-3/5" />
-              </div>
-            </LoadingRegion>
-          )}
-          {sideChats.status === 'ready' && !sideChats.error && sideChatItems.length === 0 && (
-            <p className="text-muted-foreground px-1 text-xs">No side chats</p>
           )}
           {sideChatItems.map(item => (
             <SideChatRelationshipRow
