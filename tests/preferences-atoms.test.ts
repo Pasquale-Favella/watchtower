@@ -62,6 +62,21 @@ describe('browser preferences', () => {
     expect(registry.get(preferencesAtom)).toEqual({ ...defaultPreferences, theme: 'light', onboarded: true })
   })
 
+  it('decodes a profile that still carries the retired allowHarnessApiKeyEnv key and drops it on the next write', () => {
+    const storage = new MemoryStorage()
+    storage.value = JSON.stringify({ state: { theme: 'dark', allowHarnessApiKeyEnv: true }, version: 0 })
+    const registry = AtomRegistry.make()
+
+    hydratePreferences(registry, storage)
+    expect(registry.get(preferencesAtom)).toEqual({ ...defaultPreferences, theme: 'dark' })
+
+    updatePreferences(registry, storage, { onboarded: true })
+    expect(JSON.parse(storage.value)).toEqual({
+      state: { ...defaultPreferences, theme: 'dark', onboarded: true },
+      version: 0,
+    })
+  })
+
   it('accepts every persisted OverviewPeriod, including month', () => {
     const storage = new MemoryStorage()
     storage.value = profile({ defaultPeriod: 'month' })
@@ -105,7 +120,7 @@ describe('browser preferences', () => {
     expect(registry.get(preferencesAtom).theme).toBe('dark')
   })
 
-  it('persists exactly the six fields in the existing version zero envelope', () => {
+  it('persists exactly the five fields in the existing version zero envelope', () => {
     const registry = AtomRegistry.make()
     const storage = new MemoryStorage()
     updatePreferences(registry, storage, { theme: 'dark', onboarded: true })

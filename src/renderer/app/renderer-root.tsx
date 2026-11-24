@@ -1,14 +1,15 @@
-import { RegistryContext } from '@effect/atom-react'
+import { RegistryContext, useAtomValue } from '@effect/atom-react'
 import type { ReactNode } from 'react'
 
-import { useThemeEffect } from '@/renderer/stores/hooks/use-theme-effect'
+import { type RendererRuntimeOwner, rendererRuntimeOwner } from '@/renderer/app/renderer-runtime.js'
+import { Toaster } from '@/renderer/components/ui/sonner'
 import { hydratePreferences, preferencesAtom } from '@/renderer/features/settings/preferences-atoms'
 import { browserPreferenceStorage } from '@/renderer/shared/lib/preferences-browser'
 import { themeIsDark } from '@/renderer/shared/lib/shell'
-
+import { hydrateAppVertical } from '@/renderer/stores/atoms/app-vertical.js'
 import { periodAtom } from '@/renderer/stores/atoms/scope.js'
 import { releaseWindowQueries } from '@/renderer/stores/hooks/use-remote-query.js'
-import { type RendererRuntimeOwner, rendererRuntimeOwner } from '@/renderer/app/renderer-runtime.js'
+import { useThemeEffect } from '@/renderer/stores/hooks/use-theme-effect'
 
 if (import.meta.hot) import.meta.hot.dispose(() => window.location.reload())
 
@@ -21,6 +22,7 @@ export function initializeRendererWindow(
   const owner = options.owner ?? rendererRuntimeOwner
   const { registry } = owner
   const unsubscribe = hydratePreferences(registry, storage)
+  hydrateAppVertical(registry, storage)
   const preferences = registry.get(preferencesAtom)
   registry.set(periodAtom, preferences.defaultPeriod)
   browser.document.documentElement.classList.toggle(
@@ -53,8 +55,14 @@ export function RendererRoot({ children }: RendererRootProps) {
     <RegistryContext.Provider value={rendererRuntimeOwner.registry}>
       {children}
       <ThemeSync />
+      <AppToaster />
     </RegistryContext.Provider>
   )
+}
+
+function AppToaster() {
+  const theme = useAtomValue(preferencesAtom).theme
+  return <Toaster theme={theme} position="bottom-right" closeButton />
 }
 
 function ThemeSync() {

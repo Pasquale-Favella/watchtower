@@ -14,7 +14,7 @@ export interface LedgerResourceDef {
   read: () => string | Promise<string>
 }
 
-export function buildLedgerResources(queries: LedgerMcpQueries): LedgerResourceDef[] {
+export function buildLedgerResources(queries: LedgerMcpQueries, signal?: AbortSignal): LedgerResourceDef[] {
   return [
     {
       name: 'scope',
@@ -23,7 +23,7 @@ export function buildLedgerResources(queries: LedgerMcpQueries): LedgerResourceD
       description: `The full lifetime data window the server serves: ${scopeWindowLabel(LIFETIME_SCOPE)}, its epoch range, and the counts inside it. Read this first to orient; per-window queries go through each tool's optional scope argument.`,
       mimeType: 'text/markdown',
       read: async () => {
-        const scopeFacts = await queries.scope(LIFETIME_SCOPE)
+        const scopeFacts = await queries.scope(LIFETIME_SCOPE, signal)
         return [
           '# Watchtower data window',
           '',
@@ -45,7 +45,7 @@ export function buildLedgerResources(queries: LedgerMcpQueries): LedgerResourceD
       description:
         'The full lifetime Overview dashboard payload, as JSON — the same document the UI Overview view renders for the Lifetime period.',
       mimeType: 'application/json',
-      read: async () => JSON.stringify(await queries.overview(LIFETIME_SCOPE), null, 2),
+      read: async () => JSON.stringify(await queries.overview(LIFETIME_SCOPE, signal), null, 2),
     },
     {
       name: 'schema',

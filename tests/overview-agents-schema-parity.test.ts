@@ -79,18 +79,6 @@ const harnessRow = {
   status: 'ready',
   auth: { status: 'configured' },
 }
-const modelInfo = { modelId: 'opus', name: 'Opus' }
-const runRequest = {
-  harnessKind: 'claude',
-  scope: { period: 'all', range: { since: 'a', until: 'b' } },
-  prompt: 'hello',
-}
-const inspectRequest = { kind: 'claude', allowApiKeyEnv: false }
-const sessionEvent = {
-  kind: 'session',
-  resumeCursor: 'c',
-  models: { availableModels: [modelInfo], currentModelId: 'opus' },
-}
 
 describe('overview and agents Effect Schema contracts', () => {
   it('strips unknown keys at the root and nested object levels', () => {
@@ -115,14 +103,8 @@ describe('overview and agents Effect Schema contracts', () => {
       },
       { period: 'week', provider: 'claude', range: { since: 'a', until: 'b' } },
     )
-    expectDecoded(agents.coachRunRequestSchema, runRequest, runRequest)
-    expectDecoded(agents.coachRunRequestSchema, { ...runRequest, extension: true }, runRequest)
-    expectDecoded(agents.coachInspectRequestSchema, inspectRequest, inspectRequest)
-    expectDecoded(agents.coachInspectRequestSchema, { ...inspectRequest, extension: true }, inspectRequest)
     expectDecoded(agents.coachHarnessRowSchema, harnessRow, harnessRow)
     expectDecoded(agents.coachHarnessRowSchema, { ...harnessRow, extension: true }, harnessRow)
-    expectDecoded(agents.coachEventSchema, sessionEvent, sessionEvent)
-    expectDecoded(agents.coachEventSchema, { ...sessionEvent, extension: true }, sessionEvent)
   })
 
   it('preserves optional undefined, omitted, and nullable distinctions', () => {
@@ -150,14 +132,12 @@ describe('overview and agents Effect Schema contracts', () => {
       savingsUSD: 5,
       sourceModels: null,
     })
-    expectDecoded(agents.coachModelInfoSchema, modelInfo, modelInfo)
     expectDecoded(
-      agents.coachModelInfoSchema,
-      { ...modelInfo, description: undefined },
-      { ...modelInfo, description: undefined },
+      agents.coachHarnessRowSchema,
+      { ...harnessRow, version: undefined },
+      { ...harnessRow, version: undefined },
     )
-    expectDecoded(agents.coachModelInfoSchema, { ...modelInfo, description: null }, { ...modelInfo, description: null })
-    expectRejected(agents.coachRunRequestSchema, { harnessKind: 'claude', prompt: null })
+    expectRejected(agents.coachHarnessRowSchema, { ...harnessRow, version: null })
   })
 
   it('rejects non-finite numbers and keeps decoded collections and rows mutable', () => {
@@ -174,9 +154,12 @@ describe('overview and agents Effect Schema contracts', () => {
     expect(decoded.daily.at(-1)?.date).toBe('later')
     expect(decoded.kpis.cost).toBe(2)
     expect(decoded.models[0]?.sourceModels).toEqual(['raw', 'another'])
-    const event = Schema.decodeUnknownSync(agents.coachEventSchema)(sessionEvent)
-    if (event.kind !== 'session') throw new Error('fixture must decode as session')
-    event.models?.availableModels.push({ modelId: 'sonnet', name: 'Sonnet' })
-    expect(event.models?.availableModels).toHaveLength(2)
+    const rows = Schema.decodeUnknownSync(agents.coachHarnessesResultSchema)([harnessRow])
+    const [first] = rows
+    if (!first) throw new Error('fixture must decode one row')
+    rows.push({ ...first, instanceId: 'j' })
+    first.status = 'warning'
+    expect(rows).toHaveLength(2)
+    expect(rows[0]?.status).toBe('warning')
   })
 })

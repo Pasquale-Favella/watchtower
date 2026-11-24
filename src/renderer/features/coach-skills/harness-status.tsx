@@ -18,13 +18,3 @@ export function HarnessStatusDot({ status, className }: { status: CoachHarnessRo
     />
   )
 }
-
-export function harnessTooltip(row: CoachHarnessRow): string {
-  return [
-    `${row.displayName} — ${statusLabel(row.status)}`,
-    row.message,
-    row.version ? `Version ${row.version}` : undefined,
-  ]
-    .filter(Boolean)
-    .join(' · ')
-}

@@ -1,5 +1,11 @@
 # ADR 0020 — Ledger MCP on the official SDK over the shared aggregation seam
 
+> **Superseded in part (ADR 0045, ADR 0046):** the separate query process with its own Effect runtime and read-only
+> SQLite connection is replaced by the in-process loopback endpoint and the DB worker (ADR 0046). The "Lifetime-serving"
+> briefing no longer carries the UI's current window as a suggested default: the Analytics scope is not injected into the
+> agent, which uses the window the user names and otherwise the lifetime ledger (ADR 0045). The briefing is delivered by
+> the drivers as endpoint-keyed ledger instructions, not composed into the coach prompt.
+
 - Status: accepted
 - Date: 2026-08-12
 - Domain: agents (Coach & Skills surface), store (ledger, scope)

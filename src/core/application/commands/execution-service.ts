@@ -1,0 +1,1430 @@
+import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
+import * as Context from 'effect/Context'
+import * as DateTime from 'effect/DateTime'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
+import * as Fiber from 'effect/Fiber'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Option from 'effect/Option'
+import * as Path from 'effect/Path'
+import * as Queue from 'effect/Queue'
+import * as Schema from 'effect/Schema'
+import * as Scope from 'effect/Scope'
+import * as Semaphore from 'effect/Semaphore'
+
+import {
+  findProjectCheckout,
+  isScratchCheckoutId,
+  prepareScratchCheckout,
+  recreateScratchCheckout,
+  SCRATCH_PROJECT_ID,
+  SCRATCH_ROOT_CHECKOUT_ID,
+  verifyScratchCheckoutPath,
+} from '@/core/application/commands/scratch-checkouts.js'
+import { sideChatBringBackPrompt } from '@/core/application/commands/workspace-side-chats.js'
+import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
+import { captureConversationContext, handoffBudget } from '@/core/application/execution/conversation-context.js'
+import { classifyConversationTransition } from '@/core/application/execution/conversation-transition.js'
+import type {
+  AgentDriverError,
+  AgentDriverSession,
+  AgentSessionContext,
+  UnsupportedAgentOperation,
+} from '@/core/ports/agent-driver.js'
+import { agentDriverAccessModes, AgentDriverError as PromptContentError } from '@/core/ports/agent-driver.js'
+import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
+import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { promptWithAnnotationContext } from '@/shared/prompt-annotations.js'
+import type { AgentAccessMode, AgentDriverEvent } from '@/shared/schemas/execution.js'
+import {
+  agentConnectionIdentitySchema,
+  agentDriverEventSchema,
+  agentSessionIdentitySchema,
+  DEFAULT_AGENT_ACCESS_MODE,
+} from '@/shared/schemas/execution.js'
+import type { PromptAttachment, ResolvedPromptAttachment } from '@/shared/schemas/prompt-context.js'
+import type { AgentRunId } from '@/shared/schemas/workspace.js'
+import {
+  type BeginRunCommand,
+  type CommandReceipt,
+  type DispatchClaim,
+  type DispatchFailureCommand,
+  type EnqueueFollowUpCommand,
+  type FollowUpReceipt,
+  type PromotedFollowUp,
+  type QueuedFollowUpHead,
+  type RecordRequestResponseCommand,
+  type RecordSteerCommand,
+  type SettleDeliveryCommand,
+  workerEpochSchema,
+  type WorkspaceExecutionEvent,
+} from '@/shared/schemas/workspace-store.js'
+import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+
+const positiveInteger = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))
+/** Shutdown writes one interrupt or fence per Run; this bounds how many are in flight at once. */
+const SHUTDOWN_CONCURRENCY = 8
+
+const executionOptionsSchema = Schema.Struct({
+  ownerEpoch: workerEpochSchema,
+  closeDeadlineMs: Schema.optional(positiveInteger),
+})
+const nativeTurnAcceptanceSchema = Schema.Struct({
+  nativeSessionId: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1)),
+  nativeTurnId: Schema.optional(Schema.String),
+  generation: workerEpochSchema,
+})
+
+export class ExecutionServiceError extends Schema.TaggedError<ExecutionServiceError>()('ExecutionServiceError', {
+  reason: Schema.Literals([
+    'invalid-options',
+    'service-stopped',
+    'background-failure',
+    'unsupported-access-mode',
+    'access-not-applied',
+    'scratch-inside-git',
+  ]),
+  message: Schema.String,
+  cause: Schema.optional(Schema.Defect()),
+  /** Every stopAll failure distinguishes native cleanup from durable settlement. */
+  nativeCleanup: Schema.optional(Schema.Literals(['confirmed', 'unconfirmed'])),
+}) {}
+
+export interface ExecutionServiceOptions {
+  readonly enrichPrompt?: (
+    claim: DispatchClaim,
+    store: WorkspaceStore['Service'],
+  ) => Effect.Effect<string, AgentDriverError | ExecutionServiceError>
+  /** Acquires ephemeral task-scoped session capabilities in the driver's connection scope. */
+  readonly prepareSession?: (
+    context: AgentSessionContext,
+  ) => Effect.Effect<AgentSessionContext, AgentDriverError, Scope.Scope>
+  readonly resolveAttachments?: (
+    references: readonly PromptAttachment[],
+  ) => Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError>
+  readonly ownerEpoch: number
+  readonly closeDeadlineMs?: number | undefined
+  /** The target model's context window in tokens, when the connection catalog reports it. Absent keeps the default budget. */
+  readonly modelContextWindowTokens?: ((connectionId: string, modelId: string) => number | undefined) | undefined
+  readonly publishCommittedEvent?: ((event: WorkspaceExecutionEvent) => Effect.Effect<void, unknown>) | undefined
+  /**
+   * Runs once when a worker finishes, whatever the outcome, before queued follow-ups are pumped. Delegations use it to
+   * settle children and queue wakes. Its failures never fail the worker.
+   */
+  readonly onRunFinished?: ((claim: DispatchClaim) => Effect.Effect<void, unknown>) | undefined
+}
+
+interface ManagedRun {
+  readonly claim: DispatchClaim
+  readonly ready: Deferred.Deferred<undefined>
+  readonly submissionAccepted: Deferred.Deferred<undefined>
+  readonly controlOrder: Semaphore.Semaphore
+  fiber?: Fiber.Fiber<void, never> | undefined
+  session?: AgentDriverSession | undefined
+  nativeTurnId?: string | undefined
+  submitEntered: boolean
+  acknowledged: boolean
+  turnObserved: boolean
+  terminal: boolean
+  terminalEventKind?: AgentDriverEvent['kind'] | undefined
+  settled: boolean
+  interruptRequested: boolean
+  interruptSent: boolean
+  shuttingDown: boolean
+  cleanupConfirmed: boolean
+  eventCounter: number
+}
+
+const timestamp = Effect.map(DateTime.now, DateTime.formatIso)
+
+const contextFor = (claim: DispatchClaim): AgentSessionContext => ({
+  runId: claim.runId,
+  sessionId: (claim.agentSessionId ?? claim.provisionalAgentSessionId) as AgentSessionContext['sessionId'],
+  projectId: claim.projectId,
+  taskId: claim.taskId,
+  conversationId: claim.conversationId,
+  checkoutId: claim.checkoutId,
+  workspacePath: claim.workspacePath,
+  generation: claim.generation,
+  ...(claim.modelId ? { modelId: claim.modelId } : {}),
+  ...(claim.modeId ? { modeId: claim.modeId } : {}),
+  ...(claim.configValues ? { configValues: claim.configValues } : {}),
+  accessMode: claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+})
+
+const isTerminalEvent = (event: AgentDriverEvent): boolean =>
+  event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed'
+
+/** A Run whose dispatch already settled has nothing left to interrupt, so the store's refusal is not a stop failure. */
+const isSettledDispatchRefusal = (cause: Cause.Cause<unknown>): boolean => {
+  const error = cause.reasons.find(Cause.isFailReason)?.error
+  return error instanceof WorkspaceStoreError && error.code === 'invalid-transition'
+}
+
+export class ExecutionService extends Context.Service<
+  ExecutionService,
+  {
+    readonly start: (
+      command: BeginRunCommand,
+    ) => Effect.Effect<CommandReceipt, WorkspaceStoreError | ExecutionServiceError>
+    readonly interrupt: (
+      runId: AgentRunId,
+    ) => Effect.Effect<void, WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation>
+    readonly respond: (
+      command: RecordRequestResponseCommand,
+    ) => Effect.Effect<CommandReceipt, WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation>
+    readonly steer: (
+      command: RecordSteerCommand,
+    ) => Effect.Effect<CommandReceipt, WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation>
+    readonly enqueueFollowUp: (
+      command: EnqueueFollowUpCommand,
+    ) => Effect.Effect<FollowUpReceipt, WorkspaceStoreError | ExecutionServiceError>
+    readonly cancelQueuedFollowUp: (
+      conversationId: BeginRunCommand['conversationId'],
+      commandId: string,
+    ) => Effect.Effect<void, WorkspaceStoreError>
+    readonly wakeQueuedFollowUps: () => Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError>
+    readonly promoteQueuedFollowUp: (
+      conversationId: BeginRunCommand['conversationId'],
+      command: BeginRunCommand,
+    ) => Effect.Effect<PromotedFollowUp | null, WorkspaceStoreError | ExecutionServiceError>
+    readonly stopAll: () => Effect.Effect<void, ExecutionServiceError>
+  }
+>()('watchtower/core/application/ExecutionService') {
+  static readonly layer = (options: ExecutionServiceOptions) =>
+    Layer.effect(ExecutionService, makeExecutionService(options))
+}
+
+const makeExecutionService = (input: ExecutionServiceOptions) =>
+  Effect.gen(function* () {
+    const parsedOptions = yield* Schema.decodeUnknownEffect(executionOptionsSchema)({
+      ownerEpoch: input.ownerEpoch,
+      closeDeadlineMs: input.closeDeadlineMs,
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new ExecutionServiceError({
+            reason: 'invalid-options',
+            message: 'Execution owner epoch or close deadline is invalid',
+          }),
+      ),
+    )
+    const closeDeadlineMs = parsedOptions.closeDeadlineMs ?? 10_000
+    const store = yield* WorkspaceStore
+    const drivers = yield* AgentDriverRegistry
+    const connections = yield* HarnessConnectionResolver
+    const checkouts = yield* CheckoutResolver
+    const filesystem = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const appScope = yield* Scope.Scope
+    const workerScope = yield* Scope.make()
+    const admission = yield* Semaphore.make(1)
+    const workers = new Map<AgentRunId, ManagedRun>()
+    const controlFibers = new Set<Fiber.Fiber<unknown, unknown>>()
+    const backgroundFailures: Array<Cause.Cause<unknown>> = []
+    const queuePumpWake = yield* Queue.bounded<undefined>(1)
+    let holdAllQueuedFollowUps: Effect.Effect<void, WorkspaceStoreError> = Effect.void
+    let pumpQueuedFollowUps: Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError> = Effect.void
+    let stopping = false
+    let admissionExpired = false
+    let workerScopeClosed = false
+    let nativeCleanupUnconfirmed = false
+    const shutdownGate = yield* Semaphore.make(1)
+    let shutdownResult: Exit.Exit<void, ExecutionServiceError> | undefined
+
+    function resolveAttachments(
+      references?: readonly PromptAttachment[],
+    ): Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError> {
+      if (!references?.length) return Effect.succeed([])
+      if (input.resolveAttachments) return input.resolveAttachments(references)
+      return Effect.fail(
+        new PromptContentError({ code: 'invalid-state', message: 'Attachment resolution is unavailable.' }),
+      )
+    }
+
+    /** The default is always admitted without resolving a driver. Other modes need a resolved driver that declares
+     * them; an unresolved driver fails closed instead of admitting an unverified native policy. */
+    const requireAccessModeSupport = Effect.fn('ExecutionService.requireAccessModeSupport')(function* (
+      driverId: string,
+      accessMode: AgentAccessMode | undefined,
+    ) {
+      const requested = accessMode ?? DEFAULT_AGENT_ACCESS_MODE
+      if (requested === DEFAULT_AGENT_ACCESS_MODE) return
+      const driver = yield* drivers.resolve(driverId).pipe(Effect.option)
+      if (Option.isSome(driver) && agentDriverAccessModes(driver.value).includes(requested)) return
+      return yield* new ExecutionServiceError({
+        reason: 'unsupported-access-mode',
+        message: `Access mode ${requested} is not available for the selected agent connection`,
+      })
+    })
+
+    /**
+     * Waits at most `budgetMs` for an effect. On expiry the effect keeps running detached, so an uninterruptible step
+     * inside it, such as an admitted promotion stalled on storage, cannot hold shutdown past its deadline.
+     */
+    const awaitWithin = <A, E>(effect: Effect.Effect<A, E>, budgetMs: number) =>
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkDetach(effect, { startImmediately: true })
+        return yield* Fiber.await(fiber).pipe(Effect.timeoutOption(budgetMs))
+      })
+
+    const failUnresolved = (
+      state: ManagedRun,
+      reason: DispatchFailureCommand['reason'],
+      outcome: DispatchFailureCommand['outcome'],
+    ) =>
+      Effect.gen(function* () {
+        if (state.terminal || state.settled) return
+        yield* store.failDispatch(state.claim.runId, {
+          ownerEpoch: state.claim.ownerEpoch,
+          occurredAt: yield* timestamp,
+          outcome,
+          reason,
+        })
+        state.settled = true
+        yield* store.holdQueuedFollowUps(state.claim.conversationId, state.claim.ownerEpoch)
+      })
+
+    const revalidateCheckout = Effect.fn('ExecutionService.revalidateCheckout')(
+      function* (claim: DispatchClaim) {
+        const detail = yield* store.getProject(claim.projectId, { checkoutId: claim.checkoutId })
+        const registered = findProjectCheckout(detail, claim.checkoutId)
+        if (!registered || registered.projectId !== claim.projectId || registered.path !== claim.workspacePath)
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Registered checkout could not be verified for execution.',
+          })
+        const directory = registered.kind === 'directory' || detail.project.isScratch || detail.project.isCoach
+        if (detail.project.isScratch) yield* verifyScratchCheckoutPath(checkouts, detail, claim.workspacePath)
+        const resolved = yield* checkouts
+          .resolve(claim.workspacePath, directory ? 'directory' : undefined)
+          .pipe(
+            Effect.catch(error =>
+              registered.scratchConversationId && error.code === 'path-missing'
+                ? recreateScratchCheckout(checkouts, detail, claim.workspacePath).pipe(
+                    Effect.andThen(checkouts.resolve(claim.workspacePath, 'directory')),
+                  )
+                : Effect.fail(error),
+            ),
+          )
+        if (
+          resolved.canonicalPath !== claim.workspacePath ||
+          (!directory &&
+            (resolved.kind !== registered.kind ||
+              resolved.repositoryIdentity !== detail.project.repositoryIdentity ||
+              resolved.mainCheckoutPath !== detail.mainCheckout.path))
+        ) {
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Registered checkout could not be verified for execution.',
+          })
+        }
+      },
+      Effect.provideService(FileSystem.FileSystem, filesystem),
+      Effect.provideService(Path.Path, path),
+      Effect.mapError(
+        () =>
+          new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Registered checkout could not be verified for execution.',
+          }),
+      ),
+    )
+
+    const sendNativeInterrupt = (state: ManagedRun) =>
+      Effect.suspend(() => {
+        if (
+          !state.interruptRequested ||
+          state.interruptSent ||
+          (!state.acknowledged && !state.turnObserved) ||
+          !state.session
+        ) {
+          return Effect.void
+        }
+        state.interruptSent = true
+        const session = state.session
+        return Effect.uninterruptibleMask(restore =>
+          Effect.exit(restore(session.interrupt(state.claim.runId, state.nativeTurnId))).pipe(
+            Effect.flatMap(result => {
+              if (Exit.isFailure(result)) {
+                state.interruptSent = false
+                return Effect.failCause(result.cause)
+              }
+              return Effect.void
+            }),
+          ),
+        )
+      })
+
+    const handleCommittedEvent = (state: ManagedRun, value: AgentDriverEvent) =>
+      Effect.gen(function* () {
+        const event = yield* Schema.decodeUnknownEffect(agentDriverEventSchema)(value)
+        if (
+          isTerminalEvent(event) ||
+          event.kind === 'goalUpdated' ||
+          event.kind === 'goalTurnStarted' ||
+          event.kind === 'goalTurnCompleted'
+        )
+          yield* Deferred.await(state.submissionAccepted)
+        state.eventCounter += 1
+        const committed = yield* store.recordDriverEvent(state.claim.runId, {
+          ownerEpoch: state.claim.ownerEpoch,
+          generation: state.claim.generation,
+          eventId: `${state.claim.runId}:${state.claim.ownerEpoch}:${state.eventCounter}`,
+          occurredAt: yield* timestamp,
+          event,
+        })
+        if (event.kind === 'turnStarted' || event.kind === 'goalTurnStarted') {
+          state.turnObserved = true
+          if (event.nativeTurnId !== undefined) state.nativeTurnId = event.nativeTurnId
+          yield* sendNativeInterrupt(state).pipe(
+            Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
+          )
+        }
+        if (event.kind === 'goalTurnCompleted') {
+          state.turnObserved = false
+          state.nativeTurnId = undefined
+        }
+        if (isTerminalEvent(event)) {
+          state.terminal = true
+          state.terminalEventKind = event.kind
+        }
+        if (
+          event.kind === 'turnInterrupted' ||
+          event.kind === 'turnFailed' ||
+          (event.kind === 'turnCompleted' && state.interruptRequested)
+        )
+          yield* store.holdQueuedFollowUps(state.claim.conversationId, state.claim.ownerEpoch)
+        if (input.publishCommittedEvent) yield* input.publishCommittedEvent(committed)
+        return !state.terminal
+      })
+
+    const dispatch = (state: ManagedRun) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          if (stopping) {
+            state.shuttingDown = true
+            return
+          }
+          // A failed verification settles this Run as a launch failure in supervise; it is not a shutdown failure.
+          yield* revalidateCheckout(state.claim)
+          const resolvedAttachments = yield* resolveAttachments(state.claim.attachments)
+          let prompt = input.enrichPrompt ? yield* input.enrichPrompt(state.claim, store) : state.claim.prompt
+          const snapshot = yield* store.readTaskSnapshot(state.claim.taskId, 500).pipe(
+            Effect.mapError(
+              error =>
+                new ExecutionServiceError({
+                  reason: 'background-failure',
+                  message: 'Conversation context handoff could not be prepared.',
+                  cause: error,
+                }),
+            ),
+          )
+          const contexts = new Map((snapshot.runContexts ?? []).map(context => [context.runId, context]))
+          const sourceRun = snapshot.runs
+            .filter(run => run.id !== state.claim.runId)
+            .filter(run => run.sessionId != null)
+            .filter(run => contexts.get(run.id)?.conversationId === state.claim.conversationId)
+            .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt))[0]
+          const sourceContext = sourceRun ? contexts.get(sourceRun.id) : undefined
+          const transition = classifyConversationTransition({
+            source: sourceContext
+              ? {
+                  connectionId: sourceContext.connectionId,
+                  modelId: sourceContext.modelId,
+                  accessMode: sourceContext.accessMode,
+                }
+              : null,
+            target: {
+              connectionId: state.claim.connectionId,
+              modelId: state.claim.modelId,
+              accessMode: state.claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+            },
+            resumesNativeSession: !!state.claim.nativeSessionId,
+          })
+          const nativeAccessChanged =
+            transition.kind === 'native-session' && sourceContext !== undefined && transition.accessChanged
+          if (sourceRun && sourceContext && transition.kind === 'handoff') {
+            const sourceAvailable = yield* connections.resolve(sourceContext.connectionId, sourceContext.driverId).pipe(
+              Effect.as(true),
+              Effect.catch(() => Effect.succeed(false)),
+            )
+            const contextWindowTokens = state.claim.modelId
+              ? input.modelContextWindowTokens?.(state.claim.connectionId, state.claim.modelId)
+              : undefined
+            const budget = handoffBudget(contextWindowTokens)
+            const handoff = yield* captureConversationContext(
+              store,
+              state.claim.conversationId,
+              state.claim.runId,
+              budget.chars,
+            ).pipe(
+              Effect.mapError(
+                error =>
+                  new ExecutionServiceError({
+                    reason: 'background-failure',
+                    message: 'Conversation context handoff could not be prepared.',
+                    cause: error,
+                  }),
+              ),
+            )
+            if (handoff.context.trim()) {
+              yield* store
+                .recordConversationHandoff(state.claim.runId, {
+                  ownerEpoch: state.claim.ownerEpoch,
+                  occurredAt: yield* timestamp,
+                  handoff: {
+                    sourceRunId: sourceRun.id,
+                    sourceConnectionId: sourceContext.connectionId,
+                    sourceConnectionStatus: sourceAvailable ? 'available' : 'unavailable',
+                    ...(sourceContext.modelId !== undefined ? { sourceModelId: sourceContext.modelId } : {}),
+                    targetConnectionId: state.claim.connectionId,
+                    ...(state.claim.modelId !== undefined ? { targetModelId: state.claim.modelId } : {}),
+                    highWatermark: handoff.highWatermark,
+                    truncated: handoff.truncated,
+                    budgetChars: budget.chars,
+                    budgetSource: budget.source,
+                  },
+                })
+                .pipe(
+                  Effect.mapError(
+                    error =>
+                      new ExecutionServiceError({
+                        reason: 'background-failure',
+                        message: 'Conversation context handoff could not be recorded.',
+                        cause: error,
+                      }),
+                  ),
+                )
+              prompt = [
+                'Conversation context handoff from earlier messages. Continue the discussion using this snapshot as context.',
+                handoff.context,
+                handoff.truncated ? '[Earlier conversation context was truncated.]' : '',
+                '---',
+                `Current request: ${prompt}`,
+              ]
+                .filter(Boolean)
+                .join('\n\n')
+            }
+          }
+          // Side chat bring-back: consumed once by this Run; a retry of the same dispatch returns the same record.
+          const bringBack = yield* store
+            .consumeSideChatBringBack(state.claim.runId, {
+              ownerEpoch: state.claim.ownerEpoch,
+              occurredAt: yield* timestamp,
+            })
+            .pipe(
+              Effect.mapError(
+                error =>
+                  new ExecutionServiceError({
+                    reason: 'background-failure',
+                    message: 'Side chat bring-back could not be applied.',
+                    cause: error,
+                  }),
+              ),
+            )
+          if (bringBack !== null) prompt = sideChatBringBackPrompt(bringBack, prompt)
+          const driver = yield* drivers.resolve(state.claim.driverId)
+          if (driver.driverId !== state.claim.driverId) {
+            return yield* new ExecutionServiceError({
+              reason: 'background-failure',
+              message: 'Dispatch claim driver did not match the resolved agent driver',
+            })
+          }
+          const connectionOptions = yield* connections.resolve(state.claim.connectionId, state.claim.driverId)
+          const scope = yield* Scope.Scope
+          const connectionScope = yield* Scope.make()
+          yield* Scope.addFinalizer(
+            scope,
+            Scope.close(connectionScope, Exit.void).pipe(
+              Effect.catchCause(cause =>
+                Effect.sync(() => {
+                  nativeCleanupUnconfirmed = true
+                  state.cleanupConfirmed = false
+                  backgroundFailures.push(cause)
+                }),
+              ),
+            ),
+          )
+          const connection = yield* driver
+            .connect(connectionOptions)
+            .pipe(Effect.provideService(Scope.Scope, connectionScope))
+          yield* Scope.addFinalizer(
+            scope,
+            connection.close(closeDeadlineMs).pipe(
+              Effect.catchCause(cause =>
+                Effect.sync(() => {
+                  nativeCleanupUnconfirmed = true
+                  state.cleanupConfirmed = false
+                  backgroundFailures.push(cause)
+                }),
+              ),
+            ),
+          )
+          const connectionIdentity = yield* Schema.decodeUnknownEffect(agentConnectionIdentitySchema)(
+            connection.identity,
+          )
+          if (
+            connectionIdentity.driverId !== state.claim.driverId ||
+            connectionIdentity.id !== state.claim.connectionId
+          ) {
+            return yield* new ExecutionServiceError({
+              reason: 'background-failure',
+              message: 'Driver connection identity did not match the immutable dispatch claim',
+            })
+          }
+          if (stopping) {
+            state.shuttingDown = true
+            return
+          }
+          const baseContext = contextFor(state.claim)
+          const context = input.prepareSession
+            ? yield* input.prepareSession(baseContext).pipe(Effect.provideService(Scope.Scope, connectionScope))
+            : baseContext
+          const requestedNativeSessionId = state.claim.nativeSessionId ?? undefined
+          const session =
+            requestedNativeSessionId !== undefined
+              ? yield* connection.loadSession(context, {
+                  nativeSessionId: requestedNativeSessionId,
+                  generation: state.claim.generation,
+                })
+              : yield* connection.openSession(context)
+          const identity = yield* Schema.decodeUnknownEffect(agentSessionIdentitySchema)(session.identity)
+          if (
+            identity.generation !== state.claim.generation ||
+            (requestedNativeSessionId !== undefined && identity.nativeSessionId !== requestedNativeSessionId)
+          ) {
+            return yield* new ExecutionServiceError({
+              reason: 'background-failure',
+              message: 'Driver session identity did not match the immutable dispatch claim',
+            })
+          }
+          if (stopping) {
+            state.shuttingDown = true
+            return
+          }
+          state.session = session
+          // Binding the native session admits early protocol events without
+          // recording that the native turn has started.
+          yield* store.bindNativeSession(state.claim.runId, {
+            ownerEpoch: state.claim.ownerEpoch,
+            nativeSessionId: identity.nativeSessionId,
+            generation: state.claim.generation,
+            recordedAt: yield* timestamp,
+            capabilities: session.capabilities,
+          })
+          const requestedAccess = state.claim.accessMode ?? DEFAULT_AGENT_ACCESS_MODE
+          const accessReport = session.accessReport ?? { status: 'unconfirmed' as const }
+          if (accessReport.status === 'different') {
+            yield* handleCommittedEvent(state, {
+              kind: 'nativeNotice',
+              message: `The agent reported "${accessReport.reported}" instead of ${requestedAccess} access, so the Run was not started.`,
+            })
+            return yield* new ExecutionServiceError({
+              reason: 'access-not-applied',
+              message: `The agent reported "${accessReport.reported}" instead of ${requestedAccess} access.`,
+            })
+          }
+          const eventFiber = yield* Effect.forkChild(
+            consumeCoalescedAgentEvents(session.events(state.claim.runId), event => handleCommittedEvent(state, event)),
+          )
+          if (nativeAccessChanged && accessReport.status === 'unconfirmed') {
+            yield* handleCommittedEvent(state, {
+              kind: 'nativeNotice',
+              accessStatus: 'unconfirmed',
+              accessMode: requestedAccess,
+              message: `Access mode ${requestedAccess} could not be confirmed on this native session. The agent may keep its earlier access.`,
+            })
+          }
+          state.submitEntered = true
+          const accepted = yield* Effect.raceFirst(
+            Effect.gen(function* () {
+              const acceptedValue: unknown = yield* session.submit({
+                runId: state.claim.runId,
+                messages: [{ role: 'user', content: promptWithAnnotationContext(prompt, resolvedAttachments) }],
+                attachmentIds: [],
+                attachments: resolvedAttachments,
+              })
+              const nativeAcceptance = yield* Schema.decodeUnknownEffect(nativeTurnAcceptanceSchema)(acceptedValue)
+              if (
+                nativeAcceptance.generation !== state.claim.generation ||
+                nativeAcceptance.nativeSessionId !== identity.nativeSessionId ||
+                (requestedNativeSessionId !== undefined &&
+                  nativeAcceptance.nativeSessionId !== requestedNativeSessionId)
+              ) {
+                return yield* new ExecutionServiceError({
+                  reason: 'background-failure',
+                  message: 'Native turn acceptance did not match the immutable dispatch claim',
+                })
+              }
+              state.nativeTurnId = nativeAcceptance.nativeTurnId
+              yield* store.acknowledgeDispatch(state.claim.runId, {
+                ownerEpoch: state.claim.ownerEpoch,
+                nativeSessionId: nativeAcceptance.nativeSessionId,
+                ...(nativeAcceptance.nativeTurnId !== undefined ? { nativeTurnId: nativeAcceptance.nativeTurnId } : {}),
+                acknowledgedAt: yield* timestamp,
+              })
+              state.acknowledged = true
+              yield* Deferred.succeed(state.submissionAccepted, undefined)
+              return { _tag: 'accepted' as const }
+            }),
+            Fiber.await(eventFiber).pipe(Effect.map(exit => ({ _tag: 'event-consumer-ended' as const, exit }))),
+          )
+          if (accepted._tag === 'event-consumer-ended') {
+            if (Exit.isFailure(accepted.exit)) return yield* Effect.failCause(accepted.exit.cause)
+            return yield* new ExecutionServiceError({
+              reason: 'background-failure',
+              message: 'Agent event consumer ended before native submit acceptance',
+            })
+          }
+          yield* sendNativeInterrupt(state).pipe(
+            Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
+          )
+          state.settled = false
+          yield* Fiber.join(eventFiber)
+        }),
+      )
+
+    const supervise = (state: ManagedRun) =>
+      Effect.uninterruptibleMask(restore =>
+        Effect.gen(function* () {
+          const result = yield* Effect.exit(restore(dispatch(state)))
+          if (state.terminal) {
+            if (Exit.isFailure(result)) return yield* Effect.failCause(result.cause)
+            return
+          }
+          if (state.shuttingDown) {
+            yield* failUnresolved(state, 'shutdown', 'uncertain')
+            return
+          }
+          if (state.submitEntered && !state.acknowledged) {
+            yield* failUnresolved(state, 'dispatch-uncertain', 'uncertain')
+            return
+          }
+          if (!state.submitEntered) {
+            yield* failUnresolved(state, 'launch-failed', 'failed')
+            return
+          }
+          if (Exit.isFailure(result)) {
+            yield* failUnresolved(state, 'event-stream-failed', 'uncertain')
+            return
+          }
+          yield* failUnresolved(state, 'event-stream-ended', 'uncertain')
+        }),
+      )
+
+    const finishedHook = (claim: DispatchClaim) =>
+      input.onRunFinished ? input.onRunFinished(claim).pipe(Effect.catchCause(() => Effect.void)) : Effect.void
+
+    const trackedWorker = (state: ManagedRun) =>
+      Effect.gen(function* () {
+        yield* Deferred.await(state.ready)
+        const result = yield* Effect.exit(supervise(state))
+        if (Exit.isFailure(result) && !state.settled) backgroundFailures.push(result.cause)
+        if (state.settled && !state.terminal && state.cleanupConfirmed) {
+          const released = yield* Effect.exit(
+            store.releaseDispatchAfterCleanup(state.claim.runId, state.claim.ownerEpoch),
+          )
+          if (Exit.isFailure(released)) backgroundFailures.push(released.cause)
+        }
+        // Delegation settlement runs before queued follow-ups are pumped, so a settled child's wake is promoted in turn.
+        yield* finishedHook(state.claim)
+        if ((state.terminal || state.settled) && !stopping) {
+          workers.delete(state.claim.runId)
+          if (!state.cleanupConfirmed || nativeCleanupUnconfirmed) {
+            yield* holdAllQueuedFollowUps.pipe(
+              Effect.catchCause(cause => Effect.sync(() => backgroundFailures.push(cause))),
+            )
+          } else {
+            yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
+          }
+        }
+      }).pipe(Effect.ensuring(Effect.sync(() => workers.delete(state.claim.runId))))
+
+    const launchClaim = (claim: DispatchClaim) =>
+      Effect.gen(function* () {
+        const state: ManagedRun = {
+          claim,
+          ready: yield* Deferred.make<undefined>(),
+          submissionAccepted: yield* Deferred.make<undefined>(),
+          controlOrder: yield* Semaphore.make(1),
+          submitEntered: false,
+          acknowledged: false,
+          turnObserved: false,
+          terminal: false,
+          settled: false,
+          interruptRequested: false,
+          interruptSent: false,
+          shuttingDown: false,
+          cleanupConfirmed: true,
+          eventCounter: 0,
+        }
+        if (admissionExpired) {
+          yield* store.failDispatch(claim.runId, {
+            ownerEpoch: claim.ownerEpoch,
+            occurredAt: yield* timestamp,
+            outcome: 'failed',
+            reason: 'launch-failed',
+          })
+          return yield* new ExecutionServiceError({
+            reason: 'service-stopped',
+            message: 'Execution shutdown expired before the run could launch',
+          })
+        }
+        workers.set(claim.runId, state)
+        state.fiber = yield* Effect.forkIn(Effect.interruptible(trackedWorker(state)), workerScope, {
+          startImmediately: true,
+        })
+        yield* Deferred.succeed(state.ready, undefined)
+        return state
+      })
+
+    const forkOwnedControl = <A, E>(effect: Effect.Effect<A, E>) =>
+      Effect.uninterruptibleMask(() =>
+        Effect.gen(function* () {
+          const ready = yield* Deferred.make<undefined>()
+          const childRef: { current?: Fiber.Fiber<A, E> } = {}
+          const tracked = Effect.gen(function* () {
+            yield* Deferred.await(ready)
+            return yield* effect
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                if (childRef.current) controlFibers.delete(childRef.current as Fiber.Fiber<unknown, unknown>)
+              }),
+            ),
+          )
+          const child = yield* Effect.forkIn(Effect.interruptible(tracked), workerScope, { startImmediately: true })
+          childRef.current = child
+          controlFibers.add(child as Fiber.Fiber<unknown, unknown>)
+          yield* Deferred.succeed(ready, undefined)
+          return child
+        }),
+      )
+
+    const runOwnedControl = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E | WorkspaceStoreError> =>
+      Effect.uninterruptibleMask(restore =>
+        Effect.gen(function* () {
+          const fiber = yield* admission.withPermit(
+            Effect.gen(function* () {
+              if (stopping)
+                return yield* new WorkspaceStoreError({
+                  code: 'invalid-transition',
+                  message: 'Execution service is stopping and cannot admit a native control',
+                })
+              return yield* forkOwnedControl(effect)
+            }),
+          )
+          return yield* restore(Fiber.join(fiber))
+        }),
+      )
+
+    const selectRunCheckout = Effect.fnUntraced(
+      function* (
+        command: Pick<BeginRunCommand, 'checkoutId' | 'taskId' | 'conversationId' | 'prompt' | 'issuedAt'>,
+        prepare: boolean,
+      ) {
+        if (!isScratchCheckoutId(command.checkoutId)) return command.checkoutId
+        const task = yield* store.readTaskDetail(command.taskId, { limit: 50 })
+        const conversation = task.conversations.find(item => item.id === command.conversationId)
+        if (task.task.projectId !== SCRATCH_PROJECT_ID || task.task.archivedAt || !conversation)
+          return command.checkoutId
+        if (conversation.inheritedCheckoutId) return conversation.inheritedCheckoutId
+        const delegation = yield* store.getDelegationByChildTask(command.taskId)
+        if (delegation?.childConversationId === command.conversationId) return delegation.checkoutId
+        if (command.checkoutId !== SCRATCH_ROOT_CHECKOUT_ID) return command.checkoutId
+        const detail = yield* store.getProject(SCRATCH_PROJECT_ID, { scratchConversationId: command.conversationId })
+        if (!detail.project.isScratch) return command.checkoutId
+        const own = detail.otherCheckouts[0]
+        if (own && !own.archivedAt) return own.id
+        if (!prepare) return command.checkoutId
+        const snapshot = yield* store.readTaskSnapshot(command.taskId, 1)
+        if (snapshot.task.sideChat) return command.checkoutId
+        // The first event distinguishes an existing legacy Conversation from an unsent one,
+        // even if a different Conversation has the Task's most recent Run.
+        const history = yield* store.readConversationPage(command.conversationId, 0, 1)
+        if (history.items.length > 0) return detail.mainCheckout.id
+        const checkout = yield* prepareScratchCheckout(
+          store,
+          checkouts,
+          detail,
+          command.conversationId,
+          command.prompt,
+          command.issuedAt,
+        ).pipe(
+          Effect.catchTag('ScratchProjectInsideGitError', error =>
+            Effect.fail(new ExecutionServiceError({ reason: 'scratch-inside-git', message: error.message })),
+          ),
+        )
+        return checkout.id
+      },
+      Effect.provideService(FileSystem.FileSystem, filesystem),
+      Effect.provideService(Path.Path, path),
+    )
+
+    const start = Effect.fn('ExecutionService.start')(function* (
+      command: BeginRunCommand,
+    ): Effect.fn.Return<CommandReceipt, WorkspaceStoreError | ExecutionServiceError> {
+      return yield* Effect.uninterruptibleMask(() =>
+        Effect.gen(function* () {
+          return yield* admission.withPermit(
+            Effect.gen(function* () {
+              if (stopping) {
+                return yield* new ExecutionServiceError({
+                  reason: 'service-stopped',
+                  message: 'Execution service is stopping and cannot accept a new run',
+                })
+              }
+              yield* requireAccessModeSupport(command.driverId, command.accessMode)
+              const checkoutId = yield* selectRunCheckout(command, true)
+              const receipt = yield* store.beginRun({ ...command, checkoutId })
+              if (receipt.replayed) return receipt
+              const claimResult = yield* Effect.exit(
+                store.claimDispatch(receipt.runId, parsedOptions.ownerEpoch, yield* timestamp),
+              )
+              if (Exit.isFailure(claimResult)) {
+                const settlementResult = yield* Effect.exit(
+                  store.failDispatch(receipt.runId, {
+                    ownerEpoch: parsedOptions.ownerEpoch,
+                    occurredAt: yield* timestamp,
+                    outcome: 'failed',
+                    reason: 'launch-failed',
+                  }),
+                )
+                if (Exit.isFailure(settlementResult)) {
+                  return yield* Effect.failCause(Cause.combine(claimResult.cause, settlementResult.cause))
+                }
+                return yield* Effect.failCause(claimResult.cause)
+              }
+              const claim = claimResult.value
+              yield* launchClaim(claim)
+              return receipt
+            }),
+          )
+        }),
+      )
+    })
+
+    const respond = Effect.fn('ExecutionService.respond')(function* (
+      command: RecordRequestResponseCommand,
+    ): Effect.fn.Return<CommandReceipt, WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation> {
+      if (command.ownerEpoch !== parsedOptions.ownerEpoch)
+        return yield* new WorkspaceStoreError({ code: 'stale-epoch', message: 'Response owner epoch is stale' })
+      const state = workers.get(command.runId)
+      if (state && state.claim.generation !== command.generation)
+        return yield* new WorkspaceStoreError({
+          code: 'membership-conflict',
+          message: 'Response generation is stale',
+        })
+      return yield* runOwnedControl(
+        Effect.interruptible(
+          (state?.controlOrder ?? admission).withPermit(
+            Effect.uninterruptibleMask(restoreNative =>
+              Effect.gen(function* () {
+                const receipt = yield* store.recordRequestResponse(command)
+                if (receipt.replayed) return receipt
+                if (!state?.session) {
+                  const outcome: SettleDeliveryCommand = {
+                    ownerEpoch: parsedOptions.ownerEpoch,
+                    occurredAt: yield* timestamp,
+                    outcome: 'uncertain',
+                  }
+                  yield* store.settleRequestResponse(command.runId, command.requestId, outcome)
+                  return yield* new WorkspaceStoreError({
+                    code: 'invalid-transition',
+                    message: 'The Run has no active native session for request delivery',
+                  })
+                }
+                const sent = yield* Effect.exit(
+                  restoreNative(
+                    state.session.respond(command.runId, command.requestId, command.generation, command.decision),
+                  ),
+                )
+                const delivery = Exit.isSuccess(sent) ? sent.value : { outcome: 'uncertain' as const }
+                const settled = yield* Effect.exit(
+                  store.settleRequestResponse(command.runId, command.requestId, {
+                    ...delivery,
+                    ownerEpoch: parsedOptions.ownerEpoch,
+                    occurredAt: yield* timestamp,
+                  }),
+                )
+                if (Exit.isFailure(settled)) {
+                  return yield* Effect.failCause(
+                    Exit.isFailure(sent) ? Cause.combine(sent.cause, settled.cause) : settled.cause,
+                  )
+                }
+                if (Exit.isFailure(sent)) return yield* Effect.failCause(sent.cause)
+                return receipt
+              }),
+            ),
+          ),
+        ),
+      )
+    })
+
+    const steer = Effect.fn('ExecutionService.steer')(function* (
+      command: RecordSteerCommand,
+    ): Effect.fn.Return<CommandReceipt, WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation> {
+      if (command.ownerEpoch !== parsedOptions.ownerEpoch)
+        return yield* new WorkspaceStoreError({ code: 'stale-epoch', message: 'Steering owner epoch is stale' })
+      const state = workers.get(command.runId)
+      if (state && state.claim.generation !== command.generation)
+        return yield* new WorkspaceStoreError({
+          code: 'membership-conflict',
+          message: 'Steering generation is stale',
+        })
+      return yield* runOwnedControl(
+        Effect.interruptible(
+          (state?.controlOrder ?? admission).withPermit(
+            Effect.uninterruptibleMask(restoreNative =>
+              Effect.gen(function* () {
+                const receipt = yield* store.recordSteer(command)
+                if (receipt.replayed) return receipt
+                if (!state?.session) {
+                  yield* store.settleSteer(command.runId, command.commandId, {
+                    ownerEpoch: parsedOptions.ownerEpoch,
+                    occurredAt: yield* timestamp,
+                    outcome: 'uncertain',
+                  })
+                  return yield* new WorkspaceStoreError({
+                    code: 'invalid-transition',
+                    message: 'The Run has no active native session for steering',
+                  })
+                }
+                const session = state.session
+                const sent = yield* Effect.exit(
+                  restoreNative(
+                    Effect.gen(function* () {
+                      const attachments = yield* resolveAttachments(command.attachments)
+                      return yield* session.steer(
+                        command.runId,
+                        command.expectedNativeTurnId,
+                        promptWithAnnotationContext(command.message, attachments),
+                        attachments,
+                      )
+                    }),
+                  ),
+                )
+                const delivery = Exit.isSuccess(sent) ? sent.value : { outcome: 'uncertain' as const }
+                const settled = yield* Effect.exit(
+                  store.settleSteer(command.runId, command.commandId, {
+                    ...delivery,
+                    ownerEpoch: parsedOptions.ownerEpoch,
+                    occurredAt: yield* timestamp,
+                  }),
+                )
+                if (Exit.isFailure(settled)) {
+                  return yield* Effect.failCause(
+                    Exit.isFailure(sent) ? Cause.combine(sent.cause, settled.cause) : settled.cause,
+                  )
+                }
+                if (Exit.isFailure(sent)) return yield* Effect.failCause(sent.cause)
+                return receipt
+              }),
+            ),
+          ),
+        ),
+      )
+    })
+
+    const enqueueFollowUp = Effect.fn('ExecutionService.enqueueFollowUp')(function* (command: EnqueueFollowUpCommand) {
+      // A queued follow-up names its driver only when the caller knows it; promotion re-checks the rest.
+      if (command.driverId !== undefined) yield* requireAccessModeSupport(command.driverId, command.accessMode)
+      const receipt = yield* store.enqueueFollowUp(command)
+      yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
+      return receipt
+    })
+
+    const cancelQueuedFollowUp = Effect.fn('ExecutionService.cancelQueuedFollowUp')(function* (
+      conversationId: BeginRunCommand['conversationId'],
+      commandId: string,
+    ) {
+      yield* store.cancelQueuedFollowUp(conversationId, commandId)
+      yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
+    })
+
+    const promoteQueuedFollowUp = Effect.fn('ExecutionService.promoteQueuedFollowUp')(function* (
+      conversationId: BeginRunCommand['conversationId'],
+      command: BeginRunCommand,
+    ): Effect.fn.Return<PromotedFollowUp | null, WorkspaceStoreError | ExecutionServiceError> {
+      return yield* Effect.uninterruptibleMask(() =>
+        admission.withPermit(
+          Effect.gen(function* () {
+            if (stopping)
+              return yield* new ExecutionServiceError({
+                reason: 'service-stopped',
+                message: 'Execution service is stopping and cannot promote a queued run',
+              })
+            const next = (yield* store.listQueuedFollowUps(conversationId, { limit: 1 })).items[0]
+            if (
+              Array.from(workers.values()).some(
+                state => state.claim.runId !== command.runId && state.claim.conversationId === conversationId,
+              )
+            )
+              return yield* new WorkspaceStoreError({
+                code: 'admission-conflict',
+                message: 'A native run still owns this Conversation',
+              })
+            // Check the head the store will promote, using the same driver and mode precedence it applies.
+            if (next)
+              yield* requireAccessModeSupport(next.driverId ?? command.driverId, next.accessMode ?? command.accessMode)
+            const checkoutId = yield* selectRunCheckout(command, false)
+            const promoted = yield* store.promoteNextFollowUp(conversationId, { ...command, checkoutId })
+            if (!promoted || promoted.receipt.replayed) return promoted
+            const claimResult = yield* Effect.exit(
+              store.claimDispatch(promoted.receipt.runId, parsedOptions.ownerEpoch, yield* timestamp),
+            )
+            if (Exit.isFailure(claimResult)) {
+              const settlement = yield* Effect.exit(
+                store.failDispatch(promoted.receipt.runId, {
+                  ownerEpoch: parsedOptions.ownerEpoch,
+                  occurredAt: yield* timestamp,
+                  outcome: 'failed',
+                  reason: 'launch-failed',
+                }),
+              )
+              if (Exit.isFailure(settlement))
+                return yield* Effect.failCause(Cause.combine(claimResult.cause, settlement.cause))
+              return yield* Effect.failCause(claimResult.cause)
+            }
+            yield* launchClaim(claimResult.value)
+            return promoted
+          }),
+        ),
+      )
+    })
+
+    const isActiveQueueRun = (status: string): boolean =>
+      status === 'queued' ||
+      status === 'starting' ||
+      status === 'running' ||
+      status === 'awaitingInput' ||
+      status === 'interruptRequested'
+
+    const commandForQueuedHead = (head: QueuedFollowUpHead): BeginRunCommand | null => {
+      const context = head.context
+      if (!context) return null
+      const driverId = head.driverId ?? context.driverId
+      const connectionId = head.connectionId ?? context.connectionId
+      const checkoutId = head.checkoutId ?? context.checkoutId
+      const sameSession =
+        checkoutId === context.checkoutId && driverId === context.driverId && connectionId === context.connectionId
+      if (head.nativeSessionId && head.nativeSessionId !== context.nativeSessionId) return null
+      const nativeSessionId =
+        sameSession &&
+        (context.sessionStatus === 'active' || context.sessionStatus === 'suspended') &&
+        (head.nativeSessionId === undefined ||
+          head.nativeSessionId === null ||
+          head.nativeSessionId === context.nativeSessionId)
+          ? context.nativeSessionId
+          : null
+      return {
+        commandId: `promote:${head.commandId}`,
+        issuedAt: head.issuedAt,
+        runId: `queued-run:${head.commandId}` as AgentRunId,
+        taskId: head.taskId,
+        conversationId: head.conversationId,
+        checkoutId,
+        provisionalAgentSessionId: `queued-session:${head.commandId}`,
+        generation: nativeSessionId ? (head.generation ?? context.generation) : 1,
+        driverId,
+        connectionId,
+        prompt: head.prompt,
+        attachments: head.attachments ?? [],
+        modelId: head.modelId,
+        modeId: head.modeId,
+        configValues: head.configValues,
+        accessMode: head.accessMode ?? DEFAULT_AGENT_ACCESS_MODE,
+        nativeSessionId,
+        retryOfRunId: null,
+      }
+    }
+
+    const scanQueuedFollowUps = Effect.gen(function* () {
+      let afterPosition = 0
+      while (!stopping && !nativeCleanupUnconfirmed) {
+        const page = yield* store.listQueuedFollowUpHeads({ afterPosition, limit: 50 })
+        if (page.items.length === 0) return
+        for (const head of page.items) {
+          afterPosition = head.position
+          if (head.held || stopping || nativeCleanupUnconfirmed) continue
+          if (Array.from(workers.values()).some(state => state.claim.conversationId === head.conversationId)) continue
+          const runStatus = head.context?.runStatus
+          // Enqueue can precede the first Run while its folder is being claimed.
+          if (!runStatus || isActiveQueueRun(runStatus)) continue
+          if (runStatus !== 'completed') {
+            yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+            continue
+          }
+          const command = commandForQueuedHead(head)
+          if (!command) {
+            yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+            continue
+          }
+          const result = yield* Effect.exit(promoteQueuedFollowUp(head.conversationId, command))
+          if (Exit.isFailure(result)) {
+            const failure = result.cause.reasons.find(Cause.isFailReason)?.error
+            if (failure instanceof WorkspaceStoreError && failure.code === 'admission-conflict') continue
+            yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+          }
+        }
+        if (!page.nextAfterPosition) return
+      }
+    })
+    pumpQueuedFollowUps = Effect.suspend(() =>
+      stopping || nativeCleanupUnconfirmed
+        ? Effect.void
+        : Effect.sync(() => Queue.offerUnsafe(queuePumpWake, undefined)).pipe(Effect.asVoid),
+    )
+    yield* Effect.forkIn(
+      Effect.forever(
+        Queue.take(queuePumpWake).pipe(
+          Effect.andThen(
+            scanQueuedFollowUps.pipe(
+              Effect.catchCause(cause => (stopping ? Effect.void : Effect.sync(() => backgroundFailures.push(cause)))),
+            ),
+          ),
+        ),
+      ),
+      workerScope,
+      { startImmediately: true },
+    )
+
+    holdAllQueuedFollowUps = Effect.gen(function* () {
+      let afterPosition = 0
+      while (true) {
+        const page = yield* store.listQueuedFollowUpHeads({ afterPosition, limit: 50 })
+        for (const head of page.items) {
+          afterPosition = head.position
+          if (!head.held) yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
+        }
+        if (!page.nextAfterPosition) return
+      }
+    })
+
+    const interrupt = Effect.fn('ExecutionService.interrupt')(function* (
+      runId: AgentRunId,
+    ): Effect.fn.Return<
+      void,
+      | WorkspaceStoreError
+      | import('@/core/ports/agent-driver.js').AgentDriverError
+      | import('@/core/ports/agent-driver.js').UnsupportedAgentOperation
+    > {
+      return yield* runOwnedControl(
+        Effect.uninterruptibleMask(restoreNative =>
+          Effect.gen(function* () {
+            const state = workers.get(runId)
+            let failure: Cause.Cause<WorkspaceStoreError | AgentDriverError | UnsupportedAgentOperation> | undefined
+            const held = state
+              ? yield* Effect.exit(store.holdQueuedFollowUps(state.claim.conversationId, parsedOptions.ownerEpoch))
+              : Exit.void
+            if (Exit.isFailure(held)) failure = held.cause
+            if (state) {
+              state.interruptRequested = true
+            }
+            const requested = yield* Effect.exit(
+              store.requestInterrupt(runId, parsedOptions.ownerEpoch, yield* timestamp),
+            )
+            const interrupted = state
+              ? yield* Effect.exit(
+                  Effect.gen(function* () {
+                    yield* restoreNative(sendNativeInterrupt(state))
+                  }),
+                )
+              : Exit.void
+            if (Exit.isFailure(requested)) {
+              failure = failure ? Cause.combine(failure, requested.cause) : requested.cause
+            }
+            if (Exit.isFailure(interrupted))
+              failure = failure ? Cause.combine(failure, interrupted.cause) : interrupted.cause
+            if (failure) return yield* Effect.failCause(failure)
+          }),
+        ),
+      )
+    })
+
+    const performStopAll = Effect.fn('ExecutionService.performStopAll')(function* (): Effect.fn.Return<
+      void,
+      ExecutionServiceError
+    > {
+      stopping = true
+      const forcedCleanupBudgetMs = Math.max(1, Math.ceil(closeDeadlineMs / 3))
+      const forcedFiberBudgetMs = Math.max(1, Math.floor(forcedCleanupBudgetMs / 2))
+      const forcedScopeBudgetMs = Math.max(1, forcedCleanupBudgetMs - forcedFiberBudgetMs)
+      const drainBudgetMs = Math.max(1, closeDeadlineMs - forcedCleanupBudgetMs)
+      const drainDeadline = (yield* Clock.currentTimeMillis) + drainBudgetMs
+      const admitted = yield* admission.withPermit(Effect.void).pipe(Effect.timeoutOption(drainBudgetMs))
+      admissionExpired = Option.isNone(admitted)
+      const states = Array.from(workers.values())
+      // Each Run's interrupt is isolated, so one refusal does not stop the others, and the writes are bounded.
+      const interruption = yield* forkOwnedControl(
+        Effect.forEach(
+          states,
+          state =>
+            Effect.gen(function* () {
+              if (state.terminal) return
+              const requested = yield* Effect.exit(
+                store.requestInterrupt(state.claim.runId, state.claim.ownerEpoch, yield* timestamp),
+              )
+              state.interruptRequested = true
+              if (Exit.isFailure(requested) && !isSettledDispatchRefusal(requested.cause))
+                backgroundFailures.push(requested.cause)
+              yield* sendNativeInterrupt(state).pipe(
+                Effect.catchCause(cause =>
+                  Effect.sync(() => {
+                    if (!state.terminal) backgroundFailures.push(cause)
+                  }),
+                ),
+              )
+            }),
+          { concurrency: SHUTDOWN_CONCURRENCY, discard: true },
+        ),
+      )
+      const allFibers = Array.from(
+        new Set<Fiber.Fiber<unknown, unknown>>([
+          ...states.flatMap(state => (state.fiber ? [state.fiber] : [])),
+          interruption,
+          ...controlFibers,
+        ]),
+      )
+      const drain = Effect.forEach(allFibers, fiber => Fiber.await(fiber), {
+        concurrency: 'unbounded',
+      })
+      const closeOwnedResources = (budgetMs: number) =>
+        Effect.gen(function* () {
+          if (workerScopeClosed) return !nativeCleanupUnconfirmed
+          const closed = yield* awaitWithin(Scope.close(workerScope, Exit.void), budgetMs)
+          if (Option.isNone(closed)) return false
+          workerScopeClosed = true
+          return !nativeCleanupUnconfirmed
+        })
+      const remainingDrainMs = drainDeadline - (yield* Clock.currentTimeMillis)
+      const completed =
+        admissionExpired || remainingDrainMs <= 0
+          ? Option.none()
+          : yield* drain.pipe(Effect.timeoutOption(remainingDrainMs))
+      if (Option.isNone(completed)) {
+        for (const state of states) state.shuttingDown = true
+        const forced = yield* awaitWithin(
+          Effect.all(
+            [
+              // Every Run is fenced even when another Run's write fails; the failures are reported together.
+              Effect.forEach(states, state => Effect.exit(failUnresolved(state, 'shutdown', 'uncertain')), {
+                concurrency: SHUTDOWN_CONCURRENCY,
+              }).pipe(
+                Effect.flatMap(exits => {
+                  const failures = exits.flatMap(exit => (Exit.isFailure(exit) ? [exit.cause] : []))
+                  return failures.length === 0 ? Effect.void : Effect.failCause(failures.reduce(Cause.combine))
+                }),
+                Effect.exit,
+              ),
+              Effect.forEach(allFibers, fiber => Fiber.interrupt(fiber), { concurrency: 'unbounded' }),
+            ],
+            { concurrency: 'unbounded' },
+          ),
+          forcedFiberBudgetMs,
+        )
+        if (Option.isNone(forced) || Exit.isFailure(forced.value)) {
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Shutdown deadline expired before execution resource cleanup completed',
+            nativeCleanup: 'unconfirmed',
+          })
+        }
+        const [settlement] = forced.value.value
+        const resourcesClosed = yield* Effect.exit(closeOwnedResources(forcedScopeBudgetMs))
+        if (Exit.isFailure(resourcesClosed) || !resourcesClosed.value) {
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Execution resources could not be confirmed closed after shutdown',
+            ...(Exit.isFailure(resourcesClosed) ? { cause: resourcesClosed.cause } : {}),
+            nativeCleanup: 'unconfirmed',
+          })
+        }
+        if (Exit.isFailure(settlement)) {
+          return yield* new ExecutionServiceError({
+            reason: 'background-failure',
+            message: 'Shutdown cleanup could not persist the uncertain execution fence',
+            cause: settlement.cause,
+            nativeCleanup: 'confirmed',
+          })
+        }
+        return yield* new ExecutionServiceError({
+          reason: 'background-failure',
+          message: admissionExpired
+            ? 'Shutdown deadline expired while waiting for an admitted execution operation'
+            : 'Shutdown deadline expired before execution resource cleanup completed',
+          nativeCleanup: admissionExpired ? 'unconfirmed' : 'confirmed',
+        })
+      }
+      const resourcesClosed = yield* Effect.exit(closeOwnedResources(forcedCleanupBudgetMs))
+      if (Exit.isFailure(resourcesClosed) || !resourcesClosed.value) {
+        return yield* new ExecutionServiceError({
+          reason: 'background-failure',
+          message: 'Execution resources could not be confirmed closed during shutdown',
+          ...(Exit.isFailure(resourcesClosed) ? { cause: resourcesClosed.cause } : {}),
+          nativeCleanup: 'unconfirmed',
+        })
+      }
+      const failure = backgroundFailures.shift()
+      if (failure) {
+        return yield* new ExecutionServiceError({
+          reason: 'background-failure',
+          message: 'An execution worker or its owned resource failed during cleanup',
+          cause: failure,
+          nativeCleanup: 'confirmed',
+        })
+      }
+    })
+
+    // Scope release must not retry a timed-out native cleanup or mask its original result.
+    const stopAll = Effect.fn('ExecutionService.stopAll')(function* () {
+      return yield* Effect.uninterruptible(
+        shutdownGate.withPermit(
+          Effect.gen(function* () {
+            if (!shutdownResult) {
+              shutdownResult = yield* Effect.exit(
+                performStopAll().pipe(
+                  Effect.catchCause(cause => {
+                    const failure = cause.reasons.find(Cause.isFailReason)?.error
+                    return Effect.fail(
+                      failure instanceof ExecutionServiceError
+                        ? failure
+                        : new ExecutionServiceError({
+                            reason: 'background-failure',
+                            message: 'Execution shutdown could not confirm resource cleanup',
+                            cause,
+                            nativeCleanup: 'unconfirmed',
+                          }),
+                    )
+                  }),
+                ),
+              )
+            }
+            return yield* shutdownResult
+          }),
+        ),
+      )
+    })
+
+    yield* Scope.addFinalizer(
+      appScope,
+      Effect.suspend(() => (shutdownResult ? Effect.void : stopAll().pipe(Effect.orDie))),
+    )
+    return ExecutionService.of({
+      start,
+      interrupt,
+      respond,
+      steer,
+      enqueueFollowUp,
+      cancelQueuedFollowUp,
+      wakeQueuedFollowUps: () => pumpQueuedFollowUps,
+      promoteQueuedFollowUp,
+      stopAll,
+    })
+  })

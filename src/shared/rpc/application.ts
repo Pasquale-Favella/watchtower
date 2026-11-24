@@ -1,14 +1,34 @@
 import * as RpcGroup from 'effect/rpc/RpcGroup'
 
 import { AnalyticsRpcGroup, GetOverview } from '@/shared/rpc/analytics.js'
-import { CoachRpcGroup } from '@/shared/rpc/coach.js'
+import { CheckoutActionsRpcGroup } from '@/shared/rpc/checkout-actions.js'
+import { CheckoutInspectionRpcGroup } from '@/shared/rpc/checkout-inspection.js'
+import { CheckoutNavigationRpcGroup } from '@/shared/rpc/checkout-navigation.js'
 import { ConfigRpcGroup } from '@/shared/rpc/config.js'
 import { LifecycleRpcGroup } from '@/shared/rpc/lifecycle.js'
-import { OrbShellRpcGroup, ShellRpcGroup } from '@/shared/rpc/shell.js'
 import { NativeRpcGroup, StartScan } from '@/shared/rpc/native.js'
+import { OrbShellRpcGroup, ShellRpcGroup } from '@/shared/rpc/shell.js'
+import { SourceControlRpcGroup } from '@/shared/rpc/source-control.js'
+import { TerminalRpcGroup } from '@/shared/rpc/terminal.js'
+import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
+import { WorkspaceDelegationRpcGroup } from '@/shared/rpc/workspace-delegations.js'
+import { WorkspaceDeviceRpcGroup } from '@/shared/rpc/workspace-devices.js'
+import { WorkspacePreviewRpcGroup } from '@/shared/rpc/workspace-preview.js'
+import { WorkspacePullRequestRpcGroup } from '@/shared/rpc/workspace-pull-requests.js'
+import { WorkspaceSideChatRpcGroup } from '@/shared/rpc/workspace-side-chats.js'
 
 export const ApplicationRpcGroup = AnalyticsRpcGroup.merge(ConfigRpcGroup)
-  .merge(CoachRpcGroup)
+  .merge(WorkspaceRpcGroup)
+  .merge(WorkspacePreviewRpcGroup)
+  .merge(WorkspaceDeviceRpcGroup)
+  .merge(WorkspacePullRequestRpcGroup)
+  .merge(WorkspaceSideChatRpcGroup)
+  .merge(WorkspaceDelegationRpcGroup)
+  .merge(CheckoutInspectionRpcGroup)
+  .merge(CheckoutActionsRpcGroup)
+  .merge(CheckoutNavigationRpcGroup)
+  .merge(SourceControlRpcGroup)
+  .merge(TerminalRpcGroup)
   .merge(ShellRpcGroup)
   .merge(NativeRpcGroup)
   .merge(LifecycleRpcGroup.omit('panel:events', 'beacon:events'))

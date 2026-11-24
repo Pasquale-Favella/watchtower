@@ -21,13 +21,13 @@ import { buildLedgerTools, LedgerToolInputError } from '@/platform/mcp/tools.js'
  *  and transport shutdown. One handler per MCP primitive keeps handler
  *  ownership here while Effect Schemas validate application arguments and
  *  generate the advertised tool metadata. */
-export function createLedgerMcpServer(queries: LedgerMcpQueries): Server {
+export function createLedgerMcpServer(queries: LedgerMcpQueries, signal?: AbortSignal): Server {
   const server = new Server(
     { name: 'watchtower-ledger', version: '0.1.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
   )
-  const tools = buildLedgerTools(queries)
-  const resources = buildLedgerResources(queries)
+  const tools = buildLedgerTools(queries, signal)
+  const resources = buildLedgerResources(queries, signal)
   const prompts = buildLedgerPrompts()
 
   server.setRequestHandler(ListToolsRequestSchema, () => ({
@@ -74,7 +74,6 @@ export function createLedgerMcpServer(queries: LedgerMcpQueries): Server {
   server.setRequestHandler(ReadResourceRequestSchema, async request => {
     const resource = resources.find(definition => definition.uri === request.params.uri)
     // Throw the SDK's protocol error so this remains JSON-RPC InvalidParams.
-    // eslint-disable-next-line no-restricted-syntax
     if (!resource) throw new McpError(ErrorCode.InvalidParams, `Resource ${request.params.uri} not found`)
     try {
       return {
@@ -82,7 +81,6 @@ export function createLedgerMcpServer(queries: LedgerMcpQueries): Server {
       }
     } catch {
       // Keep database and filesystem details inside the process boundary.
-      // eslint-disable-next-line no-restricted-syntax
       throw new McpError(ErrorCode.InternalError, 'Ledger resource query failed')
     }
   })
@@ -94,7 +92,6 @@ export function createLedgerMcpServer(queries: LedgerMcpQueries): Server {
   server.setRequestHandler(GetPromptRequestSchema, request => {
     const prompt = prompts.find(definition => definition.name === request.params.name)
     // Throw the SDK's protocol error so this remains JSON-RPC InvalidParams.
-    // eslint-disable-next-line no-restricted-syntax
     if (!prompt) throw new McpError(ErrorCode.InvalidParams, `Prompt ${request.params.name} not found`)
     return {
       messages: [{ role: 'user', content: { type: 'text', text: prompt.render() } }],

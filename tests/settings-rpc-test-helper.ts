@@ -10,9 +10,16 @@ import { lifecycleHandlers, lifecycleLayer } from '../src/platform/electron/main
 import type { NativeRpcCapabilities } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { nativeHandlers } from '../src/platform/electron/main/rpc/native-handlers.js'
 import { ApplicationClient } from '../src/renderer/shared/lib/application-rpc.js'
-import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
-import { unexpectedCoachHandlers, unexpectedShellRpcs } from './fixtures/unexpected-native-rpc.js'
+import { ShellRpcGroup } from '../src/shared/rpc/shell.js'
+import {
+  unexpectedCheckoutInspectionHandlers,
+  unexpectedSourceControlHandlers,
+  unexpectedTerminalHandlers,
+  unexpectedShellRpcs,
+  unexpectedWorkspaceHandlers,
+  unexpectedWorkspacePanelHandlers,
+} from './fixtures/unexpected-native-rpc.js'
 
 const unexpected = () => Effect.die(new Error('Unexpected native operation in a settings RPC test'))
 
@@ -31,10 +38,6 @@ const defaultNativeCapabilities: NativeRpcCapabilities = {
   getAppVersion: unexpected,
   dismissSkill: unexpected,
   saveSkill: unexpected,
-  getCoachHarnesses: unexpected,
-  refreshCoachHarnesses: unexpected,
-  inspectCoachHarness: unexpected,
-  openCoachLoginTerminal: unexpected,
 }
 
 /** Uses the actual application group and its worker/main handlers in settings atom tests. */
@@ -56,7 +59,11 @@ export function makeSettingsRpcTestClient(
     },
   })
   const handlers = Layer.mergeAll(
-    unexpectedCoachHandlers,
+    unexpectedWorkspaceHandlers,
+    unexpectedWorkspacePanelHandlers,
+    unexpectedCheckoutInspectionHandlers,
+    unexpectedSourceControlHandlers,
+    unexpectedTerminalHandlers,
     ShellRpcGroup.toLayer({ ...unexpectedShellRpcs, 'shell:open-settings': shellOverrides.openSettings ?? unexpected }),
     analyticsHandlers({ request }),
     configHandlers(

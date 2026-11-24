@@ -1,38 +1,105 @@
-import { useEffect } from 'react'
+import { useMemo, useState } from 'react'
 
-import { useCoachOverviewStore } from '@/renderer/features/coach-skills/hooks'
-import { ErrorPanel } from '@/renderer/components/ErrorPanel'
-import { motionClass } from '@/renderer/shared/lib/motion'
-import { cn } from '@/renderer/shared/lib/utils'
+import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons.js'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/renderer/components/ui/alert-dialog.js'
+import { Button } from '@/renderer/components/ui/button.js'
+import { WorkspaceChatColumn } from '@/renderer/features/workspace/WorkspaceChatColumn.js'
+import { WorkspaceNewChat } from '@/renderer/features/workspace/WorkspaceNewChat.js'
 
-import { ConversationView } from '@/renderer/features/coach-skills/conversation'
+import { useCoachChat, useCoachChatStarting, useDiscardCoachChat, useSetCoachChatStarting } from './coach-chat-hooks.js'
+import { CoachWelcome } from './CoachWelcome.js'
+import { SaveSkillButton } from './SaveSkillButton.js'
 
-/** The Coach section (ADR 0017, conversation prototype picked on map 58): a
- *  roomy chat surface where EVERY harness run is a conversation —
- *  free-form guidance, or a skill crafted together by asking the harness
- *  directly (its ledger tools let it discover real patterns itself). One
- *  surface, no Coach/Skills room switch and no separated cards: the chat owns
- *  the viewport height (min-h-0 flex-1), so the transcript scrolls inside
- *  while the prompt bar stays pinned. The welcome screen hosts sample prompts
- *  and the suggested-skill chips; once a conversation starts the input is the
- *  surface. No consent gate — the harnesses are the machine's own, and runs
- *  are user-initiated. The view is a thin composition root: hydration lives
- *  here, the surface is the colocated conversation components
- *  (elements.ai-sdk.dev-inspired). */
+function renderAssistantAction(markdown: string) {
+  return <SaveSkillButton markdown={markdown} />
+}
+
 export function CoachSkillsView(): React.JSX.Element {
-  const { detection, loadHarnesses, hydrated } = useCoachOverviewStore()
+  const { chat, reload } = useCoachChat()
+  const { discard, discarding } = useDiscardCoachChat()
+  const starting = useCoachChatStarting()
+  const setStarting = useSetCoachChatStarting()
+  const [confirmingNewChat, setConfirmingNewChat] = useState(false)
+  const activeChat = chat.data
 
-  useEffect(() => {
-    if (!hydrated) loadHarnesses(undefined)
-  }, [hydrated, loadHarnesses])
+  const composer = useMemo(
+    () => ({
+      assistantAction: renderAssistantAction,
+      onStartingChange: setStarting,
+      Welcome: CoachWelcome,
+    }),
+    [setStarting],
+  )
 
   return (
-    <div
-      className={cn('flex min-h-0 w-full max-w-[1180px] flex-1 flex-col', motionClass('flex flex-col', 'section-fade'))}
-    >
-      <ConversationView />
-
-      {detection.error && <ErrorPanel message={detection.error} />}
-    </div>
+    <section className="flex min-h-0 w-full flex-1 flex-col overflow-hidden" aria-label="Coach & Skills">
+      {activeChat ? (
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" inert={discarding}>
+          {/* The section title lives in the top bar, so an active chat only carries a quiet New chat action. */}
+          <div className="flex shrink-0 justify-end px-3 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={discarding || starting}
+              onClick={() => setConfirmingNewChat(true)}
+              className="text-foreground h-7 gap-1.5 text-[11.5px] font-medium"
+            >
+              New chat
+            </Button>
+          </div>
+          <WorkspaceChatColumn
+            key={activeChat.taskId}
+            taskId={activeChat.taskId}
+            selectedConversationId={activeChat.conversationId}
+            coach={composer}
+          />
+        </div>
+      ) : chat.error ? (
+        <div className="m-4 space-y-2" role="alert">
+          <p>{chat.error}</p>
+          <Button type="button" variant="outline" onClick={reload}>
+            Retry
+          </Button>
+        </div>
+      ) : chat.status === 'loading' ? (
+        <LoadingRegion label="Loading chat…" className="max-w-chat mx-auto flex w-full flex-col gap-4 p-4">
+          <SkeletonLines lines={4} />
+        </LoadingRegion>
+      ) : (
+        <WorkspaceNewChat projectId={null} onStarted={reload} coach={composer} />
+      )}
+      <AlertDialog open={confirmingNewChat} onOpenChange={setConfirmingNewChat}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Start a new chat?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The current coaching chat is discarded and can&apos;t be recovered. A running reply is stopped first.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              onClick={() => {
+                setConfirmingNewChat(false)
+                if (activeChat) void discard(activeChat.taskId)
+              }}
+            >
+              Discard and start new
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   )
 }

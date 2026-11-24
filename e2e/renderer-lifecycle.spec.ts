@@ -132,7 +132,6 @@ test('development StrictMode shares bootstrap ownership and disposes the window 
         'store:status': 1,
         'currency:get': 1,
         'updates:status': 1,
-        'coach:harnesses': 1,
         'shell:events': 1,
       }),
       unexpectedRequests: [],

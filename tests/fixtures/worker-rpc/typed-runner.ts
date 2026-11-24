@@ -14,7 +14,7 @@ if (!parentPort) throw new Error('typed RPC fixture must run in a worker thread'
 const program = Effect.scoped(
   Effect.gen(function* () {
     const protocol = yield* RpcServer.makeProtocolWorkerRunner.pipe(Effect.provide(NodeWorkerRunner.layer))
-    yield* RpcWorker.initialMessage(Schema.Void).pipe(Effect.provideService(RpcServer.Protocol, protocol))
+    yield* RpcWorker.initialMessage(Schema.Unknown).pipe(Effect.provideService(RpcServer.Protocol, protocol))
 
     const events = yield* Queue.unbounded<SequencedWorkerEvent>()
     let eventSequence = 0
@@ -44,6 +44,16 @@ const program = Effect.scoped(
             return () => Effect.succeed({ value: null, eventSequence })
           case 'scan:abort':
             return () => Effect.succeed({ value: null, eventSequence })
+          case 'scan:active':
+            return () => Effect.succeed({ value: false, eventSequence })
+          case 'ledger-mcp:scope':
+            return () => {
+              const count = new Int32Array(workerData.counters)
+              return Effect.sync(() => Atomics.store(count, 0, 1)).pipe(
+                Effect.andThen(Effect.never),
+                Effect.onInterrupt(() => Effect.sync(() => Atomics.store(count, 0, 2))),
+              )
+            }
           case 'models:addAlias':
             return () => {
               const count = new Int32Array(workerData.counters)

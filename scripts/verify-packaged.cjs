@@ -1,12 +1,14 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
-const os = require('node:os')
+const { execFileSync } = require('node:child_process')
+const { randomUUID } = require('node:crypto')
 const path = require('node:path')
 const { prepareProviderFixture } = require('./fixtures/provider.cjs')
 const { createRequire } = require('node:module')
 const fromRepo = createRequire(path.join(process.cwd(), 'package.json'))
 const { _electron: electron, expect } = fromRepo('@playwright/test')
 const { Client } = fromRepo('@modelcontextprotocol/sdk/client/index.js')
+const { StreamableHTTPClientTransport } = fromRepo('@modelcontextprotocol/sdk/client/streamableHttp.js')
 const { StdioClientTransport, getDefaultEnvironment } = fromRepo('@modelcontextprotocol/sdk/client/stdio.js')
 
 function parseOptions(args) {
@@ -45,22 +47,28 @@ function resolveExecutablePath(options) {
   return executablePath
 }
 
-function ledgerMcpEntry(resourcesPath) {
+function ledgerMcpProxyEntry(resourcesPath) {
   const archive = path.join(resourcesPath, 'app.asar')
   assert.ok(fs.statSync(archive).isFile(), `Packaged ASAR archive does not exist: ${archive}`)
-  return path.join(archive, 'out', 'main', 'ledger-mcp.js')
+  return path.join(archive, 'out', 'main', 'ledger-mcp-proxy.js')
 }
 
-async function checkMcp(executablePath, entryPath, dbPath) {
+async function checkMcp(executablePath, entryPath, url, token) {
   const transport = new StdioClientTransport({
     command: executablePath,
-    args: [entryPath, '--ledger-mcp'],
-    env: { ...getDefaultEnvironment(), ELECTRON_RUN_AS_NODE: '1', WATCHTOWER_LEDGER_MCP: JSON.stringify({ dbPath }) },
+    args: [entryPath],
+    env: {
+      ...getDefaultEnvironment(),
+      ELECTRON_RUN_AS_NODE: '1',
+      WATCHTOWER_LEDGER_MCP_URL: url,
+      WATCHTOWER_LEDGER_MCP_TOKEN: token,
+    },
     stderr: 'pipe',
   })
   const client = new Client({ name: 'watchtower-packaged-gate', version: '1.0.0' })
   try {
     await client.connect(transport)
+    assert.equal(client.getServerVersion()?.name, 'watchtower-ledger')
     const tools = await client.listTools()
     assert.deepEqual(tools.tools.map(tool => tool.name).sort(), [
       'ledger_calls',
@@ -97,7 +105,7 @@ async function checkMcp(executablePath, entryPath, dbPath) {
     assert.equal(prompts.prompts.length, 1)
     assert.ok((await client.getPrompt({ name: prompts.prompts[0].name })).messages.length > 0)
     console.log(
-      'Packaged MCP stdio passed: six tools, generated metadata, invalid/unknown tool results, resource and prompt.',
+      'Packaged MCP stdio proxy passed: six tools, generated metadata, invalid/unknown tool results, resources and prompt.',
     )
   } finally {
     try {
@@ -109,46 +117,18 @@ async function checkMcp(executablePath, entryPath, dbPath) {
   }
 }
 
-async function checkMcpHttp(executablePath, entryPath, dbPath) {
-  const { spawn } = require('node:child_process')
-  const { once } = require('node:events')
-  const { createInterface } = require('node:readline')
-  const { randomUUID } = require('node:crypto')
-  const { StreamableHTTPClientTransport } = fromRepo('@modelcontextprotocol/sdk/client/streamableHttp.js')
-  const token = randomUUID()
-  const child = spawn(executablePath, [entryPath, '--ledger-mcp-http'], {
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', WATCHTOWER_LEDGER_MCP: JSON.stringify({ dbPath, token }) },
-    stdio: ['ignore', 'pipe', 'pipe'],
-    windowsHide: true,
-  })
-  const exited = once(child, 'exit')
-  const stderr = []
-  child.stderr.on('data', chunk => stderr.push(chunk.toString()))
-  const lines = createInterface({ input: child.stdout })
+async function checkMcpHttp(url, headers) {
   const client = new Client({ name: 'watchtower-packaged-http-gate', version: '1.0.0' })
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(Error('Packaged HTTP child did not announce READY')), 10000)
-      child.once('error', reject)
-      child.once('exit', () => {
-        clearTimeout(timer)
-        reject(Error('Packaged HTTP child exited before READY: ' + stderr.join('')))
-      })
-      lines.on('line', line => {
-        if (line.startsWith('READY ')) {
-          clearTimeout(timer)
-          resolve(JSON.parse(line.slice(6)).port)
-        }
-      })
-    })
-    const url = new URL('http://127.0.0.1:' + port + '/mcp')
-    const headers = { authorization: 'Bearer ' + token }
     assert.equal(
       (await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status,
       401,
     )
-    await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers } }))
-    assert.equal((await client.listTools()).tools.length, 6)
+    await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }))
+    assert.equal(client.getServerVersion()?.name, 'watchtower-ledger')
+    const { tools } = await client.listTools()
+    assert.equal(tools.length, 6)
+    assert.ok(tools.some(tool => tool.name === 'ledger_scope'))
     for (const name of [
       'ledger_scope',
       'ledger_overview',
@@ -168,20 +148,14 @@ async function checkMcpHttp(executablePath, entryPath, dbPath) {
     assert.ok((await client.getPrompt({ name: 'coach-orient' })).messages.length > 0)
     const before = JSON.parse((await client.callTool({ name: 'ledger_scope' })).content[0].text)
     const after = JSON.parse((await client.callTool({ name: 'ledger_scope' })).content[0].text)
+    assert.ok(before.calls > 0 && before.sessions > 0, 'Packaged MCP did not read the scanned fixture')
     assert.equal(after.calls, before.calls)
     assert.equal(after.sessions, before.sessions)
     console.log(
-      'Packaged MCP HTTP passed: six tools, three resources, prompt, bearer rejection and runtime reuse across stateless requests.',
+      'Packaged MCP HTTP passed: six tools, three resources, prompt, bearer rejection and repeated reads of the scanned ledger.',
     )
   } finally {
-    try {
-      await client.close()
-    } finally {
-      lines.close()
-      if (child.exitCode === null && child.signalCode === null) child.kill()
-      await exited
-      assert.notEqual(child.pid, undefined)
-    }
+    await client.close()
   }
 }
 async function installRendererRpcProbe(window) {
@@ -192,7 +166,7 @@ async function installRendererRpcProbe(window) {
     let sequence = 0
     let disposed = false
     const prefix = `watchtower-packaged-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const call = (tag, payload = null, timeoutMs = 10000) =>
+    const call = (tag, payload = null, timeoutMs = 10000, stream = false) =>
       new Promise((resolve, reject) => {
         if (disposed) return reject(new Error('Packaged RPC probe is disposed'))
         const id = `${prefix}-${++sequence}`
@@ -202,6 +176,10 @@ async function installRendererRpcProbe(window) {
           if (settled) return
           settled = true
           clearTimeout(timeout)
+          if (stream)
+            void bridge
+              .send(JSON.stringify({ _tag: 'Interrupt', requestId: id }), connection.generation)
+              .catch(() => {})
           unsubscribe()
           if (error) reject(error)
           else resolve(value)
@@ -219,6 +197,10 @@ async function installRendererRpcProbe(window) {
             return finish(new Error('Malformed packaged RPC response'))
           }
           if (!frame || frame.requestId !== id) return
+          if (stream && frame._tag === 'Chunk' && Array.isArray(frame.values) && frame.values.length) {
+            void bridge.send(JSON.stringify({ _tag: 'Ack', requestId: id }), connection.generation).catch(() => {})
+            return finish(undefined, frame.values[0])
+          }
           if (frame._tag === 'Defect') return finish(new Error('Packaged RPC server failure'))
           if (frame._tag !== 'Exit' || !frame.exit || typeof frame.exit !== 'object')
             return finish(new Error('Malformed packaged RPC response'))
@@ -248,6 +230,7 @@ async function installRendererRpcProbe(window) {
       })
     window.rpcProbe = {
       call,
+      streamFirst: (tag, payload) => call(tag, payload, 10000, true),
       dispose: () => {
         if (disposed) return
         disposed = true
@@ -279,6 +262,164 @@ async function checkRendererRpc(window) {
     outputPricePerMillion: 2,
   })
   console.log('Packaged sandbox RPC query and admitted configuration write passed over MessagePort.')
+}
+
+// Workspace acceptance is metadata-only: never start a native agent Run.
+function isolatedLaunchEnvironment(env) {
+  if (process.platform !== 'win32') return env
+  const isolated = Object.fromEntries(Object.entries(env).filter(([key]) => key.toLowerCase() !== 'path'))
+  const systemDirectory = path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
+  const git = execFileSync(path.join(systemDirectory, 'where.exe'), ['git.exe'], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+    .trim()
+    .split(/\r?\n/)[0]
+  isolated.PATH = [systemDirectory, path.dirname(process.execPath), path.dirname(git)].join(path.delimiter)
+  return isolated
+}
+
+function readOperationalRecords(profile) {
+  const logDirectory = path.join(profile, 'logs')
+  return fs
+    .readdirSync(logDirectory)
+    .filter(name => name.startsWith('operational'))
+    .flatMap(name =>
+      fs
+        .readFileSync(path.join(logDirectory, name), 'utf8')
+        .split('\n')
+        .filter(line => line.trim()),
+    )
+    .map(line => JSON.parse(line))
+}
+
+async function checkDefaultWorkspace(window, profile) {
+  const workspace = window.locator('main[aria-label="Agent workspace"]')
+  await expect(workspace).toBeVisible({ timeout: 30000 })
+  await expect(workspace.getByRole('heading', { name: 'What should we work on?', exact: true })).toBeVisible()
+  await expect(workspace.getByRole('combobox', { name: 'Project', exact: true })).toHaveText('No project')
+  await expect(workspace.locator('header').getByText('Workspace', { exact: true })).toBeVisible()
+  await expect(window.getByRole('button', { name: 'Switch application, Workspace' })).toBeVisible()
+
+  await expect
+    .poll(async () => (await window.evaluate(() => window.rpcProbe.call('workspace:status'))).state)
+    .toBe('ready')
+  const status = await window.evaluate(() => window.rpcProbe.call('workspace:status'))
+  assert.equal(status.protocolVersion, 1)
+  assert.equal(status.state, 'ready')
+  assert.ok(Number.isSafeInteger(status.ownerEpoch) && status.ownerEpoch >= 1)
+  assert.equal(status.highWatermark, 0, 'Opening the default Workspace must not start an agent Run')
+  assert.equal(fs.statSync(path.join(profile, 'workspace.db')).isFile(), true)
+  console.log('Packaged default Agent workspace and ready worker passed without starting an agent Run.')
+}
+
+async function checkWorkspace(app, window, profile, repository) {
+  const packagedLayout = await app.evaluate(({ app: electronApp }) => {
+    const fs = process.getBuiltinModule('fs')
+    const path = process.getBuiltinModule('path')
+    const archive = electronApp.getAppPath()
+    return { archive, workerExists: fs.statSync(path.join(archive, 'out', 'main', 'workspace-worker.js')).isFile() }
+  })
+  assert.equal(path.basename(packagedLayout.archive), 'app.asar')
+  assert.equal(packagedLayout.workerExists, true)
+  const registration = { commandId: randomUUID(), path: repository, name: 'Packaged workspace fixture' }
+  const task = { commandId: randomUUID(), title: 'Verify packaged workspace', description: 'No inference required.' }
+  const result = await window.evaluate(
+    async ({ registration, task }) => {
+      const call = window.rpcProbe.call
+      const registered = await call('workspace:registerProject', registration)
+      const created = await call('workspace:createTask', { ...task, projectId: registered.project.id })
+      return {
+        registered,
+        created,
+        replayed: await call('workspace:registerProject', registration),
+        projects: await call('workspace:listProjects', {}),
+        tasks: await call('workspace:listTasks', { projectId: registered.project.id }),
+        detail: await call('workspace:readTaskDetail', { taskId: created.taskId }),
+        snapshot: await window.rpcProbe.streamFirst('workspace:events', { afterSequence: 0 }),
+        status: await call('workspace:status'),
+      }
+    },
+    { registration, task },
+  )
+  assert.equal(result.registered.commandId, registration.commandId)
+  assert.equal(result.registered.replayed, false)
+  assert.equal(result.registered.project.name, registration.name)
+  assert.equal(result.replayed.commandId, registration.commandId)
+  assert.equal(result.replayed.replayed, true)
+  assert.deepEqual(result.replayed.project, result.registered.project)
+  assert.equal(result.replayed.mainCheckout.id, result.registered.mainCheckout.id)
+  assert.equal(result.created.commandId, task.commandId)
+  assert.equal(result.created.replayed, false)
+  assert.equal(result.projects.total, 1)
+  assert.deepEqual(
+    result.projects.items.map(project => project.id),
+    [result.registered.project.id],
+  )
+  assert.equal(result.tasks.total, 1)
+  assert.deepEqual(
+    result.tasks.items.map(item => [item.id, item.title]),
+    [[result.created.taskId, task.title]],
+  )
+  assert.equal(result.detail.task.id, result.created.taskId)
+  assert.equal(result.detail.task.description, task.description)
+  assert.equal(result.detail.totalConversations, 1)
+  assert.equal(result.detail.conversations[0].id, result.created.conversationId)
+  assert.deepEqual(result.snapshot, {
+    protocolVersion: 1,
+    _tag: 'Snapshot',
+    throughSequence: 0,
+    page: { events: [], highWatermark: 0, hasMore: false, nextAfterSequence: null },
+  })
+  assert.equal(fs.statSync(path.join(profile, 'workspace.db')).isFile(), true)
+  assert.equal(result.status.protocolVersion, 1)
+  assert.equal(result.status.state, 'ready')
+  assert.ok(Number.isSafeInteger(result.status.ownerEpoch) && result.status.ownerEpoch >= 1)
+  assert.equal(result.status.highWatermark, 0, 'Metadata-only acceptance must not start an agent Run')
+  const scratch = await window.evaluate(async () => {
+    const created = await window.rpcProbe.call('workspace:ensureScratchProject', {})
+    const reused = await window.rpcProbe.call('workspace:ensureScratchProject', {})
+    return { created, reused }
+  })
+  assert.equal(scratch.created.project.isScratch, true)
+  assert.equal(scratch.created.project.name, 'No project')
+  assert.deepEqual(scratch.reused.project, scratch.created.project)
+  assert.equal(scratch.reused.mainCheckout.id, scratch.created.mainCheckout.id)
+  assert.equal(scratch.created.mainCheckout.kind, 'directory')
+  assert.equal(scratch.created.project.repositoryIdentity, undefined)
+  assert.equal(fs.statSync(path.join(profile, 'workspace', 'scratch')).isDirectory(), true)
+  assert.equal(fs.existsSync(path.join(profile, 'workspace', 'scratch', '.git')), false)
+  console.log(
+    'Packaged ASAR worker, project/task creation and reads, detail, command replay and event snapshot passed.',
+  )
+}
+
+async function closePackagedApp(app) {
+  const child = app.process()
+  const started = performance.now()
+  let timer
+  // Electron can exit while inherited Playwright pipes remain open on Windows.
+  child.once('exit', () => {
+    for (const stream of child.stdio) stream?.destroy()
+  })
+  try {
+    await Promise.race([
+      app.close(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error('Packaged close exceeded 15000ms')), 15000)
+      }),
+    ])
+    assert.equal(child.exitCode, 0)
+    assert.equal(child.signalCode, null)
+    const elapsedMs = Math.round(performance.now() - started)
+    assert.ok(elapsedMs < 15000)
+    return elapsedMs
+  } catch (error) {
+    if (child.exitCode === null && child.signalCode === null) child.kill()
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function basenameFromUrl(url) {
@@ -432,13 +573,40 @@ async function main() {
   }
   const executablePath = resolveExecutablePath(options)
   const profilePrefix = 'watchtower-packaged-'
-  const tempRoot = fs.realpathSync(os.tmpdir())
-  const profile = fs.mkdtempSync(path.join(tempRoot, profilePrefix))
+  const fixtureRoot = fs.mkdtempSync(path.join(process.cwd(), '.watchtower-packaged-'))
+  const profile = path.join(fixtureRoot, `${profilePrefix}profile`)
+  const repository = path.join(fixtureRoot, 'repository')
+  fs.mkdirSync(profile)
   try {
+    execFileSync('git', ['init', repository], { stdio: 'pipe', windowsHide: true })
+    fs.writeFileSync(path.join(repository, 'README.md'), 'Packaged workspace fixture\n')
+    execFileSync('git', ['add', '.'], { cwd: repository, stdio: 'pipe', windowsHide: true })
+    execFileSync(
+      'git',
+      [
+        '-c',
+        'user.name=Workspace Test',
+        '-c',
+        'user.email=workspace@example.invalid',
+        '-c',
+        'commit.gpgsign=false',
+        'commit',
+        '-m',
+        'Initial fixture',
+      ],
+      { cwd: repository, stdio: 'pipe', windowsHide: true },
+    )
     const providerFixture = prepareProviderFixture(profile)
     const args = [`--user-data-dir=${profile}`]
     if (process.platform === 'linux') args.unshift('--no-sandbox')
-    const app = await electron.launch({ executablePath, args, env: providerFixture.env, timeout: 60000 })
+    const bootStarted = performance.now()
+    const app = await electron.launch({
+      executablePath,
+      args,
+      env: isolatedLaunchEnvironment(providerFixture.env),
+      timeout: 60000,
+    })
+    let workspaceChecked = false
     try {
       const pageErrors = []
       const capturedPages = new WeakSet()
@@ -464,7 +632,14 @@ async function main() {
       assert.equal(await retry.isVisible(), false)
       await skip.click()
       await expect(skip).toBeHidden()
+      await checkDefaultWorkspace(window, profile)
+      console.log(
+        `Packaged app boot passed: ${Math.round(performance.now() - bootStarted)}ms (existing launch/scan budgets unchanged).`,
+      )
       await checkRendererRpc(window)
+      await window.getByRole('button', { name: 'Switch application, Workspace' }).click()
+      await window.getByRole('menuitem', { name: /^Analytics/ }).click()
+      await expect(window.getByRole('button', { name: 'Switch application, Analytics' })).toBeVisible()
       await window.getByRole('button', { name: 'Sessions', exact: true }).click()
       await expect(
         window
@@ -549,14 +724,13 @@ async function main() {
       const resourcesPath = await app.evaluate(() => process.resourcesPath)
       const runtimeExecutablePath = await app.evaluate(() => process.execPath)
       assert.ok(fs.statSync(runtimeExecutablePath).isFile(), 'Electron runtime executable is missing')
-      const entryPath = ledgerMcpEntry(resourcesPath)
+      const proxyEntryPath = ledgerMcpProxyEntry(resourcesPath)
       const exportFolder = path.join(profile, 'exports', 'usage')
       const jsonPath = path.join(profile, 'exports', 'usage.json')
       const exports = await window.evaluate(
         async ({ csv, json }) => ({
           csv: await window.rpcProbe.call('export', { format: 'csv', destination: csv }),
           json: await window.rpcProbe.call('export', { format: 'json', destination: json }),
-          harnesses: await window.rpcProbe.call('coach:harnesses'),
         }),
         { csv: exportFolder, json: jsonPath },
       )
@@ -570,7 +744,6 @@ async function main() {
       )
       assert.ok(fs.existsSync(path.join(exportFolder, '.watchtower-export')))
       assert.equal(fs.readdirSync(exportFolder).length, 11)
-      assert.ok(Array.isArray(exports.harnesses))
       const config = await window.evaluate(async () => {
         const name = 'watchtower-wave20-gate-model'
         const call = window.rpcProbe.call
@@ -650,22 +823,38 @@ async function main() {
       console.log(
         'Packaged configuration ports passed: cadence, aliases and price CRUD, zero price, dismissal, startup, source status and failed validation.',
       )
-      const inspection = await window.evaluate(async rows => {
-        const harness = rows.find(row => row.kind === 'codex') ?? rows.find(row => row.kind === 'claude')
-        if (!harness) return { skipped: true }
-        const result = await window.rpcProbe.call('coach:inspect', { request: { kind: harness.kind } })
-        return { kind: harness.kind, binaryPath: harness.binaryPath, result }
-      }, exports.harnesses)
-      assert.notEqual(inspection.skipped, true, 'Packaged Coach SDK inspection requires a detected bundled harness')
+      const inspection = await window.evaluate(async () => {
+        const call = window.rpcProbe.call
+        const { items } = await call('workspace:listConnections', {})
+        const connection =
+          items.find(item => item.provenance === 'bundled' && item.harnessKind === 'codex') ??
+          items.find(item => item.provenance === 'bundled' && item.harnessKind === 'claude') ??
+          items.find(item => item.provenance === 'bundled')
+        if (!connection) return { skipped: true }
+        const result = await call('workspace:inspectConnection', { connectionId: connection.connectionId }).then(
+          inspected => ({ ok: true, inspected }),
+          error => ({ ok: false, error: String(error?.rpcError?.message ?? error?.message ?? error) }),
+        )
+        return { kind: connection.harnessKind, connectionId: connection.connectionId, result }
+      })
+      assert.notEqual(
+        inspection.skipped,
+        true,
+        'Packaged Workspace connection inspection requires a detected bundled harness connection',
+      )
       assert.equal(typeof inspection.result.ok, 'boolean')
-      if (!inspection.result.ok) {
+      if (inspection.result.ok) {
+        const wire = JSON.stringify(inspection.result.inspected)
+        assert.equal(inspection.result.inspected.connectionId, inspection.connectionId)
+        assert.ok(wire.length < 64 * 1024)
+        assert.ok(!wire.includes('token='))
+      } else {
         assert.equal(typeof inspection.result.error, 'string')
         assert.ok(inspection.result.error.length < 700)
-        if (inspection.binaryPath) assert.ok(!inspection.result.error.includes(inspection.binaryPath))
         assert.ok(!inspection.result.error.includes('token='))
       }
       console.log(
-        'Packaged Coach SDK inspection settled with bounded wire data:',
+        'Packaged Workspace connection inspection settled with bounded wire data:',
         inspection.kind,
         inspection.result.ok ? 'success' : 'expected failure',
       )
@@ -681,10 +870,18 @@ async function main() {
       assert.equal(typeof refused.error, 'string')
       assert.equal(fs.readFileSync(protectedFile, 'utf8'), 'untouched')
       console.log(
-        'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned harness RPC passed.',
+        'Packaged export CSV/JSON, marker/schema/currency coherence, protected destination and main-owned Workspace connection RPC passed.',
       )
-      await checkMcp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
-      await checkMcpHttp(runtimeExecutablePath, entryPath, path.join(userData, 'ledger.db'))
+      // This is the RPC Settings uses to copy the Local MCP config.
+      const connection = await window.evaluate(() => window.rpcProbe.call('ledger-mcp:connection'))
+      const server = JSON.parse(connection.config).mcpServers['watchtower-ledger']
+      assert.equal(server.type, 'http')
+      assert.equal(server.url, connection.url)
+      assert.match(server.url, /^http:\/\/127\.0\.0\.1:\d+\/mcp$/)
+      const bearer = /^Bearer (\S+)$/.exec(server.headers?.Authorization)
+      assert.ok(bearer, 'Packaged Local MCP config is missing bearer authorization')
+      await checkMcpHttp(server.url, server.headers)
+      await checkMcp(runtimeExecutablePath, proxyEntryPath, server.url, bearer[1])
       const cleared = await window.evaluate(async () => {
         const call = window.rpcProbe.call
         await call('cadence:set', { value: 'manual' })
@@ -755,6 +952,9 @@ async function main() {
         'Packaged currency select/cache/validation and clear/reclaim RPC passed; facts cleared, config retained.',
         `Clear/reclaim and size measurement: ${cleared.clearElapsedMs}ms.`,
       )
+
+      await checkWorkspace(app, window, profile, repository)
+      workspaceChecked = true
 
       // Exercise the packaged background shell with its actual windows. A
       // renderer `window.close()` would destroy the page; closing the native
@@ -828,14 +1028,22 @@ async function main() {
       for (const page of app.windows()) {
         await page.evaluate(() => globalThis.rpcProbe?.dispose()).catch(() => {})
       }
-      await app.close()
+      const closeMs = await closePackagedApp(app)
+      if (workspaceChecked) {
+        const records = readOperationalRecords(profile).filter(record => record.event === 'workspace.close')
+        assert.equal(records.length, 1)
+        assert.equal(records[0].level, 'info')
+        assert.equal(records[0].outcome, 'success')
+        assert.equal(records[0].code, 'cleanup-confirmed')
+        console.log(`Packaged workspace clean shutdown and operational log passed: ${closeMs}ms (15000ms budget).`)
+      }
     }
   } finally {
     const resolvedProfile = path.resolve(profile)
     assert.ok(path.basename(resolvedProfile).startsWith(profilePrefix))
-    assert.equal(path.dirname(resolvedProfile), tempRoot)
+    assert.equal(path.dirname(resolvedProfile), fixtureRoot)
     assert.notEqual(resolvedProfile, path.parse(resolvedProfile).root)
-    fs.rmSync(profile, { recursive: true, force: true })
+    fs.rmSync(fixtureRoot, { recursive: true, force: true })
   }
 }
 

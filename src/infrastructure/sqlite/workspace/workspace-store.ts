@@ -1,0 +1,4649 @@
+import { createHash } from 'node:crypto'
+
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as NodePath from '@effect/platform-node/NodePath'
+import * as Sqlite from '@effect/sql-sqlite-node'
+import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Layer from 'effect/Layer'
+import * as Path from 'effect/Path'
+import * as Predicate from 'effect/Predicate'
+import * as Schema from 'effect/Schema'
+import * as SqlClient from 'effect/sql/SqlClient'
+
+import { SCRATCH_ROOT_CHECKOUT_ID } from '@/core/application/commands/scratch-checkouts.js'
+import { delegationStatusFromRun, isSettledDelegationStatus } from '@/core/domain/delegation/status.js'
+import { completeAgentGoalTurn, startAgentGoalTurn, transitionAgentRun } from '@/core/domain/execution/lifecycle.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import {
+  executeSqliteScript,
+  runSqliteMigrations,
+  UnsupportedLedgerSchemaVersion,
+} from '@/infrastructure/sqlite/sqlite-migrations.js'
+import { searchPromptConversations } from '@/infrastructure/sqlite/workspace/prompt-conversation-search.js'
+import {
+  type DelegationList,
+  delegationPendingRequestSchema,
+  type DelegationRecord,
+  delegationRecordSchema,
+} from '@/shared/schemas/delegation.js'
+import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
+import {
+  agentAccessModeSchema,
+  agentCapabilitiesSchema,
+  agentConfigValuesSchema,
+  agentDriverEventSchema,
+  agentRunSchema,
+  agentRunStatusSchema,
+  DEFAULT_AGENT_ACCESS_MODE,
+} from '@/shared/schemas/execution.js'
+import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
+import {
+  type AgentRunId,
+  agentRunIdSchema,
+  agentSessionIdSchema,
+  type ConversationId,
+  type Project,
+  projectIdSchema,
+  projectSchema,
+  type Task,
+  taskIdSchema,
+  taskSchema,
+  type WorkspaceCheckout,
+  workspaceCheckoutIdSchema,
+  workspaceCheckoutSchema,
+} from '@/shared/schemas/workspace.js'
+import { MANAGED_PROJECT_FOLDER, type RegisterProjectWithPreparation } from '@/shared/schemas/workspace-projects.js'
+import {
+  type CreateDelegationCommand,
+  createDelegationCommandSchema,
+  delegationQuerySchema,
+  delegationReceiptSchema,
+  type ReopenDelegationCommand,
+  reopenDelegationCommandSchema,
+  type SetDelegationPendingRequestCommand,
+  setDelegationPendingRequestCommandSchema,
+  type SetDelegationWakeCommand,
+  setDelegationWakeCommandSchema,
+  type SettleDelegationCommand,
+  settleDelegationCommandSchema,
+} from '@/shared/schemas/workspace-store.js'
+import {
+  AGENT_RUN_BLOCKS_GIT_INITIALIZATION,
+  type BeginRunCommand,
+  beginRunCommandSchema,
+  checkoutRegistrationReceiptSchema,
+  coachChatSchema,
+  type CommandReceipt,
+  commandReceiptSchema,
+  type ConsumeSideChatBringBackCommand,
+  consumeSideChatBringBackCommandSchema,
+  type ConvertDirectoryProjectCommand,
+  convertDirectoryProjectCommandSchema,
+  type CreateTaskCommand,
+  createTaskCommandSchema,
+  type DeleteSideChatTaskCommand,
+  deleteSideChatTaskCommandSchema,
+  type DispatchClaim,
+  dispatchFailureCommandSchema,
+  enqueueFollowUpCommandSchema,
+  followUpReceiptSchema,
+  GIT_INITIALIZATION_BLOCKS_AGENT_RUN,
+  GIT_INITIALIZATION_IN_PROGRESS,
+  nativeSessionBindingSchema,
+  ownerEpochAcquisitionSchema,
+  projectRegistrationReceiptSchema,
+  promotedFollowUpSchema,
+  queuedFollowUpHeadSchema,
+  queuedFollowUpSchema,
+  recordConversationHandoffCommandSchema,
+  recordDriverEventCommandSchema,
+  recordRequestResponseCommandSchema,
+  recordSteerCommandSchema,
+  type RegisterCheckoutCommand,
+  registerCheckoutCommandSchema,
+  type RegisterProjectCommand,
+  registerProjectCommandSchema,
+  type RenameTaskCommand,
+  renameTaskCommandSchema,
+  requestResponseHistoryItemSchema,
+  requestResponseIntentSchema,
+  type SetTaskArchivedCommand,
+  setTaskArchivedCommandSchema,
+  type SettleDeliveryCommand,
+  settleDeliveryCommandSchema,
+  type SideChatBringBackOutcome,
+  type SideChatBringBackRecord,
+  sideChatBringBackRecordSchema,
+  steerHistoryItemSchema,
+  steerIntentSchema,
+  taskCreationReceiptSchema,
+  taskMutationReceiptSchema,
+  workerEpochSchema,
+  WORKSPACE_STORE_COMMAND_BYTE_CAPACITY,
+  WORKSPACE_STORE_READ_BYTE_CAPACITY,
+  workspaceCheckoutPageOptionsSchema,
+  workspaceConversationMessageSchema,
+  type WorkspaceConversationPageItem,
+  workspaceConversationPageItemSchema,
+  workspaceConversationPageOptionsSchema,
+  workspaceConversationPageSchema,
+  type WorkspaceConversationRead,
+  workspaceConversationReadSchema,
+  type WorkspaceDeliveryOutcome,
+  workspaceEntityPageOptionsSchema,
+  workspaceEventPageOptionsSchema,
+  type WorkspaceExecutionEvent,
+  workspaceExecutionEventSchema,
+  workspaceNativeAgentSessionSchema,
+  workspacePayloadPageOptionsSchema,
+  type WorkspacePayloadReference,
+  type WorkspacePendingRuntimeRequest,
+  workspacePendingRuntimeRequestPageOptionsSchema,
+  workspacePendingRuntimeRequestPageSchema,
+  workspacePendingRuntimeRequestSchema,
+  workspaceProjectDetailSchema,
+  type WorkspaceProjectListItem,
+  workspaceProjectReadPageSchema,
+  type WorkspaceReadPageOptions,
+  workspaceReadPageOptionsSchema,
+  type WorkspaceRunContext,
+  workspaceRunContextSchema,
+  WorkspaceStoreError,
+  workspaceTaskDetailSchema,
+  workspaceTaskLatestRunSchema,
+  workspaceTaskPageOptionsSchema,
+  workspaceTaskReadPageSchema,
+} from '@/shared/schemas/workspace-store.js'
+
+const migrations = [
+  {
+    version: 1,
+    name: 'workspace_operational_state',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_project (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
+      CREATE TABLE workspace_checkout (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES workspace_project(id), payload TEXT NOT NULL);
+      CREATE TABLE workspace_task (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES workspace_project(id), archived INTEGER NOT NULL DEFAULT 0, payload TEXT NOT NULL);
+      CREATE TABLE workspace_conversation (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES workspace_task(id), payload TEXT NOT NULL);
+      CREATE TABLE workspace_agent_session (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES workspace_task(id), conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id), checkout_id TEXT NOT NULL REFERENCES workspace_checkout(id), generation INTEGER NOT NULL, driver_id TEXT NOT NULL, connection_id TEXT NOT NULL, native_session_id TEXT, status TEXT NOT NULL);
+      CREATE UNIQUE INDEX workspace_native_identity ON workspace_agent_session(native_session_id) WHERE native_session_id IS NOT NULL;
+      CREATE TABLE workspace_agent_run (id TEXT PRIMARY KEY, task_id TEXT NOT NULL REFERENCES workspace_task(id), session_id TEXT REFERENCES workspace_agent_session(id), checkout_id TEXT NOT NULL REFERENCES workspace_checkout(id), generation INTEGER NOT NULL, status TEXT NOT NULL, submitted_at TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE TABLE workspace_message (id TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES workspace_agent_run(id), conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id), role TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE workspace_dispatch_intent (run_id TEXT PRIMARY KEY REFERENCES workspace_agent_run(id), task_id TEXT NOT NULL, provisional_session_id TEXT NOT NULL, conversation_id TEXT NOT NULL, driver_id TEXT NOT NULL, connection_id TEXT NOT NULL, checkout_id TEXT NOT NULL, generation INTEGER NOT NULL, prompt TEXT NOT NULL, model_id TEXT, mode_id TEXT, requested_native_session_id TEXT, state TEXT NOT NULL, owner_epoch INTEGER, native_session_id TEXT, native_turn_id TEXT);
+      CREATE TABLE workspace_command_receipt (command_id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE TABLE workspace_execution_event (sequence INTEGER PRIMARY KEY AUTOINCREMENT, schema_version INTEGER NOT NULL, kind TEXT NOT NULL, run_id TEXT NOT NULL, task_id TEXT NOT NULL, generation INTEGER NOT NULL, occurred_at TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE INDEX workspace_event_run_sequence ON workspace_execution_event(run_id, sequence);
+    `),
+  },
+  {
+    version: 2,
+    name: 'scope_native_session_identity_to_connection',
+    up: executeSqliteScript(`
+      DROP INDEX IF EXISTS workspace_native_identity;
+      CREATE UNIQUE INDEX workspace_native_identity ON workspace_agent_session(driver_id, connection_id, native_session_id) WHERE native_session_id IS NOT NULL;
+    `),
+  },
+  {
+    version: 3,
+    name: 'persist_retired_worker_epoch',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_worker_epoch (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), retired_epoch INTEGER NOT NULL CHECK (retired_epoch >= 0));
+      INSERT INTO workspace_worker_epoch (singleton, retired_epoch) VALUES (1, 0);
+    `),
+  },
+  {
+    version: 4,
+    name: 'persist_driver_event_identity',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_driver_event_identity (
+        run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        event_id TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        sequence INTEGER NOT NULL UNIQUE REFERENCES workspace_execution_event(sequence),
+        PRIMARY KEY (run_id, event_id)
+      );
+    `),
+  },
+  {
+    version: 5,
+    name: 'project_driver_request_state',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_driver_request_state (
+        run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        request_id TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'resolved', 'expired')),
+        PRIMARY KEY (run_id, request_id)
+      );
+      CREATE INDEX workspace_driver_request_state_by_run ON workspace_driver_request_state(run_id, state);
+      WITH request_events AS (
+        SELECT run_id, sequence,
+          CASE
+            WHEN json_extract(payload, '$.event.kind') = 'requestPending'
+              THEN json_extract(payload, '$.event.request.requestId')
+            ELSE json_extract(payload, '$.event.requestId')
+          END AS request_id,
+          json_extract(payload, '$.event.kind') AS event_kind
+        FROM workspace_execution_event
+        WHERE kind = 'driverEvent'
+          AND json_extract(payload, '$.event.kind') IN ('requestPending', 'requestResolved')
+      ), pending_requests AS (
+        SELECT run_id, request_id, MIN(sequence) AS pending_sequence
+        FROM request_events
+        WHERE event_kind = 'requestPending' AND request_id IS NOT NULL
+        GROUP BY run_id, request_id
+      )
+      INSERT INTO workspace_driver_request_state (run_id, request_id, state)
+      SELECT pending.run_id, pending.request_id,
+        CASE
+          WHEN EXISTS (
+            SELECT 1 FROM request_events resolved
+            WHERE resolved.run_id = pending.run_id AND resolved.request_id = pending.request_id
+              AND resolved.event_kind = 'requestResolved' AND resolved.sequence > pending.pending_sequence
+          ) THEN 'resolved'
+          WHEN EXISTS (
+            SELECT 1 FROM workspace_execution_event terminal
+            WHERE terminal.run_id = pending.run_id AND terminal.kind = 'driverEvent'
+              AND terminal.sequence > pending.pending_sequence
+              AND json_extract(terminal.payload, '$.event.kind') IN ('turnCompleted', 'turnInterrupted', 'turnFailed')
+          ) THEN 'expired'
+          ELSE 'pending'
+        END
+      FROM pending_requests pending;
+    `),
+  },
+  {
+    version: 6,
+    name: 'durable_workspace_delivery_and_follow_up',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_request_response_intent (
+        run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        request_id TEXT NOT NULL,
+        state TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        PRIMARY KEY (run_id, request_id)
+      );
+      CREATE INDEX workspace_response_by_state ON workspace_request_response_intent(run_id, state);
+      CREATE TABLE workspace_steer_intent (
+        command_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        state TEXT NOT NULL,
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX workspace_steer_by_run ON workspace_steer_intent(run_id, state);
+      CREATE TABLE workspace_follow_up_queue (
+        position INTEGER PRIMARY KEY AUTOINCREMENT,
+        command_id TEXT NOT NULL UNIQUE,
+        task_id TEXT NOT NULL REFERENCES workspace_task(id),
+        conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        payload TEXT NOT NULL
+      );
+      CREATE INDEX workspace_queue_by_conversation ON workspace_follow_up_queue(conversation_id, position);
+    `),
+  },
+  {
+    version: 7,
+    name: 'persist_workspace_owner_epoch_counter',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_worker_epoch ADD COLUMN allocated_epoch INTEGER NOT NULL DEFAULT 0 CHECK (allocated_epoch >= 0);
+      UPDATE workspace_worker_epoch SET allocated_epoch = MAX(
+        retired_epoch,
+        COALESCE((SELECT MAX(owner_epoch) FROM workspace_dispatch_intent), 0),
+        COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_request_response_intent WHERE json_valid(payload)), 0),
+        COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_steer_intent WHERE json_valid(payload)), 0)
+      ) WHERE singleton = 1;
+    `),
+  },
+  {
+    version: 8,
+    name: 'persist_workspace_promotion_receipts',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_command_receipt ADD COLUMN promotion_payload TEXT;
+    `),
+  },
+  {
+    version: 9,
+    name: 'persist_prompt_attachment_snapshots',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_dispatch_intent ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE workspace_message ADD COLUMN attachments TEXT NOT NULL DEFAULT '[]';
+      ALTER TABLE workspace_agent_session ADD COLUMN capabilities TEXT;
+    `),
+  },
+  {
+    version: 10,
+    name: 'persist_run_access_mode',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_dispatch_intent ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'approval-required';
+    `),
+  },
+  {
+    version: 11,
+    name: 'hold_follow_up_queue_until_explicit_resume',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_follow_up_queue ADD COLUMN held INTEGER NOT NULL DEFAULT 0 CHECK (held IN (0, 1));
+    `),
+  },
+  {
+    version: 12,
+    name: 'persist_agent_config_values',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_dispatch_intent ADD COLUMN config_values TEXT NOT NULL DEFAULT '{}';
+    `),
+  },
+  {
+    version: 13,
+    name: 'index_agent_runs_by_task_runtime',
+    up: executeSqliteScript(`
+      CREATE INDEX IF NOT EXISTS workspace_agent_run_by_task_runtime
+        ON workspace_agent_run(task_id, status, submitted_at DESC, id DESC);
+    `),
+  },
+  {
+    version: 14,
+    name: 'index_execution_events_by_task_activity',
+    up: executeSqliteScript(`
+      CREATE INDEX IF NOT EXISTS workspace_execution_event_by_task_activity
+        ON workspace_execution_event(task_id, occurred_at DESC);
+    `),
+  },
+  {
+    version: 15,
+    name: 'side_chat_bring_back',
+    up: executeSqliteScript(`
+      ALTER TABLE workspace_task ADD COLUMN side_chat INTEGER NOT NULL DEFAULT 0 CHECK (side_chat IN (0, 1));
+      UPDATE workspace_task SET side_chat = 1 WHERE id LIKE 'side-task:%';
+      CREATE INDEX index_tasks_by_project_listed ON workspace_task (project_id, archived, side_chat);
+      CREATE TABLE workspace_side_chat_bring_back (
+        id TEXT PRIMARY KEY,
+        parent_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        side_chat_id TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'superseded', 'cancelled')),
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        consumed_run_id TEXT REFERENCES workspace_agent_run(id)
+      );
+      CREATE UNIQUE INDEX index_side_chat_bring_back_pending
+        ON workspace_side_chat_bring_back (parent_conversation_id) WHERE status = 'pending';
+      `),
+  },
+  {
+    version: 16,
+    name: 'agent_started_delegated_tasks',
+    up: executeSqliteScript(`
+      CREATE TABLE workspace_delegation (
+        id TEXT PRIMARY KEY,
+        command_id TEXT NOT NULL UNIQUE,
+        parent_task_id TEXT NOT NULL REFERENCES workspace_task(id),
+        parent_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        parent_run_id TEXT NOT NULL REFERENCES workspace_agent_run(id),
+        child_task_id TEXT NOT NULL UNIQUE REFERENCES workspace_task(id),
+        child_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+        depth INTEGER NOT NULL CHECK (depth = 1),
+        status TEXT NOT NULL,
+        wake_state TEXT NOT NULL CHECK (wake_state IN ('notDue', 'pending', 'queued', 'delivered', 'disposed')),
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        settled_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS workspace_delegation_by_parent_run ON workspace_delegation(parent_run_id, status);
+      CREATE INDEX IF NOT EXISTS workspace_delegation_by_parent_task ON workspace_delegation(parent_task_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS workspace_delegation_wake_due ON workspace_delegation(wake_state) WHERE wake_state = 'pending';
+      ALTER TABLE workspace_message ADD COLUMN origin TEXT NOT NULL DEFAULT 'user' CHECK (origin IN ('user', 'delegation'));
+      ALTER TABLE workspace_message ADD COLUMN delegation_id TEXT;
+    `),
+  },
+  {
+    version: 17,
+    name: 'repair_side_chat_schema',
+    // Development builds recorded a different migration as version 15, so the side chat schema may be missing.
+    up: Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient
+      const columns = (yield* sql.unsafe('PRAGMA table_info(workspace_task)')) as readonly { readonly name: string }[]
+      if (!columns.some(column => column.name === 'side_chat')) {
+        yield* executeSqliteScript(`
+          ALTER TABLE workspace_task ADD COLUMN side_chat INTEGER NOT NULL DEFAULT 0 CHECK (side_chat IN (0, 1));
+          UPDATE workspace_task SET side_chat = 1 WHERE id LIKE 'side-task:%';
+        `)
+      }
+      yield* executeSqliteScript(`
+        CREATE INDEX IF NOT EXISTS index_tasks_by_project_listed ON workspace_task (project_id, archived, side_chat);
+        CREATE TABLE IF NOT EXISTS workspace_side_chat_bring_back (
+          id TEXT PRIMARY KEY,
+          parent_conversation_id TEXT NOT NULL REFERENCES workspace_conversation(id),
+          side_chat_id TEXT NOT NULL,
+          status TEXT NOT NULL CHECK (status IN ('pending', 'consumed', 'superseded', 'cancelled')),
+          payload TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          consumed_run_id TEXT REFERENCES workspace_agent_run(id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS index_side_chat_bring_back_pending
+          ON workspace_side_chat_bring_back (parent_conversation_id) WHERE status = 'pending';
+      `)
+    }),
+  },
+] as const
+
+const safeError = (code: ConstructorParameters<typeof WorkspaceStoreError>[0]['code'], message: string) =>
+  new WorkspaceStoreError({ code, message })
+
+const timestampSchema = Schema.String.check(
+  Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/),
+)
+
+const encode = (value: unknown): string => JSON.stringify(value)
+
+const decodeJson =
+  <A>(schema: Schema.Schema<A>) =>
+  (json: string) =>
+    Effect.try({
+      try: () => JSON.parse(json) as unknown,
+      catch: () => undefined,
+    }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(schema)),
+      Effect.mapError(() => safeError('invalid-data', 'Stored workspace data failed validation')),
+    )
+
+const canonical = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (typeof value === 'object' && value !== null) {
+    return `{${Object.entries(value)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonical(child)}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+const fingerprint = (value: unknown): string => {
+  return createHash('sha256').update(canonical(value)).digest('hex')
+}
+
+const receiptServerFields = {
+  registerProject: [],
+  convertDirectoryProject: ['repository'],
+  registerCheckout: [],
+  createTask: [],
+  createDelegation: [],
+  renameTask: ['updatedAt'],
+  setTaskArchived: ['updatedAt'],
+  beginRun: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
+  promoteFollowUp: ['issuedAt', 'occurredAt', 'ownerEpoch', 'runId', 'provisionalAgentSessionId'],
+  enqueueFollowUp: ['issuedAt'],
+  recordRequestResponse: ['issuedAt', 'occurredAt', 'ownerEpoch'],
+  recordSteer: ['issuedAt', 'occurredAt', 'ownerEpoch'],
+} as const
+
+type ReceiptKind = keyof typeof receiptServerFields
+
+const receiptFingerprint = (kind: ReceiptKind, command: object): string => {
+  const excluded: ReadonlyArray<string> = receiptServerFields[kind]
+  let intent = Object.fromEntries(Object.entries(command).filter(([field]) => !excluded.includes(field)))
+  if (kind === 'registerProject') {
+    const registration = command as RegisterProjectCommand
+    intent = {
+      commandId: registration.commandId,
+      project: {
+        name: registration.project.name,
+        ...(registration.project.repositoryIdentity === undefined
+          ? {}
+          : { repositoryIdentity: registration.project.repositoryIdentity }),
+        ...(registration.project.isCoach ? { isCoach: true } : {}),
+      },
+      mainCheckout: { path: registration.mainCheckout.path },
+    }
+  } else if (kind === 'registerCheckout') {
+    const registration = command as RegisterCheckoutCommand
+    intent = {
+      commandId: registration.commandId,
+      checkout: {
+        projectId: registration.checkout.projectId,
+        path: registration.checkout.path,
+        branch: registration.checkout.branch ?? null,
+        ...(registration.checkout.scratchConversationId
+          ? { scratchConversationId: registration.checkout.scratchConversationId }
+          : {}),
+      },
+    }
+  } else if (kind === 'createTask') {
+    const creation = command as CreateTaskCommand
+    intent = {
+      commandId: creation.commandId,
+      task: { projectId: creation.task.projectId, title: creation.task.title, description: creation.task.description },
+      conversation: { title: creation.conversation.title },
+    }
+  } else if (kind === 'createDelegation') {
+    // Retries keep the same identifiers and content, but the issue time and record timestamps differ.
+    const delegation = command as CreateDelegationCommand
+    const { record } = delegation
+    intent = {
+      commandId: delegation.commandId,
+      parentRunId: delegation.parentRunId,
+      parentTaskId: delegation.parentTaskId,
+      parentConversationId: delegation.parentConversationId,
+      task: {
+        id: delegation.task.id,
+        projectId: delegation.task.projectId,
+        title: delegation.task.title,
+        description: delegation.task.description,
+      },
+      conversation: { id: delegation.conversation.id, title: delegation.conversation.title },
+      record: {
+        id: record.id,
+        childTaskId: record.childTaskId,
+        childConversationId: record.childConversationId,
+        childRunId: record.childRunId,
+        checkoutId: record.checkoutId,
+        depth: record.depth,
+        title: record.title,
+        driverId: record.driverId,
+        connectionId: record.connectionId,
+        modelId: record.modelId,
+        modeId: record.modeId,
+        accessMode: record.accessMode,
+        accessModeRequested: record.accessModeRequested,
+        isolation: record.isolation,
+        wake: record.wake,
+      },
+    }
+  }
+  // An absent access mode means the default, so omitting the default keeps pre-migration receipts replayable.
+  if (intent.accessMode === undefined || intent.accessMode === DEFAULT_AGENT_ACCESS_MODE) {
+    intent = Object.fromEntries(Object.entries(intent).filter(([field]) => field !== 'accessMode'))
+  }
+  return `v2:${fingerprint({ kind, intent })}`
+}
+
+// SQLite text bindings normalize lone surrogates; JSON keeps distinct client command IDs losslessly.
+const receiptKey = (commandId: string): string => `command:${JSON.stringify(commandId)}`
+
+const matchesReceipt = (saved: string, kind: ReceiptKind, command: object): boolean =>
+  saved === (saved.startsWith('v2:') ? receiptFingerprint(kind, command) : fingerprint(command))
+
+const decodeRun = decodeJson(agentRunSchema)
+const decodeWorkerEpoch = (epoch: unknown) =>
+  Schema.decodeUnknownEffect(workerEpochSchema)(epoch).pipe(
+    Effect.mapError(() => safeError('invalid-data', 'Worker epoch must be a positive integer')),
+  )
+
+function appendEvent(
+  run: AgentRun,
+  kind: WorkspaceExecutionEvent['kind'],
+  occurredAt: string,
+  data: Readonly<Record<string, unknown>> = {},
+) {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    const rows = yield* sql`
+      INSERT INTO workspace_execution_event (schema_version, kind, run_id, task_id, generation, occurred_at, payload)
+      VALUES (1, ${kind}, ${run.id}, ${run.taskId}, ${run.generation}, ${occurredAt}, ${encode(data)})
+      RETURNING sequence
+    `
+    return Number(rows[0]?.sequence)
+  })
+}
+
+function persistRun(run: AgentRun) {
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient
+    yield* sql`UPDATE workspace_agent_run SET status = ${run.status}, payload = ${encode(run)} WHERE id = ${run.id}`
+  })
+}
+
+function transition(
+  run: AgentRun,
+  status: AgentRunStatus,
+  at: string,
+  details: Parameters<typeof transitionAgentRun>[3] = {},
+) {
+  const result = transitionAgentRun(run, status, at, details)
+  return result.ok
+    ? Effect.succeed(result.run)
+    : Effect.fail(safeError('invalid-transition', 'Run transition is not allowed'))
+}
+
+const makeService = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
+  const sql = yield* SqlClient.SqlClient
+  yield* sql.unsafe('PRAGMA foreign_keys = ON')
+  yield* sql.unsafe('PRAGMA journal_mode = WAL')
+  yield* sql.unsafe('PRAGMA synchronous = FULL')
+  yield* runSqliteMigrations(migrations).pipe(
+    Effect.mapError(error =>
+      error instanceof UnsupportedLedgerSchemaVersion
+        ? safeError('invalid-data', 'Workspace database schema is newer than this application supports')
+        : error,
+    ),
+  )
+  // Reservations share the dispatch admission connection and live only as long as its worker.
+  yield* sql`CREATE TEMP TABLE workspace_git_initialization (path TEXT PRIMARY KEY, reservation_id TEXT NOT NULL)`
+  const guard = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, WorkspaceStoreError> =>
+    Effect.provideService(effect, SqlClient.SqlClient, sql).pipe(
+      Effect.mapError(error =>
+        error instanceof WorkspaceStoreError
+          ? error
+          : safeError('database-unavailable', 'Workspace database operation failed'),
+      ),
+    ) as Effect.Effect<A, WorkspaceStoreError>
+
+  const lookupReceipt = Effect.fnUntraced(function* (commandId: string) {
+    const baseKey = receiptKey(commandId)
+    let rows =
+      yield* sql`SELECT command_id, fingerprint, payload, promotion_payload FROM workspace_command_receipt WHERE command_id IN (${baseKey}, ${commandId})`
+    let key = baseKey
+    let suffix = 0
+    while (true) {
+      for (const row of rows) {
+        const identity = yield* decodeJson(Schema.Struct({ commandId: Schema.String }))(String(row.payload))
+        if (identity.commandId === commandId) return { key: String(row.command_id), prior: [row] }
+      }
+      if (!rows.some(row => row.command_id === key)) return { key, prior: [] }
+      // A legacy raw ID can equal a new encoded key; keep both commands independently addressable.
+      key = `${baseKey}:${++suffix}`
+      rows =
+        yield* sql`SELECT command_id, fingerprint, payload, promotion_payload FROM workspace_command_receipt WHERE command_id = ${key}`
+    }
+  })
+
+  const reserveGitInitialization: WorkspaceStore['Service']['reserveGitInitialization'] = (path, reservationId) =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const active = yield* sql`
+            SELECT 1 FROM workspace_dispatch_intent i
+            JOIN workspace_checkout c ON c.id = i.checkout_id
+            WHERE json_extract(c.payload, '$.path') = ${path}
+              AND i.state NOT IN ('settled', 'failed')
+            LIMIT 1`
+          if (active.length > 0) return yield* safeError('admission-conflict', AGENT_RUN_BLOCKS_GIT_INITIALIZATION)
+          const existing = yield* sql`SELECT 1 FROM workspace_git_initialization WHERE path = ${path}`
+          if (existing.length > 0) return yield* safeError('admission-conflict', GIT_INITIALIZATION_IN_PROGRESS)
+          yield* sql`INSERT INTO workspace_git_initialization (path, reservation_id) VALUES (${path}, ${reservationId})`
+        }),
+      ),
+    )
+
+  const releaseGitInitialization: WorkspaceStore['Service']['releaseGitInitialization'] = (path, reservationId) =>
+    guard(
+      sql`DELETE FROM workspace_git_initialization WHERE path = ${path} AND reservation_id = ${reservationId}`.pipe(
+        Effect.asVoid,
+      ),
+    )
+
+  const checkCheckoutAdmission = Effect.fnUntraced(function* (checkoutId: string) {
+    const initializing = yield* sql`
+      SELECT 1 FROM workspace_checkout c
+      JOIN workspace_git_initialization g ON g.path = json_extract(c.payload, '$.path')
+      WHERE c.id = ${checkoutId}`
+    if (initializing.length > 0) return yield* safeError('admission-conflict', GIT_INITIALIZATION_BLOCKS_AGENT_RUN)
+  })
+
+  const checkProjectPathMembership = Effect.fnUntraced(function* (
+    path: string,
+    membership?: { readonly scratch: boolean; readonly coach: boolean; readonly projectId: string },
+  ) {
+    const conflictingPath = yield* sql`
+      SELECT 1 FROM workspace_checkout c JOIN workspace_project p ON p.id = c.project_id
+      WHERE json_extract(c.payload, '$.path') = ${path}
+        AND (
+          COALESCE(json_extract(p.payload, '$.isScratch'), 0) <> ${Number(membership?.scratch ?? false)}
+          OR COALESCE(json_extract(p.payload, '$.isCoach'), 0) <> ${Number(membership?.coach ?? false)}
+          OR (${membership?.projectId ?? null} IS NOT NULL AND p.id <> ${membership?.projectId ?? null})
+        )
+      LIMIT 1`
+    if (conflictingPath.length > 0)
+      return yield* safeError(
+        'membership-conflict',
+        membership ? 'Chat checkout identity is invalid.' : MANAGED_PROJECT_FOLDER,
+      )
+  })
+
+  const persistGitConversion = Effect.fnUntraced(function* (
+    project: Project,
+    mainCheckout: WorkspaceCheckout,
+    repository: Omit<NonNullable<ConvertDirectoryProjectCommand['repository']>, 'checkoutId'>,
+  ) {
+    if (project.isScratch || project.isCoach) return yield* safeError('membership-conflict', MANAGED_PROJECT_FOLDER)
+    if (project.archivedAt || mainCheckout.archivedAt)
+      return yield* safeError('membership-conflict', 'Archived projects cannot be converted')
+    if (mainCheckout.path !== repository.path)
+      return yield* safeError('membership-conflict', 'Repository main checkout path differs from its registration')
+    if (mainCheckout.kind === 'main' && project.repositoryIdentity === repository.identity)
+      return { project, mainCheckout }
+    if (
+      project.repositoryIdentity !== undefined ||
+      mainCheckout.kind !== 'directory' ||
+      mainCheckout.branch !== undefined
+    )
+      return yield* safeError('membership-conflict', 'The project must have a directory main checkout')
+    const existing = yield* sql`
+      SELECT id FROM workspace_project
+      WHERE json_extract(payload, '$.archivedAt') IS NULL
+        AND json_extract(payload, '$.repositoryIdentity') = ${repository.identity}
+      LIMIT 1`
+    if (existing.length > 0) return yield* safeError('membership-conflict', 'Repository is already registered')
+    const gitProject = { ...project, repositoryIdentity: repository.identity, updatedAt: repository.updatedAt }
+    const gitCheckout = { ...mainCheckout, kind: 'main' as const, branch: repository.branch }
+    yield* sql`UPDATE workspace_project SET payload = ${encode(gitProject)} WHERE id = ${project.id}`
+    yield* sql`UPDATE workspace_checkout SET payload = ${encode(gitCheckout)} WHERE id = ${mainCheckout.id}`
+    return { project: gitProject, mainCheckout: gitCheckout }
+  })
+
+  const convertDirectoryProject = (input: ConvertDirectoryProjectCommand) =>
+    guard(
+      Effect.gen(function* () {
+        const command = yield* Schema.decodeUnknownEffect(convertDirectoryProjectCommandSchema)(input).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Git conversion data is invalid')),
+        )
+        const { commandId, projectId, repository } = command
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'convertDirectoryProject', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              const receipt = yield* decodeJson(projectRegistrationReceiptSchema)(String(prior[0].payload))
+              return { ...receipt, replayed: true }
+            }
+            if (!repository) return yield* safeError('not-found', 'Git initialization receipt was not found')
+            const { project, mainCheckout } = yield* getProject(projectId, { limit: 1 })
+            if (mainCheckout.id !== repository.checkoutId)
+              return yield* safeError('membership-conflict', 'The project main checkout has changed')
+            const converted = yield* persistGitConversion(project, mainCheckout, repository)
+            const result = { ...converted, commandId, replayed: false, reused: true }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('convertDirectoryProject', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const registerNewOrExistingProject = ({ prepareDirectory, ...registration }: RegisterProjectWithPreparation) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(registerProjectCommandSchema)(registration).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Project registration data is invalid')),
+        )
+        const { project: requestedProject } = registration
+        const scratch = requestedProject.isScratch || requestedProject.id === 'workspace-scratch-project'
+        const coach = requestedProject.isCoach || requestedProject.id === 'workspace-coach-project'
+        const managed = scratch || coach
+        const membershipConflict = safeError(
+          'membership-conflict',
+          managed ? 'Chat checkout identity is invalid.' : MANAGED_PROJECT_FOLDER,
+        )
+        const matchesMembership = (project: typeof requestedProject) =>
+          Boolean(project.isScratch) === scratch &&
+          Boolean(project.isCoach) === coach &&
+          (!managed || project.id === requestedProject.id)
+
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const commandId = registration.commandId ?? `internal:registerProject:${requestedProject.id}`
+            const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            const repositoryIdentity = requestedProject.repositoryIdentity ?? null
+            if (prior[0]) {
+              const savedFingerprint = String(prior[0].fingerprint)
+              const matches = matchesReceipt(savedFingerprint, 'registerProject', registration)
+              // A directory registration remains replayable if a retry now resolves the same path as Git.
+              const matchesDirectoryIntent =
+                !matches &&
+                repositoryIdentity !== null &&
+                matchesReceipt(savedFingerprint, 'registerProject', {
+                  ...registration,
+                  project: { ...requestedProject, repositoryIdentity: undefined },
+                })
+              if (!matches && !matchesDirectoryIntent)
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              const receipt = yield* decodeJson(projectRegistrationReceiptSchema)(String(prior[0].payload))
+              if (!matches && receipt.mainCheckout.kind !== 'directory')
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              if (!matchesMembership(receipt.project)) return yield* membershipConflict
+              return { ...receipt, replayed: true }
+            }
+            const command = prepareDirectory
+              ? {
+                  ...registration,
+                  mainCheckout: { ...registration.mainCheckout, path: yield* prepareDirectory },
+                }
+              : registration
+            yield* checkProjectPathMembership(
+              command.mainCheckout.path,
+              managed ? { scratch, coach, projectId: requestedProject.id } : undefined,
+            )
+
+            const existing = yield* sql`
+              SELECT p.id, p.payload FROM workspace_project p
+              WHERE json_extract(p.payload, '$.archivedAt') IS NULL AND (
+                json_extract(p.payload, '$.repositoryIdentity') = ${repositoryIdentity}
+                OR EXISTS (
+                  SELECT 1 FROM workspace_checkout c
+                  WHERE c.project_id = p.id
+                    AND json_extract(c.payload, '$.kind') IN ('main', 'directory')
+                    AND json_extract(c.payload, '$.scratchConversationId') IS NULL
+                    AND (${repositoryIdentity} IS NULL OR json_extract(c.payload, '$.kind') = 'directory')
+                    AND json_extract(c.payload, '$.archivedAt') IS NULL
+                    AND json_extract(c.payload, '$.path') = ${command.mainCheckout.path}
+                )
+              )
+              ORDER BY (json_extract(p.payload, '$.repositoryIdentity') = ${repositoryIdentity}) DESC, p.id
+              LIMIT 1`
+            let project = yield* Schema.decodeUnknownEffect(projectSchema)(command.project)
+            let mainCheckout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)({
+              ...command.mainCheckout,
+              projectId: project.id,
+            })
+            if (existing[0]) {
+              project = yield* decodeJson(projectSchema)(String(existing[0].payload))
+              if (!matchesMembership(project)) return yield* membershipConflict
+              const checkouts =
+                yield* sql`SELECT payload FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.kind') IN ('main', 'directory') AND json_extract(payload, '$.scratchConversationId') IS NULL AND json_extract(payload, '$.archivedAt') IS NULL ORDER BY id LIMIT 2`
+              if (checkouts.length !== 1)
+                return yield* safeError('membership-conflict', 'Repository has no unambiguous active main checkout')
+              mainCheckout = yield* decodeJson(workspaceCheckoutSchema)(String(checkouts[0].payload))
+              // Never relocate an existing project implicitly; active sessions may still own its old path.
+              if (mainCheckout.path !== command.mainCheckout.path)
+                return yield* safeError(
+                  'membership-conflict',
+                  'Repository main checkout path differs from its registration',
+                )
+              if (repositoryIdentity !== null && mainCheckout.kind === 'directory') {
+                const converted = yield* persistGitConversion(project, mainCheckout, {
+                  path: command.mainCheckout.path,
+                  identity: repositoryIdentity,
+                  branch: command.mainCheckout.branch,
+                  updatedAt: requestedProject.updatedAt,
+                })
+                project = converted.project
+                mainCheckout = converted.mainCheckout
+              }
+            } else {
+              yield* sql`INSERT INTO workspace_project (id, payload) VALUES (${project.id}, ${encode(project)})`
+              yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${mainCheckout.id}, ${project.id}, ${encode(mainCheckout)})`
+            }
+            const result = { commandId, project, mainCheckout, replayed: false, reused: existing.length > 0 }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('registerProject', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const registerCheckout = (command: Parameters<WorkspaceStore['Service']['registerCheckout']>[0]) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(registerCheckoutCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Checkout registration data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'registerCheckout', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return {
+                ...(yield* decodeJson(checkoutRegistrationReceiptSchema)(String(prior[0].payload))),
+                replayed: true,
+              }
+            }
+            const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${command.checkout.projectId}`
+            if (!projects[0]) return yield* safeError('not-found', 'Project was not found')
+            const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
+            if (project.archivedAt)
+              return yield* safeError('membership-conflict', 'Archived projects take no checkouts')
+            if (command.checkout.kind === 'directory' && !project.isScratch)
+              return yield* safeError('membership-conflict', 'Chat folders require the No project context')
+            let checkout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)(command.checkout)
+            const owner = checkout.scratchConversationId
+            let reused = false
+            if (owner) {
+              const membership = yield* sql`
+                SELECT t.project_id FROM workspace_conversation c JOIN workspace_task t ON t.id = c.task_id
+                WHERE c.id = ${owner}
+              `
+              if (membership[0]?.project_id !== project.id)
+                return yield* safeError(
+                  'membership-conflict',
+                  'Chat folder must belong to a Conversation in this Project',
+                )
+              const { mainCheckout } = yield* getProject(project.id, { limit: 1 })
+              const invalidPath = safeError(
+                'membership-conflict',
+                'Chat folder must be a canonical child of the No project root',
+              )
+              if (path.resolve(checkout.path) !== checkout.path || path.dirname(checkout.path) !== mainCheckout.path)
+                return yield* invalidPath
+              const root = yield* fs.realPath(mainCheckout.path).pipe(Effect.mapError(() => invalidPath))
+              const folder = yield* fs.realPath(checkout.path).pipe(Effect.mapError(() => invalidPath))
+              const info = yield* fs.stat(folder).pipe(Effect.mapError(() => invalidPath))
+              if (root !== mainCheckout.path || folder !== checkout.path || info.type !== 'Directory')
+                return yield* invalidPath
+              const existing = yield* sql`
+                SELECT payload FROM workspace_checkout
+                WHERE project_id = ${project.id} AND json_extract(payload, '$.scratchConversationId') = ${owner}
+                LIMIT 1
+              `
+              if (existing[0]) {
+                checkout = yield* decodeJson(workspaceCheckoutSchema)(String(existing[0].payload))
+                reused = true
+              }
+            }
+            if (!reused) {
+              const samePath =
+                yield* sql`SELECT id FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.path') = ${checkout.path} AND json_extract(payload, '$.archivedAt') IS NULL LIMIT 1`
+              if (samePath[0]) return yield* safeError('membership-conflict', 'Checkout path is already registered')
+              yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${checkout.id}, ${project.id}, ${encode(checkout)})`
+            }
+            const result = { commandId: command.commandId, checkout, replayed: reused }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('registerCheckout', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const createTask = (command: Parameters<WorkspaceStore['Service']['createTask']>[0]) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(createTaskCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Task creation data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const commandId = command.commandId ?? `internal:createTask:${command.task.id}`
+            const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'createTask', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return { ...(yield* decodeJson(taskCreationReceiptSchema)(String(prior[0].payload))), replayed: true }
+            }
+            const projects = yield* sql`
+              SELECT json_extract(payload, '$.isCoach') AS coach
+              FROM workspace_project WHERE id = ${command.task.projectId}
+            `
+            if (!projects[0]) return yield* safeError('not-found', 'Project does not exist')
+            const { sideChat, ...task } = command.task
+            if (projects[0].coach === 1) {
+              if (sideChat) return yield* safeError('membership-conflict', 'Coach chats cannot have side chats')
+              const existing = yield* sql`SELECT 1 FROM workspace_task WHERE project_id = ${task.projectId} LIMIT 1`
+              if (existing.length > 0)
+                return yield* safeError('admission-conflict', 'Discard the current Coach chat before creating another')
+            }
+            yield* sql`INSERT INTO workspace_task (id, project_id, archived, side_chat, payload) VALUES (${task.id}, ${task.projectId}, 0, ${sideChat ? 1 : 0}, ${encode({ ...task, status: 'open', updatedAt: task.createdAt })})`
+            yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${command.task.id}, ${encode({ ...command.conversation, taskId: command.task.id })})`
+            const result = {
+              commandId,
+              taskId: command.task.id,
+              conversationId: command.conversation.id,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('createTask', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const getCoachChat: WorkspaceStore['Service']['getCoachChat'] = () =>
+    guard(
+      Effect.gen(function* () {
+        const rows = yield* sql`
+          SELECT t.id AS "taskId", c.id AS "conversationId"
+          FROM workspace_task t
+          JOIN workspace_project p ON p.id = t.project_id
+          JOIN workspace_conversation c ON c.task_id = t.id
+          WHERE json_type(CASE WHEN json_valid(p.payload) THEN p.payload END, '$.isCoach') = 'true'
+            AND t.side_chat = 0
+          ORDER BY t.rowid, c.rowid
+          LIMIT 1
+        `
+        if (!rows[0]) return null
+        return yield* Schema.decodeUnknownEffect(coachChatSchema)(rows[0]).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Coach chat identity is invalid')),
+        )
+      }),
+    )
+
+  const findCoachChatTasks = Effect.fnUntraced(function* (taskId: Task['id']) {
+    const matches = yield* sql`
+      SELECT t.project_id, t.side_chat, json_type(p.payload, '$.isCoach') AS coach
+      FROM workspace_task t JOIN workspace_project p ON p.id = t.project_id
+      WHERE t.id = ${taskId}
+    `
+    const target = matches[0]
+    if (!target) return []
+    if (target.coach !== 'true') return yield* safeError('membership-conflict', 'Task does not belong to Coach')
+    const tasks = yield* sql`
+      WITH RECURSIVE chat_tasks(id) AS (
+        SELECT id FROM workspace_task
+        WHERE id = ${taskId}
+          OR (project_id = ${target.project_id} AND side_chat = 1 AND ${target.side_chat} = 0)
+        UNION
+        SELECT child.id FROM chat_tasks parent
+        JOIN workspace_delegation d ON d.parent_task_id = parent.id
+        JOIN workspace_task child ON child.id = d.child_task_id AND child.project_id = ${target.project_id}
+      )
+      SELECT id FROM chat_tasks
+    `
+    return tasks.map(row => String(row.id))
+  })
+
+  const assertCoachDependencies = Effect.fnUntraced(function* (taskIds: ReadonlyArray<string>) {
+    if (taskIds.length === 0) return
+    const conflicts = yield* sql`
+      WITH coach_tasks(id) AS (SELECT value FROM json_each(${encode(taskIds)})),
+      dependencies(task_ids, checkout_id) AS (
+        SELECT json_array(d.parent_task_id, d.child_task_id, parent.task_id, child.task_id, r.task_id,
+            child_run.task_id), json_extract(d.payload, '$.checkoutId')
+        FROM workspace_delegation d
+        JOIN workspace_conversation parent ON parent.id = d.parent_conversation_id
+        JOIN workspace_conversation child ON child.id = d.child_conversation_id
+        JOIN workspace_agent_run r ON r.id = d.parent_run_id
+        LEFT JOIN workspace_agent_run child_run ON child_run.id = json_extract(d.payload, '$.childRunId')
+        UNION ALL
+        SELECT json_array(parent.task_id, json_extract(b.payload, '$.parentTaskId'),
+            json_extract(b.payload, '$.sideTaskId'), parent_payload.task_id, side.task_id,
+            source.task_id, consumed.task_id, consumed_payload.task_id), NULL
+        FROM workspace_side_chat_bring_back b
+        JOIN workspace_conversation parent ON parent.id = b.parent_conversation_id
+        LEFT JOIN workspace_conversation parent_payload ON parent_payload.id = json_extract(b.payload, '$.parentConversationId')
+        LEFT JOIN workspace_conversation side ON side.id = json_extract(b.payload, '$.sideConversationId')
+        LEFT JOIN workspace_agent_run source ON source.id = json_extract(b.payload, '$.sourceRunId')
+        LEFT JOIN workspace_agent_run consumed ON consumed.id = b.consumed_run_id
+        LEFT JOIN workspace_agent_run consumed_payload ON consumed_payload.id = json_extract(b.payload, '$.consumedRunId')
+        UNION ALL
+        SELECT json_array(r.task_id, c.task_id, d.parent_task_id, d.child_task_id), NULL
+        FROM workspace_message m
+        JOIN workspace_agent_run r ON r.id = m.run_id
+        JOIN workspace_conversation c ON c.id = m.conversation_id
+        LEFT JOIN workspace_delegation d ON d.id = m.delegation_id
+        UNION ALL
+        SELECT json_array(q.task_id, c.task_id), NULL
+        FROM workspace_follow_up_queue q JOIN workspace_conversation c ON c.id = q.conversation_id
+        UNION ALL
+        SELECT json_array(i.task_id, r.task_id, c.task_id), i.checkout_id
+        FROM workspace_dispatch_intent i
+        JOIN workspace_agent_run r ON r.id = i.run_id
+        LEFT JOIN workspace_conversation c ON c.id = i.conversation_id
+        UNION ALL
+        SELECT json_array(s.task_id, c.task_id), s.checkout_id
+        FROM workspace_agent_session s JOIN workspace_conversation c ON c.id = s.conversation_id
+        UNION ALL
+        SELECT json_array(r.task_id, s.task_id), r.checkout_id
+        FROM workspace_agent_run r LEFT JOIN workspace_agent_session s ON s.id = r.session_id
+        UNION ALL
+        SELECT json_array(e.task_id, r.task_id), NULL
+        FROM workspace_execution_event e JOIN workspace_agent_run r ON r.id = e.run_id
+        WHERE e.task_id <> r.task_id
+        UNION ALL
+        SELECT json_array(e.task_id, r.task_id), NULL
+        FROM workspace_driver_event_identity i
+        JOIN workspace_execution_event e ON e.sequence = i.sequence
+        JOIN workspace_agent_run r ON r.id = i.run_id
+        WHERE e.task_id <> r.task_id
+        UNION ALL
+        SELECT json_array(e.task_id, source.task_id), NULL
+        FROM workspace_execution_event e
+        JOIN workspace_agent_run source ON source.id = CASE
+          WHEN e.kind IN ('contextHandoff', 'sideChatBringBack') THEN json_extract(e.payload, '$.sourceRunId')
+        END
+        WHERE e.task_id <> source.task_id
+      )
+      SELECT 1 FROM dependencies d
+      JOIN json_each(d.task_ids) AS member
+      JOIN workspace_task coach ON coach.id = member.value
+      LEFT JOIN workspace_checkout checkout ON checkout.id = d.checkout_id
+      WHERE coach.id IN (SELECT id FROM coach_tasks)
+        AND (checkout.project_id <> coach.project_id OR EXISTS (
+          SELECT 1 FROM json_each(d.task_ids) AS related
+          JOIN workspace_task other ON other.id = related.value
+          WHERE other.project_id <> coach.project_id
+        ))
+      LIMIT 1
+    `
+    if (conflicts.length > 0)
+      return yield* safeError('membership-conflict', 'Coach chat has dependencies outside its Project')
+  })
+
+  const liveCoachRuns = Effect.fnUntraced(function* (taskIds: ReadonlyArray<string>) {
+    const active: AgentRun['id'][] = []
+    for (const taskId of taskIds) {
+      const rows = yield* sql`
+        SELECT id FROM workspace_agent_run
+        WHERE task_id = ${taskId} AND status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+      `
+      for (const row of rows) active.push(yield* Schema.decodeUnknownEffect(agentRunIdSchema)(row.id))
+    }
+    return active
+  })
+
+  const deleteCoachTask = Effect.fnUntraced(function* (taskId: string) {
+    const runs = sql`SELECT id FROM workspace_agent_run WHERE task_id = ${taskId}`
+    const conversations = sql`SELECT id FROM workspace_conversation WHERE task_id = ${taskId}`
+    const delegations = sql`SELECT id FROM workspace_delegation WHERE parent_task_id = ${taskId} OR child_task_id = ${taskId}`
+    // Receipts can outlive their queue entries and must not replay deleted identities.
+    yield* sql`
+      WITH receipts AS (
+        SELECT command_id,
+          CASE WHEN json_valid(payload) THEN payload END AS payload,
+          CASE WHEN json_valid(promotion_payload) THEN promotion_payload END AS promotion_payload
+        FROM workspace_command_receipt
+      )
+      DELETE FROM workspace_command_receipt
+      WHERE command_id IN (
+        SELECT command_id FROM receipts
+        WHERE json_extract(payload, '$.taskId') = ${taskId}
+          OR json_extract(payload, '$.conversationId') IN (${conversations})
+          OR json_extract(payload, '$.runId') IN (${runs})
+          OR json_extract(promotion_payload, '$.receipt.runId') IN (${runs})
+          OR json_extract(payload, '$.delegationId') IN (${delegations})
+      )
+    `
+    yield* sql`
+      DELETE FROM workspace_side_chat_bring_back
+      WHERE parent_conversation_id IN (${conversations}) OR consumed_run_id IN (${runs})
+        OR json_extract(payload, '$.parentTaskId') = ${taskId}
+        OR json_extract(payload, '$.parentConversationId') IN (${conversations})
+        OR json_extract(payload, '$.sideTaskId') = ${taskId}
+        OR json_extract(payload, '$.sideConversationId') IN (${conversations})
+        OR json_extract(payload, '$.sourceRunId') IN (${runs})
+        OR json_extract(payload, '$.consumedRunId') IN (${runs})
+    `
+    yield* sql`DELETE FROM workspace_delegation WHERE id IN (${delegations})`
+    yield* sql`DELETE FROM workspace_driver_event_identity WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_driver_request_state WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_request_response_intent WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_steer_intent WHERE run_id IN (${runs})`
+    yield* sql`DELETE FROM workspace_message WHERE run_id IN (${runs}) OR conversation_id IN (${conversations})`
+    yield* sql`DELETE FROM workspace_follow_up_queue WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_dispatch_intent WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_execution_event WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_agent_run WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_agent_session WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_conversation WHERE task_id = ${taskId}`
+    yield* sql`DELETE FROM workspace_task WHERE id = ${taskId}`
+  })
+
+  const listActiveCoachRuns: WorkspaceStore['Service']['listActiveCoachRuns'] = taskId =>
+    guard(sql.withTransaction(Effect.flatMap(findCoachChatTasks(taskId), liveCoachRuns)))
+
+  const purgeCoachChat: WorkspaceStore['Service']['purgeCoachChat'] = taskId =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const tasks = yield* findCoachChatTasks(taskId)
+          yield* assertCoachDependencies(tasks)
+          for (const id of tasks) {
+            const blocking = yield* sql`
+              SELECT 1 FROM workspace_agent_run r
+              LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              WHERE r.task_id = ${id}
+                AND (r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                  OR (r.status IN ('uncertain', 'recoveryRequired') AND i.state NOT IN ('settled', 'failed')))
+              LIMIT 1
+            `
+            if (blocking.length > 0)
+              return yield* safeError('admission-conflict', 'Wait for the Coach Run to stop before discarding the chat')
+          }
+          for (const id of tasks) yield* deleteCoachTask(id)
+        }),
+      ),
+    )
+
+  const sweepCoachChats: WorkspaceStore['Service']['sweepCoachChats'] = () =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const tasks = yield* sql`
+            SELECT t.id FROM workspace_task t JOIN workspace_project p ON p.id = t.project_id
+            WHERE json_type(CASE WHEN json_valid(p.payload) THEN p.payload END, '$.isCoach') = 'true'
+          `
+          const taskIds = tasks.map(task => String(task.id))
+          yield* assertCoachDependencies(taskIds)
+          for (const id of taskIds) yield* deleteCoachTask(id)
+        }),
+      ),
+    )
+
+  const renameTask: WorkspaceStore['Service']['renameTask'] = (command: RenameTaskCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(renameTaskCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Task rename data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (
+                !matchesReceipt(String(prior[0].fingerprint), 'renameTask', {
+                  taskId: command.taskId,
+                  title: command.title,
+                })
+              )
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return { ...(yield* decodeJson(taskMutationReceiptSchema)(String(prior[0].payload))), replayed: true }
+            }
+            const rows = yield* sql`SELECT payload FROM workspace_task WHERE id = ${command.taskId}`
+            if (!rows[0]) return yield* safeError('not-found', 'Task was not found')
+            const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+            const updatedTask = yield* Schema.decodeUnknownEffect(taskSchema)({
+              ...task,
+              title: command.title,
+              updatedAt: command.updatedAt,
+            })
+            yield* sql`UPDATE workspace_task SET payload = ${encode(updatedTask)} WHERE id = ${command.taskId}`
+            const result = {
+              commandId: command.commandId,
+              taskId: command.taskId,
+              updatedAt: command.updatedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${key}, ${receiptFingerprint('renameTask', { taskId: command.taskId, title: command.title })}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const setTaskArchived: WorkspaceStore['Service']['setTaskArchived'] = (command: SetTaskArchivedCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(setTaskArchivedCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Task archive data is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const fingerprintCommand = { taskId: command.taskId, archived: command.archived }
+            const { key, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'setTaskArchived', fingerprintCommand))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              return { ...(yield* decodeJson(taskMutationReceiptSchema)(String(prior[0].payload))), replayed: true }
+            }
+            const rows = yield* sql`SELECT archived, payload FROM workspace_task WHERE id = ${command.taskId}`
+            if (!rows[0]) return yield* safeError('not-found', 'Task was not found')
+            const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+            // Delegated Tasks follow their parent into and out of the archive, at every depth.
+            const descendantRows = yield* sql`
+              WITH RECURSIVE descendants(id) AS (
+                SELECT child_task_id FROM workspace_delegation WHERE parent_task_id = ${command.taskId}
+                UNION
+                SELECT d.child_task_id FROM workspace_delegation d JOIN descendants ON d.parent_task_id = descendants.id
+              )
+              SELECT t.id, t.archived, t.payload FROM workspace_task t JOIN descendants ON descendants.id = t.id
+              WHERE t.id <> ${command.taskId}
+            `
+            const descendantIds = descendantRows.map(row => String(row.id))
+            if (command.archived && Number(rows[0].archived) === 0) {
+              const activeRuns = yield* sql`
+                SELECT r.id FROM workspace_agent_run r
+                LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                WHERE r.task_id IN ${sql.in([command.taskId, ...descendantIds])}
+                  AND (r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                    OR (r.status IN ('uncertain', 'recoveryRequired')
+                      AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')))
+                LIMIT 1
+              `
+              if (activeRuns.length > 0)
+                return yield* safeError(
+                  'invalid-transition',
+                  descendantIds.length > 0
+                    ? 'A Task whose own or Delegated Task Run is active or unresolved cannot be archived'
+                    : 'A Task with an active or unresolved Run cannot be archived',
+                )
+            }
+            const updatedTask = yield* Schema.decodeUnknownEffect(taskSchema)({
+              ...task,
+              status: command.archived ? 'archived' : 'open',
+              archivedAt: command.archived ? command.updatedAt : null,
+              updatedAt: command.updatedAt,
+            })
+            yield* sql`UPDATE workspace_task SET archived = ${command.archived ? 1 : 0}, payload = ${encode(updatedTask)} WHERE id = ${command.taskId}`
+            for (const row of descendantRows) {
+              if (Number(row.archived) === (command.archived ? 1 : 0)) continue
+              const descendant = yield* decodeJson(taskSchema)(String(row.payload))
+              const updatedDescendant = yield* Schema.decodeUnknownEffect(taskSchema)({
+                ...descendant,
+                status: command.archived ? 'archived' : 'open',
+                archivedAt: command.archived ? command.updatedAt : null,
+                updatedAt: command.updatedAt,
+              })
+              yield* sql`UPDATE workspace_task SET archived = ${command.archived ? 1 : 0}, payload = ${encode(updatedDescendant)} WHERE id = ${String(row.id)}`
+            }
+            const result = {
+              commandId: command.commandId,
+              taskId: command.taskId,
+              updatedAt: command.updatedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${key}, ${receiptFingerprint('setTaskArchived', fingerprintCommand)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const beginRun = (command: BeginRunCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(beginRunCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Run command data is invalid')),
+        )
+        const receipt = yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const commandFingerprint = receiptFingerprint('beginRun', command)
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'beginRun', command))
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const saved = yield* decodeJson(
+                Schema.Struct({
+                  commandId: Schema.String,
+                  runId: Schema.String,
+                  acceptedAt: Schema.String,
+                  replayed: Schema.Boolean,
+                }),
+              )(String(prior[0].payload))
+              return { ...saved, replayed: true } as CommandReceipt
+            }
+
+            const rows = yield* sql`
+        SELECT t.project_id AS task_project, t.archived, c.task_id AS conversation_task,
+          w.project_id AS checkout_project,
+          json_extract(w.payload, '$.scratchConversationId') AS checkout_owner,
+          CASE WHEN t.side_chat = 1 THEN json_extract(c.payload, '$.inheritedCheckoutId') END AS side_chat_checkout,
+          (SELECT r.checkout_id FROM workspace_delegation d
+            JOIN workspace_agent_run r ON r.id = d.parent_run_id
+            WHERE d.child_conversation_id = c.id AND d.child_task_id = t.id
+              AND json_extract(d.payload, '$.isolation') = 'shared'
+              AND json_extract(d.payload, '$.checkoutId') = r.checkout_id) AS delegated_checkout
+        FROM workspace_task t
+        JOIN workspace_conversation c ON c.id = ${command.conversationId}
+        JOIN workspace_checkout w ON w.id = ${command.checkoutId}
+        WHERE t.id = ${command.taskId}
+      `
+            if (rows.length === 0)
+              return yield* Effect.fail(safeError('not-found', 'Task, Conversation or checkout does not exist'))
+            const membership = rows[0] as {
+              task_project: string
+              archived: number
+              conversation_task: string
+              checkout_project: string
+              checkout_owner: string | null
+              side_chat_checkout: string | null
+              delegated_checkout: string | null
+            }
+            if (
+              membership.archived ||
+              membership.conversation_task !== command.taskId ||
+              membership.task_project !== membership.checkout_project
+            ) {
+              return yield* Effect.fail(
+                safeError(
+                  'membership-conflict',
+                  'Task, Conversation and checkout must belong to the same active Project',
+                ),
+              )
+            }
+
+            if (
+              membership.checkout_owner !== null &&
+              membership.checkout_owner !== command.conversationId &&
+              membership.side_chat_checkout !== command.checkoutId &&
+              membership.delegated_checkout !== command.checkoutId
+            )
+              return yield* safeError('membership-conflict', 'Chat folder belongs to another Conversation')
+
+            if (command.nativeSessionId) {
+              const knownSessions = yield* sql`
+        SELECT task_id, conversation_id, checkout_id, generation
+        FROM workspace_agent_session
+        WHERE driver_id = ${command.driverId} AND connection_id = ${command.connectionId}
+          AND native_session_id = ${command.nativeSessionId}
+      `
+              if (
+                knownSessions[0] &&
+                (knownSessions[0].task_id !== command.taskId ||
+                  knownSessions[0].conversation_id !== command.conversationId ||
+                  knownSessions[0].checkout_id !== command.checkoutId ||
+                  Number(knownSessions[0].generation) !== command.generation)
+              ) {
+                return yield* Effect.fail(
+                  safeError('membership-conflict', 'Native session identity belongs to another execution context'),
+                )
+              }
+            }
+
+            yield* checkCheckoutAdmission(command.checkoutId)
+            // Unresolved outcomes retain their checkout/session fence. Active turns fence the whole Conversation.
+            const sessionRuns = yield* sql`
+        SELECT r.id FROM workspace_agent_run r
+        JOIN workspace_dispatch_intent i ON i.run_id = r.id
+        WHERE ((i.conversation_id = ${command.conversationId}
+            AND (i.checkout_id = ${command.checkoutId} OR r.status NOT IN ('uncertain', 'recoveryRequired')))
+          OR r.session_id = ${command.provisionalAgentSessionId}
+          OR i.provisional_session_id = ${command.provisionalAgentSessionId})
+          AND r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired')
+          AND i.state NOT IN ('settled', 'failed')
+        LIMIT 1
+      `
+            if (sessionRuns.length > 0)
+              return yield* Effect.fail(
+                safeError('admission-conflict', 'Conversation or Agent Session already has an active turn'),
+              )
+
+            const previous = command.retryOfRunId
+              ? yield* sql`SELECT payload FROM workspace_agent_run WHERE id = ${command.retryOfRunId} AND task_id = ${command.taskId}`
+              : []
+            if (command.retryOfRunId && previous.length === 0)
+              return yield* Effect.fail(safeError('not-found', 'Retry source Run does not exist for this Task'))
+            let attempt = 1
+            if (previous[0]) {
+              const previousRun = yield* decodeRun(String(previous[0].payload))
+              if (!['failed', 'interrupted', 'uncertain', 'recoveryRequired'].includes(previousRun.status))
+                return yield* Effect.fail(
+                  safeError('invalid-transition', 'Only a terminal unsuccessful Run can be retried'),
+                )
+              attempt = previousRun.attempt + 1
+            }
+            const run: AgentRun = {
+              id: command.runId,
+              taskId: command.taskId,
+              sessionId: null,
+              attempt,
+              retryOfRunId: command.retryOfRunId ?? null,
+              generation: command.generation,
+              status: 'queued',
+              submittedAt: command.issuedAt,
+              startedAt: null,
+              finishedAt: null,
+              nativeTurnId: null,
+              failure: null,
+            }
+            yield* sql`INSERT INTO workspace_agent_run (id, task_id, checkout_id, generation, status, submitted_at, payload) VALUES (${run.id}, ${run.taskId}, ${command.checkoutId}, ${run.generation}, 'queued', ${run.submittedAt}, ${encode(run)})`
+            yield* sql`INSERT INTO workspace_message (id, run_id, conversation_id, role, content, created_at, origin, delegation_id) VALUES (${`user:${run.id}`}, ${run.id}, ${command.conversationId}, 'user', ${command.prompt}, ${command.issuedAt}, ${command.origin ?? 'user'}, ${command.delegationId ?? null})`
+            yield* sql`INSERT INTO workspace_dispatch_intent (run_id, task_id, provisional_session_id, conversation_id, driver_id, connection_id, checkout_id, generation, prompt, model_id, mode_id, access_mode, requested_native_session_id, state) VALUES (${run.id}, ${command.taskId}, ${command.provisionalAgentSessionId}, ${command.conversationId}, ${command.driverId}, ${command.connectionId}, ${command.checkoutId}, ${command.generation}, ${command.prompt}, ${command.modelId ?? null}, ${command.modeId ?? null}, ${command.accessMode ?? DEFAULT_AGENT_ACCESS_MODE}, ${command.nativeSessionId ?? null}, 'pending')`
+            yield* sql`UPDATE workspace_dispatch_intent SET attachments = ${encode(command.attachments ?? [])}, config_values = ${encode(command.configValues ?? {})} WHERE run_id = ${run.id}`
+            yield* sql`UPDATE workspace_message SET attachments = ${encode(command.attachments ?? [])} WHERE run_id = ${run.id}`
+            yield* appendEvent(run, 'runQueued', command.issuedAt, {
+              conversationId: command.conversationId,
+              commandId: command.commandId,
+            })
+            const result: CommandReceipt = {
+              commandId: command.commandId,
+              runId: run.id,
+              acceptedAt: command.issuedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${commandFingerprint}, ${encode(result)})`
+            return result
+          }),
+        )
+        return receipt
+      }),
+    )
+
+  const claimDispatch = (
+    runId: Parameters<WorkspaceStore['Service']['claimDispatch']>[0],
+    ownerEpoch: number,
+    claimedAt: string,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const worker =
+              yield* sql`SELECT CAST(retired_epoch AS TEXT) AS retired_epoch, CAST(allocated_epoch AS TEXT) AS allocated_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+            const retiredEpoch = Number(worker[0]?.retired_epoch)
+            const allocatedEpoch = Number(worker[0]?.allocated_epoch)
+            if (
+              !Number.isSafeInteger(retiredEpoch) ||
+              retiredEpoch < 0 ||
+              !Number.isSafeInteger(allocatedEpoch) ||
+              allocatedEpoch < 0
+            )
+              return yield* Effect.fail(safeError('invalid-data', 'Stored workspace owner epoch is invalid'))
+            // Keep the old caller-owned path only for databases that have never allocated an epoch here.
+            if (ownerEpoch <= retiredEpoch || (allocatedEpoch > 0 && ownerEpoch !== allocatedEpoch))
+              return yield* Effect.fail(safeError('stale-epoch', 'Worker epoch has already been retired'))
+            const rows = yield* sql`
+              SELECT i.*, r.payload AS run_payload, r.task_id AS run_task_id,
+                r.checkout_id AS run_checkout_id, r.generation AS run_generation,
+                t.project_id AS project_id, t.archived,
+                c.project_id AS checkout_project_id, c.payload AS checkout_payload
+              FROM workspace_dispatch_intent i
+              JOIN workspace_agent_run r ON r.id = i.run_id
+              JOIN workspace_task t ON t.id = r.task_id
+              JOIN workspace_checkout c ON c.id = r.checkout_id
+              WHERE i.run_id = ${runId}
+            `
+            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Dispatch intent does not exist'))
+            const intent = rows[0] as Record<string, unknown>
+            if (intent.state !== 'pending')
+              return yield* Effect.fail(safeError('admission-conflict', 'Dispatch intent is not pending'))
+            const current = yield* decodeRun(String(intent.run_payload))
+            if (
+              intent.task_id !== intent.run_task_id ||
+              intent.checkout_id !== intent.run_checkout_id ||
+              Number(intent.generation) !== Number(intent.run_generation) ||
+              current.generation !== Number(intent.generation) ||
+              intent.archived ||
+              intent.project_id !== intent.checkout_project_id
+            ) {
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Dispatch Task and checkout membership is inconsistent'),
+              )
+            }
+            const checkout = yield* decodeJson(workspaceCheckoutSchema)(String(intent.checkout_payload))
+            const projectId = yield* Schema.decodeUnknownEffect(projectIdSchema)(intent.project_id).pipe(
+              Effect.mapError(() => safeError('invalid-data', 'Stored project identity failed validation')),
+            )
+            if (checkout.id !== intent.checkout_id || checkout.projectId !== projectId)
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Dispatch checkout payload does not match stored membership'),
+              )
+            yield* checkCheckoutAdmission(checkout.id)
+            const accessMode = yield* Schema.decodeUnknownEffect(agentAccessModeSchema)(intent.access_mode).pipe(
+              Effect.mapError(() => safeError('invalid-data', 'Stored access mode failed validation')),
+            )
+            const knownSessions = intent.requested_native_session_id
+              ? yield* sql`SELECT id, task_id, conversation_id, checkout_id, generation FROM workspace_agent_session WHERE driver_id = ${intent.driver_id} AND connection_id = ${intent.connection_id} AND native_session_id = ${intent.requested_native_session_id}`
+              : []
+            const knownSession = knownSessions[0]
+            if (
+              knownSession &&
+              (knownSession.task_id !== intent.task_id ||
+                knownSession.conversation_id !== intent.conversation_id ||
+                knownSession.checkout_id !== intent.checkout_id ||
+                Number(knownSession.generation) !== Number(intent.generation))
+            )
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Native session does not match the claimed context'),
+              )
+            const agentSessionId = knownSession
+              ? yield* Schema.decodeUnknownEffect(agentSessionIdSchema)(knownSession.id).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored native session identity is invalid')),
+                )
+              : undefined
+            const run = yield* transition(current, 'starting', claimedAt)
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'claimed', owner_epoch = ${ownerEpoch} WHERE run_id = ${runId} AND state = 'pending'`
+            yield* persistRun(run)
+            yield* syncDelegationLiveState(run)
+            yield* appendEvent(run, 'dispatchClaimed', claimedAt, { ownerEpoch })
+            return {
+              runId,
+              projectId,
+              taskId: String(intent.task_id),
+              conversationId: String(intent.conversation_id),
+              ownerEpoch,
+              provisionalAgentSessionId: String(intent.provisional_session_id),
+              ...(agentSessionId ? { agentSessionId } : {}),
+              driverId: String(intent.driver_id),
+              connectionId: String(intent.connection_id),
+              checkoutId: String(intent.checkout_id),
+              workspacePath: checkout.path,
+              generation: Number(intent.generation),
+              prompt: String(intent.prompt),
+              attachments: yield* decodeJson(promptAttachmentsSchema)(String(intent.attachments ?? '[]')),
+              modelId: intent.model_id as string | null,
+              modeId: intent.mode_id as string | null,
+              configValues: yield* decodeJson(agentConfigValuesSchema)(String(intent.config_values ?? '{}')),
+              accessMode,
+              nativeSessionId: intent.requested_native_session_id as string | null,
+            } as DispatchClaim
+          }),
+        )
+      }),
+    )
+
+  const associateNativeSession = Effect.fnUntraced(function* (
+    runId: Parameters<WorkspaceStore['Service']['bindNativeSession']>[0],
+    binding: Parameters<WorkspaceStore['Service']['bindNativeSession']>[1],
+  ) {
+    yield* Schema.decodeUnknownEffect(nativeSessionBindingSchema)(binding).pipe(
+      Effect.mapError(() => safeError('invalid-data', 'Native session binding is invalid')),
+    )
+    const { row, run } = yield* loadOwnedDispatch(runId, binding.ownerEpoch)
+    if (row.state !== 'claimed' && row.state !== 'accepted')
+      return yield* Effect.fail(safeError('invalid-transition', 'Native session cannot bind to this dispatch'))
+    if (binding.generation !== run.generation || binding.generation !== Number(row.generation))
+      return yield* Effect.fail(safeError('membership-conflict', 'Native session generation does not match the Run'))
+    if (row.requested_native_session_id && row.requested_native_session_id !== binding.nativeSessionId)
+      return yield* Effect.fail(safeError('membership-conflict', 'Native session does not match the requested session'))
+    if (row.native_session_id && row.native_session_id !== binding.nativeSessionId)
+      return yield* Effect.fail(safeError('membership-conflict', 'Native session identity changed during binding'))
+
+    const existing = yield* sql`
+      SELECT id, task_id, conversation_id, checkout_id, generation, driver_id, connection_id
+      FROM workspace_agent_session
+      WHERE driver_id = ${row.driver_id} AND connection_id = ${row.connection_id}
+        AND native_session_id = ${binding.nativeSessionId}
+    `
+    let sessionId = String(row.provisional_session_id)
+    if (existing[0]) {
+      const session = existing[0] as Record<string, unknown>
+      if (
+        session.task_id !== row.task_id ||
+        session.conversation_id !== row.conversation_id ||
+        session.checkout_id !== row.checkout_id ||
+        Number(session.generation) !== Number(row.generation) ||
+        session.driver_id !== row.driver_id ||
+        session.connection_id !== row.connection_id
+      ) {
+        return yield* Effect.fail(
+          safeError('membership-conflict', 'Native session identity belongs to another execution context'),
+        )
+      }
+      sessionId = String(session.id)
+    } else {
+      yield* sql`INSERT INTO workspace_agent_session (id, task_id, conversation_id, checkout_id, generation, driver_id, connection_id, native_session_id, status) VALUES (${row.provisional_session_id}, ${row.task_id}, ${row.conversation_id}, ${row.checkout_id}, ${Number(row.generation)}, ${row.driver_id}, ${row.connection_id}, ${binding.nativeSessionId}, 'active')`
+    }
+    if (run.sessionId && run.sessionId !== sessionId)
+      return yield* Effect.fail(safeError('membership-conflict', 'Agent Session changed during native session binding'))
+    if (binding.capabilities)
+      yield* sql`UPDATE workspace_agent_session SET capabilities = ${encode(binding.capabilities)} WHERE id = ${sessionId}`
+    if (!run.sessionId) {
+      const associatedRun = { ...run, sessionId: sessionId as AgentRun['sessionId'] }
+      yield* sql`UPDATE workspace_agent_run SET session_id = ${sessionId}, payload = ${encode(associatedRun)} WHERE id = ${runId}`
+    }
+    if (!row.native_session_id)
+      yield* sql`UPDATE workspace_dispatch_intent SET native_session_id = ${binding.nativeSessionId} WHERE run_id = ${runId}`
+    return { row, run: run.sessionId ? run : { ...run, sessionId: sessionId as AgentRun['sessionId'] }, sessionId }
+  })
+
+  const bindNativeSession = (
+    runId: Parameters<WorkspaceStore['Service']['bindNativeSession']>[0],
+    binding: Parameters<WorkspaceStore['Service']['bindNativeSession']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        return yield* sql.withTransaction(associateNativeSession(runId, binding).pipe(Effect.asVoid))
+      }),
+    )
+
+  const acknowledgeDispatch = (
+    runId: Parameters<WorkspaceStore['Service']['acknowledgeDispatch']>[0],
+    acknowledgement: Parameters<WorkspaceStore['Service']['acknowledgeDispatch']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(acknowledgement.ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const generationRows = yield* sql`SELECT generation FROM workspace_dispatch_intent WHERE run_id = ${runId}`
+            const intentRows = yield* sql`
+              SELECT state, owner_epoch, native_session_id, native_turn_id
+              FROM workspace_dispatch_intent WHERE run_id = ${runId}
+            `
+            const prior = intentRows[0] as Record<string, unknown> | undefined
+            if (!prior) return yield* Effect.fail(safeError('not-found', 'Dispatch intent does not exist'))
+            if (
+              prior.state === 'settled' &&
+              Number(prior.owner_epoch) === acknowledgement.ownerEpoch &&
+              prior.native_session_id === acknowledgement.nativeSessionId &&
+              prior.native_turn_id === (acknowledgement.nativeTurnId ?? null)
+            )
+              return
+            const binding = {
+              ownerEpoch: acknowledgement.ownerEpoch,
+              nativeSessionId: acknowledgement.nativeSessionId,
+              generation: Number(generationRows[0]?.generation),
+              recordedAt: acknowledgement.acknowledgedAt,
+            }
+            const associated = yield* associateNativeSession(runId, binding)
+            if (associated.row.state === 'accepted') {
+              const acceptedTurnId = associated.row.native_turn_id as string | null
+              if (acceptedTurnId === (acknowledgement.nativeTurnId ?? null)) return
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Native acknowledgement changed after acceptance'),
+              )
+            }
+            const current = associated.run
+            if (
+              (current.nativeTurnId &&
+                acknowledgement.nativeTurnId &&
+                current.nativeTurnId !== acknowledgement.nativeTurnId) ||
+              (associated.row.native_turn_id &&
+                acknowledgement.nativeTurnId &&
+                associated.row.native_turn_id !== acknowledgement.nativeTurnId)
+            )
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Native turn identity changed during acknowledgement'),
+              )
+            const nativeTurnId = acknowledgement.nativeTurnId ?? current.nativeTurnId ?? null
+            let startedRun: AgentRun
+            if (current.status === 'starting') {
+              startedRun = yield* transition(current, 'running', acknowledgement.acknowledgedAt, { nativeTurnId })
+            } else if (current.status === 'interruptRequested' && !current.startedAt) {
+              const started = yield* transition(
+                { ...current, status: 'starting' },
+                'running',
+                acknowledgement.acknowledgedAt,
+                { nativeTurnId },
+              )
+              startedRun = { ...started, status: 'interruptRequested' }
+            } else if (
+              current.status === 'running' ||
+              current.status === 'awaitingInput' ||
+              current.status === 'interruptRequested'
+            ) {
+              startedRun = { ...current, nativeTurnId }
+            } else {
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Native acknowledgement is not valid for this Run'),
+              )
+            }
+            yield* persistRun(startedRun)
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'accepted', native_turn_id = ${nativeTurnId} WHERE run_id = ${runId}`
+            yield* appendEvent(startedRun, 'runStarted', acknowledgement.acknowledgedAt, { nativeTurnId })
+          }),
+        )
+      }),
+    )
+
+  const loadOwnedDispatch = (runId: string, ownerEpoch: number, requireSession = false) =>
+    Effect.gen(function* () {
+      yield* decodeWorkerEpoch(ownerEpoch)
+      const rows = yield* sql`
+        SELECT i.*, r.task_id AS run_task_id, r.session_id AS run_session_id,
+          r.checkout_id AS run_checkout_id, r.generation AS run_generation, r.payload AS run_payload,
+          t.project_id AS task_project_id, c.project_id AS checkout_project_id, c.payload AS checkout_payload,
+          s.task_id AS session_task_id, s.conversation_id AS session_conversation_id,
+          s.checkout_id AS session_checkout_id, s.generation AS session_generation,
+          s.driver_id AS session_driver_id, s.connection_id AS session_connection_id,
+          s.native_session_id AS session_native_session_id
+        FROM workspace_dispatch_intent i
+        JOIN workspace_agent_run r ON r.id = i.run_id
+        JOIN workspace_task t ON t.id = r.task_id
+        JOIN workspace_checkout c ON c.id = r.checkout_id
+        LEFT JOIN workspace_agent_session s ON s.id = r.session_id
+        WHERE i.run_id = ${runId}
+      `
+      if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Dispatch intent does not exist'))
+      const row = rows[0] as Record<string, unknown>
+      const retired = yield* sql`SELECT retired_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+      if (ownerEpoch <= Number(retired[0]?.retired_epoch ?? 0) || Number(row.owner_epoch) !== ownerEpoch)
+        return yield* Effect.fail(safeError('stale-epoch', 'Operation does not belong to the current worker epoch'))
+
+      const run = yield* decodeRun(String(row.run_payload))
+      if (
+        run.id !== runId ||
+        row.task_id !== row.run_task_id ||
+        row.checkout_id !== row.run_checkout_id ||
+        Number(row.generation) !== Number(row.run_generation) ||
+        run.generation !== Number(row.generation) ||
+        row.task_project_id !== row.checkout_project_id
+      ) {
+        return yield* Effect.fail(safeError('membership-conflict', 'Run, Task and checkout membership is inconsistent'))
+      }
+      const projectId = yield* Schema.decodeUnknownEffect(projectIdSchema)(row.task_project_id).pipe(
+        Effect.mapError(() => safeError('invalid-data', 'Stored project identity failed validation')),
+      )
+      const checkout = yield* decodeJson(workspaceCheckoutSchema)(String(row.checkout_payload))
+      if (checkout.id !== row.checkout_id || checkout.projectId !== projectId)
+        return yield* Effect.fail(safeError('membership-conflict', 'Stored checkout payload has different membership'))
+
+      if (
+        requireSession &&
+        (!run.sessionId ||
+          row.run_session_id !== run.sessionId ||
+          row.session_task_id !== row.task_id ||
+          row.session_conversation_id !== row.conversation_id ||
+          row.session_checkout_id !== row.checkout_id ||
+          Number(row.session_generation) !== Number(row.generation) ||
+          row.session_driver_id !== row.driver_id ||
+          row.session_connection_id !== row.connection_id ||
+          row.session_native_session_id !== row.native_session_id)
+      ) {
+        return yield* Effect.fail(safeError('membership-conflict', 'Agent Session does not match the current Run'))
+      }
+      return { row, run, checkout }
+    })
+
+  const decodeEventData = (kind: unknown, payload: string) =>
+    kind === 'driverEvent'
+      ? decodeJson(
+          Schema.Struct({ eventId: recordDriverEventCommandSchema.fields.eventId, event: agentDriverEventSchema }),
+        )(payload)
+      : decodeJson(Schema.Record(Schema.String, Schema.Unknown))(payload)
+
+  const decodeStoredEvent = (row: Record<string, unknown>) =>
+    Effect.gen(function* () {
+      const data = yield* decodeEventData(row.kind, String(row.payload))
+      return yield* Schema.decodeUnknownEffect(workspaceExecutionEventSchema)({
+        sequence: Number(row.sequence),
+        schemaVersion: Number(row.schema_version),
+        kind: row.kind,
+        runId: row.run_id,
+        taskId: row.task_id,
+        generation: Number(row.generation),
+        occurredAt: row.occurred_at,
+        data,
+      }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored workspace event failed validation')))
+    })
+
+  const recordDriverEvent = (
+    runId: Parameters<WorkspaceStore['Service']['recordDriverEvent']>[0],
+    command: Parameters<WorkspaceStore['Service']['recordDriverEvent']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(recordDriverEventCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Driver event command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { row, run } = yield* loadOwnedDispatch(runId, command.ownerEpoch, true)
+            if (command.generation !== run.generation || command.generation !== Number(row.generation))
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Driver event generation does not match the Run'),
+              )
+
+            const eventFingerprint = fingerprint(command)
+            const prior = yield* sql`
+              SELECT fingerprint, sequence FROM workspace_driver_event_identity
+              WHERE run_id = ${runId} AND event_id = ${command.eventId}
+            `
+            if (prior[0]) {
+              if (prior[0].fingerprint !== eventFingerprint)
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Driver event ID was already used with different input'),
+                )
+              const savedRows = yield* sql`
+                SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload
+                FROM workspace_execution_event WHERE sequence = ${Number(prior[0].sequence)}
+              `
+              if (!savedRows[0])
+                return yield* Effect.fail(safeError('invalid-data', 'Committed driver event is missing'))
+              return yield* decodeStoredEvent(savedRows[0] as Record<string, unknown>)
+            }
+            const boundButUnaccepted = row.state === 'claimed' && row.native_session_id !== null
+            if (row.state !== 'accepted' && !boundButUnaccepted) {
+              if (run.status === 'completed' || run.status === 'failed' || run.status === 'interrupted')
+                return yield* Effect.fail(
+                  safeError('invalid-transition', 'Terminal Run cannot accept another driver event'),
+                )
+              return yield* Effect.fail(safeError('stale-epoch', 'Driver event dispatch is no longer accepted'))
+            }
+
+            const event = command.event as AgentDriverEvent
+            if (
+              (event.kind === 'goalUpdated' ||
+                event.kind === 'goalTurnStarted' ||
+                event.kind === 'goalTurnCompleted') &&
+              (event.nativeSessionId !== row.session_native_session_id || event.generation !== run.generation)
+            ) {
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Native goal event does not match the Run session and generation'),
+              )
+            }
+            if (
+              row.state === 'claimed' &&
+              (event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed')
+            )
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Terminal driver event arrived before native submission was accepted'),
+              )
+            if (event.kind === 'requestPending') {
+              const priorRequest = yield* sql`
+                SELECT state FROM workspace_driver_request_state
+                WHERE run_id = ${runId} AND request_id = ${event.request.requestId}
+              `
+              if (
+                event.request.runId !== run.id ||
+                event.request.generation !== run.generation ||
+                (event.request.sessionId !== undefined && event.request.sessionId !== run.sessionId) ||
+                priorRequest.length > 0
+              ) {
+                return yield* Effect.fail(safeError('membership-conflict', 'Agent request does not belong to this Run'))
+              }
+            } else if (event.kind === 'requestResolved') {
+              const request = yield* sql`
+                SELECT state FROM workspace_driver_request_state
+                WHERE run_id = ${runId} AND request_id = ${event.requestId}
+              `
+              if (request[0]?.state !== 'pending')
+                return yield* Effect.fail(
+                  safeError('membership-conflict', 'Agent request response has no unresolved request in this Run'),
+                )
+            }
+
+            const suppliedTurnId =
+              row.state === 'claimed'
+                ? undefined
+                : event.kind === 'goalTurnStarted' ||
+                    event.kind === 'goalTurnCompleted' ||
+                    event.kind === 'turnStarted' ||
+                    event.kind === 'turnCompleted' ||
+                    event.kind === 'turnInterrupted' ||
+                    event.kind === 'turnFailed'
+                  ? event.nativeTurnId
+                  : undefined
+            const currentTurnId = run.nativeTurnId ?? (row.native_turn_id as string | null) ?? null
+            if (event.kind === 'goalTurnStarted' && (run.goal?.status !== 'active' || currentTurnId !== null))
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Native goal turn can start only after an active goal boundary'),
+              )
+            if (
+              event.kind === 'goalTurnCompleted' &&
+              (run.goal?.status === undefined || currentTurnId !== event.nativeTurnId)
+            )
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Native goal turn completion does not match the active turn'),
+              )
+            if (event.kind === 'turnStarted' && run.goal?.status === 'active')
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Active native goals must use a goal turn boundary'),
+              )
+            if (
+              (event.kind === 'turnCompleted' || event.kind === 'turnInterrupted' || event.kind === 'turnFailed') &&
+              run.goal?.status === 'active'
+            )
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'An active native goal cannot terminate its owning Run'),
+              )
+            if (
+              suppliedTurnId &&
+              ((currentTurnId && suppliedTurnId !== currentTurnId) ||
+                (row.native_turn_id && suppliedTurnId !== row.native_turn_id))
+            ) {
+              return yield* Effect.fail(safeError('membership-conflict', 'Driver event native turn ID changed'))
+            }
+            const nativeTurnId = suppliedTurnId ?? currentTurnId
+            let updatedRun = run
+            const transitionWithNativeId = (
+              status: AgentRunStatus,
+              details: Parameters<typeof transitionAgentRun>[3] = {},
+            ) =>
+              transition(run, status, command.occurredAt, {
+                ...details,
+                ...(nativeTurnId !== null ? { nativeTurnId } : {}),
+              })
+
+            if (run.status === 'completed' || run.status === 'failed' || run.status === 'interrupted')
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Terminal Run cannot accept another driver event'),
+              )
+            switch (event.kind) {
+              case 'goalUpdated':
+                updatedRun = { ...run, goal: event.goal }
+                if (event.goal?.status === 'active' && updatedRun.status === 'starting')
+                  updatedRun = yield* transition(updatedRun, 'running', command.occurredAt)
+                break
+              case 'goalTurnStarted':
+                {
+                  const boundary = startAgentGoalTurn(run, event.nativeTurnId, command.occurredAt)
+                  if (!boundary.ok)
+                    return yield* Effect.fail(
+                      safeError('invalid-transition', 'Goal turn start is not valid for this Run'),
+                    )
+                  updatedRun = boundary.run
+                }
+                break
+              case 'goalTurnCompleted':
+                {
+                  const boundary = completeAgentGoalTurn(run, event.nativeTurnId)
+                  if (!boundary.ok)
+                    return yield* Effect.fail(
+                      safeError('invalid-transition', 'Goal turn completion does not match the active turn'),
+                    )
+                  updatedRun = boundary.run
+                }
+                break
+              case 'capabilitiesUpdated':
+                if (run.sessionId)
+                  yield* sql`UPDATE workspace_agent_session SET capabilities = ${encode(event.capabilities)} WHERE id = ${run.sessionId}`
+                break
+              case 'turnStarted':
+                if (run.status === 'starting' || run.status === 'awaitingInput')
+                  updatedRun = yield* transitionWithNativeId('running')
+                else if (run.status !== 'running' && run.status !== 'interruptRequested')
+                  return yield* Effect.fail(safeError('invalid-transition', 'Turn start is not valid for this Run'))
+                break
+              case 'turnCompleted':
+                updatedRun = yield* transitionWithNativeId('completed')
+                break
+              case 'turnInterrupted':
+                updatedRun = yield* transitionWithNativeId('interrupted')
+                break
+              case 'turnFailed':
+                updatedRun = yield* transitionWithNativeId('failed', { failure: 'driver-failed' })
+                break
+              case 'requestPending':
+                if (run.status === 'running') updatedRun = yield* transitionWithNativeId('awaitingInput')
+                else if (run.status === 'starting') {
+                  const started = yield* transition(run, 'running', command.occurredAt)
+                  updatedRun = yield* transition(started, 'awaitingInput', command.occurredAt)
+                } else if (run.status !== 'awaitingInput' && run.status !== 'interruptRequested')
+                  return yield* Effect.fail(safeError('invalid-transition', 'Agent request is not valid for this Run'))
+                break
+              case 'requestResolved':
+                if (run.status === 'awaitingInput') {
+                  const unresolvedRequests = yield* sql`
+                    SELECT request_id FROM workspace_driver_request_state
+                    WHERE run_id = ${runId} AND state = 'pending' AND request_id <> ${event.requestId}
+                  `
+                  if (unresolvedRequests.length === 0) updatedRun = yield* transitionWithNativeId('running')
+                } else if (run.status !== 'running' && run.status !== 'interruptRequested')
+                  return yield* Effect.fail(safeError('invalid-transition', 'Agent response is not valid for this Run'))
+                break
+              default:
+                break
+            }
+            if (event.kind !== 'goalTurnCompleted' && nativeTurnId !== null && updatedRun.nativeTurnId !== nativeTurnId)
+              updatedRun = { ...updatedRun, nativeTurnId }
+
+            yield* persistRun(updatedRun)
+            if (event.kind === 'requestPending') {
+              yield* sql`
+                INSERT INTO workspace_driver_request_state (run_id, request_id, state)
+                VALUES (${runId}, ${event.request.requestId}, 'pending')
+              `
+            } else if (event.kind === 'requestResolved') {
+              yield* sql`
+                UPDATE workspace_driver_request_state SET state = 'resolved'
+                WHERE run_id = ${runId} AND request_id = ${event.requestId} AND state = 'pending'
+              `
+              const responses =
+                yield* sql`SELECT payload FROM workspace_request_response_intent WHERE run_id = ${runId} AND request_id = ${event.requestId}`
+              if (responses[0]) {
+                const response = yield* decodeJson(requestResponseIntentSchema)(String(responses[0].payload))
+                yield* sql`UPDATE workspace_request_response_intent SET state = 'resolved', payload = ${encode({ ...response, state: 'resolved' })} WHERE run_id = ${runId} AND request_id = ${event.requestId}`
+              }
+            } else if (
+              event.kind === 'turnCompleted' ||
+              event.kind === 'turnInterrupted' ||
+              event.kind === 'turnFailed'
+            ) {
+              yield* sql`
+                UPDATE workspace_driver_request_state SET state = 'expired'
+                WHERE run_id = ${runId} AND state = 'pending'
+              `
+              yield* sql`
+                UPDATE workspace_dispatch_intent SET state = 'settled'
+                WHERE run_id = ${runId} AND state = 'accepted'
+              `
+            }
+            if (nativeTurnId !== null)
+              yield* sql`UPDATE workspace_dispatch_intent SET native_turn_id = ${nativeTurnId} WHERE run_id = ${runId}`
+            else if (event.kind === 'goalTurnCompleted')
+              yield* sql`UPDATE workspace_dispatch_intent SET native_turn_id = NULL WHERE run_id = ${runId}`
+            const storedEvent =
+              row.state === 'claimed' && suppliedTurnId !== undefined
+                ? { ...event, nativeTurnId: undefined }
+                : command.event
+            const data = { eventId: command.eventId, event: storedEvent }
+            const sequence = yield* appendEvent(updatedRun, 'driverEvent', command.occurredAt, data)
+            const requestChanged = event.kind === 'requestPending' || event.kind === 'requestResolved'
+            if (requestChanged || updatedRun.status !== run.status)
+              yield* syncDelegationLiveState(updatedRun, requestChanged)
+            yield* sql`
+              INSERT INTO workspace_driver_event_identity (run_id, event_id, fingerprint, sequence)
+              VALUES (${runId}, ${command.eventId}, ${eventFingerprint}, ${sequence})
+            `
+            return yield* Schema.decodeUnknownEffect(workspaceExecutionEventSchema)({
+              sequence,
+              schemaVersion: 1,
+              kind: 'driverEvent',
+              runId: updatedRun.id,
+              taskId: updatedRun.taskId,
+              generation: updatedRun.generation,
+              occurredAt: command.occurredAt,
+              data,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Committed driver event failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const recordConversationHandoff = (
+    runId: Parameters<WorkspaceStore['Service']['recordConversationHandoff']>[0],
+    command: Parameters<WorkspaceStore['Service']['recordConversationHandoff']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(recordConversationHandoffCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Conversation handoff metadata is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { row, run } = yield* loadOwnedDispatch(runId, decoded.ownerEpoch)
+            if (row.state !== 'claimed' || run.sessionId != null)
+              return yield* Effect.fail(safeError('invalid-transition', 'Context handoff must precede session startup'))
+            const prior = yield* sql`
+              SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload
+              FROM workspace_execution_event WHERE run_id = ${runId} AND kind = 'contextHandoff'
+              ORDER BY sequence LIMIT 1
+            `
+            if (prior[0]) return yield* decodeStoredEvent(prior[0] as Record<string, unknown>)
+            const sequence = yield* appendEvent(run, 'contextHandoff', decoded.occurredAt, decoded.handoff)
+            const rows = yield* sql`
+              SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload
+              FROM workspace_execution_event WHERE sequence = ${sequence}
+            `
+            if (!rows[0]) return yield* Effect.fail(safeError('invalid-data', 'Committed handoff event is missing'))
+            return yield* decodeStoredEvent(rows[0] as Record<string, unknown>)
+          }),
+        )
+      }),
+    )
+
+  // Side chat bring-back: a pending transfer on the parent Conversation, consumed by its next Run.
+  const decodeBringBack = decodeJson(sideChatBringBackRecordSchema)
+  const writeBringBack = (record: SideChatBringBackRecord) =>
+    sql`UPDATE workspace_side_chat_bring_back SET status = ${record.status}, payload = ${encode(record)}, consumed_run_id = ${record.consumedRunId} WHERE id = ${record.id}`
+  const pendingBringBackFor = Effect.fnUntraced(function* (parentConversationId: string) {
+    const rows =
+      yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE parent_conversation_id = ${parentConversationId} AND status = 'pending'`
+    return rows[0] ? yield* decodeBringBack(String(rows[0].payload)) : null
+  })
+  // A pre-submit failure never reached the driver, so its consumed bring-back waits for the next Run.
+  const releaseSideChatBringBacks = Effect.fnUntraced(function* (runId: string) {
+    const rows =
+      yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE consumed_run_id = ${runId} AND status = 'consumed'`
+    for (const row of rows) {
+      const record = yield* decodeBringBack(String(row.payload))
+      const pending = yield* pendingBringBackFor(record.parentConversationId)
+      yield* writeBringBack(
+        pending
+          ? { ...record, status: 'superseded', consumedRunId: null, consumedAt: null }
+          : { ...record, status: 'pending', consumedRunId: null, consumedAt: null },
+      )
+    }
+  })
+
+  const recordSideChatBringBackInTransaction = Effect.fnUntraced(function* (decoded: SideChatBringBackRecord) {
+    const busy = yield* sql`
+      SELECT 1 FROM workspace_agent_run r
+      JOIN workspace_dispatch_intent i ON i.run_id = r.id
+      WHERE i.conversation_id = ${decoded.parentConversationId}
+        AND r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+      LIMIT 1
+    `
+    const queued =
+      yield* sql`SELECT 1 FROM workspace_follow_up_queue WHERE conversation_id = ${decoded.parentConversationId} LIMIT 1`
+    if (busy[0] || queued[0]) return { _tag: 'parent-busy' } as const
+    const pending = yield* pendingBringBackFor(decoded.parentConversationId)
+    if (pending && pending.sideChatId !== decoded.sideChatId)
+      return { _tag: 'bring-back-pending', pendingSideChatId: pending.sideChatId } as const
+    if (pending) yield* writeBringBack({ ...pending, status: 'superseded' })
+    const recorded: SideChatBringBackRecord = { ...decoded, status: 'pending', consumedRunId: null, consumedAt: null }
+    yield* sql`INSERT INTO workspace_side_chat_bring_back (id, parent_conversation_id, side_chat_id, status, payload, created_at, consumed_run_id) VALUES (${recorded.id}, ${recorded.parentConversationId}, ${recorded.sideChatId}, 'pending', ${encode(recorded)}, ${recorded.createdAt}, NULL)`
+    return { _tag: 'recorded', record: recorded, supersedesId: pending?.id ?? null } as const
+  })
+
+  const recordSideChatBringBack = (record: SideChatBringBackRecord) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(sideChatBringBackRecordSchema)(record).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Side chat bring-back data is invalid')),
+        )
+        const outcome: SideChatBringBackOutcome = yield* sql.withTransaction(
+          recordSideChatBringBackInTransaction(decoded),
+        )
+        return outcome
+      }),
+    )
+
+  const consumeSideChatBringBack = (runId: AgentRunId, command: ConsumeSideChatBringBackCommand) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(consumeSideChatBringBackCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Side chat bring-back command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { row, run } = yield* loadOwnedDispatch(runId, decoded.ownerEpoch)
+            if (row.state !== 'claimed')
+              return yield* Effect.fail(safeError('invalid-transition', 'Side chat bring-back requires a claimed Run'))
+            const consumed =
+              yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE consumed_run_id = ${runId} AND status = 'consumed' LIMIT 1`
+            if (consumed[0]) return yield* decodeBringBack(String(consumed[0].payload))
+            const pending = yield* pendingBringBackFor(String(row.conversation_id))
+            if (!pending) return null
+            const next: SideChatBringBackRecord = {
+              ...pending,
+              status: 'consumed',
+              consumedRunId: run.id,
+              consumedAt: decoded.occurredAt,
+            }
+            yield* writeBringBack(next)
+            yield* appendEvent(run, 'sideChatBringBack', decoded.occurredAt, {
+              bringBackId: pending.id,
+              sideChatId: pending.sideChatId,
+              sourceRunId: pending.sourceRunId,
+              title: pending.title,
+            })
+            return next
+          }),
+        )
+      }),
+    )
+
+  const readPendingSideChatBringBack = (conversationId: ConversationId) => guard(pendingBringBackFor(conversationId))
+
+  const deleteSideChatTask = (command: DeleteSideChatTaskCommand) =>
+    guard(
+      Effect.gen(function* () {
+        const decoded = yield* Schema.decodeUnknownEffect(deleteSideChatTaskCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Side chat delete command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const id = decoded.sideTaskId
+            const tasks = yield* sql`SELECT id FROM workspace_task WHERE id = ${id} AND side_chat = 1`
+            if (tasks[0]) {
+              if (decoded.onlyIfUnused) {
+                // A Run that failed before its driver opened a native session did no agent work.
+                const active =
+                  yield* sql`SELECT 1 FROM workspace_agent_run WHERE task_id = ${id} AND status <> 'failed' LIMIT 1`
+                const native =
+                  yield* sql`SELECT 1 FROM workspace_agent_session WHERE task_id = ${id} AND native_session_id IS NOT NULL LIMIT 1`
+                if (active[0] || native[0]) return false
+              }
+              yield* sql`DELETE FROM workspace_driver_event_identity WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_driver_request_state WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_request_response_intent WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_steer_intent WHERE run_id IN (SELECT id FROM workspace_agent_run WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_message WHERE conversation_id IN (SELECT id FROM workspace_conversation WHERE task_id = ${id})`
+              yield* sql`DELETE FROM workspace_follow_up_queue WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_dispatch_intent WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_execution_event WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_agent_run WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_agent_session WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_conversation WHERE task_id = ${id}`
+              yield* sql`DELETE FROM workspace_task WHERE id = ${id}`
+              // The side chat's createTask receipt would otherwise replay a Task that no longer exists.
+              yield* sql`DELETE FROM workspace_command_receipt WHERE command_id = ${receiptKey(`create-${decoded.sideChatId}`)}`
+            }
+            const pending =
+              yield* sql`SELECT payload FROM workspace_side_chat_bring_back WHERE side_chat_id = ${decoded.sideChatId} AND status = 'pending'`
+            for (const row of pending) {
+              const record = yield* decodeBringBack(String(row.payload))
+              yield* writeBringBack({ ...record, status: 'cancelled' })
+            }
+            return true
+          }),
+        )
+      }),
+    )
+
+  const failDispatch = (
+    runId: Parameters<WorkspaceStore['Service']['failDispatch']>[0],
+    command: Parameters<WorkspaceStore['Service']['failDispatch']>[1],
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(dispatchFailureCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Dispatch failure command is invalid')),
+        )
+        yield* decodeWorkerEpoch(command.ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const intentRows = yield* sql`
+              SELECT i.state, i.owner_epoch, r.payload AS run_payload
+              FROM workspace_dispatch_intent i
+              JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.run_id = ${runId}
+            `
+            if (!intentRows[0]) return yield* Effect.fail(safeError('not-found', 'Dispatch intent does not exist'))
+            let row = intentRows[0] as Record<string, unknown>
+            let run: AgentRun
+            const pendingLaunchFailure = row.state === 'pending' && row.owner_epoch === null
+            if (pendingLaunchFailure) {
+              if (command.outcome !== 'failed' || command.reason !== 'launch-failed')
+                return yield* Effect.fail(
+                  safeError('invalid-transition', 'Pending dispatch can only fail before launch'),
+                )
+              const worker = yield* sql`SELECT retired_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+              if (command.ownerEpoch <= Number(worker[0]?.retired_epoch ?? 0))
+                return yield* Effect.fail(safeError('stale-epoch', 'Worker epoch has already been retired'))
+              run = yield* decodeRun(String(row.run_payload))
+            } else {
+              const owned = yield* loadOwnedDispatch(runId, command.ownerEpoch)
+              row = owned.row
+              run = owned.run
+            }
+            if (
+              ((row.state === 'failed' && run.status === 'failed') ||
+                (row.state === 'uncertain' && run.status === 'uncertain')) &&
+              run.failure === command.reason
+            ) {
+              return
+            }
+            const definitePreSubmitFailure =
+              (row.state === 'pending' || row.state === 'claimed') &&
+              command.outcome === 'failed' &&
+              command.reason === 'launch-failed'
+            const outcome = definitePreSubmitFailure ? 'failed' : 'uncertain'
+            const terminalStatus = outcome === 'failed' ? 'failed' : 'uncertain'
+            if (row.state !== 'pending' && row.state !== 'claimed' && row.state !== 'accepted')
+              return yield* Effect.fail(safeError('invalid-transition', 'Dispatch can no longer be failed'))
+            const failedRun = yield* transition(run, terminalStatus, command.occurredAt, {
+              failure: command.reason,
+            })
+            yield* persistRun(failedRun)
+            yield* sql`UPDATE workspace_driver_request_state SET state = 'expired' WHERE run_id = ${runId} AND state = 'pending'`
+            yield* syncDelegationLiveState(failedRun)
+            if (pendingLaunchFailure) {
+              yield* sql`
+                UPDATE workspace_dispatch_intent SET state = 'failed', owner_epoch = ${command.ownerEpoch}
+                WHERE run_id = ${runId} AND state = 'pending' AND owner_epoch IS NULL
+              `
+            } else {
+              yield* sql`UPDATE workspace_dispatch_intent SET state = ${outcome} WHERE run_id = ${runId}`
+            }
+            if (outcome === 'failed') yield* releaseSideChatBringBacks(runId)
+            yield* appendEvent(
+              failedRun,
+              terminalStatus === 'failed' ? 'runFailed' : 'runUncertain',
+              command.occurredAt,
+              {
+                reason: command.reason,
+              },
+            )
+          }),
+        )
+      }),
+    )
+
+  const requestInterrupt = (
+    runId: Parameters<WorkspaceStore['Service']['requestInterrupt']>[0],
+    ownerEpoch: number,
+    requestedAt: string,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* Schema.decodeUnknownEffect(timestampSchema)(requestedAt).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Interrupt request timestamp is invalid')),
+        )
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { row, run } = yield* loadOwnedDispatch(runId, ownerEpoch)
+            if (run.status === 'interruptRequested') return
+            if (row.state !== 'claimed' && row.state !== 'accepted')
+              return yield* Effect.fail(
+                safeError('invalid-transition', 'Run cannot be interrupted in its current state'),
+              )
+            const interrupted = yield* transition(run, 'interruptRequested', requestedAt)
+            yield* persistRun(interrupted)
+            yield* syncDelegationLiveState(interrupted)
+            yield* appendEvent(interrupted, 'runInterruptRequested', requestedAt, { ownerEpoch })
+          }),
+        )
+      }),
+    )
+
+  function deliveryOutcome(command: SettleDeliveryCommand): WorkspaceDeliveryOutcome {
+    return {
+      outcome: command.outcome,
+      ...(command.nativeConfirmation === undefined ? {} : { nativeConfirmation: command.nativeConfirmation }),
+      ...(command.nativeRequestId === undefined ? {} : { nativeRequestId: command.nativeRequestId }),
+    }
+  }
+
+  const replayReceipt = Effect.fnUntraced(function* (kind: ReceiptKind, command: { readonly commandId: string }) {
+    const { prior } = yield* lookupReceipt(command.commandId)
+    if (!prior[0]) return undefined
+    if (!matchesReceipt(String(prior[0].fingerprint), kind, command))
+      return yield* Effect.fail(safeError('command-conflict', 'Command ID was already used with different input'))
+    const receipt = yield* decodeJson(commandReceiptSchema)(String(prior[0].payload))
+    return { ...receipt, replayed: true }
+  })
+
+  const saveReceipt = Effect.fnUntraced(function* (
+    kind: ReceiptKind,
+    command: {
+      readonly commandId: string
+      readonly runId: AgentRun['id']
+      readonly issuedAt: string
+    },
+  ) {
+    const receipt: CommandReceipt = {
+      commandId: command.commandId,
+      runId: command.runId,
+      acceptedAt: command.issuedAt,
+      replayed: false,
+    }
+    const { key: commandKey } = yield* lookupReceipt(command.commandId)
+    yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint(kind, command)}, ${encode(receipt)})`
+    return receipt
+  })
+
+  const validateCommandBytes = (command: unknown) =>
+    Buffer.byteLength(encode(command), 'utf8') <= WORKSPACE_STORE_COMMAND_BYTE_CAPACITY
+      ? Effect.void
+      : Effect.fail(safeError('invalid-data', 'Workspace command exceeds the byte limit'))
+
+  const recordRequestResponse: WorkspaceStore['Service']['recordRequestResponse'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(recordRequestResponseCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Request response command is invalid')),
+        )
+        yield* validateCommandBytes(command)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const replay = yield* replayReceipt('recordRequestResponse', command)
+            if (replay) return replay
+            const { run } = yield* loadOwnedDispatch(command.runId, command.ownerEpoch, true)
+            const pending =
+              yield* sql`SELECT state FROM workspace_driver_request_state WHERE run_id = ${command.runId} AND request_id = ${command.requestId}`
+            const prior =
+              yield* sql`SELECT state FROM workspace_request_response_intent WHERE run_id = ${command.runId} AND request_id = ${command.requestId}`
+            if (run.generation !== command.generation || pending[0]?.state !== 'pending' || prior.length > 0)
+              return yield* Effect.fail(safeError('stale-request', 'Request is no longer available for a response'))
+            const intent = { ...command, state: 'pending' as const }
+            yield* sql`INSERT INTO workspace_request_response_intent (run_id, request_id, state, payload) VALUES (${command.runId}, ${command.requestId}, 'pending', ${encode(intent)})`
+            yield* appendEvent(run, 'requestResponseRecorded', command.issuedAt, {
+              commandId: command.commandId,
+              requestId: command.requestId,
+            })
+            return yield* saveReceipt('recordRequestResponse', command)
+          }),
+        )
+      }),
+    )
+
+  const settleRequestResponse: WorkspaceStore['Service']['settleRequestResponse'] = (runId, requestId, outcome) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(settleDeliveryCommandSchema)(outcome).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delivery outcome is invalid')),
+        )
+        yield* validateCommandBytes(outcome)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { run } = yield* loadOwnedDispatch(runId, outcome.ownerEpoch, true)
+            const rows =
+              yield* sql`SELECT payload FROM workspace_request_response_intent WHERE run_id = ${runId} AND request_id = ${requestId}`
+            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Request response intent does not exist'))
+            const intent = yield* decodeJson(requestResponseIntentSchema)(String(rows[0].payload))
+            const delivery = deliveryOutcome(outcome)
+            if (intent.delivery) {
+              if (fingerprint(intent.delivery) === fingerprint(delivery)) return
+              return yield* Effect.fail(safeError('invalid-transition', 'Delivery was already settled'))
+            }
+            const state = intent.state === 'resolved' ? 'resolved' : outcome.outcome
+            yield* sql`UPDATE workspace_request_response_intent SET state = ${state}, payload = ${encode({ ...intent, state, delivery })} WHERE run_id = ${runId} AND request_id = ${requestId}`
+            yield* appendEvent(run, 'requestResponseSettled', outcome.occurredAt, { requestId, ...delivery })
+          }),
+        )
+      }),
+    )
+
+  const recordSteer: WorkspaceStore['Service']['recordSteer'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(recordSteerCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Steering command is invalid')),
+        )
+        yield* validateCommandBytes(command)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const replay = yield* replayReceipt('recordSteer', command)
+            if (replay) return replay
+            const { run } = yield* loadOwnedDispatch(command.runId, command.ownerEpoch)
+            if (run.status === 'completed' || run.status === 'failed' || run.status === 'interrupted')
+              return yield* Effect.fail(safeError('invalid-transition', 'Terminal Run cannot accept steering'))
+            if (
+              command.generation !== run.generation ||
+              (command.expectedNativeTurnId !== undefined && command.expectedNativeTurnId !== run.nativeTurnId)
+            )
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Steering does not match the current generation or native turn'),
+              )
+            yield* sql`INSERT INTO workspace_steer_intent (command_id, run_id, state, payload) VALUES (${command.commandId}, ${command.runId}, 'pending', ${encode({ ...command, state: 'pending' })})`
+            yield* appendEvent(run, 'steerRecorded', command.issuedAt, { commandId: command.commandId })
+            return yield* saveReceipt('recordSteer', command)
+          }),
+        )
+      }),
+    )
+
+  const settleSteer: WorkspaceStore['Service']['settleSteer'] = (runId, commandId, outcome) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(settleDeliveryCommandSchema)(outcome).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delivery outcome is invalid')),
+        )
+        yield* validateCommandBytes(outcome)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { run } = yield* loadOwnedDispatch(runId, outcome.ownerEpoch)
+            const rows =
+              yield* sql`SELECT payload FROM workspace_steer_intent WHERE run_id = ${runId} AND command_id = ${commandId}`
+            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Steering intent does not exist'))
+            const intent = yield* decodeJson(steerIntentSchema)(String(rows[0].payload))
+            const delivery = deliveryOutcome(outcome)
+            if (intent.delivery) {
+              if (fingerprint(intent.delivery) === fingerprint(delivery)) return
+              return yield* Effect.fail(safeError('invalid-transition', 'Delivery was already settled'))
+            }
+            yield* sql`UPDATE workspace_steer_intent SET state = ${outcome.outcome}, payload = ${encode({ ...intent, state: outcome.outcome, delivery })} WHERE run_id = ${runId} AND command_id = ${commandId}`
+            yield* appendEvent(run, 'steerSettled', outcome.occurredAt, { commandId, ...delivery })
+          }),
+        )
+      }),
+    )
+
+  const enqueueFollowUp: WorkspaceStore['Service']['enqueueFollowUp'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(enqueueFollowUpCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Follow-up command is invalid')),
+        )
+        yield* validateCommandBytes(command)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'enqueueFollowUp', command))
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const receipt = yield* decodeJson(followUpReceiptSchema)(String(prior[0].payload))
+              return { ...receipt, replayed: true }
+            }
+            const membership =
+              yield* sql`SELECT c.task_id, t.archived FROM workspace_conversation c JOIN workspace_task t ON t.id = c.task_id WHERE c.id = ${command.conversationId}`
+            if (!membership[0]) return yield* Effect.fail(safeError('not-found', 'Conversation does not exist'))
+            if (membership[0].task_id !== command.taskId || membership[0].archived)
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Follow-up must belong to an active Task and Conversation'),
+              )
+            const priorQueue =
+              yield* sql`SELECT held FROM workspace_follow_up_queue WHERE conversation_id = ${command.conversationId} ORDER BY position LIMIT 1`
+            const held = Number(priorQueue[0]?.held ?? 0) === 1
+            yield* sql`INSERT INTO workspace_follow_up_queue (command_id, task_id, conversation_id, payload, held) VALUES (${command.commandId}, ${command.taskId}, ${command.conversationId}, ${encode(command)}, ${held ? 1 : 0})`
+            const receipt = {
+              commandId: command.commandId,
+              conversationId: command.conversationId,
+              acceptedAt: command.issuedAt,
+              replayed: false,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('enqueueFollowUp', command)}, ${encode(receipt)})`
+            return receipt
+          }),
+        )
+      }),
+    )
+
+  const readScratchBinding = Effect.fnUntraced(function* (conversationId: BeginRunCommand['conversationId']) {
+    const bindings = yield* sql`
+      SELECT COALESCE(
+        json_extract(c.payload, '$.inheritedCheckoutId'),
+        (SELECT json_extract(d.payload, '$.checkoutId') FROM workspace_delegation d
+          WHERE d.child_conversation_id = c.id AND d.child_task_id = t.id),
+        (SELECT w.id FROM workspace_checkout w WHERE w.project_id = t.project_id
+          AND json_extract(w.payload, '$.scratchConversationId') = c.id
+          AND json_extract(w.payload, '$.archivedAt') IS NULL LIMIT 1)
+      ) AS checkout_id
+      FROM workspace_conversation c
+      JOIN workspace_task t ON t.id = c.task_id
+      JOIN workspace_project p ON p.id = t.project_id
+      WHERE json_extract(p.payload, '$.isScratch') = 1 AND c.id = ${conversationId}
+    `
+    return bindings[0]?.checkout_id
+      ? yield* Schema.decodeUnknownEffect(workspaceCheckoutIdSchema)(bindings[0].checkout_id)
+      : null
+  })
+
+  const decodeQueuedFollowUp = Effect.fnUntraced(function* (row: Record<string, unknown>) {
+    const command = yield* decodeJson(enqueueFollowUpCommandSchema)(String(row.payload))
+    const checkoutId =
+      command.checkoutId === SCRATCH_ROOT_CHECKOUT_ID
+        ? ((yield* readScratchBinding(command.conversationId)) ?? command.checkoutId)
+        : command.checkoutId
+    return yield* Schema.decodeUnknownEffect(queuedFollowUpSchema)({
+      ...command,
+      checkoutId,
+      position: Number(row.position),
+      held: Number(row.held ?? 0) === 1,
+    }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored follow-up failed validation')))
+  })
+
+  const decodeReadOptions = (options: WorkspaceReadPageOptions = {}) =>
+    Schema.decodeUnknownEffect(workspaceReadPageOptionsSchema)(options).pipe(
+      Effect.map(options => ({ afterPosition: options.afterPosition ?? 0, limit: options.limit ?? 20 })),
+      Effect.mapError(() => safeError('invalid-data', 'Workspace read cursor or limit is invalid')),
+    )
+
+  function boundedItems<A>(items: ReadonlyArray<A>, byteBudget: number, atLeastOne = false): Array<A> {
+    const selected: Array<A> = []
+    let bytes = 1024
+    for (const item of items) {
+      const size = Buffer.byteLength(encode(item), 'utf8') + 1
+      if (bytes + size > byteBudget && (!atLeastOne || selected.length > 0)) break
+      selected.push(item)
+      bytes += size
+    }
+    return selected
+  }
+
+  function readPage<A extends { readonly position: number }>(
+    items: ReadonlyArray<A>,
+    total: number,
+    remaining: number,
+  ) {
+    const selected = boundedItems(items, 1536 * 1024, true)
+    const truncated = remaining > selected.length
+    return {
+      items: selected,
+      total,
+      truncated,
+      nextAfterPosition: truncated ? (selected[selected.length - 1]?.position ?? null) : null,
+    }
+  }
+
+  const listQueuedFollowUps: WorkspaceStore['Service']['listQueuedFollowUps'] = (conversationId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN position > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId}`
+            const rows =
+              yield* sql`SELECT position, payload, held FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} AND position > ${afterPosition} ORDER BY position LIMIT ${limit}`
+            const items = yield* Effect.forEach(rows, decodeQueuedFollowUp)
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const listQueuedFollowUpHeads: WorkspaceStore['Service']['listQueuedFollowUpHeads'] = options =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts = yield* sql`
+              SELECT COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN head.position > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining
+              FROM workspace_follow_up_queue head
+              WHERE head.position = (
+                SELECT MIN(candidate.position) FROM workspace_follow_up_queue candidate
+                WHERE candidate.conversation_id = head.conversation_id
+              )
+            `
+            const rows = yield* sql`
+              SELECT head.position, head.payload, head.held,
+                task.project_id, intent.checkout_id, intent.driver_id, intent.connection_id,
+                run.generation, run.status AS run_status,
+                session.native_session_id, session.status AS session_status
+              FROM workspace_follow_up_queue head
+              JOIN workspace_conversation conversation ON conversation.id = head.conversation_id
+              JOIN workspace_task task ON task.id = conversation.task_id
+              LEFT JOIN workspace_dispatch_intent intent ON intent.run_id = (
+                SELECT latest.run_id
+                FROM workspace_dispatch_intent latest
+                JOIN workspace_agent_run latest_run ON latest_run.id = latest.run_id
+                WHERE latest.conversation_id = head.conversation_id
+                ORDER BY latest_run.rowid DESC LIMIT 1
+              )
+              LEFT JOIN workspace_agent_run run ON run.id = intent.run_id
+              LEFT JOIN workspace_agent_session session ON session.id = run.session_id
+              WHERE head.position > ${afterPosition}
+                AND head.position = (
+                  SELECT MIN(candidate.position) FROM workspace_follow_up_queue candidate
+                  WHERE candidate.conversation_id = head.conversation_id
+                )
+              ORDER BY head.position LIMIT ${limit}
+            `
+            const items = yield* Effect.forEach(rows, row =>
+              Effect.gen(function* () {
+                const queued = yield* decodeQueuedFollowUp(row as Record<string, unknown>)
+                const context = row.run_status
+                  ? {
+                      projectId: String(row.project_id),
+                      checkoutId: String(row.checkout_id),
+                      driverId: String(row.driver_id),
+                      connectionId: String(row.connection_id),
+                      generation: Number(row.generation),
+                      nativeSessionId: row.native_session_id === null ? null : String(row.native_session_id),
+                      sessionStatus: row.session_status === null ? null : String(row.session_status),
+                      runStatus: String(row.run_status),
+                    }
+                  : null
+                return yield* Schema.decodeUnknownEffect(queuedFollowUpHeadSchema)({ ...queued, context }).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored follow-up head context failed validation')),
+                )
+              }),
+            )
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const holdQueuedFollowUps: WorkspaceStore['Service']['holdQueuedFollowUps'] = (conversationId, ownerEpoch) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const worker =
+              yield* sql`SELECT retired_epoch, allocated_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+            const retiredEpoch = Number(worker[0]?.retired_epoch ?? 0)
+            const allocatedEpoch = Number(worker[0]?.allocated_epoch ?? 0)
+            if (ownerEpoch <= retiredEpoch || (allocatedEpoch > 0 && ownerEpoch !== allocatedEpoch))
+              return yield* Effect.fail(safeError('stale-epoch', 'Queue hold owner epoch is stale'))
+            yield* sql`UPDATE workspace_follow_up_queue SET held = 1 WHERE conversation_id = ${conversationId}`
+          }),
+        )
+      }),
+    )
+
+  const listRequestResponses: WorkspaceStore['Service']['listRequestResponses'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN i.rowid > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const rows =
+              yield* sql`SELECT i.rowid AS position, i.payload FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} AND i.rowid > ${afterPosition} ORDER BY i.rowid LIMIT ${limit}`
+            const items = yield* Effect.forEach(rows, row =>
+              Effect.gen(function* () {
+                const intent = yield* decodeJson(requestResponseIntentSchema)(String(row.payload))
+                return yield* Schema.decodeUnknownEffect(requestResponseHistoryItemSchema)({
+                  ...intent,
+                  position: Number(row.position),
+                }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored response cursor failed validation')))
+              }),
+            )
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const listSteerIntents: WorkspaceStore['Service']['listSteerIntents'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterPosition, limit } = yield* decodeReadOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN i.rowid > ${afterPosition} THEN 1 ELSE 0 END), 0) AS remaining FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const rows =
+              yield* sql`SELECT i.rowid AS position, i.payload FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} AND i.rowid > ${afterPosition} ORDER BY i.rowid LIMIT ${limit}`
+            const items = yield* Effect.forEach(rows, row =>
+              Effect.gen(function* () {
+                const intent = yield* decodeJson(steerIntentSchema)(String(row.payload))
+                return yield* Schema.decodeUnknownEffect(steerHistoryItemSchema)({
+                  ...intent,
+                  position: Number(row.position),
+                }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored steering cursor failed validation')))
+              }),
+            )
+            return readPage(items, Number(counts[0]?.total ?? 0), Number(counts[0]?.remaining ?? 0))
+          }),
+        )
+      }),
+    )
+
+  const cancelQueuedFollowUp: WorkspaceStore['Service']['cancelQueuedFollowUp'] = (conversationId, commandId) =>
+    guard(
+      sql`DELETE FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} AND command_id = ${commandId}`.pipe(
+        Effect.asVoid,
+      ),
+    )
+
+  // Beginning the Run in the dequeue transaction prevents loss or double promotion after a crash.
+  const promoteNextFollowUp: WorkspaceStore['Service']['promoteNextFollowUp'] = (conversationId, command) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(beginRunCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Promotion Run command is invalid')),
+        )
+        if (command.conversationId !== conversationId)
+          return yield* Effect.fail(safeError('membership-conflict', 'Promotion Conversation does not match the Run'))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (
+                !matchesReceipt(String(prior[0].fingerprint), 'promoteFollowUp', command) ||
+                prior[0].promotion_payload == null
+              )
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const promoted = yield* decodeJson(promotedFollowUpSchema)(String(prior[0].promotion_payload))
+              return { ...promoted, receipt: { ...promoted.receipt, replayed: true } }
+            }
+            const active =
+              yield* sql`SELECT r.id FROM workspace_agent_run r JOIN workspace_dispatch_intent i ON i.run_id = r.id WHERE i.conversation_id = ${conversationId} AND r.status NOT IN ('completed', 'failed', 'interrupted') AND i.state NOT IN ('settled', 'failed') LIMIT 1`
+            if (active.length > 0) return null
+            yield* sql`UPDATE workspace_follow_up_queue SET held = 0 WHERE conversation_id = ${conversationId}`
+            const head =
+              yield* sql`SELECT position, payload FROM workspace_follow_up_queue WHERE conversation_id = ${conversationId} ORDER BY position LIMIT 1`
+            if (!head[0]) return null
+            const followUpCommand = yield* decodeJson(enqueueFollowUpCommandSchema)(String(head[0].payload))
+            if (followUpCommand.taskId !== command.taskId)
+              return yield* Effect.fail(
+                safeError('membership-conflict', 'Promotion Task does not match queued follow-up'),
+              )
+            const requestedCheckoutId = followUpCommand.checkoutId ?? command.checkoutId
+            const checkoutId =
+              requestedCheckoutId === SCRATCH_ROOT_CHECKOUT_ID
+                ? ((yield* readScratchBinding(conversationId)) ?? requestedCheckoutId)
+                : requestedCheckoutId
+            const followUp = {
+              ...followUpCommand,
+              ...(followUpCommand.checkoutId === SCRATCH_ROOT_CHECKOUT_ID ? { checkoutId } : {}),
+              position: Number(head[0].position),
+            }
+            const receipt = yield* beginRun({
+              ...command,
+              checkoutId,
+              generation: followUp.generation ?? command.generation,
+              prompt: followUp.prompt,
+              attachments: followUp.attachments ?? [],
+              driverId: followUp.driverId ?? command.driverId,
+              connectionId: followUp.connectionId ?? command.connectionId,
+              modelId: followUp.modelId === undefined ? command.modelId : followUp.modelId,
+              modeId: followUp.modeId === undefined ? command.modeId : followUp.modeId,
+              configValues: followUp.configValues ?? command.configValues,
+              accessMode: followUp.accessMode === undefined ? command.accessMode : followUp.accessMode,
+              nativeSessionId: followUp.nativeSessionId ?? command.nativeSessionId,
+              // A queued delegation wake keeps its origin through promotion.
+              ...(followUp.origin === 'delegation'
+                ? { origin: 'delegation' as const, delegationId: followUp.delegationId }
+                : {}),
+            })
+            if (receipt.replayed)
+              return yield* Effect.fail(safeError('command-conflict', 'Promotion requires a new Run command'))
+            const promoted = { followUp, receipt }
+            yield* sql`UPDATE workspace_command_receipt SET fingerprint = ${receiptFingerprint('promoteFollowUp', command)}, promotion_payload = ${encode(promoted)} WHERE command_id = ${commandKey}`
+            yield* sql`DELETE FROM workspace_follow_up_queue WHERE position = ${followUp.position}`
+            return promoted
+          }),
+        )
+      }),
+    )
+
+  // Promotion removes a wake from the follow-up queue, so a promoted wake Run that never launched leaves its wake owed but
+  // no longer queued. The wake stays `pending`; counting the lost delivery gives recovery a new command id, so its
+  // re-enqueue is not swallowed by the stored receipt of the first one.
+  const recordLostWakeDelivery = Effect.fnUntraced(function* (runId: string, parentTaskId: string) {
+    const messages =
+      yield* sql`SELECT delegation_id FROM workspace_message WHERE run_id = ${runId} AND origin = 'delegation' AND delegation_id IS NOT NULL`
+    for (const message of messages) {
+      const record = yield* loadDelegation(String(message.delegation_id))
+      if (!record || record.parentTaskId !== parentTaskId || record.wakeState !== 'pending') continue
+      yield* saveDelegation({ ...record, wakeAttempts: (record.wakeAttempts ?? 0) + 1 })
+    }
+  })
+
+  // A Run begun but never claimed has no owner left to launch it once a new owner takes over, and it would fence its
+  // Conversation forever. It never reached a driver, so it fails as a launch failure, as a never-claimed Delegated Task
+  // does. Only owner acquisition runs this, before the new owner can begin a Run of its own.
+  const failUnclaimedDispatches = Effect.fnUntraced(function* (replacedEpoch: number, recoveredAt: string) {
+    const orphans = yield* sql`
+      SELECT i.run_id, r.payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+      WHERE i.state = 'pending' AND i.owner_epoch IS NULL
+    `
+    for (const row of orphans) {
+      const runId = String(row.run_id)
+      const failedRun = yield* transition(yield* decodeRun(String(row.payload)), 'failed', recoveredAt, {
+        failure: 'launch-failed',
+      })
+      yield* persistRun(failedRun)
+      yield* syncDelegationLiveState(failedRun)
+      yield* sql`UPDATE workspace_dispatch_intent SET state = 'failed', owner_epoch = ${replacedEpoch} WHERE run_id = ${runId}`
+      yield* recordLostWakeDelivery(runId, failedRun.taskId)
+      yield* releaseSideChatBringBacks(runId)
+      yield* appendEvent(failedRun, 'runFailed', recoveredAt, { reason: 'launch-failed' })
+    }
+  })
+
+  const recoverWorkerInTransaction = Effect.fnUntraced(function* (replacedEpoch: number, recoveredAt: string) {
+    yield* sql`UPDATE workspace_worker_epoch SET retired_epoch = MAX(retired_epoch, ${replacedEpoch}) WHERE singleton = 1`
+    const responseRows = yield* sql`
+              SELECT i.run_id, i.request_id, i.payload, r.payload AS run_payload
+              FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') <= ${replacedEpoch}
+            `
+    for (const row of responseRows) {
+      const intent = yield* decodeJson(requestResponseIntentSchema)(String(row.payload))
+      const run = yield* decodeRun(String(row.run_payload))
+      const recovered = {
+        ...intent,
+        state: 'uncertain',
+        delivery: { outcome: 'uncertain' },
+        recoveryReason: 'worker-replaced',
+      }
+      yield* sql`UPDATE workspace_request_response_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE run_id = ${row.run_id} AND request_id = ${row.request_id}`
+      yield* appendEvent(run, 'requestResponseSettled', recoveredAt, {
+        requestId: row.request_id,
+        outcome: 'uncertain',
+        reason: 'worker-replaced',
+      })
+    }
+    const steerRows = yield* sql`
+              SELECT i.command_id, i.payload, r.payload AS run_payload
+              FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+              WHERE i.state = 'pending' AND json_extract(i.payload, '$.ownerEpoch') <= ${replacedEpoch}
+            `
+    for (const row of steerRows) {
+      const intent = yield* decodeJson(steerIntentSchema)(String(row.payload))
+      const run = yield* decodeRun(String(row.run_payload))
+      const recovered = {
+        ...intent,
+        state: 'uncertain',
+        delivery: { outcome: 'uncertain' },
+        recoveryReason: 'worker-replaced',
+      }
+      yield* sql`UPDATE workspace_steer_intent SET state = 'uncertain', payload = ${encode(recovered)} WHERE command_id = ${row.command_id}`
+      yield* appendEvent(run, 'steerSettled', recoveredAt, {
+        commandId: row.command_id,
+        outcome: 'uncertain',
+        reason: 'worker-replaced',
+      })
+    }
+    yield* sql`UPDATE workspace_driver_request_state SET state = 'expired' WHERE state = 'pending' AND run_id IN (SELECT run_id FROM workspace_dispatch_intent WHERE owner_epoch <= ${replacedEpoch})`
+    const intents =
+      yield* sql`SELECT i.run_id, i.state, i.owner_epoch, r.payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE i.owner_epoch <= ${replacedEpoch} AND i.state IN ('claimed', 'accepted')`
+    let recovered = 0
+    for (const row of intents as Array<Record<string, unknown>>) {
+      const current = yield* decodeRun(String(row.payload))
+      if (current.status === 'completed' || current.status === 'failed' || current.status === 'interrupted') {
+        yield* syncDelegationLiveState(current)
+        yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${Number(row.owner_epoch)}`
+        continue
+      }
+      const status = row.state === 'claimed' ? 'uncertain' : 'recoveryRequired'
+      const run = yield* transition(current, status, recoveredAt)
+      yield* persistRun(run)
+      yield* syncDelegationLiveState(run)
+      yield* sql`UPDATE workspace_dispatch_intent SET state = 'recoveryRequired' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${Number(row.owner_epoch)}`
+      yield* appendEvent(run, row.state === 'claimed' ? 'runUncertain' : 'runRecoveryRequired', recoveredAt, {
+        replacedEpoch,
+      })
+      recovered += 1
+    }
+    return recovered
+  })
+
+  const releaseDispatchAfterCleanup: WorkspaceStore['Service']['releaseDispatchAfterCleanup'] = (runId, ownerEpoch) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT owner_epoch FROM workspace_dispatch_intent WHERE run_id = ${runId}`
+            if (!rows[0]) return yield* safeError('not-found', 'Dispatch intent does not exist')
+            if (Number(rows[0].owner_epoch) !== ownerEpoch)
+              return yield* safeError('stale-epoch', 'Dispatch cleanup belongs to another owner')
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled'
+          WHERE run_id = ${runId} AND owner_epoch = ${ownerEpoch} AND state IN ('uncertain', 'recoveryRequired')
+          AND run_id IN (SELECT id FROM workspace_agent_run WHERE status IN ('uncertain', 'recoveryRequired'))`
+          }),
+        )
+      }),
+    )
+
+  const releaseRetiredDispatches: WorkspaceStore['Service']['releaseRetiredDispatches'] = ownerEpoch =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(ownerEpoch)
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows =
+              yield* sql`SELECT allocated_epoch, retired_epoch FROM workspace_worker_epoch WHERE singleton = 1`
+            if (Number(rows[0]?.allocated_epoch) !== ownerEpoch || ownerEpoch <= Number(rows[0]?.retired_epoch))
+              return yield* safeError('stale-epoch', 'Execution cleanup requires the current owner')
+            yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled'
+          WHERE owner_epoch <= ${Number(rows[0].retired_epoch)} AND state IN ('uncertain', 'recoveryRequired')
+          AND run_id IN (SELECT id FROM workspace_agent_run WHERE status IN ('uncertain', 'recoveryRequired'))`
+          }),
+        )
+      }),
+    )
+
+  const recoverWorker = (replacedEpoch: number, recoveredAt: string) =>
+    guard(
+      Effect.gen(function* () {
+        yield* decodeWorkerEpoch(replacedEpoch)
+        return yield* sql.withTransaction(recoverWorkerInTransaction(replacedEpoch, recoveredAt))
+      }),
+    )
+
+  const acquireOwnerEpoch = Effect.fn('WorkspaceStore.acquireOwnerEpoch')(function* (recoveredAt: string) {
+    return yield* guard(
+      Effect.gen(function* () {
+        if (!Schema.is(timestampSchema)(recoveredAt))
+          return yield* Effect.fail(safeError('invalid-data', 'Owner epoch recovery timestamp is invalid'))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql`
+              SELECT CAST(allocated_epoch AS TEXT) AS allocated_epoch,
+                CAST(retired_epoch AS TEXT) AS retired_epoch,
+                CAST(MAX(
+                  COALESCE((SELECT MAX(owner_epoch) FROM workspace_dispatch_intent), 0),
+                  COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_request_response_intent WHERE json_valid(payload)), 0),
+                  COALESCE((SELECT MAX(CAST(json_extract(payload, '$.ownerEpoch') AS INTEGER)) FROM workspace_steer_intent WHERE json_valid(payload)), 0)
+                ) AS TEXT) AS persisted_epoch
+              FROM workspace_worker_epoch WHERE singleton = 1
+            `
+            const allocatedEpoch = Number(rows[0]?.allocated_epoch)
+            const retiredEpoch = Number(rows[0]?.retired_epoch)
+            const persistedEpoch = Number(rows[0]?.persisted_epoch)
+            const safeEpochValue = Schema.Number.check(
+              Schema.isInt(),
+              Schema.isGreaterThanOrEqualTo(0),
+              Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER),
+            )
+            for (const epoch of [allocatedEpoch, retiredEpoch, persistedEpoch])
+              yield* Schema.decodeUnknownEffect(safeEpochValue)(epoch).pipe(
+                Effect.mapError(() => safeError('invalid-data', 'Stored workspace owner epoch is invalid')),
+              )
+            const previousEpoch = Math.max(allocatedEpoch, retiredEpoch, persistedEpoch)
+            if (previousEpoch >= Number.MAX_SAFE_INTEGER)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored workspace owner epoch is invalid'))
+            const ownerEpoch = previousEpoch + 1
+            yield* sql`UPDATE workspace_worker_epoch SET allocated_epoch = ${ownerEpoch} WHERE singleton = 1`
+            const recoveredCount =
+              previousEpoch === 0 ? 0 : yield* recoverWorkerInTransaction(previousEpoch, recoveredAt)
+            if (previousEpoch > 0) yield* failUnclaimedDispatches(previousEpoch, recoveredAt)
+            return yield* Schema.decodeUnknownEffect(ownerEpochAcquisitionSchema)({ ownerEpoch, recoveredCount }).pipe(
+              Effect.mapError(() => safeError('invalid-data', 'Workspace owner epoch acquisition failed validation')),
+            )
+          }),
+        )
+      }),
+    )
+  })
+
+  const requireTask = Effect.fnUntraced(function* (taskId: string) {
+    const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId}`
+    if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
+    const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+    if (task.id !== taskId || task.projectId !== rows[0].project_id)
+      return yield* Effect.fail(safeError('invalid-data', 'Stored Task identity failed validation'))
+    return task
+  })
+
+  function preview(value: unknown, depth = 0): unknown {
+    if (Predicate.isString(value)) return value.slice(0, 256)
+    if (Array.isArray(value)) return depth < 6 ? value.slice(0, 4).map(item => preview(item, depth + 1)) : []
+    if (Predicate.isObject(value))
+      return depth < 6
+        ? Object.fromEntries(
+            Object.entries(value)
+              .slice(0, 16)
+              .map(([key, item]) => [key, preview(item, depth + 1)]),
+          )
+        : {}
+    return value
+  }
+
+  function summarize<A extends object>(
+    value: A,
+    kind: WorkspacePayloadReference['kind'],
+    id: string,
+    byteLimit = 1024 * 1024,
+  ): A & {
+    readonly payloadTruncated?: true
+    readonly payloadRef?: WorkspacePayloadReference
+  } {
+    if (Buffer.byteLength(encode(value), 'utf8') <= byteLimit) return value
+    return {
+      ...(preview(value) as A),
+      ...Object.fromEntries(
+        Object.entries(value).filter(([key]) =>
+          ['id', 'projectId', 'taskId', 'runId', 'conversationId', 'checkoutId'].includes(key),
+        ),
+      ),
+      payloadTruncated: true,
+      payloadRef: { kind, id, digest: fingerprint(value) },
+    }
+  }
+
+  const decodeNativeSession = Effect.fnUntraced(function* (row: Record<string, unknown>) {
+    return yield* Schema.decodeUnknownEffect(workspaceNativeAgentSessionSchema)({
+      id: row.id,
+      taskId: row.task_id,
+      conversationId: row.conversation_id,
+      checkoutId: row.checkout_id,
+      driverId: row.driver_id,
+      connectionId: row.connection_id,
+      nativeSessionId: row.native_session_id,
+      generation: Number(row.generation),
+      status: row.status,
+      ...(row.capabilities
+        ? { capabilities: yield* decodeJson(agentCapabilitiesSchema)(String(row.capabilities)) }
+        : {}),
+    }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored native Agent Session failed validation')))
+  })
+
+  const readWorkspacePayload: WorkspaceStore['Service']['readWorkspacePayload'] = (reference, afterOffset, limit) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspacePayloadPageOptionsSchema)({ reference, afterOffset, limit }).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Workspace payload reference or cursor is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            let value: unknown
+            switch (reference.kind) {
+              case 'event': {
+                const rows =
+                  yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence = ${reference.id}`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Workspace event does not exist'))
+                value = yield* decodeStoredEvent(rows[0])
+                break
+              }
+              case 'message': {
+                const rows =
+                  yield* sql`SELECT id, content, created_at, attachments FROM workspace_message WHERE id = ${reference.id} AND role = 'user'`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Conversation message does not exist'))
+                value = yield* Schema.decodeUnknownEffect(workspaceConversationMessageSchema)({
+                  id: rows[0].id,
+                  content: rows[0].content,
+                  attachments: yield* decodeJson(promptAttachmentsSchema)(String(rows[0].attachments ?? '[]')),
+                  createdAt: rows[0].created_at,
+                }).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')),
+                )
+                break
+              }
+              case 'agentSession': {
+                const rows =
+                  yield* sql`SELECT * FROM workspace_agent_session WHERE id = ${reference.id} AND native_session_id IS NOT NULL`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Agent Session does not exist'))
+                value = yield* decodeNativeSession(rows[0])
+                break
+              }
+              default: {
+                const tables = {
+                  project: 'workspace_project',
+                  checkout: 'workspace_checkout',
+                  task: 'workspace_task',
+                  conversation: 'workspace_conversation',
+                } as const
+                const rows =
+                  yield* sql`SELECT id, payload FROM ${sql(tables[reference.kind])} WHERE id = ${reference.id}`
+                if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Workspace entity does not exist'))
+                switch (reference.kind) {
+                  case 'project':
+                    value = yield* decodeJson(projectSchema)(String(rows[0].payload))
+                    break
+                  case 'checkout':
+                    value = yield* decodeJson(workspaceCheckoutSchema)(String(rows[0].payload))
+                    break
+                  case 'task':
+                    value = yield* decodeJson(taskSchema)(String(rows[0].payload))
+                    break
+                  case 'conversation':
+                    value = yield* decodeJson(workspaceConversationReadSchema)(String(rows[0].payload))
+                    break
+                }
+              }
+            }
+            if (fingerprint(value) !== reference.digest)
+              return yield* Effect.fail(safeError('invalid-data', 'Workspace payload reference is stale'))
+            const json = encode(value)
+            if (afterOffset > json.length)
+              return yield* Effect.fail(safeError('invalid-data', 'Workspace payload cursor is invalid'))
+            const end = Math.min(afterOffset + limit, json.length)
+            return {
+              json: json.slice(afterOffset, end),
+              total: json.length,
+              nextAfterOffset: end < json.length ? end : null,
+              truncated: end < json.length,
+            }
+          }),
+        )
+      }),
+    )
+
+  const pageEvents: WorkspaceStore['Service']['pageEvents'] = (afterSequence, limit, throughSequence) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspaceEventPageOptionsSchema)({
+          afterSequence,
+          limit,
+          throughSequence,
+        }).pipe(Effect.mapError(() => safeError('invalid-data', 'Event cursor or page limit is invalid')))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const high =
+              yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
+            const latestSequence = Number(high[0]?.high ?? 0)
+            if (throughSequence !== undefined && throughSequence > latestSequence)
+              return yield* Effect.fail(safeError('invalid-data', 'Event high watermark is invalid'))
+            const highWatermark = throughSequence ?? latestSequence
+            const events: Array<WorkspaceExecutionEvent> = []
+            let cursor = afterSequence
+            let encodedBytes = 1024
+            for (let index = 0; index < limit && cursor < highWatermark; index += 1) {
+              const rows =
+                yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence = ${cursor + 1}`
+              const row = rows[0] as Record<string, unknown> | undefined
+              // Purges remove the event and its identities. A missing allocated sequence still occupies a feed slot.
+              const event: WorkspaceExecutionEvent = row
+                ? summarize(yield* decodeStoredEvent(row), 'event', String(row.sequence))
+                : {
+                    sequence: cursor + 1,
+                    schemaVersion: 1,
+                    kind: 'driverEvent',
+                    runId: agentRunIdSchema.make('purged'),
+                    taskId: taskIdSchema.make('purged'),
+                    generation: 1,
+                    occurredAt: '1970-01-01T00:00:00Z',
+                    data: { purged: true },
+                  }
+              const nextBytes = Buffer.byteLength(JSON.stringify(event), 'utf8') + 1
+              if (encodedBytes + nextBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                if (events.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored workspace event exceeds the read page byte limit'),
+                  )
+                break
+              }
+              events.push(event)
+              encodedBytes += nextBytes
+              cursor = event.sequence
+            }
+            const hasMore = cursor < highWatermark
+            return { events, highWatermark, nextAfterSequence: hasMore ? cursor : null, hasMore }
+          }),
+        )
+      }),
+    )
+
+  const decodeEntityPageOptions = (options: unknown) =>
+    Schema.decodeUnknownEffect(workspaceEntityPageOptionsSchema)(options ?? {}).pipe(
+      Effect.map(value => ({ afterId: value.afterId ?? '', limit: value.limit ?? 20 })),
+      Effect.mapError(() => safeError('invalid-data', 'Workspace entity cursor or limit is invalid')),
+    )
+
+  const appendEntityPageItem = Effect.fnUntraced(function* <A extends { readonly id: string }>(
+    items: Array<A>,
+    item: A,
+    total: number,
+    entity: 'Project' | 'Task',
+  ): Effect.fn.Return<boolean, WorkspaceStoreError> {
+    const candidate = [...items, item]
+    if (
+      Buffer.byteLength(JSON.stringify({ items: candidate, total, nextAfterId: item.id }), 'utf8') >
+      WORKSPACE_STORE_READ_BYTE_CAPACITY
+    ) {
+      if (items.length === 0)
+        return yield* Effect.fail(safeError('invalid-data', `Stored ${entity} exceeds the read page byte limit`))
+      return false
+    }
+    items.push(item)
+    return true
+  })
+
+  const listProjects: WorkspaceStore['Service']['listProjects'] = options =>
+    guard(
+      Effect.gen(function* () {
+        const { afterId, limit } = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const listed = sql`COALESCE(json_extract(CASE WHEN json_valid(payload) THEN payload END, '$.isCoach'), 0) = 0`
+            const counts = yield* sql`SELECT COUNT(*) AS total FROM workspace_project WHERE ${listed}`
+            const total = Number(counts[0]?.total ?? 0)
+            const taskRuntimeRows = yield* sql`
+              WITH ranked_runs AS (
+                SELECT r.id, r.task_id, r.status,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY r.task_id
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired')
+                        AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC
+                  ) AS runtime_rank
+                FROM workspace_agent_run r
+                LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                WHERE r.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                  AND (r.status NOT IN ('uncertain', 'recoveryRequired') OR (
+                    COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')
+                  ))
+              ), task_runtime AS (
+                SELECT t.project_id, r.status,
+                  CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM workspace_driver_request_state s
+                    JOIN workspace_agent_run pending_run ON pending_run.id = s.run_id
+                    WHERE s.state = 'pending'
+                      AND pending_run.task_id = t.id
+                      AND pending_run.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                      AND NOT EXISTS (
+                        SELECT 1 FROM workspace_dispatch_intent pending_intent
+                        WHERE pending_intent.run_id = pending_run.id AND pending_intent.state IN ('settled', 'failed')
+                      )
+                      AND EXISTS (
+                        SELECT 1
+                        FROM workspace_execution_event e
+                        WHERE e.run_id = s.run_id
+                          AND e.kind = 'driverEvent'
+                          AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.kind') = 'requestPending'
+                          AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.request.requestId') = s.request_id
+                      )
+                  ) THEN 1 ELSE 0 END AS has_pending_request
+                FROM workspace_task t
+                LEFT JOIN ranked_runs r ON r.task_id = t.id AND r.runtime_rank = 1
+                WHERE t.archived = 0
+              )
+              SELECT project_id,
+                SUM(CASE WHEN status IN ('uncertain', 'recoveryRequired', 'awaitingInput') OR has_pending_request = 1 THEN 1 ELSE 0 END) AS attention_count,
+                SUM(CASE WHEN status IN ('queued', 'starting', 'running', 'interruptRequested') AND has_pending_request = 0 THEN 1 ELSE 0 END) AS working_count
+              FROM task_runtime
+              GROUP BY project_id
+            `
+            const runtimeByProject = new Map(
+              taskRuntimeRows.map(row => [
+                String(row.project_id),
+                { attentionCount: Number(row.attention_count ?? 0), workingCount: Number(row.working_count ?? 0) },
+              ]),
+            )
+            const items: Array<WorkspaceProjectListItem> = []
+            let cursor = afterId
+            let hasMore = false
+            for (let index = 0; index < limit; index += 1) {
+              const rows =
+                yield* sql`SELECT id, payload FROM workspace_project WHERE ${listed} AND id > ${cursor} ORDER BY id LIMIT 1`
+              const row = rows[0]
+              if (!row) break
+              const project = summarize(
+                yield* decodeJson(projectSchema)(String(row.payload)),
+                'project',
+                String(row.id),
+              )
+              if (project.id !== row.id)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+              const item = {
+                ...project,
+                runtime: runtimeByProject.get(project.id) ?? { attentionCount: 0, workingCount: 0 },
+              }
+              if (!(yield* appendEntityPageItem(items, item, total, 'Project'))) {
+                hasMore = true
+                break
+              }
+              cursor = project.id
+            }
+            if (!hasMore) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_project WHERE ${listed} AND id > ${cursor} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceProjectReadPageSchema)({
+              items,
+              total,
+              nextAfterId: hasMore ? cursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored project page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const getProject: WorkspaceStore['Service']['getProject'] = (projectId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const page = yield* Schema.decodeUnknownEffect(workspaceCheckoutPageOptionsSchema)(options ?? {}).pipe(
+          Effect.map(value => ({ ...value, afterCheckoutId: value.afterCheckoutId ?? '', limit: value.limit ?? 20 })),
+          Effect.mapError(() => safeError('invalid-data', 'Checkout cursor or page limit is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const projectRows = yield* sql`SELECT id, payload FROM workspace_project WHERE id = ${projectId}`
+            if (!projectRows[0]) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const project = summarize(
+              yield* decodeJson(projectSchema)(String(projectRows[0].payload)),
+              'project',
+              String(projectRows[0].id),
+              128 * 1024,
+            )
+            if (project.id !== projectRows[0].id)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+            const mainRows =
+              yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND CASE WHEN json_valid(payload) THEN json_extract(payload, '$.kind') IN ('main', 'directory') AND json_extract(payload, '$.scratchConversationId') IS NULL ELSE 0 END LIMIT 2`
+            if (mainRows.length !== 1)
+              return yield* Effect.fail(safeError('invalid-data', 'Project must have exactly one main checkout'))
+            const mainCheckout = summarize(
+              yield* decodeJson(workspaceCheckoutSchema)(String(mainRows[0].payload)),
+              'checkout',
+              String(mainRows[0].id),
+              128 * 1024,
+            )
+            if (
+              mainCheckout.id !== mainRows[0].id ||
+              mainCheckout.projectId !== projectId ||
+              mainCheckout.projectId !== mainRows[0].project_id ||
+              mainCheckout.kind !== (project.repositoryIdentity === undefined ? 'directory' : 'main')
+            )
+              return yield* Effect.fail(safeError('invalid-data', 'Stored main checkout membership failed validation'))
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id}`
+            const totalOtherCheckouts = Number(counts[0]?.total ?? 0)
+            const otherCheckouts: Array<WorkspaceCheckout> = []
+            let checkoutCursor = page.afterCheckoutId
+            let hasMore = false
+            const singleCheckout = page.checkoutId || page.scratchConversationId
+            for (let index = 0; index < (singleCheckout ? 1 : page.limit); index += 1) {
+              const checkouts = page.checkoutId
+                ? yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id = ${page.checkoutId}`
+                : page.scratchConversationId
+                  ? yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND json_extract(payload, '$.scratchConversationId') = ${page.scratchConversationId} LIMIT 1`
+                  : yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} ORDER BY id LIMIT 1`
+              const row = checkouts[0]
+              if (!row) break
+              const checkout = summarize(
+                yield* decodeJson(workspaceCheckoutSchema)(String(row.payload)),
+                'checkout',
+                String(row.id),
+              )
+              if (checkout.id !== row.id || checkout.projectId !== projectId || checkout.projectId !== row.project_id)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored checkout membership failed validation'))
+              const candidate = [...otherCheckouts, checkout]
+              if (
+                Buffer.byteLength(
+                  JSON.stringify({
+                    project,
+                    mainCheckout,
+                    otherCheckouts: candidate,
+                    totalOtherCheckouts,
+                    nextAfterCheckoutId: checkout.id,
+                  }),
+                  'utf8',
+                ) > WORKSPACE_STORE_READ_BYTE_CAPACITY
+              ) {
+                if (otherCheckouts.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored checkout exceeds the project detail byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              otherCheckouts.push(checkout)
+              checkoutCursor = checkout.id
+            }
+            if (!hasMore && !singleCheckout) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceProjectDetailSchema)({
+              project,
+              mainCheckout,
+              otherCheckouts,
+              totalOtherCheckouts,
+              nextAfterCheckoutId: hasMore ? checkoutCursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored project detail failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const listTasks: WorkspaceStore['Service']['listTasks'] = (projectId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterId, limit, includeArchived, includeDelegated } = yield* Schema.decodeUnknownEffect(
+          workspaceTaskPageOptionsSchema,
+        )(options ?? {}).pipe(
+          Effect.map(value => ({
+            afterId: value.afterId ?? '',
+            limit: value.limit ?? 20,
+            includeArchived: value.includeArchived ?? false,
+            includeDelegated: value.includeDelegated ?? false,
+          })),
+          Effect.mapError(() => safeError('invalid-data', 'Workspace task cursor or limit is invalid')),
+        )
+        const includeArchivedFlag = includeArchived ? 1 : 0
+        const includeDelegatedFlag = includeDelegated ? 1 : 0
+        const delegatedFilter = sql`(${includeDelegatedFlag} = 1 OR NOT EXISTS (
+          SELECT 1 FROM workspace_delegation d
+          JOIN workspace_task parent ON parent.id = d.parent_task_id
+          WHERE d.child_task_id = task.id
+        ))`
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const projects = yield* sql`SELECT payload FROM workspace_project WHERE id = ${projectId}`
+            if (!projects[0]) return yield* Effect.fail(safeError('not-found', 'Project does not exist'))
+            const project = yield* decodeJson(projectSchema)(String(projects[0].payload))
+            if (project.id !== projectId)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Project identity failed validation'))
+            if (project.isCoach) return { items: [], total: 0, nextAfterId: null }
+            const counts = yield* sql`
+              SELECT COUNT(*) AS total FROM workspace_task task
+              WHERE task.project_id = ${projectId} AND (${includeArchivedFlag} = 1 OR task.archived = 0)
+                AND ${delegatedFilter} AND task.side_chat = 0
+            `
+            const total = Number(counts[0]?.total ?? 0)
+            const items: Array<Task> = []
+            let cursor = afterId
+            let cursorActivityAt: string | null = null
+            if (cursor !== '') {
+              const cursorRows = yield* sql`
+                SELECT MAX(
+                  COALESCE(json_extract(CASE WHEN json_valid(payload) THEN payload ELSE '{}' END, '$.updatedAt'), ''),
+                  COALESCE((SELECT MAX(e.occurred_at) FROM workspace_execution_event e WHERE e.task_id = workspace_task.id), '')
+                ) AS activity_at
+                FROM workspace_task
+                WHERE id = ${cursor} AND project_id = ${projectId}
+                  AND (${includeArchivedFlag} = 1 OR archived = 0) AND side_chat = 0
+              `
+              if (cursorRows[0]?.activity_at != null) cursorActivityAt = String(cursorRows[0].activity_at)
+            }
+            let hasMore = false
+            const rows = yield* sql`
+                WITH task_activity AS (
+                  SELECT task.id, task.project_id, task.archived,
+                    MAX(
+                      COALESCE(json_extract(CASE WHEN json_valid(task.payload) THEN task.payload ELSE '{}' END, '$.updatedAt'), ''),
+                      COALESCE((SELECT MAX(e.occurred_at) FROM workspace_execution_event e WHERE e.task_id = task.id), '')
+                    ) AS activity_at
+                  FROM workspace_task task
+                  WHERE task.project_id = ${projectId}
+                    AND (${includeArchivedFlag} = 1 OR task.archived = 0)
+                    AND ${delegatedFilter}
+                    AND task.side_chat = 0
+                ), task_page AS (
+                  SELECT t.id, t.activity_at
+                  FROM task_activity t
+                  WHERE t.project_id = ${projectId}
+                    AND (${includeArchivedFlag} = 1 OR t.archived = 0)
+                    AND (
+                      (${cursorActivityAt} IS NULL AND t.id > ${cursor})
+                      OR (${cursorActivityAt} IS NOT NULL AND (
+                        t.activity_at < ${cursorActivityAt}
+                        OR (t.activity_at = ${cursorActivityAt} AND t.id > ${cursor})
+                      ))
+                    )
+                  ORDER BY t.activity_at DESC, t.id ASC
+                  LIMIT ${limit + 1}
+                )
+                SELECT t.id, t.activity_at,
+                  (
+                    SELECT r.status
+                    FROM workspace_agent_run r
+                    LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                    WHERE r.task_id = t.id
+                      AND r.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                      AND (r.status NOT IN ('uncertain', 'recoveryRequired') OR (
+                        COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')
+                      ))
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC
+                    LIMIT 1
+                  ) AS runtime_run_status,
+                  (
+                    SELECT json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.request.kind')
+                    FROM workspace_driver_request_state s
+                    JOIN workspace_execution_event e
+                      ON e.run_id = s.run_id
+                      AND e.kind = 'driverEvent'
+                      AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.kind') = 'requestPending'
+                      AND json_extract(CASE WHEN json_valid(e.payload) THEN e.payload ELSE '{}' END, '$.event.request.requestId') = s.request_id
+                    JOIN workspace_agent_run r ON r.id = s.run_id
+                    LEFT JOIN workspace_dispatch_intent i2 ON i2.run_id = r.id
+                    WHERE r.task_id = t.id
+                      AND s.state = 'pending'
+                      AND r.status IN ('uncertain', 'recoveryRequired', 'queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
+                      AND (r.status NOT IN ('uncertain', 'recoveryRequired') OR (
+                        COALESCE(i2.state, 'pending') NOT IN ('settled', 'failed')
+                      ))
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC, e.sequence DESC
+                    LIMIT 1
+                  ) AS runtime_pending_request_kind,
+                  (
+                    SELECT json_object(
+                      'runId', r.id,
+                      'driverId', COALESCE(i.driver_id, s.driver_id),
+                      'connectionId', COALESCE(i.connection_id, s.connection_id),
+                      'modelId', i.model_id,
+                      'branch', CASE WHEN json_valid(c.payload) THEN json_extract(c.payload, '$.branch') ELSE NULL END,
+                      'activityAt', COALESCE((SELECT MAX(e.occurred_at) FROM workspace_execution_event e WHERE e.run_id = r.id), r.submitted_at)
+                    )
+                    FROM workspace_agent_run r
+                    LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+                    LEFT JOIN workspace_agent_session s ON s.id = r.session_id
+                    LEFT JOIN workspace_checkout c ON c.id = r.checkout_id
+                    WHERE r.task_id = t.id
+                    ORDER BY CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                      WHEN r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested') THEN 0
+                      ELSE 1
+                    END, CASE
+                      WHEN r.status IN ('uncertain', 'recoveryRequired') AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                      ELSE 1
+                    END, r.submitted_at DESC, r.id DESC
+                    LIMIT 1
+                  ) AS latest_run_metadata
+                FROM task_page t
+                ORDER BY t.activity_at DESC, t.id ASC
+              `
+            hasMore = rows.length > limit
+            for (const row of rows.slice(0, limit)) {
+              const taskRows = yield* sql`SELECT project_id, payload FROM workspace_task WHERE id = ${row.id}`
+              const taskRow = taskRows[0]
+              if (!taskRow)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Task disappeared during page read'))
+              const decodedTask = summarize(
+                yield* decodeJson(taskSchema)(String(taskRow.payload)),
+                'task',
+                String(row.id),
+              )
+              const delegatedFromRows =
+                yield* sql`SELECT id, parent_task_id, status FROM workspace_delegation WHERE child_task_id = ${row.id}`
+              const delegatedChildRows = yield* sql`
+                SELECT COUNT(*) AS total,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL) AS active,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL AND json_extract(payload, '$.pendingRequest') IS NOT NULL) AS attention,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL AND json_extract(payload, '$.pendingRequest.kind') = 'approval') AS approvals,
+                  COUNT(*) FILTER (WHERE settled_at IS NULL AND json_extract(payload, '$.pendingRequest.kind') = 'question') AS questions
+                FROM workspace_delegation WHERE parent_task_id = ${row.id}
+              `
+              const delegatedFrom = delegatedFromRows[0]
+                ? {
+                    delegationId: String(delegatedFromRows[0].id),
+                    parentTaskId: String(delegatedFromRows[0].parent_task_id),
+                    status: String(delegatedFromRows[0].status),
+                  }
+                : null
+              const delegatedChildTotal = Number(delegatedChildRows[0]?.total ?? 0)
+              const delegatedChildren =
+                delegatedChildTotal === 0
+                  ? null
+                  : {
+                      total: delegatedChildTotal,
+                      active: Number(delegatedChildRows[0]?.active ?? 0),
+                      attention: Number(delegatedChildRows[0]?.attention ?? 0),
+                      approvals: Number(delegatedChildRows[0]?.approvals ?? 0),
+                      questions: Number(delegatedChildRows[0]?.questions ?? 0),
+                    }
+              const task = {
+                ...decodedTask,
+                runtime: {
+                  lastActivityAt: String(row.activity_at),
+                  delegatedFrom,
+                  delegatedChildren,
+                  runStatus: row.runtime_run_status == null ? null : String(row.runtime_run_status),
+                  pendingRequestKind:
+                    row.runtime_pending_request_kind === 'approval' || row.runtime_pending_request_kind === 'question'
+                      ? row.runtime_pending_request_kind
+                      : null,
+                  latestRun:
+                    row.latest_run_metadata == null
+                      ? null
+                      : yield* decodeJson(workspaceTaskLatestRunSchema)(String(row.latest_run_metadata)),
+                },
+              }
+              if (task.id !== row.id || task.projectId !== projectId || taskRow.project_id !== projectId)
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Task membership failed validation'))
+              if (!(yield* appendEntityPageItem(items, task, total, 'Task'))) {
+                hasMore = true
+                break
+              }
+              cursor = task.id
+              cursorActivityAt = String(row.activity_at)
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceTaskReadPageSchema)({
+              items,
+              total,
+              nextAfterId: hasMore ? cursor : null,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored task page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const listNativeAgentSessions: WorkspaceStore['Service']['listNativeAgentSessions'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const { afterId, limit } = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* requireTask(taskId)
+            const counts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_session WHERE task_id = ${taskId} AND native_session_id IS NOT NULL`
+            const rows =
+              yield* sql`SELECT * FROM workspace_agent_session WHERE task_id = ${taskId} AND native_session_id IS NOT NULL AND id > ${afterId} ORDER BY id LIMIT ${limit + 1}`
+            const items = []
+            let bytes = 1024
+            for (const row of rows.slice(0, limit)) {
+              const item = summarize(yield* decodeNativeSession(row), 'agentSession', String(row.id))
+              const size = Buffer.byteLength(encode(item), 'utf8') + 1
+              if (bytes + size > WORKSPACE_STORE_READ_BYTE_CAPACITY) break
+              items.push(item)
+              bytes += size
+            }
+            const truncated = rows.length > items.length
+            return {
+              items,
+              total: Number(counts[0]?.total ?? 0),
+              truncated,
+              nextAfterId: truncated ? (items.at(-1)?.id ?? null) : null,
+            }
+          }),
+        )
+      }),
+    )
+
+  const readTaskDetail: WorkspaceStore['Service']['readTaskDetail'] = (taskId, options) =>
+    guard(
+      Effect.gen(function* () {
+        const page = yield* decodeEntityPageOptions(options)
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT id, project_id, payload FROM workspace_task WHERE id = ${taskId}`
+            const row = rows[0] as Record<string, unknown> | undefined
+            if (!row) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
+            const task = summarize(
+              yield* decodeJson(taskSchema)(String(row.payload)),
+              'task',
+              String(row.id),
+              128 * 1024,
+            )
+            if (task.id !== row.id || task.projectId !== row.project_id)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Task membership failed validation'))
+            const conversationCounts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_conversation WHERE task_id = ${taskId}`
+            const totalConversations = Number(conversationCounts[0]?.total ?? 0)
+            const conversations: Array<WorkspaceConversationRead> = []
+            let conversationCursor = page.afterId
+            let conversationsHaveMore = false
+            for (let index = 0; index < page.limit; index += 1) {
+              const conversationRows =
+                yield* sql`SELECT id, task_id, payload FROM workspace_conversation WHERE task_id = ${taskId} AND id > ${conversationCursor} ORDER BY id LIMIT 1`
+              const conversationRow = conversationRows[0]
+              if (!conversationRow) break
+              const conversation = summarize(
+                yield* decodeJson(workspaceConversationReadSchema)(String(conversationRow.payload)),
+                'conversation',
+                String(conversationRow.id),
+              )
+              if (
+                conversation.id !== conversationRow.id ||
+                conversation.taskId !== taskId ||
+                conversation.taskId !== conversationRow.task_id
+              )
+                return yield* Effect.fail(safeError('invalid-data', 'Stored Conversation membership failed validation'))
+              const candidate = [...conversations, conversation]
+              if (
+                Buffer.byteLength(
+                  JSON.stringify({
+                    task,
+                    conversations: candidate,
+                    totalConversations,
+                    nextAfterConversationId: conversation.id,
+                  }),
+                  'utf8',
+                ) > WORKSPACE_STORE_READ_BYTE_CAPACITY
+              ) {
+                if (conversations.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored Conversation exceeds the Task detail byte limit'),
+                  )
+                conversationsHaveMore = true
+                break
+              }
+              conversations.push(conversation)
+              conversationCursor = conversation.id
+            }
+            if (!conversationsHaveMore) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_conversation WHERE task_id = ${taskId} AND id > ${conversationCursor} LIMIT 1`
+              conversationsHaveMore = more.length > 0
+            }
+            const delegatedFromRows =
+              yield* sql`SELECT id, parent_task_id, status FROM workspace_delegation WHERE child_task_id = ${taskId}`
+            const delegatedFrom = delegatedFromRows[0]
+              ? {
+                  delegationId: String(delegatedFromRows[0].id),
+                  parentTaskId: String(delegatedFromRows[0].parent_task_id),
+                  status: String(delegatedFromRows[0].status),
+                }
+              : null
+            return yield* Schema.decodeUnknownEffect(workspaceTaskDetailSchema)({
+              task,
+              conversations,
+              totalConversations,
+              nextAfterConversationId: conversationsHaveMore ? conversationCursor : null,
+              delegatedFrom,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Task detail failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const listPendingRuntimeRequests: WorkspaceStore['Service']['listPendingRuntimeRequests'] = (
+    taskId,
+    afterSequence,
+    limit,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspacePendingRuntimeRequestPageOptionsSchema)({
+          afterSequence,
+          limit,
+        }).pipe(Effect.mapError(() => safeError('invalid-data', 'Pending request cursor or limit is invalid')))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            yield* requireTask(taskId)
+            let rows =
+              yield* sql`SELECT s.run_id, r.task_id, e.sequence, e.payload FROM workspace_driver_request_state s JOIN workspace_agent_run r ON r.id = s.run_id LEFT JOIN workspace_execution_event e ON e.sequence = (SELECT MAX(p.sequence) FROM workspace_execution_event p WHERE p.run_id = s.run_id AND p.kind = 'driverEvent' AND CASE WHEN json_valid(p.payload) THEN json_extract(p.payload, '$.event.kind') = 'requestPending' AND json_extract(p.payload, '$.event.request.requestId') = s.request_id ELSE 0 END) WHERE s.state = 'pending' AND r.task_id = ${taskId} AND (e.sequence > ${afterSequence} OR e.sequence IS NULL) ORDER BY e.sequence LIMIT 1`
+            const countRows =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_driver_request_state s JOIN workspace_agent_run r ON r.id = s.run_id WHERE s.state = 'pending' AND r.task_id = ${taskId}`
+            const total = Number(countRows[0]?.total ?? 0)
+            const items: Array<WorkspacePendingRuntimeRequest> = []
+            let cursor = afterSequence
+            let hasMore = false
+            let bytes = 512
+            for (let index = 0; index < limit && rows[0]; index += 1) {
+              const row = rows[0] as Record<string, unknown>
+              const data = yield* decodeEventData('driverEvent', String(row.payload))
+              const request = yield* Schema.decodeUnknownEffect(agentDriverEventSchema)(data.event).pipe(
+                Effect.flatMap(event =>
+                  event.kind === 'requestPending'
+                    ? Effect.succeed(event.request)
+                    : Effect.fail(safeError('invalid-data', 'Pending request event failed validation')),
+                ),
+                Effect.mapError(error =>
+                  error instanceof WorkspaceStoreError
+                    ? error
+                    : safeError('invalid-data', 'Pending request event failed validation'),
+                ),
+              )
+              if (request.runId !== row.run_id)
+                return yield* Effect.fail(
+                  safeError('invalid-data', 'Stored pending request membership failed validation'),
+                )
+              const storedItem = yield* Schema.decodeUnknownEffect(workspacePendingRuntimeRequestSchema)({
+                runId: row.run_id,
+                taskId: row.task_id,
+                sequence: Number(row.sequence),
+                request,
+              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored pending request failed validation')))
+              const eventRows =
+                yield* sql`SELECT sequence, schema_version, kind, run_id, task_id, generation, occurred_at, payload FROM workspace_execution_event WHERE sequence = ${storedItem.sequence}`
+              if (!eventRows[0])
+                return yield* Effect.fail(safeError('invalid-data', 'Stored pending request event is missing'))
+              const sourceEvent = yield* decodeStoredEvent(eventRows[0])
+              const summarizedRequest = summarize(storedItem.request, 'event', String(storedItem.sequence))
+              const item = summarizedRequest.payloadRef
+                ? {
+                    ...storedItem,
+                    request: summarizedRequest,
+                    payloadTruncated: true as const,
+                    payloadRef: { ...summarizedRequest.payloadRef, digest: fingerprint(sourceEvent) },
+                  }
+                : storedItem
+              const itemBytes = Buffer.byteLength(encode(item), 'utf8') + 1
+              if (bytes + itemBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                if (items.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored pending request exceeds the read page byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              items.push(item)
+              bytes += itemBytes
+              cursor = item.sequence
+              const nextRows =
+                yield* sql`SELECT s.run_id, r.task_id, e.sequence, e.payload FROM workspace_driver_request_state s JOIN workspace_agent_run r ON r.id = s.run_id LEFT JOIN workspace_execution_event e ON e.sequence = (SELECT MAX(p.sequence) FROM workspace_execution_event p WHERE p.run_id = s.run_id AND p.kind = 'driverEvent' AND CASE WHEN json_valid(p.payload) THEN json_extract(p.payload, '$.event.kind') = 'requestPending' AND json_extract(p.payload, '$.event.request.requestId') = s.request_id ELSE 0 END) WHERE s.state = 'pending' AND r.task_id = ${taskId} AND (e.sequence > ${cursor} OR e.sequence IS NULL) ORDER BY e.sequence LIMIT 1`
+              if (index + 1 >= limit || !nextRows[0]) {
+                hasMore = !!nextRows[0]
+                break
+              }
+              rows = nextRows
+            }
+            return yield* Schema.decodeUnknownEffect(workspacePendingRuntimeRequestPageSchema)({
+              items,
+              total,
+              nextAfterSequence: hasMore ? cursor : null,
+              hasMore,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Pending request page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const readConversationPage: WorkspaceStore['Service']['readConversationPage'] = (
+    conversationId,
+    afterSequence,
+    limit,
+    throughSequence,
+    paging,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(workspaceConversationPageOptionsSchema)({
+          afterSequence,
+          limit,
+          throughSequence,
+          ...paging,
+        }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation cursor or page limit is invalid')))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const conversations =
+              yield* sql`SELECT id, task_id, payload FROM workspace_conversation WHERE id = ${conversationId}`
+            if (!conversations[0]) return yield* Effect.fail(safeError('not-found', 'Conversation does not exist'))
+            const conversation = yield* decodeJson(workspaceConversationReadSchema)(String(conversations[0].payload))
+            if (conversation.id !== conversationId || conversation.taskId !== conversations[0].task_id)
+              return yield* Effect.fail(safeError('invalid-data', 'Stored Conversation membership failed validation'))
+            const highs =
+              yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
+            const latestSequence = Number(highs[0]?.high ?? 0)
+            if (throughSequence !== undefined && throughSequence > latestSequence)
+              return yield* Effect.fail(safeError('invalid-data', 'Conversation high watermark is invalid'))
+            const highWatermark = throughSequence ?? latestSequence
+            const items: Array<WorkspaceConversationPageItem> = []
+            let hasMore = false
+            let bytes = 1024
+            if (paging?.direction === 'backward') {
+              let beforeSequence = paging.beforeSequence ?? highWatermark
+              for (let index = 0; index < limit; index += 1) {
+                if (beforeSequence < 1) break
+                const rows =
+                  yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments, m.origin AS message_origin, d.payload AS message_delegation FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' LEFT JOIN workspace_delegation d ON d.id = m.delegation_id WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${beforeSequence} AND e.sequence <= ${highWatermark} ORDER BY e.sequence DESC LIMIT 1`
+                const row = rows[0] as Record<string, unknown> | undefined
+                if (!row) break
+                const storedEvent = yield* decodeStoredEvent(row)
+                const event = summarize(storedEvent, 'event', String(storedEvent.sequence))
+                const userMessage =
+                  row.message_id === null || row.message_id === undefined
+                    ? undefined
+                    : {
+                        id: row.message_id,
+                        content: row.message_content,
+                        attachments: yield* decodeJson(promptAttachmentsSchema)(
+                          String(row.message_attachments ?? '[]'),
+                        ),
+                        createdAt: row.message_created_at,
+                        ...(yield* messageOriginFields(row)),
+                      }
+                const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
+                  event,
+                  ...(userMessage ? { userMessage: summarize(userMessage, 'message', String(userMessage.id)) } : {}),
+                }).pipe(
+                  Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')),
+                )
+                const itemBytes = Buffer.byteLength(encode(item), 'utf8') + 1
+                if (bytes + itemBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                  if (items.length === 0)
+                    return yield* Effect.fail(
+                      safeError('invalid-data', 'Stored Conversation item exceeds the read page byte limit'),
+                    )
+                  hasMore = true
+                  break
+                }
+                items.push(item)
+                bytes += itemBytes
+                beforeSequence = event.sequence - 1
+              }
+              const nextBeforeSequence = items.length === 0 ? null : items.at(-1)!.event.sequence - 1
+              if (!hasMore && nextBeforeSequence !== null && nextBeforeSequence > 0) {
+                const more =
+                  yield* sql`SELECT 1 AS found FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id WHERE i.conversation_id = ${conversationId} AND e.sequence <= ${nextBeforeSequence} AND e.sequence <= ${highWatermark} LIMIT 1`
+                hasMore = more.length > 0
+              }
+              items.reverse()
+              return yield* Schema.decodeUnknownEffect(workspaceConversationPageSchema)({
+                items,
+                highWatermark,
+                nextAfterSequence: null,
+                nextBeforeSequence: hasMore ? nextBeforeSequence : null,
+                hasMore,
+              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation page failed validation')))
+            }
+
+            let cursor = afterSequence
+            for (let index = 0; index < limit; index += 1) {
+              const rows =
+                yield* sql`SELECT e.sequence, e.schema_version, e.kind, e.run_id, e.task_id, e.generation, e.occurred_at, e.payload, m.id AS message_id, m.content AS message_content, m.created_at AS message_created_at, m.attachments AS message_attachments, m.origin AS message_origin, d.payload AS message_delegation FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id LEFT JOIN workspace_message m ON m.run_id = e.run_id AND m.role = 'user' AND e.kind = 'runQueued' LEFT JOIN workspace_delegation d ON d.id = m.delegation_id WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} ORDER BY e.sequence LIMIT 1`
+              const row = rows[0] as Record<string, unknown> | undefined
+              if (!row) break
+              const storedEvent = yield* decodeStoredEvent(row)
+              const event = summarize(storedEvent, 'event', String(storedEvent.sequence))
+              const userMessage =
+                row.message_id === null || row.message_id === undefined
+                  ? undefined
+                  : {
+                      id: row.message_id,
+                      content: row.message_content,
+                      attachments: yield* decodeJson(promptAttachmentsSchema)(String(row.message_attachments ?? '[]')),
+                      createdAt: row.message_created_at,
+                      ...(yield* messageOriginFields(row)),
+                    }
+              const item = yield* Schema.decodeUnknownEffect(workspaceConversationPageItemSchema)({
+                event,
+                ...(userMessage ? { userMessage: summarize(userMessage, 'message', String(userMessage.id)) } : {}),
+              }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Conversation message failed validation')))
+              const itemBytes = Buffer.byteLength(encode(item), 'utf8') + 1
+              if (bytes + itemBytes > WORKSPACE_STORE_READ_BYTE_CAPACITY) {
+                if (items.length === 0)
+                  return yield* Effect.fail(
+                    safeError('invalid-data', 'Stored Conversation item exceeds the read page byte limit'),
+                  )
+                hasMore = true
+                break
+              }
+              items.push(item)
+              bytes += itemBytes
+              cursor = event.sequence
+            }
+            if (!hasMore && cursor < highWatermark) {
+              const more =
+                yield* sql`SELECT 1 AS found FROM workspace_execution_event e JOIN workspace_dispatch_intent i ON i.run_id = e.run_id WHERE i.conversation_id = ${conversationId} AND e.sequence > ${cursor} AND e.sequence <= ${highWatermark} LIMIT 1`
+              hasMore = more.length > 0
+            }
+            return yield* Schema.decodeUnknownEffect(workspaceConversationPageSchema)({
+              items,
+              highWatermark,
+              nextAfterSequence: hasMore ? cursor : null,
+              hasMore,
+            }).pipe(Effect.mapError(() => safeError('invalid-data', 'Conversation page failed validation')))
+          }),
+        )
+      }),
+    )
+
+  const readTaskSnapshot = (taskId: Parameters<WorkspaceStore['Service']['readTaskSnapshot']>[0], runLimit: number) =>
+    guard(
+      Effect.gen(function* () {
+        if (!Number.isInteger(runLimit) || runLimit < 1 || runLimit > 500)
+          return yield* Effect.fail(safeError('invalid-data', 'Snapshot page limit is invalid'))
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const rows = yield* sql`SELECT id, project_id, payload, side_chat FROM workspace_task WHERE id = ${taskId}`
+            if (!rows[0]) return yield* Effect.fail(safeError('not-found', 'Task does not exist'))
+            const taskRow = rows[0] as Record<string, unknown>
+            const taskPayload = yield* decodeJson(
+              Schema.Struct({
+                id: taskIdSchema,
+                projectId: projectIdSchema,
+                title: Schema.String,
+                status: Schema.String,
+              }),
+            )(String(taskRow.payload))
+            const high =
+              yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
+            const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
+            const runRows = yield* sql`
+              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, i.mode_id, i.access_mode, json_extract(c.payload, '$.path') AS workspace_path
+              FROM workspace_agent_run r
+              LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              LEFT JOIN workspace_checkout c ON c.id = i.checkout_id
+              WHERE r.task_id = ${taskId}
+              ORDER BY CASE
+                WHEN r.status IN ('uncertain', 'recoveryRequired') AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed') THEN 0
+                WHEN r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested') THEN 1
+                ELSE 2
+              END, r.submitted_at DESC, r.id DESC
+              LIMIT ${runLimit}
+            `
+            const RUN_SNAPSHOT_BYTE_CAPACITY = 1024 * 1024
+            const runs: AgentRun[] = []
+            const runContexts: WorkspaceRunContext[] = []
+            let runBytes = 0
+            let runPayloadTruncated = false
+            for (const row of runRows as Array<Record<string, unknown>>) {
+              const decoded = yield* decodeRun(String(row.payload))
+              const failureTruncated = typeof decoded.failure === 'string' && decoded.failure.length > 1024
+              const run = failureTruncated ? { ...decoded, failure: decoded.failure?.slice(0, 1024) } : decoded
+              const context =
+                row.intent_run_id !== null
+                  ? yield* Schema.decodeUnknownEffect(workspaceRunContextSchema)({
+                      runId: run.id,
+                      conversationId: row.conversation_id,
+                      checkoutId: row.checkout_id,
+                      driverId: row.driver_id,
+                      connectionId: row.connection_id,
+                      ...(row.model_id != null ? { modelId: row.model_id } : {}),
+                      ...(row.mode_id != null ? { modeId: row.mode_id } : {}),
+                      ...(row.workspace_path != null ? { workspacePath: row.workspace_path } : {}),
+                      ...(row.access_mode != null ? { accessMode: row.access_mode } : {}),
+                    }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Run context failed validation')))
+                  : undefined
+              const bytes = Buffer.byteLength(encode([run, context ?? null]), 'utf8')
+              if (runBytes + bytes > RUN_SNAPSHOT_BYTE_CAPACITY) {
+                runPayloadTruncated = true
+                break
+              }
+              runs.push(run)
+              if (context) runContexts.push(context)
+              runBytes += bytes
+              runPayloadTruncated ||= failureTruncated
+            }
+            const totalRuns = Number(runCountRows[0]?.total ?? 0)
+            const runCoverage = {
+              total: totalRuns,
+              returned: runs.length,
+              truncated: totalRuns > runs.length || runPayloadTruncated,
+            }
+            const deliveryLimit = Math.min(runLimit, 50)
+            const responseCounts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(i.state = 'pending'), 0) AS pending, COALESCE(SUM(i.state = 'uncertain'), 0) AS uncertain FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const responseRows =
+              yield* sql`SELECT i.payload FROM workspace_request_response_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} ORDER BY CASE i.state WHEN 'pending' THEN 0 WHEN 'uncertain' THEN 1 ELSE 2 END, i.rowid DESC LIMIT ${deliveryLimit}`
+            const responses = yield* Effect.forEach(responseRows, row =>
+              decodeJson(requestResponseIntentSchema)(String(row.payload)),
+            )
+            // Full delivery bodies remain available through the cursor-paged history reads.
+            const requestResponses = boundedItems(
+              responses.map(intent => {
+                if (Buffer.byteLength(encode(intent), 'utf8') <= 8192) return intent
+                const { decision, ...preview } = intent
+                return { ...preview, decisionKind: decision.kind, payloadTruncated: true }
+              }),
+              512 * 1024,
+            )
+            const steerCounts =
+              yield* sql`SELECT COUNT(*) AS total, COALESCE(SUM(i.state = 'pending'), 0) AS pending, COALESCE(SUM(i.state = 'uncertain'), 0) AS uncertain FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId}`
+            const steerRows =
+              yield* sql`SELECT i.payload FROM workspace_steer_intent i JOIN workspace_agent_run r ON r.id = i.run_id WHERE r.task_id = ${taskId} ORDER BY CASE i.state WHEN 'pending' THEN 0 WHEN 'uncertain' THEN 1 ELSE 2 END, i.rowid DESC LIMIT ${deliveryLimit}`
+            const steers = yield* Effect.forEach(steerRows, row => decodeJson(steerIntentSchema)(String(row.payload)))
+            const steerIntents = boundedItems(
+              steers.map(intent => {
+                if (Buffer.byteLength(encode(intent), 'utf8') <= 8192) return intent
+                const { message, ...preview } = intent
+                return { ...preview, messagePreview: message.slice(0, 512), payloadTruncated: true }
+              }),
+              512 * 1024,
+            )
+            const queueCounts =
+              yield* sql`SELECT COUNT(*) AS total FROM workspace_follow_up_queue WHERE task_id = ${taskId}`
+            const queuedRows =
+              yield* sql`SELECT position, payload, held FROM workspace_follow_up_queue WHERE task_id = ${taskId} ORDER BY position LIMIT ${deliveryLimit}`
+            const queue = yield* Effect.forEach(queuedRows, decodeQueuedFollowUp)
+            const queuedFollowUps = boundedItems(
+              queue.map(({ commandId, taskId, conversationId, issuedAt, position, prompt, held }) => ({
+                commandId,
+                taskId,
+                conversationId,
+                issuedAt,
+                position,
+                promptByteLength: Buffer.byteLength(prompt, 'utf8'),
+                promptPreview: prompt.slice(0, 512),
+                held: held ?? false,
+              })),
+              512 * 1024,
+            )
+            const requestResponseSummary = {
+              total: Number(responseCounts[0]?.total ?? 0),
+              pendingCount: Number(responseCounts[0]?.pending ?? 0),
+              uncertainCount: Number(responseCounts[0]?.uncertain ?? 0),
+              truncated:
+                Number(responseCounts[0]?.total ?? 0) > requestResponses.length ||
+                requestResponses.some(intent => 'payloadTruncated' in intent),
+            }
+            const steerIntentSummary = {
+              total: Number(steerCounts[0]?.total ?? 0),
+              pendingCount: Number(steerCounts[0]?.pending ?? 0),
+              uncertainCount: Number(steerCounts[0]?.uncertain ?? 0),
+              truncated:
+                Number(steerCounts[0]?.total ?? 0) > steerIntents.length ||
+                steerIntents.some(intent => 'payloadTruncated' in intent),
+            }
+            const queuedFollowUpSummary = {
+              total: Number(queueCounts[0]?.total ?? 0),
+              truncated: Number(queueCounts[0]?.total ?? 0) > queuedFollowUps.length,
+            }
+            return {
+              task: { ...taskPayload, sideChat: Number(taskRow.side_chat) === 1 },
+              runs,
+              runContexts,
+              runCoverage,
+              requestResponses,
+              steerIntents,
+              queuedFollowUps,
+              requestResponseSummary,
+              steerIntentSummary,
+              queuedFollowUpSummary,
+              highWatermark: Number(high[0]?.high ?? 0),
+            }
+          }),
+        )
+      }),
+    )
+
+  // Delegation rows keep hot columns (status, wake state, settlement) in step with the decoded payload.
+  const ACTIVE_PARENT_STATUSES = ['starting', 'running', 'awaitingInput']
+
+  const decodeDelegationRows = Effect.fnUntraced(function* (rows: ReadonlyArray<unknown>) {
+    const items: Array<DelegationRecord> = []
+    for (const row of rows) {
+      const payload = (row as Record<string, unknown>).payload
+      items.push(yield* decodeJson(delegationRecordSchema)(String(payload)))
+    }
+    return items
+  })
+
+  /** Wake messages carry their origin and a bounded summary of the Delegated Task; ordinary messages add nothing. */
+  const messageOriginFields = Effect.fnUntraced(function* (row: Record<string, unknown>) {
+    if (row.message_origin !== 'delegation' || row.message_delegation == null) return {}
+    const record = yield* decodeJson(delegationRecordSchema)(String(row.message_delegation))
+    return {
+      origin: 'delegation' as const,
+      delegation: {
+        delegationId: record.id,
+        childTaskId: record.childTaskId,
+        title: record.title,
+        status: record.status,
+      },
+    }
+  })
+
+  const loadDelegation = Effect.fnUntraced(function* (delegationId: string) {
+    const rows = yield* sql`SELECT payload FROM workspace_delegation WHERE id = ${delegationId}`
+    return rows[0] ? yield* decodeJson(delegationRecordSchema)(String(rows[0].payload)) : null
+  })
+
+  const saveDelegation = (record: DelegationRecord) =>
+    sql`UPDATE workspace_delegation SET status = ${record.status}, wake_state = ${record.wakeState}, settled_at = ${record.settledAt}, payload = ${encode(record)} WHERE id = ${record.id}`
+
+  function clearDelegationRequest(record: DelegationRecord): DelegationRecord {
+    if (record.pendingRequest === null && record.status !== 'waiting') return record
+    return { ...record, status: record.status === 'waiting' ? 'running' : record.status, pendingRequest: null }
+  }
+
+  // Keep the indexed status and request mirror in the same transaction as the child Run change.
+  const syncDelegationLiveState = Effect.fnUntraced(function* (run: AgentRun, requestChanged = false) {
+    const status = delegationStatusFromRun({ runStatus: run.status, cancelRequested: false, pendingRequest: false })
+
+    const rows = yield* sql`
+      SELECT payload FROM workspace_delegation
+      WHERE child_task_id = ${run.taskId} AND settled_at IS NULL AND json_extract(payload, '$.childRunId') = ${run.id}
+    `
+    if (!rows[0]) return
+    const current = yield* decodeJson(delegationRecordSchema)(String(rows[0].payload))
+    if (isSettledDelegationStatus(status)) {
+      const cleared = clearDelegationRequest(current)
+      if (cleared !== current) yield* saveDelegation(cleared)
+      return
+    }
+
+    let pendingRequest = current.pendingRequest
+    if (requestChanged) {
+      const pending = yield* sql`
+        SELECT json_extract(e.payload, '$.event.request.kind') AS kind, r.request_id AS requestId
+        FROM workspace_execution_event e JOIN workspace_driver_request_state r
+          ON r.run_id = e.run_id AND r.request_id = json_extract(e.payload, '$.event.request.requestId')
+        WHERE e.run_id = ${run.id} AND e.kind = 'driverEvent'
+          AND json_extract(e.payload, '$.event.kind') = 'requestPending' AND r.state = 'pending'
+        ORDER BY e.sequence DESC LIMIT 1
+      `
+      pendingRequest = pending[0]
+        ? yield* Schema.decodeUnknownEffect(delegationPendingRequestSchema)(pending[0]).pipe(
+            Effect.mapError(() => safeError('invalid-data', 'Stored Delegation request is invalid')),
+          )
+        : null
+    }
+    const nextStatus = delegationStatusFromRun({
+      runStatus: run.status,
+      cancelRequested: current.cancelRequestedAt !== null,
+      pendingRequest: pendingRequest !== null,
+    })
+    if (nextStatus !== current.status || requestChanged)
+      yield* saveDelegation({ ...current, status: nextStatus, pendingRequest })
+  })
+
+  const createDelegation: WorkspaceStore['Service']['createDelegation'] = command =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(createDelegationCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(command.commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'createDelegation', command))
+                return yield* Effect.fail(
+                  safeError('command-conflict', 'Command ID was already used with different input'),
+                )
+              const saved = yield* decodeJson(delegationReceiptSchema)(String(prior[0].payload))
+              return { ...saved, replayed: true }
+            }
+            const parents = yield* sql`
+              SELECT r.status, r.task_id, i.conversation_id, json_extract(p.payload, '$.isCoach') AS coach
+              FROM workspace_agent_run r
+              JOIN workspace_task t ON t.id = r.task_id
+              JOIN workspace_project p ON p.id = t.project_id
+              LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
+              WHERE r.id = ${command.parentRunId}
+            `
+            const parent = parents[0]
+            if (
+              !parent ||
+              String(parent.task_id) !== command.parentTaskId ||
+              String(parent.conversation_id) !== command.parentConversationId
+            )
+              return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))
+            if (!ACTIVE_PARENT_STATUSES.includes(String(parent.status)))
+              return yield* Effect.fail(safeError('invalid-transition', 'Parent Run is not active'))
+            const parentLink =
+              yield* sql`SELECT depth FROM workspace_delegation WHERE child_task_id = ${command.parentTaskId}`
+            const depth = parentLink[0] ? Number(parentLink[0].depth) + 1 : 1
+            if (depth !== command.record.depth || depth > command.limits.maxDepth)
+              return yield* Effect.fail(safeError('admission-conflict', 'Delegation depth limit reached'))
+            const projects = yield* sql`
+              SELECT json_extract(payload, '$.isCoach') AS coach
+              FROM workspace_project WHERE id = ${command.task.projectId}
+            `
+            if (!projects[0]) return yield* safeError('not-found', 'Project does not exist')
+            if (parent.coach === 1 || projects[0].coach === 1)
+              return yield* safeError('membership-conflict', 'Coach cannot participate in delegation')
+            const task = { ...command.task, status: 'open', updatedAt: command.task.createdAt }
+            yield* sql`INSERT INTO workspace_task (id, project_id, archived, payload) VALUES (${task.id}, ${task.projectId}, 0, ${encode(task)})`
+            yield* sql`INSERT INTO workspace_conversation (id, task_id, payload) VALUES (${command.conversation.id}, ${task.id}, ${encode({ ...command.conversation, taskId: task.id })})`
+            const record = command.record
+            yield* sql`
+              INSERT INTO workspace_delegation (id, command_id, parent_task_id, parent_conversation_id, parent_run_id, child_task_id, child_conversation_id, depth, status, wake_state, payload, created_at, settled_at)
+              VALUES (${record.id}, ${command.commandId}, ${record.parentTaskId}, ${record.parentConversationId}, ${record.parentRunId}, ${record.childTaskId}, ${record.childConversationId}, ${record.depth}, ${record.status}, ${record.wakeState}, ${encode(record)}, ${record.createdAt}, NULL)
+            `
+            const result = {
+              commandId: command.commandId,
+              delegationId: record.id,
+              replayed: false,
+              acceptedAt: command.issuedAt,
+            }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('createDelegation', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const getDelegation: WorkspaceStore['Service']['getDelegation'] = delegationId => guard(loadDelegation(delegationId))
+
+  const getDelegationByChildTask: WorkspaceStore['Service']['getDelegationByChildTask'] = childTaskId =>
+    guard(
+      Effect.gen(function* () {
+        const rows = yield* sql`SELECT payload FROM workspace_delegation WHERE child_task_id = ${childTaskId}`
+        return rows[0] ? yield* decodeJson(delegationRecordSchema)(String(rows[0].payload)) : null
+      }),
+    )
+
+  const listedDelegations = sql`NOT EXISTS (
+    SELECT 1 FROM workspace_task t JOIN workspace_project p ON p.id = t.project_id
+    WHERE t.id IN (d.parent_task_id, d.child_task_id) AND json_extract(p.payload, '$.isCoach') = 1
+  )`
+
+  const listDelegations: WorkspaceStore['Service']['listDelegations'] = query =>
+    guard(
+      Effect.gen(function* () {
+        const request = yield* Schema.decodeUnknownEffect(delegationQuerySchema)(query).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation query is invalid')),
+        )
+        const limit = request.limit ?? 50
+        const parentRunId = request.parentRunId ?? null
+        const parentTaskId = request.parentTaskId ?? null
+        const activeOnly = request.activeOnly === true ? 1 : 0
+        const wakeState = request.wakeState ?? null
+        const visibility = request.visibility ?? null
+        const before = request.before
+        const rows = yield* sql`
+          SELECT payload FROM workspace_delegation d
+          WHERE ${listedDelegations} AND (${parentRunId} IS NULL OR parent_run_id = ${parentRunId})
+            AND (${parentTaskId} IS NULL OR parent_task_id = ${parentTaskId})
+            AND (${activeOnly} = 0 OR settled_at IS NULL)
+            AND (${wakeState} IS NULL OR wake_state = ${wakeState})
+            AND (${visibility} IS NOT 'current' OR settled_at IS NULL OR wake_state IN ('pending', 'queued'))
+            AND (${visibility} IS NOT 'history' OR (settled_at IS NOT NULL AND wake_state NOT IN ('pending', 'queued')))
+            AND (${before?.createdAt ?? null} IS NULL OR (created_at, id) < (${before?.createdAt ?? null}, ${before?.id ?? null}))
+          ORDER BY created_at DESC, id DESC
+          LIMIT ${limit + 1}
+        `
+        const decoded = yield* decodeDelegationRows(rows.slice(0, limit))
+        const items = boundedItems(decoded, WORKSPACE_STORE_READ_BYTE_CAPACITY, true)
+        return { items, truncated: items.length < rows.length } satisfies DelegationList
+      }),
+    )
+
+  const settleDelegation: WorkspaceStore['Service']['settleDelegation'] = (command: SettleDelegationCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(settleDelegationCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation settlement is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            // Settlement is written once; a replayed terminal event returns the stored outcome.
+            if (current.settledAt !== null) return current
+            const next: DelegationRecord = {
+              ...current,
+              status: command.status,
+              resultText: command.resultText,
+              resultTruncated: command.resultTruncated,
+              pendingRequest: null,
+              settledAt: command.occurredAt,
+            }
+            yield* saveDelegation(next)
+            return next
+          }),
+        )
+      }),
+    )
+
+  const setDelegationWake: WorkspaceStore['Service']['setDelegationWake'] = (command: SetDelegationWakeCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(setDelegationWakeCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation wake command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            const next = { ...current, wakeState: command.wakeState, wake: command.wake ?? current.wake }
+            yield* saveDelegation(next)
+            return next
+          }),
+        )
+      }),
+    )
+
+  const setDelegationPendingRequest: WorkspaceStore['Service']['setDelegationPendingRequest'] = (
+    command: SetDelegationPendingRequestCommand,
+  ) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(setDelegationPendingRequestCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation request command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            if (current.settledAt !== null) return current
+            const runs = yield* sql`SELECT status FROM workspace_agent_run WHERE id = ${current.childRunId}`
+            const runStatus = runs[0] ? yield* Schema.decodeUnknownEffect(agentRunStatusSchema)(runs[0].status) : null
+            const status = delegationStatusFromRun({
+              runStatus,
+              cancelRequested: current.cancelRequestedAt !== null,
+              pendingRequest: command.pendingRequest !== null,
+            })
+            const next = isSettledDelegationStatus(status)
+              ? clearDelegationRequest(current)
+              : { ...current, pendingRequest: command.pendingRequest, status }
+            if (next !== current) yield* saveDelegation(next)
+            return next
+          }),
+        )
+      }),
+    )
+
+  const requestDelegationCancel: WorkspaceStore['Service']['requestDelegationCancel'] = (delegationId, requestedAt) =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const current = yield* loadDelegation(delegationId)
+          if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+          if (current.settledAt !== null || current.cancelRequestedAt !== null) return current
+          const next = { ...current, cancelRequestedAt: requestedAt }
+          yield* saveDelegation(next)
+          return next
+        }),
+      ),
+    )
+
+  const reopenDelegation: WorkspaceStore['Service']['reopenDelegation'] = (command: ReopenDelegationCommand) =>
+    guard(
+      Effect.gen(function* () {
+        yield* Schema.decodeUnknownEffect(reopenDelegationCommandSchema)(command).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Delegation reopen command is invalid')),
+        )
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const current = yield* loadDelegation(command.delegationId)
+            if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+            if (current.childRunId === command.childRunId) return current
+            if (current.settledAt === null)
+              return yield* Effect.fail(safeError('invalid-transition', 'Delegation is still running'))
+            // Check parent liveness in the same transaction that reopens the Delegation.
+            const parents =
+              yield* sql`SELECT status, task_id FROM workspace_agent_run WHERE id = ${command.parentRunId}`
+            const parent = parents[0]
+            if (!parent || String(parent.task_id) !== current.parentTaskId)
+              return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))
+            if (!ACTIVE_PARENT_STATUSES.includes(String(parent.status)))
+              return yield* Effect.fail(safeError('invalid-transition', 'Parent Run is not active'))
+            const { wakeAttempts: _lostWakes, ...reopened } = current
+            const next: DelegationRecord = {
+              ...reopened,
+              parentRunId: command.parentRunId,
+              childRunId: command.childRunId,
+              accessMode: command.accessMode,
+              status: 'queued',
+              wake: 'always',
+              wakeState: 'notDue',
+              pendingRequest: null,
+              resultText: null,
+              resultTruncated: false,
+              cancelRequestedAt: null,
+              resultReadAt: null,
+              settledAt: null,
+            }
+            yield* sql`UPDATE workspace_delegation SET parent_run_id = ${next.parentRunId}, status = ${next.status}, wake_state = ${next.wakeState}, settled_at = NULL, payload = ${encode(next)} WHERE id = ${next.id}`
+            return next
+          }),
+        )
+      }),
+    )
+
+  const markDelegationRead: WorkspaceStore['Service']['markDelegationRead'] = (delegationId, readAt) =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const current = yield* loadDelegation(delegationId)
+          if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
+          if (current.settledAt === null || current.resultReadAt !== null) return current
+          const next = { ...current, resultReadAt: readAt }
+          yield* saveDelegation(next)
+          return next
+        }),
+      ),
+    )
+
+  const listDueDelegationWakes: WorkspaceStore['Service']['listDueDelegationWakes'] = (limit, after) =>
+    guard(
+      Effect.gen(function* () {
+        const rows = yield* sql`
+          SELECT payload FROM workspace_delegation d
+          WHERE wake_state = 'pending' AND ${listedDelegations}
+            AND (${after?.createdAt ?? null} IS NULL OR (created_at, id) > (${after?.createdAt ?? null}, ${after?.id ?? null}))
+          ORDER BY created_at, id LIMIT ${limit}
+        `
+        // Results are up to 16 Ki chars each, so the page is cut by size too; callers page until it is empty.
+        return boundedItems(yield* decodeDelegationRows(rows), WORKSPACE_STORE_READ_BYTE_CAPACITY, true)
+      }),
+    )
+
+  return WorkspaceStore.of({
+    searchPromptConversations: request => guard(searchPromptConversations(sql, request)),
+    registerProject: command =>
+      '_tag' in command ? convertDirectoryProject(command) : registerNewOrExistingProject(command),
+    checkUnmanagedProjectPath: path => guard(checkProjectPathMembership(path)),
+    reserveGitInitialization,
+    releaseGitInitialization,
+    registerCheckout,
+    createTask,
+    listActiveCoachRuns,
+    getCoachChat,
+    purgeCoachChat,
+    sweepCoachChats,
+    renameTask,
+    setTaskArchived,
+    beginRun,
+    claimDispatch,
+    bindNativeSession,
+    acknowledgeDispatch,
+    recordDriverEvent,
+    recordConversationHandoff,
+    failDispatch,
+    requestInterrupt,
+    recordRequestResponse,
+    settleRequestResponse,
+    recordSteer,
+    settleSteer,
+    enqueueFollowUp,
+    cancelQueuedFollowUp,
+    listQueuedFollowUps,
+    listQueuedFollowUpHeads,
+    holdQueuedFollowUps,
+    listRequestResponses,
+    listSteerIntents,
+    promoteNextFollowUp,
+    recoverWorker,
+    releaseDispatchAfterCleanup,
+    releaseRetiredDispatches,
+    recordSideChatBringBack,
+    consumeSideChatBringBack,
+    readPendingSideChatBringBack,
+    deleteSideChatTask,
+    acquireOwnerEpoch,
+    readWorkspacePayload,
+    pageEvents,
+    listProjects,
+    getProject,
+    listTasks,
+    readTaskDetail,
+    listNativeAgentSessions,
+    listPendingRuntimeRequests,
+    readConversationPage,
+    readTaskSnapshot,
+    createDelegation,
+    getDelegation,
+    getDelegationByChildTask,
+    listDelegations,
+    settleDelegation,
+    setDelegationWake,
+    setDelegationPendingRequest,
+    markDelegationRead,
+    reopenDelegation,
+    requestDelegationCancel,
+    listDueDelegationWakes,
+  })
+})
+
+export const WorkspaceStoreLive = (options: { readonly filename: string }) => {
+  const sqlLayer = Sqlite.SqliteClient.layer({ filename: options.filename })
+  return Layer.effect(WorkspaceStore, makeService).pipe(
+    Layer.provide(Layer.mergeAll(sqlLayer, NodeFileSystem.layer, NodePath.layer)),
+  )
+}

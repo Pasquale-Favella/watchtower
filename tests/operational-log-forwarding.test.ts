@@ -1,8 +1,6 @@
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { parseSidecarLogLine } from '../src/platform/mcp/sidecar.js'
-import { logCodeFor } from '../src/infrastructure/logging/operational-log.js'
 import {
   fileErrorCode,
   logFileName,
@@ -10,6 +8,7 @@ import {
   takeQueuedLogRecords,
 } from '../src/infrastructure/ingestion/file-errors.js'
 import { buildScanSummaryRecords } from '../src/infrastructure/ingestion/scan.js'
+import { logCodeFor } from '../src/infrastructure/logging/operational-log.js'
 import { rendererNoticeSchema } from '../src/shared/schemas/ipc.js'
 import type { ScanMetadata } from '../src/shared/schemas/scan.js'
 
@@ -90,66 +89,6 @@ describe('file-error outbox (#128)', () => {
     if (process.platform === 'win32') {
       expect(logFileName('C:\\Users\\alice\\data\\s.json')).toBe('s.json')
     }
-  })
-})
-
-describe('sidecar stderr protocol (#129)', () => {
-  it('parses a request-failure line to kind + method + route + code', () => {
-    expect(
-      parseSidecarLogLine(
-        JSON.stringify({ level: 50, time: 0, kind: 'request', method: 'POST', route: '/mcp', code: 'failed' }),
-      ),
-    ).toEqual({
-      kind: 'request',
-      method: 'POST',
-      route: '/mcp',
-      code: 'failed',
-    })
-  })
-
-  it('parses a boot-failure line to kind + op + code', () => {
-    expect(
-      parseSidecarLogLine(
-        JSON.stringify({ level: 50, time: 0, kind: 'boot', op: 'ledger-mcp-boot', code: 'db-open-failed' }),
-      ),
-    ).toEqual({
-      kind: 'boot',
-      op: 'ledger-mcp-boot',
-      code: 'db-open-failed',
-    })
-  })
-
-  it('defaults a kind-less line to a request record', () => {
-    expect(parseSidecarLogLine(JSON.stringify({ method: 'POST', route: '/mcp', code: 'failed' }))).toMatchObject({
-      kind: 'request',
-      code: 'failed',
-    })
-  })
-
-  it('drops non-JSON lines, non-objects, and lines without a code', () => {
-    expect(parseSidecarLogLine('Node warning: foo')).toBeNull()
-    expect(parseSidecarLogLine('')).toBeNull()
-    expect(parseSidecarLogLine('[1,2]')).toBeNull()
-    expect(parseSidecarLogLine(JSON.stringify({ method: 'POST', route: '/mcp' }))).toBeNull()
-    expect(parseSidecarLogLine(JSON.stringify({ method: '', route: '/mcp', code: 'x' }))).toEqual({
-      kind: 'request',
-      route: '/mcp',
-      code: 'x',
-    })
-  })
-
-  it('ignores sensitive keys even when the sidecar sends them', () => {
-    const parsed = parseSidecarLogLine(
-      JSON.stringify({
-        method: 'POST',
-        route: '/mcp',
-        code: 'failed',
-        body: 'secret bytes',
-        token: 'Bearer sk-secret',
-        prompt: 'do evil',
-      }),
-    )
-    expect(parsed).toEqual({ kind: 'request', method: 'POST', route: '/mcp', code: 'failed' })
   })
 })
 

@@ -22,7 +22,6 @@ import {
   type LifecycleCursor,
 } from '../src/renderer/stores/atoms/rpc-lifecycle.js'
 import { initialScanState, scanHydrationStateAtom, scanStateAtom } from '../src/renderer/stores/atoms/scan.js'
-import { coachStateAtom } from '../src/renderer/features/coach-skills/atoms.js'
 import { activeCurrencyAtom } from '../src/renderer/features/settings/atoms.js'
 import { updatesMachineAtom } from '../src/renderer/features/settings/updates-atoms.js'
 import type { AppLifecycleFrame } from '../src/shared/rpc/lifecycle.js'
@@ -269,7 +268,6 @@ describe('root RPC lifecycle subscription', () => {
     expect(registry.get(configInvalidationRevisionAtom)).toBe(0)
     expect(registry.get(activeCurrencyAtom)).toEqual(currency)
     expect(registry.get(updatesMachineAtom)).toMatchObject({ state: 'synced', status: { revision: 2 } })
-    expect(registry.get(coachStateAtom).harnesses).toEqual([harness])
     registry.dispose()
   })
 

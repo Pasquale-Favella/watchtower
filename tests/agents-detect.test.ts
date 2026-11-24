@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectHarnesses, pickPreferredHarness } from '../src/infrastructure/agent-harnesses/detect.js'
+import { detectHarnesses } from '../src/infrastructure/agent-harnesses/detect.js'
 import { harnessSpecs } from '../src/infrastructure/agent-harnesses/harnesses/index.js'
 
 /** A commandExists lookup seeded with installed binaries. */
@@ -209,20 +209,5 @@ describe('harness spec invariants — registry shape (ADR 0016)', () => {
         expect(token, `${spec.kind}: ${token}`).toMatch(/^[A-Za-z0-9._:/-]+$/u)
       }
     }
-  })
-})
-
-describe('pickPreferredHarness — most-compatible selection', () => {
-  it('follows the per-spec preference order (data-driven): claude, then codex, then opencode', async () => {
-    const commandExists = lookup(['claude-agent-acp', 'opencode', 'codex-acp'])
-    const all = await detectHarnesses({ commandExists })
-    expect(pickPreferredHarness(all)?.name).toBe('claude')
-    expect(pickPreferredHarness(all.filter(h => h.name !== 'claude'))?.name).toBe('codex')
-    expect(pickPreferredHarness(all.filter(h => !['claude', 'codex'].includes(h.name)))?.name).toBe('opencode')
-  })
-
-  it('returns undefined when nothing is installed', async () => {
-    const all = await detectHarnesses({ commandExists: lookup([]) })
-    expect(pickPreferredHarness(all)).toBeUndefined()
   })
 })

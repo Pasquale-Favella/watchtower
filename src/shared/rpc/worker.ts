@@ -7,6 +7,7 @@ import { exportResultSchema } from '@/shared/schemas/export.js'
 import { activeCurrencySchema, currencyOptionsSchema } from '@/shared/schemas/fx.js'
 import { pricingRefreshResultSchema, scanStatusSchema, settingsInfoSchema } from '@/shared/schemas/ipc.js'
 import { ledgerMcpStartupModeSchema } from '@/shared/schemas/ledger-mcp.js'
+import { ledgerMcpCallsSchema, ledgerMcpScopeResultSchema } from '@/shared/schemas/ledger-mcp-results.js'
 import { modelAliasSchema, modelsPayloadSchema, priceOverrideSchema } from '@/shared/schemas/models.js'
 import { optimizePayloadSchema } from '@/shared/schemas/optimize.js'
 import { overviewPayloadSchema, overviewScopeSchema } from '@/shared/schemas/overview.js'
@@ -24,6 +25,8 @@ import {
   sessionRowSchema,
 } from '@/shared/schemas/views.js'
 import { yieldPayloadSchema } from '@/shared/schemas/yield.js'
+
+import { ledgerMcpCallsRequestSchema } from './ledger-mcp.js'
 
 /** Distinct ordinary requests admitted by the main-owned worker supervisor. */
 export const WORKER_REQUEST_CAPACITY = 128
@@ -165,6 +168,8 @@ export const WorkerRpcGroup = RpcGroup.make(
   Rpc.make('models:setPrice', { payload: priceOverrideSchema, ...unary(ok) }),
   Rpc.make('ledger-mcp:startup:get', unary(ledgerMcpStartupModeSchema)),
   Rpc.make('ledger-mcp:startup:set', { payload: startupModeRequest, ...unary(ledgerMcpStartupModeSchema) }),
+  Rpc.make('ledger-mcp:scope', { payload: scopedRequest, ...unary(ledgerMcpScopeResultSchema) }),
+  Rpc.make('ledger-mcp:calls', { payload: ledgerMcpCallsRequestSchema, ...unary(ledgerMcpCallsSchema) }),
 
   Rpc.make('scan:start', { payload: scanStartRequest, ...unary(scanResult) }),
   Rpc.make('scan:active', unary(booleanValue)),

@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 
-import { cn } from '@/renderer/shared/lib/utils'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { cn } from '@/renderer/shared/lib/utils'
 
 /** Decorative bar-chart silhouette heights, cycled by the bar skeleton. */
 const BAR_HEIGHTS = [38, 62, 46, 74, 52, 86, 64, 92, 58, 78, 48, 68, 42, 58]
@@ -118,4 +118,27 @@ export function SkeletonRows({ rows = 7, className }: { rows?: number; className
       ))}
     </div>
   )
+}
+
+/** Varied line widths for the code skeleton, cycled per line so it reads as source. */
+const CODE_LINE_WIDTHS = ['w-3/5', 'w-4/5', 'w-2/5', 'w-11/12', 'w-1/2', 'w-3/4', 'w-1/3', 'w-2/3']
+
+/** Code/diff-view skeleton: a line-number gutter square and a varying-width
+ * bar per line, spaced at the 20px rhythm of the text-[11px] leading-5 rows. */
+export function SkeletonCode({ lines = 12, className }: { lines?: number; className?: string }) {
+  return (
+    <div className={cn('flex flex-col gap-2.5', className)} aria-hidden="true">
+      {Array.from({ length: lines }).map((_, i) => (
+        <div key={i} className="flex items-center gap-3">
+          <Skeleton className="h-2.5 w-5 shrink-0" />
+          <Skeleton className={cn('h-2.5', CODE_LINE_WIDTHS[i % CODE_LINE_WIDTHS.length])} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/** Paged-document sheet skeleton (PDF): an A4-proportioned block centered in its container. */
+export function SkeletonPage({ className }: { className?: string }) {
+  return <Skeleton className={cn('mx-auto aspect-[1/1.414] w-full max-w-[420px] rounded-sm', className)} />
 }

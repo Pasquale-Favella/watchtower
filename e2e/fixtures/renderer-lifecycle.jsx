@@ -137,9 +137,6 @@ const readNative = async (tag, request, generation) => {
     case 'updates:status':
       value = updateStatus
       break
-    case 'coach:harnesses':
-      value = []
-      break
     default:
       counts.unexpectedRequests.push(tag)
       throw new Error(`Unexpected native RPC request: ${tag}`)

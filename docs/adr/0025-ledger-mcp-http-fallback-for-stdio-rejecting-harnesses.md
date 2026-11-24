@@ -1,5 +1,11 @@
 # ADR 0025 — Ledger MCP HTTP fallback for stdio-rejecting harnesses
 
+> **Superseded in part (ADR 0046):** the per-harness `clientMcpTransport` choice (section 1) and the loopback-HTTP
+> sidecar process that serves it (section 2) are removed. The ledger endpoint is attached as the orchestrator endpoint is
+> (ADR 0044): over HTTP where the harness accepts HTTP MCP servers, otherwise through the `ledger-mcp-proxy` stdio bridge.
+> Section 3's sidecar boot fallback no longer applies, because there is no sidecar to boot. The Copilot rejection evidence
+> stands.
+
 - Status: accepted
 - Date: 2026-09-16
 - Domain: agents (Coach & Skills surface), ledger MCP transport

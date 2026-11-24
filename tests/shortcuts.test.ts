@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
+
 import {
-  SHORTCUTS,
-  NAV_SECTIONS,
-  NUMBERED_SECTION_SHORTCUTS,
-  shortcutForAction,
   displayShortcut,
   displayShortcutForAction,
+  displayShortcutText,
+  NAV_SECTIONS,
+  NUMBERED_SECTION_SHORTCUTS,
   sectionsRangeLabel,
+  shortcutForAction,
+  SHORTCUTS,
 } from '../src/renderer/app/shortcuts.js'
 import { acceleratorFor } from '../src/shared/lib/shortcuts.js'
 
@@ -25,7 +27,7 @@ describe('shortcut registry', () => {
     expect(shortcutForAction('commandPalette')?.hotkey).toBe('Mod+K')
   })
 
-  it('registers nothing for digits beyond the numbered sections (Mod+9/Mod+10 no-op)', () => {
+  it('registers nothing for digits beyond the numbered sections (Mod+10 no-op)', () => {
     const hotkeys = new Set<string>(SHORTCUTS.map(def => def.hotkey))
     expect(hotkeys.has('Mod+9')).toBe(false)
     expect([...hotkeys].some(hotkey => hotkey === 'Mod+10')).toBe(false)
@@ -45,6 +47,11 @@ describe('shortcut registry', () => {
     expect(displayShortcut('Mod+1', 'windows')).toBe('Ctrl+1')
     expect(displayShortcut('Mod+1', 'linux')).toBe('Ctrl+1')
     expect(displayShortcut('Mod+,', 'mac')).toBe('⌘,')
+    expect(displayShortcut('Mod', 'mac')).toBe('⌘')
+    expect(displayShortcutText('Mod+Enter', 'mac')).toBe('⌘↵')
+    expect(displayShortcutText('Mod+Enter', 'windows')).toBe('Ctrl+Enter')
+    expect(displayShortcutText('Shift+Enter', 'linux')).toBe('Shift+Enter')
+    expect(displayShortcutText('Mod', 'windows')).toBe('Ctrl')
     expect(displayShortcut('Mod+R', 'mac')).toBe('⌘R')
     expect(displayShortcutForAction('settings', 'windows')).toBe('Ctrl+,')
     expect(displayShortcutForAction('refresh', 'windows')).toBe('Ctrl+R')
@@ -62,6 +69,17 @@ describe('shortcut registry', () => {
     expect(shortcutForAction('summonOrb')?.hotkey).toBe('Mod+Alt+O')
     expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.action === 'summonOrb')).toBe(false)
     expect(displayShortcutForAction('summonOrb', 'windows')).toBe('Ctrl+Alt+O')
+  })
+
+  it('declares Add project and New chat without a project as workspace-scoped, outside the numbered range', () => {
+    const workspace = SHORTCUTS.filter(def => def.scope === 'workspace')
+    expect(workspace.map(def => [def.action, def.hotkey])).toEqual([
+      ['addProject', 'Mod+O'],
+      ['newChatWithoutProject', 'Mod+Alt+N'],
+    ])
+    expect(NUMBERED_SECTION_SHORTCUTS.some(def => def.scope === 'workspace')).toBe(false)
+    expect(displayShortcutForAction('addProject', 'windows')).toBe('Ctrl+O')
+    expect(displayShortcutForAction('newChatWithoutProject', 'windows')).toBe('Ctrl+Alt+N')
   })
 
   it('maps a registry hotkey to an Electron accelerator', () => {

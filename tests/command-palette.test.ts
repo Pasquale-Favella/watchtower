@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { shortcutForAction } from '../src/renderer/app/shortcuts.js'
 import {
   PALETTE_ACTIONS,
-  PALETTE_SECTIONS,
   PALETTE_ROWS,
+  PALETTE_SECTIONS,
   rowFilterValue,
 } from '../src/renderer/components/shell/CommandPalette.js'
 
@@ -26,6 +26,9 @@ describe('command palette rows (ADR 0028)', () => {
     for (const row of PALETTE_ROWS) {
       expect(rowFilterValue(row)).toContain(row.action)
     }
+  })
+  it('lists no workspace Tasks, so side Tasks never reach it', () => {
+    expect(new Set(PALETTE_ROWS.map(row => row.source))).toEqual(new Set(['section', 'action']))
   })
   it('every row resolves a registry label (unique filter values for cmdk)', () => {
     const labels = [...PALETTE_SECTIONS, ...PALETTE_ACTIONS].map(action => shortcutForAction(action)?.label ?? action)

@@ -7,7 +7,6 @@ import * as AtomRegistry from 'effect/reactivity/AtomRegistry'
 import * as Reactivity from 'effect/reactivity/Reactivity'
 import * as Stream from 'effect/Stream'
 
-import { coachStateAtom, replaceHarnessesAtom } from '@/renderer/features/coach-skills/atoms'
 import { activeCurrencyAtom, currencyChangedAtom } from '@/renderer/features/settings/atoms'
 import { updateStatusChangedAtom } from '@/renderer/features/settings/updates-atoms'
 import { ApplicationClient, ApplicationProtocolLayer } from '@/renderer/shared/lib/application-rpc'
@@ -84,7 +83,6 @@ export function dispatchAppLifecycleEvent<R = never>(
       registry.set(updateStatusChangedAtom, event.status)
       return Effect.void
     case 'HarnessesChanged':
-      registry.set(replaceHarnessesAtom, event.rows)
       return Effect.void
     case 'LedgerReset':
       registry.set(rehydrateScanAtom, undefined)
@@ -245,18 +243,14 @@ export function createRpcLifecycleAtom(options: RpcLifecycleOptions = {}) {
                 Effect.gen(function* () {
                   if (refreshScanMetadata) yield* get.setResult(rehydrateScanAtom, undefined).pipe(Effect.ignore)
                   const currencyAtStart = registry.get(activeCurrencyAtom)
-                  const harnessesAtStart = registry.get(coachStateAtom).harnesses
                   const client = yield* ApplicationClient
-                  const [currency, updater, harnesses] = yield* Effect.all([
+                  const [currency, updater] = yield* Effect.all([
                     Effect.result(client('currency:get', undefined)),
                     Effect.result(client('updates:status', undefined)),
-                    Effect.result(client('coach:harnesses', undefined)),
                   ])
                   if (currency._tag === 'Success' && registry.get(activeCurrencyAtom) === currencyAtStart)
                     registry.set(currencyChangedAtom, currency.success)
                   if (updater._tag === 'Success') registry.set(updateStatusChangedAtom, updater.success)
-                  if (harnesses._tag === 'Success' && registry.get(coachStateAtom).harnesses === harnessesAtStart)
-                    registry.set(replaceHarnessesAtom, harnesses.success)
                 }),
               )
             })

@@ -69,6 +69,8 @@ export const DEDUPABLE_OPS: ReadonlySet<string> = new Set([
   'models:getAliases',
   'models:getPriceOverrides',
   'settings:info',
+  'ledger-mcp:scope',
+  'ledger-mcp:calls',
   'ledger-mcp:startup:get',
   'currency:get',
   'currency:list',

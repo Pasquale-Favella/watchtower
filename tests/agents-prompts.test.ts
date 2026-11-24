@@ -1,11 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import {
-  buildCoachPrompt,
-  buildLedgerBriefing,
-  buildScopeUpdate,
-  scopeWindowLabel,
-} from '../src/infrastructure/agent-harnesses/prompts.js'
+import { buildLedgerBriefing, scopeWindowLabel } from '../src/infrastructure/agent-harnesses/prompts.js'
 
 const scope30 = { period: '30days' as const, provider: 'claude' }
 const scopeAll = { period: 'lifetime' as const }
@@ -91,28 +86,5 @@ describe('buildLedgerBriefing — the MCP tool briefing (lifetime-serving)', () 
     expect(briefing).not.toContain('## When to use')
     expect(briefing).not.toContain('## Example')
     expect(briefing).not.toContain('under 40 lines')
-  })
-})
-
-describe('buildScopeUpdate', () => {
-  it('names the new default ledger window', () => {
-    expect(buildScopeUpdate(scope30)).toBe(
-      'The user has switched their view to Last 30 days · claude — use it as the default window for ledger queries from now on.',
-    )
-  })
-})
-
-describe('buildCoachPrompt — briefing prepended only when present', () => {
-  it('prepends the briefing then the user question', () => {
-    const prompt = buildCoachPrompt('Summarise my spend', buildLedgerBriefing(scope30))
-    expect(prompt).toContain("The user's question:\nSummarise my spend")
-    // The whole briefing (the ledger tools included) sits BEFORE the question
-    // block — compare against the question LABEL, since the briefing itself
-    // can legitimately mention "The user" in its role definition.
-    expect(prompt.indexOf('ledger_scope')).toBeLessThan(prompt.indexOf("The user's question:"))
-  })
-
-  it('passes the user text through untouched without a briefing', () => {
-    expect(buildCoachPrompt('Summarise my spend', '')).toBe('Summarise my spend')
   })
 })

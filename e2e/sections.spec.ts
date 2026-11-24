@@ -1,6 +1,7 @@
 import { expect, type Locator, type Page, test } from '@playwright/test'
 
 import { dismissOnboarding, expectSingleMainWindow, waitForAnyVisible, withApp } from './app'
+import { switchVertical } from './verticals'
 
 /**
  * Section walk (tracks #133): every sidebar destination renders its view
@@ -43,18 +44,28 @@ const MARKERS: Record<SectionName, (window: Page) => Locator[]> = {
     window.getByRole('combobox', { name: 'First model' }),
     window.getByText('Need at least two models with usage in this range to compare.'),
   ],
-  'Coach & Skills': window => [window.getByRole('button', { name: 'Send message' })],
-  Settings: window => [window.getByRole('navigation', { name: 'Settings sections' })],
+  'Coach & Skills': window => [
+    window.getByRole('region', { name: 'Coach & Skills' }).getByRole('heading', { name: 'Coach & Skills', level: 2 }),
+  ],
+  Settings: window => [window.getByRole('navigation', { name: 'Settings groups' })],
 }
 
 test('every section renders without errors', async () => {
   await withApp(async ({ app, window }) => {
     await expect(window).toHaveTitle(/Watchtower/)
     await dismissOnboarding(window)
+    await switchVertical(window, 'Analytics')
 
     for (const nav of SECTIONS) {
       await window.getByRole('button', { name: nav, exact: true }).click()
       await waitForAnyVisible(MARKERS[nav](window))
+      if (nav === 'Coach & Skills') {
+        const coach = window.getByRole('region', { name: 'Coach & Skills' })
+        // A new coach chat has no in-chat header: the top bar carries the title and New chat appears once a chat exists.
+        await expect(coach.getByRole('button', { name: 'New chat' })).toHaveCount(0)
+        await expect(coach.getByRole('button', { name: 'Agent and model' })).toBeVisible()
+        await expect(coach.getByRole('button', { name: /conversation details|terminal|right panel/i })).toHaveCount(0)
+      }
       if (nav === 'Optimize') {
         await window.getByRole('tab', { name: 'Outcomes', exact: true }).click()
         await expect(window.getByRole('heading', { name: 'Delivery evidence', exact: true })).toBeVisible()

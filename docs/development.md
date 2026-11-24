@@ -229,14 +229,13 @@ src/
 │  ├─ cadence.ts            # background scan / FX cadence policy
 │  ├─ fx.ts                 # Effect FX service and Frankfurter cache
 │  ├─ updates.ts            # scoped check/download/install state machine
-│  ├─ agents/               # the Coach & Skills harness surface (ADRs 0016–0021)
+│  ├─ agents/               # the harness surface shared by Workspace and Coach & Skills (ADRs 0016, 0045)
 │  │  ├─ detect.ts          # harness discovery over the spec registry
-│  │  ├─ runtime.ts         # the HarnessRuntime seam (AI SDK + ACP provider)
 │  │  ├─ harnesses/         # one spec file per drivable CLI (claude, codex, …)
+│  │  ├─ drivers/           # the Workspace AgentDriver registry (claude, codex, ACP)
+│  │  ├─ connection-catalog.ts # detected Harness Connections for the Workspace pickers
 │  │  ├─ ledger-mcp/        # official SDK server, Schema tool inputs, read-only runtime
-│  │  ├─ prompts.ts         # the one briefing: coaching + skill authoring scopes
-│  │  ├─ events.ts          # ACP stream → CoachEvent derivation
-│  │  └─ ipc.ts             # existing Coach coordinator capability composition
+│  │  └─ prompts.ts         # the ledger MCP briefing (coach-orient prompt)
 │  ├─ pipeline/             # discovery -> extraction -> parse -> classify -> price
 │  │  ├─ scan.ts            # Effect scan orchestration, metadata out
 │  │  ├─ parser.ts          # native parser streams and per-file delta seam

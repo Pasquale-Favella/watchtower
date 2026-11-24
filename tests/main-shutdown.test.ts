@@ -58,4 +58,24 @@ describe('main resource shutdown', () => {
     await expect(closing).resolves.toEqual(new Error('Shutdown failed'))
     expect(order).toEqual(['worker', 'runtime'])
   })
+
+  it('bounds a stalled producer so the runtime still disposes inside the quit deadline', async () => {
+    const order: string[] = []
+    const started = performance.now()
+    const closing = closeMainResources(
+      {
+        stopCoach: () => new Promise<void>(() => {}),
+        stopWorker: async () => {
+          order.push('worker')
+        },
+        disposeRuntime: async () => {
+          order.push('runtime')
+        },
+      },
+      { producersMs: 30, runtimeMs: 1_000 },
+    ).catch(error => error)
+    await expect(closing).resolves.toEqual(new Error('Shutdown failed'))
+    expect(performance.now() - started).toBeLessThan(500)
+    expect(order).toEqual(['worker', 'runtime'])
+  })
 })

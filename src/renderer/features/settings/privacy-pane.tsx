@@ -47,8 +47,8 @@ export function PrivacyPane() {
           <div>
             <p className="text-foreground text-[12.5px] font-medium">No API keys</p>
             <p className="text-muted-foreground text-[11px]">
-              Usage is detected from local files; no provider API keys are required. Coach runs use each harness&apos;s
-              own sign-in — an opt-in toggle in Coach can pass environment keys through instead.
+              Usage is detected from local files; no provider API keys are required. Coach & Skills uses the selected
+              Workspace Harness Connection&apos;s own sign-in.
             </p>
           </div>
         </div>

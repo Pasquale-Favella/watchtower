@@ -1,5 +1,11 @@
 # ADR 0019 — In-app ledger MCP server + per-conversation temp workspace
 
+> **Superseded in part (ADR 0045, ADR 0046):** section 1 is replaced. The per-conversation temp directory and the
+> `coach:reset` IPC give way to the hidden Coach project's managed checkout, which New chat purges and the startup sweep
+> clears. Section 2 is replaced: the self-spawned stdio server and its second read-only SQLite connection give way to
+> the in-process loopback endpoint, which reads through the DB worker (ADR 0046). The no-workspace-picker decision and
+> the read-only, tool-shaped ledger surface stand.
+
 - Status: accepted
 - Date: 2026-08-11
 - Domain: agents (Coach & Skills surface), store (ledger, scope)

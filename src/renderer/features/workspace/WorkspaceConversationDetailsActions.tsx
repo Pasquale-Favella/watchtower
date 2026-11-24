@@ -1,0 +1,474 @@
+import {
+  ArrowUpRight,
+  FileDiff,
+  Folder,
+  GitBranchPlus,
+  GitPullRequest,
+  LoaderCircle,
+  MessageSquare,
+} from 'lucide-react'
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
+
+import { LoadingRegion } from '@/renderer/components/skeletons'
+import { Button } from '@/renderer/components/ui/button'
+import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { TextTooltip } from '@/renderer/components/ui/tooltip'
+import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
+import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
+
+import { DelegationDetails } from './delegation/DelegationDetails.js'
+import { showErrorToast, useErrorToast } from './error-toast.js'
+import {
+  useInitializeProjectGit,
+  useSwitchBranch,
+  useWorkspaceBranches,
+  useWorkspaceProject,
+  useWorkspaceTaskSnapshot,
+} from './hooks.js'
+import {
+  INITIALIZE_GIT_SUCCESS_MESSAGE,
+  initializeGitBlockedReason,
+  shouldShowInitializeGit,
+} from './initialize-git-visibility.js'
+import { openProjectRequest } from './project-request.js'
+import { ChangeStats } from './right-panel/inspection-ui.js'
+import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
+import { useSideChats } from './side-chat/hooks.js'
+import { WorkspaceQueryScopeContext } from './side-chat/scope-context.js'
+import { sideChatStatus, sideChatStatusLabel, sideChatTabState } from './side-chat/status.js'
+import { useSideChatQueryScope } from './side-chat/use-side-chat-query-scope.js'
+import type { ConversationDetailsItems } from './use-conversation-details-items.js'
+import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
+
+interface Props {
+  readonly visible: ConversationDetailsItems
+  readonly projectId?: ProjectId | undefined
+  readonly checkoutId?: WorkspaceCheckoutId | undefined
+  readonly workspacePath?: string | undefined
+  readonly taskId?: TaskId | undefined
+  readonly conversationId?: ConversationId | null | undefined
+  readonly activeRun?: boolean | undefined
+  readonly isScratch?: boolean | undefined
+  readonly checkoutControls?: ReactNode
+  readonly onOpenDiff?: (() => void) | undefined
+  readonly onOpenFiles?: (() => void) | undefined
+  readonly onOpenPullRequests?: (() => void) | undefined
+  readonly onOpenSideChat?: ((id: string) => void) | undefined
+}
+
+export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Element | null {
+  const scope = props.projectId
+    ? { projectId: props.projectId, ...(props.checkoutId ? { checkoutId: props.checkoutId } : {}) }
+    : null
+  const project = useWorkspaceProject(openProjectRequest(props.projectId))
+  const initializeGit = shouldShowInitializeGit(project.data, props.checkoutId)
+  const versionControlHeadingId = useId()
+  const versionControlHeading = useRef<HTMLHeadingElement>(null)
+  const [announcement, setAnnouncement] = useState('')
+  const [focusVersionControl, setFocusVersionControl] = useState(false)
+  const onGitInitialized = useCallback(() => {
+    setAnnouncement(INITIALIZE_GIT_SUCCESS_MESSAGE)
+    setFocusVersionControl(true)
+  }, [])
+  // The Initialize Git row unmounts once the project refreshes, so focus moves to the section heading, which stays.
+  // The heading can lag the refresh by a render, so keep trying until it mounts, then give up after a moment.
+  useEffect(() => {
+    if (!focusVersionControl || initializeGit) return
+    if (versionControlHeading.current) {
+      versionControlHeading.current.focus()
+      setFocusVersionControl(false)
+      return
+    }
+    const giveUp = setTimeout(() => setFocusVersionControl(false), 5000)
+    return () => clearTimeout(giveUp)
+  }, [focusVersionControl, initializeGit, project.data])
+  useEffect(() => {
+    if (announcement === '') return
+    const clear = setTimeout(() => setAnnouncement(''), 5000)
+    return () => clearTimeout(clear)
+  }, [announcement])
+  const sideChats = useSideChats(props.visible.sideChats ? (props.taskId ?? null) : null)
+  const sideChatItems = sideChats.items.filter(
+    item => !props.conversationId || item.parentConversationId === props.conversationId,
+  )
+  const [runningSideChats, setRunningSideChats] = useState<ReadonlySet<string>>(() => new Set())
+  const setSideChatRunning = useCallback((id: string, running: boolean) => {
+    setRunningSideChats(previous => {
+      if (previous.has(id) === running) return previous
+      const next = new Set(previous)
+      if (running) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }, [])
+  const workspacePath = props.workspacePath
+  const workspaceName = workspacePath?.split(/[\\/]/).filter(Boolean).at(-1) ?? workspacePath
+
+  if (!scope && !workspacePath && !props.onOpenDiff && !props.onOpenPullRequests && !props.taskId) return null
+
+  return (
+    <div className="divide-border/65 divide-y">
+      <p role="status" className="sr-only">
+        {announcement}
+      </p>
+      {props.visible.workspace && workspacePath && (
+        <section aria-label="Workspace" className="p-2">
+          <div className="flex h-8 min-w-0 items-center gap-2.5 px-2.5">
+            <Folder aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
+            <TextTooltip
+              label={workspacePath}
+              side="left"
+              trigger={<span className="min-w-0 flex-1 truncate text-xs">{workspaceName}</span>}
+            />
+          </div>
+          {scope && props.onOpenFiles && (
+            <ActionRow icon={<Folder aria-hidden="true" />} label="Files" onClick={props.onOpenFiles} />
+          )}
+        </section>
+      )}
+      {scope &&
+        !props.isScratch &&
+        !project.data?.project.isCoach &&
+        (initializeGit || props.taskId || props.checkoutControls || props.onOpenDiff) &&
+        (props.visible.branch || props.visible.changes || props.visible.pullRequests) && (
+          <section aria-labelledby={versionControlHeadingId} className="p-2">
+            <h3 id={versionControlHeadingId} ref={versionControlHeading} tabIndex={-1} className="sr-only outline-none">
+              Version control
+            </h3>
+            {initializeGit ? (
+              <InitializeGitRow
+                projectId={scope.projectId}
+                activeRun={props.activeRun}
+                onInitialized={onGitInitialized}
+              />
+            ) : (
+              <>
+                {props.visible.branch && props.checkoutControls}
+                {!props.checkoutControls && props.taskId && props.checkoutId && (
+                  <TaskGitControls
+                    key={props.checkoutId}
+                    projectId={scope.projectId}
+                    checkoutId={props.checkoutId}
+                    workspacePath={workspacePath}
+                    disabled={props.activeRun ?? false}
+                    showBranch={props.visible.branch}
+                    onOpenDiff={props.visible.changes ? props.onOpenDiff : undefined}
+                    onOpenPullRequests={props.visible.pullRequests ? props.onOpenPullRequests : undefined}
+                  />
+                )}
+                {!props.taskId && props.visible.changes && props.onOpenDiff && (
+                  <ConversationDiffRow scope={scope} activeRun={false} onOpen={props.onOpenDiff} />
+                )}
+                {!props.taskId && props.visible.pullRequests && props.onOpenPullRequests && (
+                  <ActionRow
+                    icon={<GitPullRequest aria-hidden="true" />}
+                    label="Pull requests"
+                    onClick={props.onOpenPullRequests}
+                  />
+                )}
+              </>
+            )}
+          </section>
+        )}
+      {props.visible.sideChats && props.taskId && (sideChatItems.length > 0 || sideChats.error) && (
+        <section aria-label="Side chats" className="space-y-1 p-2">
+          <div className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
+            <MessageSquare aria-hidden="true" className="size-3.5" />
+            <span>{runningSideChats.size > 0 ? `Side chats · ${runningSideChats.size} running` : 'Side chats'}</span>
+          </div>
+          {sideChats.error && (
+            <p role="alert" className="text-destructive px-1 text-xs">
+              {sideChats.error}
+            </p>
+          )}
+          {sideChatItems.map(item => (
+            <SideChatRelationshipRow
+              key={item.id}
+              item={item}
+              disabled={!props.onOpenSideChat}
+              onOpen={() => props.onOpenSideChat?.(item.id)}
+              onRunningChange={setSideChatRunning}
+            />
+          ))}
+        </section>
+      )}
+      {props.visible.delegations && props.taskId && (
+        <DelegationDetails
+          key={props.conversationId ?? props.taskId}
+          taskId={props.taskId}
+          conversationId={props.conversationId ?? null}
+          projectId={props.projectId ?? null}
+        />
+      )}
+      {sideChats.error && !props.taskId && (
+        <p role="alert" className="text-destructive px-2.5 py-1 text-xs">
+          {sideChats.error}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function SideChatRelationshipRow({
+  item,
+  disabled,
+  onOpen,
+  onRunningChange,
+}: {
+  readonly item: ReturnType<typeof useSideChats>['items'][number]
+  readonly disabled: boolean
+  readonly onOpen: () => void
+  readonly onRunningChange: (id: string, running: boolean) => void
+}): React.JSX.Element {
+  const scope = useSideChatQueryScope()
+  return (
+    <WorkspaceQueryScopeContext value={scope}>
+      <SideChatRelationshipStatus item={item} disabled={disabled} onOpen={onOpen} onRunningChange={onRunningChange} />
+    </WorkspaceQueryScopeContext>
+  )
+}
+
+function SideChatRelationshipStatus({
+  item,
+  disabled,
+  onOpen,
+  onRunningChange,
+}: {
+  readonly item: ReturnType<typeof useSideChats>['items'][number]
+  readonly disabled: boolean
+  readonly onOpen: () => void
+  readonly onRunningChange: (id: string, running: boolean) => void
+}): React.JSX.Element {
+  const snapshot = useWorkspaceTaskSnapshot({ taskId: item.taskId, runLimit: 100 })
+  const latestRuns = snapshot.data?.runs ?? []
+  const running = sideChatTabState({ runs: latestRuns, pendingRequestKind: null }) === 'running'
+  useEffect(() => {
+    onRunningChange(item.id, running)
+    return () => onRunningChange(item.id, false)
+  }, [item.id, running, onRunningChange])
+  const status = snapshot.error
+    ? 'Status unavailable'
+    : snapshot.data
+      ? sideChatStatusLabel(sideChatStatus(latestRuns))
+      : 'Checking status…'
+  const statusClass =
+    status === 'Running' || status === 'Waiting' || status === 'Stopping' || status === 'Queued'
+      ? 'text-primary'
+      : status === 'Failed' || status === 'Needs attention' || status === 'Recovering'
+        ? 'text-destructive'
+        : 'text-muted-foreground'
+  return (
+    <TextTooltip
+      label={`${item.title} · ${status}`}
+      side="left"
+      trigger={
+        <button
+          type="button"
+          disabled={disabled}
+          className="hover:bg-muted flex w-full min-w-0 items-center gap-2 rounded px-1 py-1 text-left text-xs disabled:cursor-default disabled:opacity-70"
+          onClick={onOpen}
+        >
+          <span className="min-w-0 flex-1 truncate">{item.title}</span>
+          <span className={`shrink-0 text-[10px] ${statusClass}`} role="status">
+            {status}
+          </span>
+        </button>
+      }
+    />
+  )
+}
+
+function ActionRow({
+  icon,
+  label,
+  onClick,
+  disabled,
+  blockedReason,
+}: {
+  readonly icon: React.ReactNode | null
+  readonly label: string
+  readonly onClick: () => void
+  readonly disabled?: boolean
+  /** Keeps the row focusable but inert, and explains why in a tooltip. */
+  readonly blockedReason?: string | null
+}): React.JSX.Element {
+  const blocked = blockedReason != null
+  const row = (
+    <Button
+      type="button"
+      variant="ghost"
+      className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-left text-[13px] aria-disabled:cursor-default aria-disabled:opacity-50"
+      onClick={() => {
+        if (!blocked) onClick()
+      }}
+      disabled={disabled}
+      aria-disabled={blocked || undefined}
+    >
+      {icon && <span className="text-muted-foreground [&_svg]:size-4">{icon}</span>}
+      <span className="flex-1">{label}</span>
+      <ArrowUpRight aria-hidden="true" className="text-muted-foreground size-3" />
+    </Button>
+  )
+  return blocked ? <TextTooltip label={blockedReason} side="left" trigger={row} /> : row
+}
+
+function InitializeGitRow({
+  projectId,
+  activeRun,
+  onInitialized,
+}: {
+  readonly projectId: ProjectId
+  readonly activeRun?: boolean | undefined
+  readonly onInitialized: () => void
+}): React.JSX.Element {
+  const initialize = useInitializeProjectGit()
+  return (
+    <ActionRow
+      icon={<GitBranchPlus aria-hidden="true" />}
+      label={initialize.pending ? 'Initializing...' : 'Initialize Git'}
+      disabled={initialize.pending}
+      blockedReason={initializeGitBlockedReason(activeRun)}
+      onClick={() => {
+        initialize
+          .execute({ projectId })
+          .then(onInitialized)
+          .catch(cause => {
+            showErrorToast(
+              `workspace:project:${projectId}:initialize-git`,
+              'Git initialization failed',
+              cause instanceof Error ? cause.message : 'Git could not initialize the folder.',
+            )
+          })
+      }}
+    />
+  )
+}
+
+function ConversationDiffRow({
+  scope,
+  activeRun,
+  onOpen,
+}: {
+  readonly scope: CheckoutScope
+  readonly activeRun: boolean
+  readonly onOpen: () => void
+}): React.JSX.Element {
+  const [focusRevision, setFocusRevision] = useState(0)
+  const preview = useCheckoutDiffPreview(scope, { kind: 'working-tree' }, focusRevision * 2 + Number(activeRun))
+  useEffect(() => {
+    const refresh = () => setFocusRevision(revision => revision + 1)
+    window.addEventListener('focus', refresh)
+    return () => window.removeEventListener('focus', refresh)
+  }, [])
+  const totals = preview.data?.files.reduce(
+    (total, file) => ({ additions: total.additions + file.additions, deletions: total.deletions + file.deletions }),
+    { additions: 0, deletions: 0 },
+  )
+  return (
+    <>
+      <TextTooltip
+        label="Open the Diff tab. Totals show uncommitted changes."
+        side="left"
+        trigger={
+          <Button
+            type="button"
+            variant="ghost"
+            aria-label="Diff"
+            className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-[13px]"
+            onClick={onOpen}
+          >
+            <FileDiff aria-hidden="true" className="text-muted-foreground size-4" />
+            <span className="min-w-0 flex-1 text-left">Diff</span>
+            {totals && <ChangeStats additions={totals.additions} deletions={totals.deletions} />}
+            {preview.loading && (
+              <LoaderCircle aria-label="Loading diff totals" className="text-muted-foreground size-3.5 animate-spin" />
+            )}
+          </Button>
+        }
+      />
+      {preview.data?.truncated && (
+        <p className="text-muted-foreground px-2.5 text-xs">
+          Totals cover the loaded files. More changes are available in Diff.
+        </p>
+      )}
+      {preview.error && (
+        <p role="alert" className="text-destructive px-2.5 pb-1.5 text-xs">
+          {preview.error.message}
+        </p>
+      )}
+    </>
+  )
+}
+
+function TaskGitControls({
+  projectId,
+  checkoutId,
+  workspacePath,
+  disabled,
+  showBranch,
+  onOpenDiff,
+  onOpenPullRequests,
+}: {
+  readonly projectId: ProjectId
+  readonly checkoutId: WorkspaceCheckoutId
+  readonly workspacePath?: string | undefined
+  readonly disabled: boolean
+  readonly showBranch: boolean
+  readonly onOpenDiff?: (() => void) | undefined
+  readonly onOpenPullRequests?: (() => void) | undefined
+}): React.JSX.Element {
+  const project = useWorkspaceProject({ projectId })
+  const switchBranch = useSwitchBranch()
+  const [error, setError] = useState<string | null>(null)
+  useErrorToast(`workspace:checkout:${checkoutId}:branch`, "Couldn't switch branch", error)
+  const checkout = [project.data?.mainCheckout, ...(project.data?.otherCheckouts ?? [])].find(
+    item => item?.id === checkoutId,
+  )
+  const branches = useWorkspaceBranches(checkout && checkout.kind !== 'directory' ? { projectId, checkoutId } : null)
+  if (!checkout) {
+    if (project.error)
+      return (
+        <p role="alert" className="text-destructive px-2 py-1 text-xs">
+          {project.error}
+        </p>
+      )
+    return (
+      <LoadingRegion label="Loading checkout…" className="flex items-center gap-2 px-2 py-1.5">
+        <Skeleton className="size-3.5 shrink-0 rounded-sm" />
+        <Skeleton className="h-3 w-28" />
+      </LoadingRegion>
+    )
+  }
+  if (checkout.kind === 'directory') return <></>
+  const kind = checkout.kind
+  const mode = kind === 'worktree' ? 'worktree' : 'local'
+  return (
+    <>
+      {showBranch && (
+        <div className="py-1">
+          <CheckoutStrip
+            layout="details"
+            workspacePath={workspacePath ?? checkout.path}
+            mode={mode}
+            lockedKind={kind}
+            branch={branches.data?.current ?? null}
+            branches={branches.data}
+            pending={switchBranch.pending}
+            disabled={disabled || switchBranch.pending}
+            onBranchSelect={branch => {
+              setError(null)
+              switchBranch.execute({ projectId, checkoutId, branch }).catch(cause => {
+                setError(cause instanceof Error ? cause.message : 'Could not switch branches.')
+              })
+            }}
+            error={branches.error}
+          />
+        </div>
+      )}
+      {onOpenDiff && <ConversationDiffRow scope={{ projectId, checkoutId }} activeRun={disabled} onOpen={onOpenDiff} />}
+      {onOpenPullRequests && (
+        <ActionRow icon={<GitPullRequest aria-hidden="true" />} label="Pull requests" onClick={onOpenPullRequests} />
+      )}
+    </>
+  )
+}

@@ -1,13 +1,6 @@
 import { Rpc, RpcGroup } from 'effect/rpc'
 import * as Schema from 'effect/Schema'
 
-import {
-  coachHarnessesResultSchema,
-  coachInspectRequestSchema,
-  coachInspectResultSchema,
-  coachLoginTerminalResultSchema,
-  coachOpenLoginTerminalRequestSchema,
-} from '@/shared/schemas/agents.js'
 import { exportResultSchema } from '@/shared/schemas/export.js'
 import { scanResultSchema } from '@/shared/schemas/ipc.js'
 import { ledgerMcpStartupModeSchema } from '@/shared/schemas/ledger-mcp.js'
@@ -65,16 +58,4 @@ export const NativeRpcGroup = RpcGroup.make(
     error: NativeRpcError,
   }),
   Rpc.make('skills:save', { payload: skillsSaveRequestSchema, success: skillsSaveResultSchema, error: NativeRpcError }),
-  Rpc.make('coach:harnesses', { success: coachHarnessesResultSchema, error: NativeRpcError }),
-  Rpc.make('coach:harnesses-refresh', { success: coachHarnessesResultSchema, error: NativeRpcError }),
-  Rpc.make('coach:inspect', {
-    payload: { request: coachInspectRequestSchema },
-    success: coachInspectResultSchema,
-    error: NativeRpcError,
-  }),
-  Rpc.make('coach:open-login-terminal', {
-    payload: { instanceId: coachOpenLoginTerminalRequestSchema },
-    success: coachLoginTerminalResultSchema,
-    error: NativeRpcError,
-  }),
 )

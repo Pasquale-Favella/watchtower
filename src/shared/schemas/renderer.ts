@@ -17,7 +17,8 @@ export interface SplashProviderProgress {
   done: boolean
 }
 
-export type ShortcutAction = Section | 'refresh' | 'toggleSidebar' | 'commandPalette' | 'summonOrb'
+export type ShortcutAction =
+  Section | 'refresh' | 'toggleSidebar' | 'commandPalette' | 'summonOrb' | 'addProject' | 'newChatWithoutProject'
 
 export type Platform = 'mac' | 'windows' | 'linux'
 
@@ -26,8 +27,9 @@ export interface ShortcutDef {
   hotkey: Hotkey
   label: string
   /** `global`: registered OS-wide by the main process (Electron
-   * `globalShortcut`), never by the renderer's in-window `useHotkeys`. */
-  scope?: 'global'
+   * `globalShortcut`), never by the renderer's in-window `useHotkeys`.
+   * `workspace`: registered only while the Workspace vertical is mounted. */
+  scope?: 'global' | 'workspace'
 }
 
 export interface OnboardingStep {

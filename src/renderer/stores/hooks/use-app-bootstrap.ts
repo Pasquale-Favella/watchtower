@@ -13,7 +13,7 @@ import {
 } from '@/renderer/stores/atoms/scan'
 import { registry, runtime } from '@/renderer/app/renderer-runtime'
 import { navigationAtom } from '@/renderer/stores/subscribe'
-import { coachDetection, mountCoachWorkflow } from '@/renderer/features/coach-skills/atoms'
+import { coachSkillDetection } from '@/renderer/features/coach-skills/skill-detection-atoms.js'
 import {
   loadCadenceAtom,
   loadCurrencyOptionsAtom,
@@ -49,7 +49,6 @@ export const appBootstrapAtom = runtime(get =>
   get.mount(hydrateScanProvidersAtom)
   get.mount(setCadenceAtom)
   get.mount(setCurrencyAtom)
-  get.addFinalizer(mountCoachWorkflow(get.registry))
   get.addFinalizer(mountSettingsCapabilityWorkflow(get.registry))
   const preferences = get.registry.get(preferencesAtom)
   let thresholdKey = `${preferences.skillsFrequency}\0${preferences.skillsSpread}`
@@ -57,9 +56,9 @@ export const appBootstrapAtom = runtime(get =>
     const nextKey = `${next.skillsFrequency}\0${next.skillsSpread}`
     if (nextKey === thresholdKey) return
     thresholdKey = nextKey
-    const request = get.registry.get(coachDetection.requestAtom)
+    const request = get.registry.get(coachSkillDetection.requestAtom)
     if (request)
-      get.registry.set(coachDetection.requestAtom, {
+      get.registry.set(coachSkillDetection.requestAtom, {
         ...request,
         frequency: next.skillsFrequency,
         spread: next.skillsSpread,

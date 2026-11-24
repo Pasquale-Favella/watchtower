@@ -3,12 +3,19 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
 
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import * as Effect from 'effect/Effect'
+import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as Scope from 'effect/Scope'
 import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { DbWorkerClient } from '../src/platform/electron/workers/client.js'
 import { openWorkerRpcTransport } from '../src/platform/electron/workers/rpc-transport.js'
+import { acquireLedgerMcp } from '../src/platform/mcp/ledger-endpoint.js'
+import { createLedgerMcpQueries } from '../src/platform/mcp/query-api.js'
 import { WORKER_REQUEST_CAPACITY, type WorkerEvent, WorkerRpcError } from '../src/shared/rpc/worker.js'
 
 let fixtureDir = ''
@@ -56,6 +63,39 @@ const waitForExit = (worker: Worker): Promise<void> =>
   worker.threadId === -1 ? Promise.resolve() : new Promise(resolve => worker.once('exit', () => resolve()))
 
 describe('supervisor-owned worker RPC transport', () => {
+  it('interrupts an admitted ledger query in the worker when its MCP endpoint closes', async () => {
+    const counters = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT))
+    const worker = new DbWorkerClient(
+      { dbPath: 'unused', dataDir: fixtureDir, cacheDir: fixtureDir },
+      runnerPath,
+      (script, data) => new Worker(script, { workerData: { ...data, counters: counters.buffer } }),
+    )
+    const scope = Scope.makeUnsafe()
+    const client = new Client({ name: 'ledger-cancellation-test', version: '1.0.0' })
+    try {
+      await worker.ready
+      const endpoint = await Effect.runPromise(
+        Scope.provide(scope)(acquireLedgerMcp(createLedgerMcpQueries(worker), Effect.runPromise)),
+      )
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(endpoint.url), {
+          requestInit: { headers: { Authorization: `Bearer ${endpoint.token}` } },
+        }),
+      )
+      const pending = client.callTool({ name: 'ledger_scope' })
+      void pending.catch(() => {})
+      await waitForCounter(counters, 1)
+
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+      await waitForCounter(counters, 2)
+      await expect(worker.request('scan:active')).resolves.toBe(false)
+    } finally {
+      await Effect.runPromise(Scope.close(scope, Exit.void))
+      await client.close()
+      await worker.shutdown()
+    }
+  }, 10_000)
+
   it('waits for the event subscription barrier and applies event watermarks before returning unary results', async () => {
     const fixture = makeFixture()
     const events: Array<WorkerEvent> = []

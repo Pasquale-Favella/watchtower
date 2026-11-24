@@ -312,6 +312,8 @@ export function dbWorkerRpcServerLayer(options: DbWorkerRpcServerOptions) {
       command('models:setPrice', 'models:setPrice', [model, inputPricePerMillion, outputPricePerMillion]),
     'ledger-mcp:startup:get': () => query('ledger-mcp:startup:get', 'ledger-mcp:startup:get'),
     'ledger-mcp:startup:set': ({ mode }) => command('ledger-mcp:startup:set', 'ledger-mcp:startup:set', [mode]),
+    'ledger-mcp:scope': ({ scope }) => query('ledger-mcp:scope', 'ledger-mcp:scope', [scope]),
+    'ledger-mcp:calls': input => query('ledger-mcp:calls', 'ledger-mcp:calls', [input]),
     'scan:start': ({ provider }) => command('scan:start', 'scan:start', provider === undefined ? [] : [{ provider }]),
     'scan:active': () => query('scan:active', 'scan:active'),
     'scan:abort': () => command('scan:abort', 'scan:abort'),

@@ -46,7 +46,8 @@ buffers. Production Coach separately bounds its queue to 128 events and
 2 MiB pending JSON bytes, with a 1 MiB per-frame limit.
 
 Reproduce Coach retention with
-`node scripts/probes/run-coach-retention.cjs`. The startup harness now also
+`node scripts/probes/run-coach-retention.cjs`. (That probe was removed with the legacy Coach stack in ADR 0045;
+the measurements above are historical.) The startup harness now also
 records launch and first-window resolution phases. Opt-in main instrumentation
 is separate from ordinary timing runs.
 

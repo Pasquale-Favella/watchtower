@@ -75,10 +75,10 @@ jobs:
       - name: Package macOS universal application directory
         if: matrix.platform == 'mac'
         run: npx electron-builder --config electron-builder.config.cjs --mac --dir --universal --publish never
-      - name: Verify packaged Linux application
+      - name: Verify packaged Linux application and Local MCP
         if: matrix.platform == 'linux'
         run: xvfb-run -a node scripts/verify-packaged.cjs --executable dist/linux-unpacked/watchtower-desktop
-      - name: Verify packaged macOS application
+      - name: Verify packaged macOS application and Local MCP
         if: matrix.platform == 'mac'
         run: node scripts/verify-packaged.cjs --executable dist/mac-universal/Watchtower.app/Contents/MacOS/Watchtower
 

@@ -1,13 +1,13 @@
 # Using Watchtower
 
-This guide covers day-to-day use: keyboard shortcuts, the period and provider
-scope that every view shares, and what each of the nine sections shows in
-detail.
+This guide covers day-to-day use: keyboard shortcuts, the Workspace sidebar,
+the period and provider scope that every Analytics view shares, what each of
+the eight Analytics sections shows, and Settings.
 
 ## Keyboard shortcuts
 
 Shortcuts are declared once in the shortcut registry
-(`src/renderer/src/app/shortcuts.ts`, over the table in
+(`src/renderer/app/shortcuts.ts`, over the table in
 `src/shared/lib/shortcuts.ts`, ADR 0001), which drives both their
 registration and every place the UI renders them. `Mod` resolves to `⌘` on
 macOS and `Ctrl` on Windows and Linux.
@@ -26,6 +26,8 @@ macOS and `Ctrl` on Windows and Linux.
 | `Mod+R`     | Refresh                                                     |
 | `Mod+B`     | Toggle sidebar                                              |
 | `Mod+K`     | Command palette                                             |
+| `Mod+O`     | Add project (Workspace)                                     |
+| `Mod+Alt+N` | New chat without a project (Workspace)                      |
 | `Mod+Alt+O` | Summon Watchtower (global — works with every window hidden) |
 
 **Summon Watchtower** is the one OS-wide shortcut: the main process registers
@@ -34,15 +36,43 @@ screen it focuses the window; otherwise it floats the orb and unfolds its spend
 panel (turning _Show floating orb_ back on if it was off); pressed again with
 the panel open, it opens the full app.
 
+## Workspace
+
+The sidebar lists the chats (Tasks) of every Project in one list, grouped by
+status: **Needs attention**, **Working**, **Ready**, **In progress**,
+**Blocked**, **In review**, **Completed** and **Archived**. Each row names its
+Project (**No project** for app-managed chats), and a small Watchtower mascot
+acts out what the chat is doing: thinking, working, waiting for an approval or
+an answer, delegating, or done. Search covers the loaded chats and Project names;
+**Load more chats** fetches the next page. Groups can be collapsed.
+
+- **Add project** (`Mod+O`) registers any local folder, with or without Git.
+  Browse to one, create a new repository or clone one. A plain folder can be
+  turned into a Git repository in place later.
+- **New chat without a project** (`Mod+Alt+N`) starts a chat in a fresh
+  folder that Watchtower manages under its profile, with no Git setup.
+- **The composer** sends a message, queues a follow-up while the agent works,
+  or steers the running turn when the agent supports it. Its tooltip lists the
+  keys.
+- **Delegates** started by the agent appear in a strip above the composer with
+  their live status (queued, running, waiting). Each starts immediately in its
+  own conversation, never gets more access than its parent, and cannot
+  delegate further.
+- **Side chats** open from the right panel, share the parent's checkout, and
+  **Bring back** queues their findings for the parent's next run.
+
+The [Workspace browser](workspace-browser.md) guide covers the Task browser
+and the agent's browser tools.
+
 ## Scope: period and provider
 
-Every section shares the same **period switcher** (Today, 7D, 30D, Month, 6M,
+Every Analytics section shares the same **period switcher** (Today, 7D, 30D, Month, 6M,
 Life, or a custom date range) and **provider filter**, and every data fetch
-consumes the active scope. The Coach is the one exception: it has no filter of
-its own — it reads the current scope as the _suggested default_ for its
-answers, never a boundary.
+consumes the active scope. The Coach & Skills chat is the one exception: it takes no scope
+from these controls. It reads your full lifetime ledger unless your message names a window, and it says which window
+its numbers cover.
 
-## The nine sections
+## The Analytics sections
 
 ### Overview
 
@@ -135,57 +165,70 @@ rate, plus per-category one-shot bars and a working-style summary.
 
 ### Coach & Skills
 
-One chat surface with a single harness agent — the picker shows which
-coding-agent CLIs are detected on your machine (Claude Code, Codex, OpenCode,
-Gemini, …) and whether they are logged in. Detection is per ACP server: for
-most agents the app drives the agent's own ACP-capable binary; for Codex,
-Claude Code, and Pi the ACP server ships **bundled inside the app** (no extra
-install — Claude Code and Codex only need their CLI login, Pi needs the base
-`pi` CLI on PATH). Ask anything about your usage: the
-agent answers from the same ledger the dashboard shows, queried live through
-the in-app `watchtower-ledger` MCP server, and it says which window its
-numbers cover (the current scope is its suggested default, never a boundary).
+A coaching chat with one harness agent. It answers from your usage ledger through the read-only `watchtower-ledger`
+MCP endpoint, and it drafts skills in the same chat. The chat runs on the Workspace stack, so the composer, the harness
+picker and Harness Connections work as they do in Workspace.
 
-- **Skills are crafted conversationally.** Describe what you do and ask for a
-  SKILL.md — or start from the **suggested-skill chips** on the welcome
-  screen, which surface the patterns detected in your current window
-  (frequency, spread, cost). A chip click is just a chat-starter: the agent
-  authors the complete skill file, grounded in your real usage through its
-  ledger tools, ready to copy and save.
-- **Model and mode pickers** appear only when the selected harness declares
-  them (progressive). Once probed, a harness's models and your picks are
-  remembered, so switching back restores them instantly.
-- A run streams live — thinking, tool calls with input/output previews, then
-  the answer. **Copy** sits on assistant answers; **Regenerate** on the last
-  one. **Stop** interrupts the running turn; **New conversation** (header)
-  starts a fresh thread. Follow-up messages resume the same harness session.
-- **Switching the harness mid-conversation asks first**: a switch starts a
-  new conversation, so a confirmation dialog appears before the thread is
-  cleared. Confirming stops any run in progress (the runner cancels all
-  active runs, waits for their teardown, then deletes the old temp
-  workspace), clears the thread and session, and restores the new harness's
-  models/picks. On the welcome screen a switch is immediate — there is
-  nothing to lose.
+- **Pick a harness.** The picker lists the coding-agent CLIs detected on this machine (Claude Code, Codex, OpenCode,
+  Gemini, …) and whether each one is signed in. Model and mode pickers appear only when the selected harness declares
+  them. Your picks are shared with Workspace and remembered. If a harness needs an API key, set it up in its Harness
+  Connection. There is no separate Coach switch for keys.
+- **Ask about your usage.** The agent reads your full lifetime ledger. It uses the window you name in your message
+  ("last 30 days", "Claude only") and states which window its numbers cover. The Analytics period and provider are not
+  sent to it.
+- **Only the ledger is read-only.** The ledger tools only read, so they run without an approval prompt: Claude and
+  Codex approve the ledger server as a whole because every tool on it reads, and ACP agents approve by tool name while
+  the ledger endpoint is attached. The agent's own tools (shell, file edits) follow the access mode you pick in the
+  composer, as in Workspace, and work in an app-managed Coach folder, not in your projects. The coach chat has no
+  orchestration tools, so it cannot start Delegated Tasks, and it has no browser. Subagents that a harness starts on
+  its own still run as they do in Workspace.
+- **Skills are crafted in the chat.** The suggested-skill chips on the empty state show the patterns detected in your
+  current Analytics window, with their frequency, spread and cost. A chip fills the composer with a skill-crafting
+  request. Review it and send. The agent drafts a SKILL.md grounded in your real invocations.
+- **Save…** on an assistant message saves its text as a skill file through the system save dialog.
+- **Streaming.** Answers stream live: thinking, tool calls, then the answer. **Stop** interrupts the running answer.
+- **Switching harness** applies to the next message. That message starts a new session on the new harness with a
+  bounded handoff of the chat so far. Nothing is cleared and no confirmation is asked.
+- **New chat** (above an active chat) asks for confirmation, then interrupts a running answer and discards the chat and its history. The chat stays while you
+  move between sections, but it is not kept across a Watchtower restart.
+- Workspace features that need a project folder are hidden in the chat: the checkout strip, @file mentions, the
+  terminal, the details panel, the file preview, diff, review, browser and pull-request panels, and side chats.
 
-### Settings
+## Settings
 
-A seven-pane rail (**General, Providers, Model aliases, Pricing, Export,
-Skills detection, Privacy & data**):
+`Mod+,` opens Settings. Its rail has three groups.
 
-- **General** sets the light/dark/system theme, background scan cadence
-  (Manual, 30s, 1m, 3m, 5m, 10m), default period, and the Claude config
+**General**
+
+- **Appearance & updates** sets the light, dark or system theme. It also holds
+  the explicit update check, download and restart-to-install controls.
+  Unsupported installations offer a release-page link. See
+  [app updates](releases.md).
+- **Privacy & data** shows where data is stored, the database, data and pricing
+  cache sizes, and offers a full data wipe (config survives).
+- **Local MCP** lets MCP clients on this computer read the ledger through a
+  token-protected loopback endpoint, started on demand or at launch.
+
+**Analytics**
+
+- **Display & scanning** sets the display currency, the default period, the
+  background scan cadence (Manual, 30s, 1m, 3m, 5m, 10m) and the Claude config
   directories the scanner aggregates
 - **Providers** lists the tools detected on this machine and their data
   locations
-- **Model aliases** map an unpriced or renamed model to a priced one
 - **Pricing** sets input/output rates (USD per 1M tokens) for any model; the
   ledger stores raw tokens, so display cost recomputes on read
+- **Model aliases** map an unpriced or renamed model to a priced one
 - **Export** writes full-history CSV or JSON in the currently selected display
   currency through a native folder/file picker
 - **Skills detection** tunes the frequency × spread gate that decides when a
   repeated pattern in a window becomes a suggested-skill chip in the Coach
   section
-- **Privacy & data** shows database and cache sizes, offers a full data wipe
-  (config survives), and explicit update check, download, and restart-to-install
-  controls. Unsupported installations offer a release-page link. See
-  [app updates](releases.md).
+
+**Workspace**
+
+- **Agent defaults** picks the Harness Connection and access mode that new
+  chats start with, or asks each time
+- **Source control** shows which Git and hosting integrations were found
+  (rescan on demand), whether GitHub is offered, and the default pull request
+  merge method (squash, merge commit or rebase)

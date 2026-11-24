@@ -1,0 +1,533 @@
+import { execFileSync } from 'node:child_process'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
+import { join, resolve as resolvePath, sep } from 'node:path'
+
+import * as NodePath from '@effect/platform-node/NodePath'
+import * as Deferred from 'effect/Deferred'
+import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
+import * as Layer from 'effect/Layer'
+import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
+import { describe, expect, it } from 'vitest'
+
+import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
+import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
+import { makeRecordingCommandRunner } from '@/core/ports/process.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
+import { ProjectProvisionerLive } from '@/infrastructure/filesystem/project-provisioner.js'
+import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
+import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
+import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
+import { CheckoutResolverError, type ResolvedCheckout } from '@/shared/schemas/checkout.js'
+import { registerWorkspaceProjectSchema } from '@/shared/schemas/workspace-projects.js'
+import { beginRunCommandSchema, createTaskCommandSchema } from '@/shared/schemas/workspace-store.js'
+
+const at = '2026-10-30T08:00:00Z'
+const main: ResolvedCheckout = {
+  kind: 'main',
+  canonicalPath: '/canonical/project',
+  repositoryIdentity: '/canonical/project/.git',
+  mainCheckoutPath: '/canonical/project',
+  branch: 'main',
+  headRevision: 'abc',
+  dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+}
+
+function fixture(resolve: CheckoutResolver['Service']['resolve'], pathLayer = NodePath.layer) {
+  return ManagedRuntime.make(
+    WorkspaceProjectsLive.pipe(
+      Layer.provideMerge(
+        Layer.merge(
+          WorkspaceStoreLive({ filename: ':memory:' }),
+          Layer.succeed(
+            CheckoutResolver,
+            CheckoutResolver.of({
+              resolve,
+              createIsolatedWorktree: () => Effect.die('Unused fixture operation'),
+              removeWorktree: () => Effect.die('Unused fixture operation'),
+            }),
+          ),
+        ),
+      ),
+      Layer.provide(pathLayer),
+      Layer.provide(ProjectProvisionerLive.pipe(Layer.provide(CommandRunnerLive))),
+      Layer.provide(NodePlatformLive),
+    ),
+  )
+}
+
+function request(suffix = '1', path = '/alias/project') {
+  return Schema.decodeUnknownSync(registerWorkspaceProjectSchema)({
+    commandId: `register-${suffix}`,
+    projectId: `project-${suffix}`,
+    checkoutId: `checkout-${suffix}`,
+    name: 'Project',
+    path,
+  })
+}
+
+describe('workspace project registration', () => {
+  it('validates paths before resolving them and allows an existing UNC folder without creation', async () => {
+    const unc = String.raw`\\server\share\folder`
+    const seen: string[] = []
+    const runtime = fixture(
+      path =>
+        Effect.sync(() => {
+          seen.push(path)
+          return { ...main, canonicalPath: unc, mainCheckoutPath: unc }
+        }),
+      NodePath.layerWin32,
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      for (const path of ['project', String.raw`C:project`]) {
+        expect(
+          await runtime.runPromise(
+            projects.register({ ...request('relative', path), createIfMissing: true }).pipe(Effect.flip),
+          ),
+        ).toMatchObject({ code: 'invalid-input', message: 'Choose an absolute folder path.' })
+      }
+      expect(
+        await runtime.runPromise(projects.register(request('relative', 'project')).pipe(Effect.flip)),
+      ).toMatchObject({
+        code: 'invalid-input',
+      })
+      for (const path of [unc, String.raw`\\?\C:\folder`, String.raw`\\.\C:\folder`, '//server/share/folder']) {
+        expect(
+          await runtime.runPromise(
+            projects.register({ ...request('remote', path), createIfMissing: true }).pipe(Effect.flip),
+          ),
+        ).toMatchObject({ code: 'not-local-folder', message: 'Choose a folder on this computer.' })
+      }
+      expect(seen).toEqual([])
+      expect(await runtime.runPromise(projects.register(request('unc', unc)))).toMatchObject({
+        mainCheckout: { path: unc },
+      })
+      expect(seen).toEqual([unc])
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('persists the resolved canonical identity and admits runs against that exact path', async () => {
+    const seen: string[] = []
+    const runtime = fixture(path =>
+      Effect.sync(() => {
+        seen.push(path)
+        return main
+      }),
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const registered = await runtime.runPromise(projects.register(request()))
+      expect(seen).toEqual(['/alias/project'])
+      expect(
+        await runtime.runPromise(projects.register({ ...request('new-identities'), commandId: request().commandId })),
+      ).toEqual({ ...registered, replayed: true })
+      expect(registered.project.repositoryIdentity).toBe('/canonical/project/.git')
+      expect(registered.mainCheckout.path).toBe('/canonical/project')
+      const store = await runtime.runPromise(WorkspaceStore)
+      await runtime.runPromise(
+        store.createTask(
+          Schema.decodeUnknownSync(createTaskCommandSchema)({
+            task: { id: 'task-1', projectId: 'project-1', title: 'Task', description: '', createdAt: at },
+            conversation: { id: 'conversation-1', createdAt: at },
+          }),
+        ),
+      )
+      const command = Schema.decodeUnknownSync(beginRunCommandSchema)({
+        commandId: 'command-1',
+        issuedAt: at,
+        runId: 'run-1',
+        taskId: 'task-1',
+        conversationId: 'conversation-1',
+        checkoutId: 'checkout-1',
+        provisionalAgentSessionId: 'session-1',
+        generation: 1,
+        driverId: 'acp',
+        connectionId: 'connection-1',
+        prompt: 'Inspect',
+      })
+      await runtime.runPromise(store.beginRun(command))
+      const owner = await runtime.runPromise(store.acquireOwnerEpoch(at))
+      const claim = await runtime.runPromise(store.claimDispatch(command.runId, owner.ownerEpoch, at))
+      expect(claim.workspacePath).toBe('/canonical/project')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('registers the main checkout when the selected path is a linked worktree', async () => {
+    const seen: string[] = []
+    const runtime = fixture(path =>
+      Effect.sync(() => {
+        seen.push(path)
+        return path === '/alias/worktree' ? { ...main, kind: 'worktree', canonicalPath: '/canonical/worktree' } : main
+      }),
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const registered = await runtime.runPromise(projects.register(request('1', '/alias/worktree')))
+      expect(seen).toEqual(['/alias/worktree', '/canonical/project'])
+      expect(registered.mainCheckout.path).toBe('/canonical/project')
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('registers an ordinary directory and reports a missing folder', async () => {
+    const runtime = fixture(path =>
+      path === '/missing'
+        ? Effect.fail(new CheckoutResolverError({ code: 'path-missing', message: 'Checkout is missing.' }))
+        : Effect.succeed({
+            kind: 'directory',
+            canonicalPath: path,
+            repositoryIdentity: null,
+            mainCheckoutPath: null,
+            branch: null,
+            headRevision: null,
+            dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+          }),
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      expect(await runtime.runPromise(projects.register(request()))).toMatchObject({
+        mainCheckout: { kind: 'directory', path: '/alias/project' },
+      })
+      expect(await runtime.runPromise(projects.register(request('2', '/missing')).pipe(Effect.flip))).toMatchObject({
+        code: 'path-missing',
+        message: 'This folder does not exist.',
+      })
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('registers existing and newly created folders without invoking Git', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const folder = mkdtempSync(join(cache, 'workspace-directory-projects-'))
+    if (!resolvePath(folder).startsWith(`${cache}${sep}`)) throw new Error('Unexpected fixture cleanup path')
+    const runner = makeRecordingCommandRunner(() => Effect.die('Unexpected Git command'))
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            WorkspaceStoreLive({ filename: ':memory:' }),
+            Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(runner.layer)),
+          ),
+        ),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const first = await runtime.runPromise(projects.register(request('existing', folder)))
+      expect(first.project.repositoryIdentity).toBeUndefined()
+      expect(first.mainCheckout).toMatchObject({ kind: 'directory', path: realpathSync.native(folder) })
+      expect(first.mainCheckout.branch).toBeUndefined()
+      const repeat = await runtime.runPromise(projects.register(request('repeat', folder)))
+      expect(repeat.reused).toBe(true)
+      expect(repeat.project).toEqual(first.project)
+      expect(repeat.mainCheckout).toEqual(first.mainCheckout)
+      expect(repeat.project).not.toHaveProperty('repositoryIdentity')
+      expect(repeat.mainCheckout).not.toHaveProperty('branch')
+
+      const missing = join(realpathSync.native(folder), 'nested', 'missing')
+      const created = await runtime.runPromise(
+        projects.register({ ...request('create', missing), createIfMissing: true }),
+      )
+      expect(created.mainCheckout).toMatchObject({ kind: 'directory', path: realpathSync.native(missing) })
+      expect(existsSync(join(missing, '.git'))).toBe(false)
+      rmdirSync(missing)
+      expect(
+        await runtime.runPromise(projects.register({ ...request('create', missing), createIfMissing: true })),
+      ).toEqual({ ...created, replayed: true })
+      expect(existsSync(missing)).toBe(false)
+
+      const conflicting = join(folder, 'another', 'missing')
+      expect(
+        await runtime.runPromise(
+          projects.register({ ...request('create', conflicting), createIfMissing: true }).pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'command-conflict' })
+      expect(existsSync(join(folder, 'another'))).toBe(false)
+
+      const file = join(folder, 'file.txt')
+      writeFileSync(file, '')
+      expect(
+        await runtime.runPromise(
+          projects.register({ ...request('file', file), createIfMissing: true }).pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'not-a-directory', message: 'This path is not a folder.' })
+      expect(runner.calls).toEqual([])
+      expect(runner.starts).toEqual([])
+    } finally {
+      await runtime.dispose()
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  it('initializes a nested directory as its own repository and replays the conversion', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const parent = mkdtempSync(join(cache, 'workspace-initialize-git-'))
+    if (!resolvePath(parent).startsWith(`${cache}${sep}`)) throw new Error('Unexpected fixture cleanup path')
+    const nested = join(parent, 'nested')
+    mkdirSync(nested)
+    const gitServices = Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(CommandRunnerLive))
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(Layer.merge(WorkspaceStoreLive({ filename: ':memory:' }), gitServices)),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      execFileSync('git', ['-C', parent, 'init', '--quiet'], { windowsHide: true, stdio: 'pipe' })
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const folder = await runtime.runPromise(projects.register(request('nested', nested)))
+      expect(folder.mainCheckout.kind).toBe('directory')
+
+      const intent = { commandId: 'initialize-nested', projectId: folder.project.id }
+      const converted = await runtime.runPromise(projects.initializeGit(intent))
+      expect(converted).toMatchObject({
+        project: { id: folder.project.id, repositoryIdentity: realpathSync.native(join(nested, '.git')) },
+        mainCheckout: { ...folder.mainCheckout, kind: 'main', branch: expect.any(String) },
+        replayed: false,
+      })
+      expect(await runtime.runPromise(projects.initializeGit(intent))).toEqual({ ...converted, replayed: true })
+    } finally {
+      await runtime.dispose()
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses existing Git metadata that resolves to another checkout root', async () => {
+    const target = '/alias/project'
+    let selected: ResolvedCheckout = {
+      ...main,
+      kind: 'directory',
+      canonicalPath: target,
+      mainCheckoutPath: null,
+      repositoryIdentity: null,
+      branch: null,
+      headRevision: null,
+    }
+    const runtime = fixture(() => Effect.sync(() => selected))
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const original = await runtime.runPromise(projects.register(request()))
+      selected = main
+      expect(
+        await runtime.runPromise(
+          projects
+            .initializeGit({ commandId: 'initialize-mismatched', projectId: original.project.id })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'checkout-root-mismatch' })
+      const store = await runtime.runPromise(WorkspaceStore)
+      const unchanged = await runtime.runPromise(store.getProject(original.project.id))
+      expect(unchanged.project).toEqual(original.project)
+      expect(unchanged.mainCheckout).toEqual(original.mainCheckout)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('completes initialization when registration wins the race, without enumerating untracked files', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const directory = mkdtempSync(join(cache, 'workspace-large-project-'))
+    const target = realpathSync.native(directory)
+    const initialized = Effect.runSync(Deferred.make<undefined>())
+    const resumeInitialization = Effect.runSync(Deferred.make<undefined>())
+    const runner = makeRecordingCommandRunner(
+      (_command, args) =>
+        Effect.gen(function* () {
+          expect(args).toEqual(['init'])
+          mkdirSync(join(target, '.git'))
+          yield* Deferred.succeed(initialized, undefined)
+          yield* Deferred.await(resumeInitialization)
+          return { stdout: '', exitCode: 0 }
+        }),
+      (_command, args) => {
+        const command = args.slice(1).join(' ')
+        const outputs: Record<string, string> = {
+          'rev-parse --is-inside-work-tree': 'true\n',
+          'rev-parse --show-toplevel': target,
+          'rev-parse --path-format=absolute --git-common-dir': join(target, '.git'),
+          'worktree list --porcelain -z': `worktree ${target}\0`,
+          'symbolic-ref --quiet --short HEAD': 'main\n',
+          'rev-parse --verify --quiet HEAD': '',
+        }
+        const status = args[1] === 'status'
+        if (!status) expect(outputs[command]).toBeDefined()
+        const stdout = status ? new Uint8Array(1024 * 1024 + 1) : Buffer.from(outputs[command] ?? '')
+        return Effect.succeed({
+          pid: -1,
+          exitCode: Effect.succeed(command === 'rev-parse --verify --quiet HEAD' ? 1 : 0),
+          isRunning: Effect.succeed(false),
+          stdout: Stream.succeed(stdout),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          kill: Effect.void,
+        })
+      },
+    )
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            WorkspaceStoreLive({ filename: ':memory:' }),
+            Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(runner.layer)),
+          ),
+        ),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      await runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const projects = yield* WorkspaceProjects
+            const store = yield* WorkspaceStore
+            const resolver = yield* CheckoutResolver
+            const folder = yield* projects.register(request('large-folder', target))
+            const intent = { commandId: 'initialize-large-folder', projectId: folder.project.id }
+            const result = yield* Effect.forkScoped(projects.initializeGit(intent))
+            yield* Effect.raceFirst(Deferred.await(initialized), Fiber.join(result).pipe(Effect.asVoid))
+            const registered = yield* projects.register(request('register-large-git', target))
+            expect(registered).toMatchObject({
+              project: { id: folder.project.id, repositoryIdentity: join(target, '.git') },
+              mainCheckout: { id: folder.mainCheckout.id, kind: 'main', branch: 'main' },
+            })
+            yield* Deferred.succeed(resumeInitialization, undefined)
+            const converted = yield* Fiber.join(result)
+            expect(converted).toEqual({ ...registered, commandId: intent.commandId, replayed: false })
+            expect(yield* projects.initializeGit(intent)).toEqual({ ...converted, replayed: true })
+            expect((yield* store.getProject(folder.project.id)).mainCheckout).toEqual(converted.mainCheckout)
+            expect(runner.starts.some(call => call.args[1] === 'status')).toBe(false)
+            expect(yield* resolver.resolve(target).pipe(Effect.flip)).toMatchObject({
+              code: 'git-failed',
+              message: 'Git output exceeded 1 MiB',
+            })
+          }),
+        ),
+      )
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses real Git identities to distinguish same-name repositories and share aliases of one checkout', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const directory = mkdtempSync(join(cache, 'workspace-projects-'))
+    if (!resolvePath(directory).startsWith(`${cache}${sep}`)) throw new Error('Unexpected fixture cleanup path')
+    const repository = (parent: string) => {
+      const path = join(directory, parent, 'same-name')
+      mkdirSync(path, { recursive: true })
+      execFileSync('git', ['init', '--quiet', '--initial-branch=main', path], { windowsHide: true, stdio: 'pipe' })
+      return path
+    }
+    const first = repository('first')
+    const second = repository('second')
+    const alias = join(directory, 'alias')
+    symlinkSync(first, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    const gitServices = Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(CommandRunnerLive))
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(Layer.merge(WorkspaceStoreLive({ filename: ':memory:' }), gitServices)),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const a = await runtime.runPromise(projects.register(request('1', first)))
+      const b = await runtime.runPromise(projects.register(request('2', second)))
+      const linked = await runtime.runPromise(projects.register(request('3', alias)))
+      expect(a.project.repositoryIdentity).not.toBe(b.project.repositoryIdentity)
+      expect(linked.project.repositoryIdentity).toBe(a.project.repositoryIdentity)
+      expect(linked.mainCheckout.path).toBe(realpathSync.native(first))
+      expect(linked).toMatchObject({ project: a.project, mainCheckout: a.mainCheckout, reused: true, replayed: false })
+      expect(await runtime.runPromise(projects.register(request('3', alias)))).toEqual({ ...linked, replayed: true })
+      execFileSync(
+        'git',
+        [
+          '-C',
+          first,
+          '-c',
+          'user.name=Workspace Test',
+          '-c',
+          'user.email=workspace@example.test',
+          'commit',
+          '--quiet',
+          '--allow-empty',
+          '-m',
+          'Initial',
+        ],
+        { windowsHide: true, stdio: 'pipe' },
+      )
+      const worktree = join(directory, 'linked-worktree')
+      execFileSync('git', ['-C', first, 'worktree', 'add', '--quiet', '--detach', worktree, 'HEAD'], {
+        windowsHide: true,
+        stdio: 'pipe',
+      })
+      const reused = await runtime.runPromise(projects.register(request('4', worktree)))
+      expect(reused).toMatchObject({ project: a.project, mainCheckout: a.mainCheckout, reused: true, replayed: false })
+      expect((await runtime.runPromise((await runtime.runPromise(WorkspaceStore)).listProjects())).total).toBe(2)
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run = (suffix: string) =>
+        Schema.decodeUnknownSync(beginRunCommandSchema)({
+          commandId: `command-${suffix}`,
+          issuedAt: at,
+          runId: `run-${suffix}`,
+          taskId: `task-${suffix}`,
+          conversationId: `conversation-${suffix}`,
+          checkoutId: a.mainCheckout.id,
+          provisionalAgentSessionId: `session-${suffix}`,
+          generation: 1,
+          driverId: 'acp',
+          connectionId: 'connection-1',
+          prompt: 'Inspect',
+        })
+      for (const suffix of ['1', '3']) {
+        await runtime.runPromise(
+          store.createTask(
+            Schema.decodeUnknownSync(createTaskCommandSchema)({
+              task: {
+                id: `task-${suffix}`,
+                projectId: a.project.id,
+                title: 'Task',
+                description: '',
+                createdAt: at,
+              },
+              conversation: { id: `conversation-${suffix}`, createdAt: at },
+            }),
+          ),
+        )
+      }
+      await runtime.runPromise(store.beginRun(run('1')))
+      await expect(runtime.runPromise(store.beginRun(run('3')))).resolves.toMatchObject({
+        runId: 'run-3',
+        replayed: false,
+      })
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
+})

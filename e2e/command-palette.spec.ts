@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test'
 
 import { dismissOnboarding, withApp } from './app'
+import { switchVertical } from './verticals'
 
 /**
  * Command palette v1 (ADR 0028, tracks #133): Mod+K opens the launcher over
@@ -12,6 +13,7 @@ import { dismissOnboarding, withApp } from './app'
 test('palette opens, filters, and navigates to Models', async () => {
   await withApp(async ({ window }) => {
     await test.step('dismiss first-run onboarding', () => dismissOnboarding(window))
+    await switchVertical(window, 'Analytics')
 
     const input = window.getByPlaceholder('Go to a section or run an action...')
     await test.step('open command palette', async () => {

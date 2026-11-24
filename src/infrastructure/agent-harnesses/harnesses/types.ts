@@ -4,51 +4,36 @@
  *
  * Each drivable harness gets a single spec file under `agents/harnesses/`
  * exporting a `HarnessSpec`. A central index collects them. The detection
- * core and runtime seam iterate specs generically — a new harness is a
+ * core and connection catalog iterate specs generically — a new harness is a
  * new spec file, never an edit to the core module.
  *
- * One harness = ONE agent = ONE language model (map 47): the ACP provider
- * exposes a single language model per configured agent, so the spec carries
- * NO model pick lists. The TanStack-era CLI model discovery scaffolding
- * (`modelListCommand` / `fallbackModels`) is removed — selectable
- * models/modes are discovered LIVE through the ACP handshake (`initSession`
- * → session event models/modes, ticket 50) and surfaced progressively.
+ * One harness = ONE agent: the spec carries NO model pick lists. Selectable
+ * models/modes are discovered LIVE through the ACP handshake and surfaced
+ * progressively by the Workspace drivers.
  *
  * Adapter descriptors: harnesses are driven over the Agent Client Protocol
- * (ACP) via the AI SDK's `@mcpc-tech/acp-ai-provider` — `createACPProvider({
- * command, args, session: { cwd, mcpServers }, ... })`. A spec's `acpConfig`
- * is the static slice of the REAL `ACPProviderSettings` type (the seam adds
- * the per-run `session.cwd`, the scrubbed env (ADR 0012), and the resume
- * handle). `direct` remains a placeholder for a future generic raw-CLI
- * driver.
+ * (ACP). A spec's `acpConfig` is the static launch description (the probe
+ * adds the scrubbed env (ADR 0012) and the working directory). `direct`
+ * remains a placeholder for a future generic raw-CLI driver.
  */
 
-import type { ACPProviderSettings } from '@mcpc-tech/acp-ai-provider'
+import type { McpServer } from '@agentclientprotocol/sdk'
 
-/** An MCP server attached to the agent's session — the REAL ACP `McpServer`
- *  union (stdio | http | sse), derived from the provider's own settings type
- *  so the spec files can never drift from what the SDK accepts. */
-export type AcpMcpServer = ACPProviderSettings['session']['mcpServers'][number]
+/** An MCP server attached to the agent's session — the ACP SDK `McpServer`
+ *  union (stdio | http | sse), so the drivers can never drift from what the
+ *  SDK accepts. */
+export type AcpMcpServer = McpServer
 
 export interface AcpAdapter {
   kind: 'acp'
-  /** The STATIC slice of `ACPProviderSettings` a spec owns. The seam fills in
-   *  the per-run parts: `session.cwd` (the real workspace), `env` (scrubbed),
-   *  and `existingSessionId` (resume handle). */
+  /** The static launch description a spec owns. */
   acpConfig: {
     /** Human-readable protocol name, e.g. 'claude-code'. */
     name: string
-    /** ACP server command the provider spawns (e.g. 'claude-agent-acp'). */
+    /** ACP server command to spawn (e.g. 'claude-agent-acp'). */
     command: string
     /** Args passed to the command (e.g. ['--acp'], ['acp']). */
     args?: string[]
-    /** MCP servers attached to the agent session (default: none). */
-    mcpServers?: AcpMcpServer[]
-    /** Auth method id for the agent's lazy auth (default: first offered). */
-    authMethodId?: string
-    /** Delay before the provider initializes the connection — for agents that
-     *  load MCP servers asynchronously (real `ACPProviderSettings.sessionDelayMs`). */
-    sessionDelayMs?: number
   }
 }
 
@@ -99,12 +84,6 @@ export interface HarnessSpec {
   }
   /** ACP `initialize` deadline for the health probe, for agents that boot slowly (default 15s). */
   probeTimeoutMs?: number
-  /** Client-provided MCP transport the harness accepts in `session/new`
-   *  params. Most ACP agents spawn stdio servers from the session config; the
-   *  Copilot CLI rejects non-http/sse client servers outright (its own logs:
-   *  `Rejecting non-http/sse MCP server ... from client`), so it gets the
-   *  same ledger over loopback HTTP instead. Default: 'stdio'. */
-  clientMcpTransport?: 'stdio' | 'http'
   /** Lower = higher priority in the default selection (ticket 33) */
   preference?: number
   /** How to construct the harness adapter — discriminated union */

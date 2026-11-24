@@ -101,16 +101,4 @@ export async function detectHarnesses(options: DetectOptions = {}): Promise<Harn
   return found
 }
 
-/** The harness to drive by default: first-configured-wins in preference order. */
-export function pickPreferredHarness(harnesses: HarnessInfo[]): HarnessInfo | undefined {
-  const sorted = [...harnesses].sort((a, b) => {
-    const specA = harnessSpecs.find(s => s.kind === a.kind)
-    const specB = harnessSpecs.find(s => s.kind === b.kind)
-    return (specA?.preference ?? 999) - (specB?.preference ?? 999)
-  })
-  const configured = sorted.find(h => h.authStatus === 'configured')
-  if (configured) return configured
-  return sorted[0]
-}
-
 export { harnessSpecs } from '@/infrastructure/agent-harnesses/harnesses/index.js'
