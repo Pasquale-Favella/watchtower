@@ -14,7 +14,7 @@ import type { ProjectId, TaskId } from '@/shared/schemas/workspace.js'
 import { useWorkspaceNavigation } from './use-workspace-navigation.js'
 import { WorkspaceProjects } from './WorkspaceProjects.js'
 
-/** Project and Task navigation for the workspace vertical's shared app sidebar. */
+/** Chat navigation across Projects for the workspace vertical's shared app sidebar. */
 export function WorkspaceSidebar({ onNewChat }: { readonly onNewChat?: (projectId: ProjectId | null) => void }) {
   const { navigation, selectProject, selectTask } = useWorkspaceNavigation()
   const { setOpen, setOpenMobile } = useSidebar()
@@ -31,13 +31,9 @@ export function WorkspaceSidebar({ onNewChat }: { readonly onNewChat?: (projectI
       <SidebarGroupContent className="flex min-h-0 flex-1 flex-col">
         <SidebarMenu className="hidden group-data-[collapsible=icon]:flex">
           <SidebarMenuItem>
-            <SidebarMenuButton
-              tooltip="Projects and Tasks"
-              aria-label="Open workspace navigation"
-              onClick={() => setOpen(true)}
-            >
+            <SidebarMenuButton tooltip="Chats" aria-label="Open workspace navigation" onClick={() => setOpen(true)}>
               <FolderKanban />
-              <span>Projects</span>
+              <span>Chats</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
         </SidebarMenu>

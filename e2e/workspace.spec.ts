@@ -110,16 +110,21 @@ test('workspace opens by default, persists project and task across reload, and c
     await addProject.getByRole('combobox', { name: 'Project folder', exact: true }).fill(repository)
     await addProject.getByRole('button', { name: /^Add \(/ }).click()
     await expect(window.getByRole('status').filter({ hasText: 'Using the existing Project' })).toBeVisible()
-    const projectGroup = window.getByRole('button', { name: 'Workspace fixture', exact: true })
-    if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
-    await window.getByRole('button', { name: /^Verify workspace composition,/ }).click()
+    const sidebar = window.getByRole('region', { name: 'Chats', exact: true })
+    const taskRow = sidebar.getByRole('button', { name: /^Verify workspace composition, Workspace fixture,/ })
+    // `has` resolves inside each candidate section, so its locator cannot start from the sidebar.
+    const taskSection = sidebar
+      .getByRole('region')
+      .filter({ has: window.getByRole('button', { name: /^Verify workspace composition, Workspace fixture,/ }) })
+    const sectionToggle = taskSection.getByRole('button', { name: /^(Expand|Collapse) / })
+    await taskRow.click()
     await expect(window.getByRole('heading', { name: task.title, exact: true })).toBeVisible()
     await expect(window.getByRole('region', { name: 'Conversation history', exact: true })).toContainText(
       'Send a message to start the conversation.',
     )
-    // Sidebar refreshes must not override a folder the user explicitly collapsed.
-    await projectGroup.click()
-    await expect(projectGroup).toHaveAttribute('aria-expanded', 'false')
+    // Sidebar refreshes must not override a status section the user explicitly collapsed.
+    await sectionToggle.click()
+    await expect(sectionToggle).toHaveAttribute('aria-expanded', 'false')
     const otherRepository = join(directory, 'other-repository')
     execFileSync('git', ['init', otherRepository], { stdio: 'pipe' })
     execFileSync(
@@ -142,8 +147,12 @@ test('workspace opens by default, persists project and task across reload, and c
       name: 'Another project',
     })
     expect(otherRegistration.ok).toBe(true)
-    await expect(window.getByRole('button', { name: 'Another project', exact: true })).toBeVisible()
-    await expect(projectGroup).toHaveAttribute('aria-expanded', 'false')
+    await expect
+      .poll(async () => JSON.stringify(await invokeRpc(window, 'workspace:listProjects', {})))
+      .toContain('Another project')
+    // The selected chat stays listed in its collapsed section.
+    await expect(taskRow).toHaveAttribute('aria-current', 'page')
+    await expect(sectionToggle).toHaveAttribute('aria-expanded', 'false')
     await window.getByRole('button', { name: 'New chat', exact: true }).click()
     const newChat = window.getByRole('region', { name: 'New chat', exact: true })
     await expect(newChat.getByRole('combobox', { name: 'Project', exact: true })).toHaveText('No project')

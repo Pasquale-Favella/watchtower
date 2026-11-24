@@ -37,13 +37,16 @@ test('a Delegated Task opens from its parent and reveals the parent in the sideb
     const { window, pageErrors } = launched
 
     await switchVertical(window, 'Workspace')
-    const projectGroup = window.getByRole('button', { name: 'Delegation fixture', exact: true })
-    if ((await projectGroup.getAttribute('aria-expanded')) === 'false') await projectGroup.click()
-
     const sidebar = window.getByRole('region', { name: 'Chats', exact: true })
     await expect(sidebar.getByRole('button', { name: new RegExp(`^${LIVE}, `) })).toHaveCount(0)
     await expect(sidebar.getByRole('button', { name: new RegExp(`^${SETTLED}, `) })).toHaveCount(0)
-    const parentRow = sidebar.getByRole('button', { name: new RegExp(`^${PARENT}, `) })
+    // Chats from every Project share one status-grouped list; the card names its Project.
+    const parentRow = sidebar.getByRole('button', { name: new RegExp(`^${PARENT}, Delegation fixture, `) })
+    // `has` resolves inside each candidate section, so its locator cannot start from the sidebar.
+    const parentSection = sidebar
+      .getByRole('region')
+      .filter({ has: window.getByRole('button', { name: new RegExp(`^${PARENT}, Delegation fixture, `) }) })
+    const parentSectionToggle = parentSection.getByRole('button', { name: /^(Expand|Collapse) / })
     await parentRow.click()
     const selected = window.getByRole('region', { name: 'Selected task', exact: true })
     await expect(selected.getByRole('heading', { name: PARENT, exact: true })).toBeVisible()
@@ -100,14 +103,14 @@ test('a Delegated Task opens from its parent and reveals the parent in the sideb
     await expect(details).toBeHidden()
 
     // Opening a child reveals its parent in the sidebar, and the child links back to the parent.
-    await projectGroup.click()
-    await expect(projectGroup).toHaveAttribute('aria-expanded', 'false')
+    await parentSectionToggle.click()
+    await expect(parentSectionToggle).toHaveAttribute('aria-expanded', 'false')
     // The strip opens its list on demand unless a delegate needs an answer.
     const stripToggle = strip.getByRole('button', { name: /Details$/ })
     if ((await stripToggle.getAttribute('aria-expanded')) === 'false') await stripToggle.click()
     await strip.getByRole('button', { name: `Open delegated task ${LIVE}`, exact: true }).click()
     await expect(selected.getByRole('heading', { name: LIVE, exact: true })).toBeVisible()
-    await expect(projectGroup).toHaveAttribute('aria-expanded', 'true')
+    await expect(parentSectionToggle).toHaveAttribute('aria-expanded', 'true')
     await expect(parentRow).toHaveAttribute('aria-current', 'page')
     await expect(sidebar.getByRole('button', { name: new RegExp(`^${LIVE}, `) })).toHaveCount(0)
     await expect(selected.getByRole('button', { name: `Open parent task: ${PARENT}`, exact: true })).toBeVisible()
