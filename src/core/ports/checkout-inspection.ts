@@ -36,6 +36,7 @@ export interface CheckoutFilePatchRequest {
 }
 
 export interface CheckoutReadOptions {
+  readonly directory?: boolean | undefined
   readonly includeIgnored?: boolean | undefined
 }
 

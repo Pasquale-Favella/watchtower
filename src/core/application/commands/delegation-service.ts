@@ -503,7 +503,12 @@ export class DelegationService extends Context.Service<
               parentTaskId: caller.taskId,
               parentConversationId: caller.conversationId,
               task: { id: childTaskId, projectId: caller.projectId, title: record.title, description: '', createdAt },
-              conversation: { id: childConversationId, title: record.title, createdAt },
+              conversation: {
+                id: childConversationId,
+                title: record.title,
+                createdAt,
+                inheritedCheckoutId: checkoutId,
+              },
               record,
               limits: { maxDepth: DELEGATION_MAX_DEPTH, maxActivePerParentRun: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN },
             })

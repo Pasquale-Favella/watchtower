@@ -1,7 +1,9 @@
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
 import { describe, expect, it } from 'vitest'
 
+import { SCRATCH_PROJECT_ID, SCRATCH_ROOT_CHECKOUT_ID } from '../src/core/application/commands/scratch-checkouts.js'
 import {
   hasNewerActiveRun,
   latestCompletedRun,
@@ -61,7 +63,9 @@ function item(sequence: number, text: string, user = false, run = 'run-a'): Work
     ...(user ? { userMessage: { id: `message-${sequence}`, content: `question ${sequence}`, createdAt: issued } } : {}),
   }
 }
-function harness() {
+function harness(beforeRead = Effect.void, scratch = false) {
+  const parentProjectId = scratch ? SCRATCH_PROJECT_ID : projectId
+  const mainCheckoutId = scratch ? SCRATCH_ROOT_CHECKOUT_ID : checkoutId
   const records = new Map<string, SideChatRecord>()
   const created: CreateTaskCommand[] = []
   const bringBacks: SideChatBringBackRecord[] = []
@@ -76,7 +80,7 @@ function harness() {
   let sideRunList = sideRuns()
   let busy = false
   let parentIsSide = false
-  let parentCheckout = checkoutId
+  let parentCheckout: typeof checkoutId | undefined = mainCheckoutId
   let otherCheckouts: Array<{ id: typeof checkoutId; archivedAt?: string }> = []
   let pageSize = 1
   let failCreation = false
@@ -90,22 +94,24 @@ function harness() {
   const store = {
     readTaskDetail: () =>
       Effect.succeed({
-        task: { id: parentTaskId, projectId, title: 'Parent' },
+        task: { id: parentTaskId, projectId: parentProjectId, title: 'Parent' },
         conversations: [{ id: parentConversationId }],
       }),
     getProject: () =>
       Effect.succeed({
-        project: { id: projectId },
-        mainCheckout: { id: checkoutId },
+        project: { id: parentProjectId, isScratch: scratch },
+        mainCheckout: { id: mainCheckoutId },
         otherCheckouts,
       }),
     readTaskSnapshot: (id: string) => {
       if (deletedTasks.has(id)) return Effect.fail(new Error('Task does not exist'))
       if (id === parentTaskId)
         return Effect.succeed({
-          task: { id, projectId, title: 'Parent', status: 'open', sideChat: parentIsSide },
+          task: { id, projectId: parentProjectId, title: 'Parent', status: 'open', sideChat: parentIsSide },
           runs: [{ id: 'parent-run', status: busy ? 'running' : 'completed', submittedAt: issued }],
-          runContexts: [{ runId: 'parent-run', conversationId: parentConversationId, checkoutId: parentCheckout }],
+          runContexts: parentCheckout
+            ? [{ runId: 'parent-run', conversationId: parentConversationId, checkoutId: parentCheckout }]
+            : [],
         })
       return Effect.succeed({
         task: { id, projectId, title: 'Side chat', status: 'open', sideChat: true },
@@ -119,29 +125,34 @@ function harness() {
       limit: number,
       through?: number,
       options?: WorkspaceConversationPageReadOptions,
-    ) => {
-      reads++
-      watermarks.push(through)
-      const all = id === parentConversationId ? parentItems : sideItems
-      const bound = through ?? all.at(-1)?.event.sequence ?? 0
-      const backward = options?.direction === 'backward'
-      const entries = all.filter(
-        item =>
-          item.event.sequence <= bound &&
-          (backward ? item.event.sequence <= (options.beforeSequence ?? bound) : item.event.sequence > after),
-      )
-      const count = Math.min(pageSize, limit)
-      const selected = backward ? entries.slice(-count) : entries.slice(0, count)
-      const hasMore = entries.length > selected.length
-      onRead?.()
-      return Effect.succeed({
-        items: selected,
-        highWatermark: bound,
-        nextAfterSequence: !backward && hasMore ? (selected.at(-1)?.event.sequence ?? null) : null,
-        nextBeforeSequence: backward && hasMore ? (selected[0]?.event.sequence ?? 1) - 1 : null,
-        hasMore,
-      })
-    },
+    ) =>
+      beforeRead.pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            reads++
+            watermarks.push(through)
+            const all = id === parentConversationId ? parentItems : sideItems
+            const bound = through ?? all.at(-1)?.event.sequence ?? 0
+            const backward = options?.direction === 'backward'
+            const entries = all.filter(
+              item =>
+                item.event.sequence <= bound &&
+                (backward ? item.event.sequence <= (options.beforeSequence ?? bound) : item.event.sequence > after),
+            )
+            const count = Math.min(pageSize, limit)
+            const selected = backward ? entries.slice(-count) : entries.slice(0, count)
+            const hasMore = entries.length > selected.length
+            onRead?.()
+            return Effect.succeed({
+              items: selected,
+              highWatermark: bound,
+              nextAfterSequence: !backward && hasMore ? (selected.at(-1)?.event.sequence ?? null) : null,
+              nextBeforeSequence: backward && hasMore ? (selected[0]?.event.sequence ?? 1) - 1 : null,
+              hasMore,
+            })
+          }),
+        ),
+      ),
     readWorkspacePayload: (reference: WorkspacePayloadReference, offset: number, limit: number) => {
       const json = payloads.get(reference.id)
       if (json === undefined) return Effect.fail(new Error('Payload unavailable'))
@@ -237,7 +248,7 @@ function harness() {
     setParentIsSide: (value: boolean) => {
       parentIsSide = value
     },
-    setParentCheckout: (value: typeof checkoutId) => {
+    setParentCheckout: (value: typeof checkoutId | undefined) => {
       parentCheckout = value
       otherCheckouts = [{ id: otherCheckoutId }]
     },
@@ -267,6 +278,30 @@ describe('side chat context and independent identity', () => {
     expect(h.created[0]?.task.projectId).toBe(projectId)
     expect(h.created[0]?.task.sideChat).toEqual({ parentTaskId, parentConversationId })
   })
+  it('inherits the checkout when the first parent Run commits before messages are read', async () => {
+    const reading = Deferred.makeUnsafe<undefined>()
+    const committed = Deferred.makeUnsafe<undefined>()
+    const h = harness(Deferred.succeed(reading, undefined).pipe(Effect.andThen(Deferred.await(committed))), true)
+    h.setParent([])
+    h.setParentCheckout(undefined)
+    const creating = h.run(service => service.create(request))
+    try {
+      await Effect.runPromise(Deferred.await(reading))
+      h.setParentCheckout(otherCheckoutId)
+      h.setParent([item(1, 'first message', true)])
+    } finally {
+      await Effect.runPromise(Deferred.succeed(committed, undefined))
+    }
+    expect(await creating).toMatchObject({ checkoutId: otherCheckoutId })
+    expect(h.created[0]?.conversation.inheritedCheckoutId).toBe(otherCheckoutId)
+  })
+
+  it('uses the bound folder when the latest parent Run still names the scratch root', async () => {
+    const h = harness(Effect.void, true)
+    h.setParentCheckout(SCRATCH_ROOT_CHECKOUT_ID)
+    expect(await h.run(service => service.create(request))).toMatchObject({ checkoutId: otherCheckoutId })
+  })
+
   it('captures final tool output and input without duplicating intermediate tool snapshots', async () => {
     const h = harness()
     const start = item(2, '')

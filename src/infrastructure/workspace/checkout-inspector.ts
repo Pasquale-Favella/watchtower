@@ -550,7 +550,7 @@ const listEntries = Effect.fn('CheckoutInspection.listEntries')(function* (
   const target = yield* resolveContainedPath(root, path)
   const info = yield* regularFileSize(target.absolute)
   if (!info.isDirectory()) return yield* fail('path-not-found', 'The path is not a directory')
-  const visible = yield* visibleChildren(runner, root, path)
+  const visible = options.directory ? null : yield* visibleChildren(runner, root, path)
   const dirents = yield* readDirectoryEntries(target.absolute)
   const candidates = dirents.filter(
     dirent =>
@@ -668,7 +668,7 @@ const readFile = Effect.fn('CheckoutInspection.readFile')(function* (
   const target = yield* resolveContainedPath(root, path)
   const info = yield* regularFileSize(target.absolute)
   if (!info.isFile()) return yield* fail('path-not-found', 'The path is not a file')
-  if (!options.includeIgnored && !(yield* isListedFile(runner, root, path)))
+  if (!options.directory && !options.includeIgnored && !(yield* isListedFile(runner, root, path)))
     return yield* fail('path-not-found', 'The file is not listed')
   let read = yield* readBoundedFile(target.absolute, CHECKOUT_FILE_MAX_BYTES)
   const text = looksBinary(read.bytes) ? null : decodeUtf8(read.bytes, read.truncated)

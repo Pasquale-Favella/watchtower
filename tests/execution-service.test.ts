@@ -1,7 +1,18 @@
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as NodePath from '@effect/platform-node/NodePath'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
@@ -9,12 +20,15 @@ import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
-import * as Scope from 'effect/Scope'
 import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
 import { ExecutionService, type ExecutionServiceOptions } from '@/core/application/commands/execution-service.js'
-import { SCRATCH_PROJECT_ID, SCRATCH_ROOT_CHECKOUT_ID } from '@/core/application/commands/scratch-checkouts.js'
+import {
+  SCRATCH_PROJECT_ID,
+  SCRATCH_ROOT_CHECKOUT_ID,
+  scratchCheckoutId,
+} from '@/core/application/commands/scratch-checkouts.js'
 import { enrichSideChatPrompt, SideChatPersistence } from '@/core/application/commands/workspace-side-chats.js'
 import {
   AgentDriver,
@@ -28,6 +42,7 @@ import { CheckoutResolver, CheckoutResolverError } from '@/core/ports/checkout-r
 import { HarnessConnectionResolutionError, HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
+import { COACH_CHECKOUT_ID, COACH_PROJECT_ID } from '@/platform/electron/main/workspace/coach-project.js'
 import type { ResolvedCheckout } from '@/shared/schemas/checkout.js'
 import type { AgentAccessMode, AgentCapabilities, AgentDriverEvent } from '@/shared/schemas/execution.js'
 import type { AgentSessionId } from '@/shared/schemas/workspace.js'
@@ -163,7 +178,7 @@ const makeRuntime = (
             ]),
           ),
         ),
-        Layer.merge(resolverLayer, checkoutLayer),
+        Layer.mergeAll(resolverLayer, checkoutLayer, NodeFileSystem.layer, NodePath.layer),
       ),
     ),
   )
@@ -173,10 +188,39 @@ const setup = async (store: WorkspaceStore['Service'], run: RunEffect) => {
   await run(store.createTask({ task, conversation }))
 }
 
+const directoryResolverLayer = checkoutResolverLayer((path, mode) =>
+  Effect.try({
+    try: () => {
+      expect(mode).toBe('directory')
+      return {
+        ...resolvedCheckout,
+        canonicalPath: realpathSync.native(path),
+        kind: 'directory',
+        repositoryIdentity: null,
+        mainCheckoutPath: null,
+        branch: null,
+        headRevision: null,
+      } as const
+    },
+    catch: () => new CheckoutResolverError({ code: 'path-missing', message: 'Checkout folder is missing' }),
+  }),
+)
+
+const registerScratchChat = (store: WorkspaceStore['Service'], root: string) =>
+  Effect.gen(function* () {
+    yield* store.registerProject({
+      project: { ...project, id: SCRATCH_PROJECT_ID, isScratch: true, repositoryIdentity: undefined },
+      mainCheckout: { ...checkout, id: SCRATCH_ROOT_CHECKOUT_ID, kind: 'directory', path: root },
+    })
+    yield* store.createTask({ task: { ...task, projectId: SCRATCH_PROJECT_ID }, conversation })
+  })
+
 describe('ExecutionService', () => {
   it('dispatches No project chats into their registered directory and recreates it before the next Run', async () => {
     const temporary = mkdtempSync(join(tmpdir(), 'watchtower-scratch-dispatch-'))
-    const root = realpathSync.native(temporary)
+    const profile = realpathSync.native(temporary)
+    const root = join(profile, 'scratch')
+    mkdirSync(root)
     const workspacePaths: string[] = []
     const runtime = makeRuntime(
       () => {
@@ -212,34 +256,12 @@ describe('ExecutionService', () => {
       undefined,
       [],
       fakeResolverLayer(),
-      checkoutResolverLayer((path, mode) =>
-        Effect.try({
-          try: () => {
-            expect(mode).toBe('directory')
-            return {
-              ...resolvedCheckout,
-              canonicalPath: realpathSync.native(path),
-              kind: 'directory',
-              repositoryIdentity: null,
-              mainCheckoutPath: null,
-              branch: null,
-              headRevision: null,
-            } as const
-          },
-          catch: () => new CheckoutResolverError({ code: 'path-missing', message: 'Checkout folder is missing' }),
-        }),
-      ),
+      directoryResolverLayer,
     )
     try {
       const store = await runtime.runPromise(WorkspaceStore)
       const execution = await runtime.runPromise(ExecutionService)
-      await runtime.runPromise(
-        store.registerProject({
-          project: { ...project, id: SCRATCH_PROJECT_ID, isScratch: true, repositoryIdentity: undefined },
-          mainCheckout: { ...checkout, id: SCRATCH_ROOT_CHECKOUT_ID, kind: 'directory', path: root },
-        }),
-      )
-      await runtime.runPromise(store.createTask({ task: { ...task, projectId: SCRATCH_PROJECT_ID }, conversation }))
+      await runtime.runPromise(registerScratchChat(store, root))
       const initial = { ...command, checkoutId: SCRATCH_ROOT_CHECKOUT_ID, prompt: 'Fix the bug now please soon' }
       const accepted = await runtime.runPromise(execution.start(initial))
       const waitFor = (runId: BeginRunCommand['runId']) =>
@@ -277,6 +299,278 @@ describe('ExecutionService', () => {
       expect(readdirSync(folder)).toEqual([])
       const snapshot = await runtime.runPromise(store.readTaskSnapshot(task.id, 2))
       expect(snapshot.runContexts?.map(context => context.checkoutId)).toEqual([registered?.id, registered?.id])
+      const movedRoot = join(profile, 'original-scratch')
+      const outside = join(profile, 'outside-scratch')
+      mkdirSync(outside)
+      rmSync(folder, { recursive: true })
+      renameSync(root, movedRoot)
+      symlinkSync(outside, root, 'junction')
+      const redirected = { ...initial, commandId: 'redirected-folder', runId: 'redirected-folder' as never }
+      await runtime.runPromise(execution.start(redirected))
+      const waitForFailure = (runId: BeginRunCommand['runId']) =>
+        expect
+          .poll(
+            async () =>
+              (await runtime.runPromise(store.readTaskSnapshot(task.id, 4))).runs.find(run => run.id === runId)?.status,
+          )
+          .toBe('failed')
+      await waitForFailure(redirected.runId)
+      expect(readdirSync(outside)).toEqual([])
+      rmSync(root, { recursive: true })
+      renameSync(movedRoot, root)
+
+      mkdirSync(folder)
+      mkdirSync(join(root, '.git'))
+      writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+      const enclosing = { ...initial, commandId: 'enclosing-git', runId: 'enclosing-git' as never }
+      await runtime.runPromise(execution.start(enclosing))
+      await waitForFailure(enclosing.runId)
+      expect(workspacePaths).toEqual([folder, folder])
+    } finally {
+      await runtime.dispose()
+      rmSync(temporary, { recursive: true, force: true })
+    }
+  })
+
+  it('promotes a follow-up queued during the first folder claim in the bound native session', async () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'watchtower-scratch-queue-'))
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const claiming = Deferred.makeUnsafe<undefined>()
+    const releaseClaim = Deferred.makeUnsafe<undefined>()
+    const firstSubmitted = Deferred.makeUnsafe<undefined>()
+    const followUpSubmitted = Deferred.makeUnsafe<undefined>()
+    const finishFirst = Deferred.makeUnsafe<undefined>()
+    const opened: string[] = []
+    const loaded: string[] = []
+    let connected = 0
+    const runtime = makeRuntime(
+      () => {
+        const index = connected++
+        const nativeTurnId = index === 0 ? 'first' : 'follow-up'
+        const submitted = index === 0 ? firstSubmitted : followUpSubmitted
+        const terminal = Effect.gen(function* () {
+          yield* Deferred.await(submitted)
+          if (index === 0) yield* Deferred.await(finishFirst)
+          return { kind: 'turnCompleted', nativeTurnId } as const
+        })
+        const session = makeSession({
+          events: () => Stream.fromEffect(terminal),
+          submit: () =>
+            Deferred.succeed(submitted, undefined).pipe(
+              Effect.as({ nativeSessionId: 'native-session', nativeTurnId, generation: 1 }),
+            ),
+        })
+        return Effect.succeed(
+          makeConnection(session, {
+            openSession: context =>
+              Effect.sync(() => {
+                opened.push(context.workspacePath)
+                return session
+              }),
+            loadSession: context =>
+              Effect.sync(() => {
+                loaded.push(context.workspacePath)
+                return session
+              }),
+          }),
+        )
+      },
+      {},
+      {
+        ...store,
+        registerCheckout: input =>
+          Effect.gen(function* () {
+            yield* Deferred.succeed(claiming, undefined)
+            yield* Deferred.await(releaseClaim)
+            return yield* store.registerCheckout(input)
+          }),
+      },
+      [],
+      fakeResolverLayer(),
+      directoryResolverLayer,
+    )
+    const run = runtime.runPromise
+    const first = { ...command, checkoutId: SCRATCH_ROOT_CHECKOUT_ID }
+    const followUp = { ...first, commandId: 'queued-during-claim', prompt: 'Follow up' }
+    let starting: Promise<unknown> | undefined
+    try {
+      await run(registerScratchChat(store, realpathSync.native(temporary)))
+      const execution = await run(ExecutionService)
+      starting = run(execution.start(first))
+      await run(Deferred.await(claiming))
+      await run(execution.enqueueFollowUp(followUp))
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items[0]).toMatchObject({
+        checkoutId: SCRATCH_ROOT_CHECKOUT_ID,
+        held: false,
+      })
+      await run(Deferred.succeed(releaseClaim, undefined))
+      await starting
+      await run(Deferred.await(firstSubmitted))
+      const bound = (await run(store.getProject(SCRATCH_PROJECT_ID))).otherCheckouts[0]
+      expect((await run(store.listQueuedFollowUps(conversation.id))).items[0]?.checkoutId).toBe(bound?.id)
+      await run(Deferred.succeed(finishFirst, undefined))
+      await run(Deferred.await(followUpSubmitted).pipe(Effect.timeout('3 seconds')))
+      expect(opened).toEqual([bound?.path])
+      expect(loaded).toEqual([bound?.path])
+      const snapshot = await run(store.readTaskSnapshot(task.id, 2))
+      expect(snapshot.runContexts?.map(context => context.checkoutId)).toEqual([bound?.id, bound?.id])
+    } finally {
+      await run(Deferred.succeed(releaseClaim, undefined))
+      await run(Deferred.succeed(finishFirst, undefined))
+      await starting?.catch(() => undefined)
+      await runtime.dispose()
+      await storeRuntime.dispose()
+      rmSync(temporary, { recursive: true, force: true })
+    }
+  })
+
+  it('dispatches a shared Delegated Task into its recorded parent folder', async () => {
+    const temporary = mkdtempSync(join(tmpdir(), 'watchtower-scratch-delegation-'))
+    const root = realpathSync.native(temporary)
+    const opened = Deferred.makeUnsafe<string>()
+    const session = makeSession()
+    const runtime = makeRuntime(
+      () =>
+        Effect.succeed(
+          makeConnection(session, {
+            openSession: context => Deferred.succeed(opened, context.workspacePath).pipe(Effect.as(session)),
+          }),
+        ),
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(),
+      directoryResolverLayer,
+    )
+    try {
+      const run = runtime.runPromise
+      const store = await run(WorkspaceStore)
+      const execution = await run(ExecutionService)
+      await run(registerScratchChat(store, root))
+      const path = join(root, 'parent')
+      mkdirSync(path)
+      const checkoutId = scratchCheckoutId(conversation.id)
+      await run(
+        store.registerCheckout({
+          commandId: 'register-parent-folder',
+          checkout: {
+            id: checkoutId,
+            projectId: SCRATCH_PROJECT_ID,
+            kind: 'directory',
+            path,
+            scratchConversationId: conversation.id,
+            createdAt: command.issuedAt,
+          },
+        }),
+      )
+      await run(store.beginRun({ ...command, checkoutId }))
+      await run(store.claimDispatch(command.runId, 7, command.issuedAt))
+      const child = {
+        ...command,
+        commandId: 'start-delegated-task',
+        runId: 'delegated-run' as never,
+        taskId: 'delegated-task' as never,
+        conversationId: 'delegated-conversation' as never,
+        provisionalAgentSessionId: 'delegated-session',
+        checkoutId,
+      }
+      const delegationCommandId = 'create-delegated-task'
+      await run(
+        store.createDelegation({
+          commandId: delegationCommandId,
+          issuedAt: command.issuedAt,
+          parentRunId: command.runId,
+          parentTaskId: task.id,
+          parentConversationId: conversation.id,
+          task: { ...task, id: child.taskId, projectId: SCRATCH_PROJECT_ID },
+          // Older Delegations carry the checkout in their record alone.
+          conversation: { ...conversation, id: child.conversationId },
+          record: {
+            id: 'scratch-delegation' as never,
+            commandId: delegationCommandId,
+            projectId: SCRATCH_PROJECT_ID,
+            parentRunId: command.runId,
+            parentTaskId: task.id,
+            parentConversationId: conversation.id,
+            childRunId: child.runId,
+            childTaskId: child.taskId,
+            childConversationId: child.conversationId,
+            depth: 1,
+            title: 'Delegated task',
+            driverId: child.driverId,
+            connectionId: child.connectionId,
+            checkoutId,
+            isolation: 'shared',
+            accessMode: 'approval-required',
+            accessModeRequested: null,
+            accessModeSteppedDownFrom: null,
+            modelId: null,
+            modeId: null,
+            status: 'queued',
+            wake: 'always',
+            wakeState: 'notDue',
+            pendingRequest: null,
+            resultText: null,
+            resultTruncated: false,
+            resultReadAt: null,
+            cancelRequestedAt: null,
+            createdAt: command.issuedAt,
+            settledAt: null,
+          },
+          limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+        }),
+      )
+      await run(execution.start(child))
+      expect(await run(Deferred.await(opened).pipe(Effect.timeout('3 seconds')))).toBe(path)
+      expect((await run(store.getProject(SCRATCH_PROJECT_ID))).otherCheckouts.map(item => item.id)).toEqual([
+        checkoutId,
+      ])
+    } finally {
+      await runtime.dispose()
+      rmSync(temporary, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    { id: COACH_PROJECT_ID, checkoutId: COACH_CHECKOUT_ID, isCoach: true },
+    { id: SCRATCH_PROJECT_ID, checkoutId: SCRATCH_ROOT_CHECKOUT_ID, isScratch: true },
+  ])('revalidates a legacy Git record for $id in directory mode', async managed => {
+    const temporary = mkdtempSync(join(tmpdir(), 'watchtower-managed-dispatch-'))
+    const root = realpathSync.native(temporary)
+    const opened = Deferred.makeUnsafe<string>()
+    const runtime = makeRuntime(
+      () =>
+        Effect.succeed(
+          makeConnection(makeSession(), {
+            openSession: context => Deferred.succeed(opened, context.workspacePath).pipe(Effect.as(makeSession())),
+          }),
+        ),
+      {},
+      undefined,
+      [],
+      fakeResolverLayer(),
+      directoryResolverLayer,
+    )
+    try {
+      const run = runtime.runPromise
+      const store = await run(WorkspaceStore)
+      const execution = await run(ExecutionService)
+      const { checkoutId, ...managedProject } = managed
+      await run(
+        store.registerProject({
+          project: { ...project, ...managedProject },
+          mainCheckout: { ...checkout, id: checkoutId, path: root },
+        }),
+      )
+      await run(
+        store.createTask({
+          task: { ...task, projectId: managed.id },
+          conversation: { ...conversation, inheritedCheckoutId: checkoutId },
+        }),
+      )
+      await run(execution.start({ ...command, checkoutId }))
+      expect(await run(Deferred.await(opened).pipe(Effect.timeout('3 seconds')))).toBe(root)
     } finally {
       await runtime.dispose()
       rmSync(temporary, { recursive: true, force: true })

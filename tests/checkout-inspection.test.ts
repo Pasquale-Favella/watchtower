@@ -9,6 +9,7 @@ import * as ManagedRuntime from 'effect/ManagedRuntime'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { CheckoutInspection } from '@/core/ports/checkout-inspection.js'
+import { CommandRunner } from '@/core/ports/process.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
 import { CheckoutInspectionLive } from '@/infrastructure/workspace/checkout-inspector.js'
@@ -86,6 +87,29 @@ afterEach(() => {
 })
 
 const working: DiffSourceSelector = { kind: 'working-tree' }
+
+it('lists directory checkouts without commands and hides only Git metadata', async () => {
+  const root = scratch()
+  mkdirSync(join(root, '.git'))
+  writeFileSync(join(root, '.gitignore'), 'visible.txt\n')
+  writeFileSync(join(root, 'visible.txt'), 'contents')
+  const runtime = ManagedRuntime.make(
+    CheckoutInspectionLive.pipe(
+      Layer.provide(CommandRunner.layerWithRunner(() => Effect.die('Unexpected Git command'))),
+      Layer.provide(NodePlatformLive),
+    ),
+  )
+  try {
+    const inspection = await runtime.runPromise(CheckoutInspection)
+    const listing = await runtime.runPromise(inspection.listEntries(root, '', { directory: true }))
+    expect(listing.entries.map(entry => entry.name)).toEqual(['.gitignore', 'visible.txt'])
+    expect(await runtime.runPromise(inspection.readFile(root, 'visible.txt', { directory: true }))).toMatchObject({
+      content: 'contents',
+    })
+  } finally {
+    await runtime.dispose()
+  }
+})
 
 describe('checkout inspection: working tree', () => {
   it('reports modified, deleted, renamed, binary and untracked files without ignored paths', async () => {

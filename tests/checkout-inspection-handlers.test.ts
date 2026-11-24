@@ -7,8 +7,11 @@ import * as RpcTest from 'effect/rpc/RpcTest'
 import * as Schema from 'effect/Schema'
 import { describe, expect, it, vi } from 'vitest'
 
+import { SCRATCH_PROJECT_ID } from '@/core/application/commands/scratch-checkouts.js'
 import { CheckoutInspection, CheckoutInspectionError } from '@/core/ports/checkout-inspection.js'
 import { checkoutInspectionHandlers } from '@/platform/electron/main/rpc/checkout-inspection-handlers.js'
+import { guardGitCheckoutPath } from '@/platform/electron/main/workspace/checkout-paths.js'
+import { COACH_PROJECT_ID } from '@/platform/electron/main/workspace/coach-project.js'
 import { CheckoutInspectionRpcError, CheckoutInspectionRpcGroup } from '@/shared/rpc/checkout-inspection.js'
 import { projectIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 
@@ -47,7 +50,7 @@ function fakeInspection(overrides: Partial<CheckoutInspection['Service']> = {}) 
 const resolveCheckoutPath = (request: { readonly checkoutId?: string | undefined }) =>
   request.checkoutId === missingCheckout
     ? Effect.fail(new CheckoutInspectionRpcError({ code: 'not-found', message: 'Checkout record was not found.' }))
-    : Effect.succeed('/canonical/checkout')
+    : Effect.succeed({ path: '/canonical/checkout', directory: request.checkoutId === siblingCheckout })
 
 /** Runs one body against the real RPC group, with handlers wired to the fake service and resolver. */
 function run<A, E>(
@@ -64,10 +67,20 @@ function run<A, E>(
 }
 
 describe('checkout inspection RPC handlers', () => {
+  it('refuses Git actions and pull requests for both managed Project IDs before resolving the path', async () => {
+    const resolve = vi.fn(() => Effect.succeed('/canonical/checkout'))
+    const guarded = guardGitCheckoutPath(resolve)
+    for (const managed of [SCRATCH_PROJECT_ID, COACH_PROJECT_ID]) {
+      expect(await Effect.runPromise(Effect.flip(guarded({ projectId: managed, checkoutId: siblingCheckout })))).toBe(
+        'unavailable',
+      )
+    }
+    expect(resolve).not.toHaveBeenCalled()
+    expect(await Effect.runPromise(guarded({ projectId }))).toBe('/canonical/checkout')
+  })
+
   it('passes guarded saves through the resolved checkout and sanitizes conflicts', async () => {
-    const writeFile = vi.fn((_root: string, _request: { readonly path: string }) =>
-      Effect.fail(new CheckoutInspectionError({ code: 'conflict', message: leaked })),
-    )
+    const writeFile = vi.fn(() => Effect.fail(new CheckoutInspectionError({ code: 'conflict', message: leaked })))
     const error = await run(fakeInspection({ writeFile }), client =>
       Effect.flip(client['checkout:writeFile']({ projectId, path: 'x', content: 'mine', expectedContent: 'before' })),
     )
@@ -141,6 +154,7 @@ describe('checkout inspection RPC handlers', () => {
     )
     expect(result).toEqual({ path: 'src', entries: [], truncated: false })
     expect(seen).toEqual(['/canonical/checkout'])
+    expect(listEntries).toHaveBeenCalledWith('/canonical/checkout', 'src', expect.objectContaining({ directory: true }))
   })
 
   it('rejects paths that leave the checkout before any handler runs', async () => {

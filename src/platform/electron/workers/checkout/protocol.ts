@@ -7,7 +7,7 @@ import * as Inspection from '@/shared/schemas/checkout-inspection.js'
 
 const root = { root: Schema.String }
 const path = { ...root, path: Inspection.checkoutFilePathSchema }
-const includeIgnored = Schema.optional(Schema.Boolean)
+const fileOptions = { includeIgnored: Schema.optional(Schema.Boolean), directory: Schema.optional(Schema.Boolean) }
 
 /** Internal transport. Main resolves a registered checkout before sending its canonical path. */
 export const CheckoutWorkerRpc = RpcGroup.make(
@@ -35,12 +35,12 @@ export const CheckoutWorkerRpc = RpcGroup.make(
     error: CheckoutInspectionError,
   }),
   Rpc.make('inspect:entries', {
-    payload: { ...root, path: Inspection.checkoutDirectoryPathSchema, includeIgnored },
+    payload: { ...root, path: Inspection.checkoutDirectoryPathSchema, ...fileOptions },
     success: Inspection.directoryListingSchema,
     error: CheckoutInspectionError,
   }),
   Rpc.make('inspect:read', {
-    payload: { ...path, includeIgnored },
+    payload: { ...path, ...fileOptions },
     success: Inspection.fileContentSchema,
     error: CheckoutInspectionError,
   }),
@@ -48,6 +48,7 @@ export const CheckoutWorkerRpc = RpcGroup.make(
     payload: Inspection.writeFileRequestSchema.mapFields(fields => ({
       ...Struct.omit(fields, ['projectId', 'checkoutId']),
       ...root,
+      ...fileOptions,
     })),
     success: Inspection.fileContentSchema,
     error: CheckoutInspectionError,

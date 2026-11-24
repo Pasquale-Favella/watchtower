@@ -36,7 +36,9 @@ export interface CheckoutInspectionHandlerOptions<R = never> {
    * Maps a Project and optional checkout to its canonical path. The renderer never supplies a filesystem path.
    * The resolver may require the workspace store, which the composition root already provides.
    */
-  readonly resolveCheckoutPath: (request: CheckoutScope) => Effect.Effect<string, CheckoutInspectionRpcError, R>
+  readonly resolveCheckoutPath: (
+    request: CheckoutScope,
+  ) => Effect.Effect<{ path: string; directory: boolean }, CheckoutInspectionRpcError, R>
 }
 
 /** Checkout review and text editing handlers. They require the CheckoutInspection service from the caller's runtime. */
@@ -44,8 +46,11 @@ export function checkoutInspectionHandlers<R = never>(options: CheckoutInspectio
   return Layer.unwrap(
     Effect.gen(function* () {
       const inspection = yield* CheckoutInspection
-      const checkout = <A>(request: CheckoutScope, use: (root: string) => Effect.Effect<A, CheckoutInspectionError>) =>
-        safe(options.resolveCheckoutPath(request).pipe(Effect.flatMap(use)))
+      const checkout = <A>(
+        request: CheckoutScope,
+        use: (root: string, directory: boolean) => Effect.Effect<A, CheckoutInspectionError>,
+      ) =>
+        safe(options.resolveCheckoutPath(request).pipe(Effect.flatMap(({ path, directory }) => use(path, directory))))
       return CheckoutInspectionRpcGroup.toLayer({
         'checkout:diffPreview': request => checkout(request, root => inspection.diffPreview(root, request.source)),
         'checkout:filePatch': request =>
@@ -61,9 +66,11 @@ export function checkoutInspectionHandlers<R = never>(options: CheckoutInspectio
         'checkout:branches': request => checkout(request, root => inspection.branches(root)),
         'checkout:commits': request => checkout(request, root => inspection.commits(root)),
         'checkout:listEntries': request =>
-          checkout(request, root => inspection.listEntries(root, request.path, request)),
-        'checkout:readFile': request => checkout(request, root => inspection.readFile(root, request.path, request)),
-        'checkout:writeFile': request => checkout(request, root => inspection.writeFile(root, request)),
+          checkout(request, (root, directory) => inspection.listEntries(root, request.path, { ...request, directory })),
+        'checkout:readFile': request =>
+          checkout(request, (root, directory) => inspection.readFile(root, request.path, { ...request, directory })),
+        'checkout:writeFile': request =>
+          checkout(request, (root, directory) => inspection.writeFile(root, { ...request, directory })),
       })
     }),
   )

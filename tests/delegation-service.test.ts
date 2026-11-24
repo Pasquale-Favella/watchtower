@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest'
 import {
   type DelegationCallerScope,
   DelegationService,
-  matchesModelSearch,
   type DelegationServiceOptions,
+  matchesModelSearch,
   type StartDelegationRequest,
 } from '@/core/application/commands/delegation-service.js'
 import { ExecutionService } from '@/core/application/commands/execution-service.js'
@@ -306,6 +306,8 @@ describe('DelegationService', () => {
       const summary = await built.runtime.runPromise(service.start(parentCaller, request()))
       const child = built.starts[0]
       if (!child) throw new Error('The delegation did not launch a child Run.')
+      const childTask = await built.runtime.runPromise(store.readTaskDetail(child.taskId))
+      expect(childTask.conversations[0]?.inheritedCheckoutId).toBe(parentCommand.checkoutId)
       await built.runtime.runPromise(store.recordDriverEvent(child.runId, textDelta(child.runId, 'd1', 'Found ')))
       await built.runtime.runPromise(store.recordDriverEvent(child.runId, textDelta(child.runId, 'd2', 'two bugs.')))
       const transcript = await built.runtime.runPromise(service.read(parentCaller, summary.delegationId, 6))

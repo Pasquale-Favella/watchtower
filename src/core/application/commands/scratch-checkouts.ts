@@ -1,8 +1,8 @@
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, stat } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
 
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
+import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 
@@ -30,28 +30,25 @@ export class ScratchProjectInsideGitError extends Schema.TaggedError<ScratchProj
 const folderUnavailable = () =>
   new WorkspaceStoreError({ code: 'database-unavailable', message: 'Chat folder is unavailable.' })
 
-function hasCode(error: unknown, code: string): boolean {
-  return error instanceof Error && 'code' in error && error.code === code
-}
-
-async function hasGitMarker(directory: string): Promise<boolean> {
-  const marker = join(directory, '.git')
-  try {
-    const info = await stat(marker)
-    if (info.isDirectory()) return (await stat(join(marker, 'HEAD'))).isFile()
-    if (info.isFile() && info.size <= 4096) return /^gitdir: \S/m.test(await readFile(marker, 'utf8'))
+const hasGitMarker = Effect.fnUntraced(
+  function* (directory: string) {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const marker = path.join(directory, '.git')
+    const info = yield* fs.stat(marker)
+    if (info.type === 'Directory') return (yield* fs.stat(path.join(marker, 'HEAD'))).type === 'File'
+    if (info.type === 'File' && info.size <= 4096n) return /^gitdir: \S/m.test(yield* fs.readFileString(marker))
     return false
-  } catch (error) {
-    if (hasCode(error, 'ENOENT') || hasCode(error, 'ENOTDIR')) return false
-    throw error
-  }
-}
+  },
+  Effect.catch(error => (error.reason._tag === 'NotFound' ? Effect.succeed(false) : Effect.fail(folderUnavailable()))),
+)
 
 export const resolveScratchRoot = Effect.fnUntraced(function* (
   resolver: CheckoutResolver['Service'],
   directory: string,
   legacy: boolean,
 ) {
+  const { dirname } = yield* Path.Path
   const resolved = yield* resolver.resolve(directory, 'directory')
   const root = resolved.canonicalPath
   if (resolved.kind !== 'directory')
@@ -59,7 +56,7 @@ export const resolveScratchRoot = Effect.fnUntraced(function* (
   // Directory mode canonicalizes without invoking Git. Check the physical ancestors for Git's
   // directory or worktree marker. An existing legacy checkout is allowed its own marker.
   for (let current = legacy ? dirname(root) : root; ; current = dirname(current)) {
-    if (yield* Effect.tryPromise({ try: () => hasGitMarker(current), catch: folderUnavailable }))
+    if (yield* hasGitMarker(current))
       return yield* new ScratchProjectInsideGitError({ message: SCRATCH_INSIDE_GIT_MESSAGE })
     if (dirname(current) === current) return root
   }
@@ -98,6 +95,8 @@ const claimFolder = Effect.fnUntraced(function* (
   at: string,
   register: (path: string) => ReturnType<WorkspaceStore['Service']['registerCheckout']>,
 ) {
+  const fs = yield* FileSystem.FileSystem
+  const { join } = yield* Path.Path
   const id = conversationId
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
@@ -108,11 +107,11 @@ const claimFolder = Effect.fnUntraced(function* (
   let name = `${prefix}-${id.slice(-8) || 'chat'}`
   for (let attempt = 0; ; attempt += 1) {
     const path = join(root, name)
-    const claimed = yield* Effect.tryPromise({
-      try: () => mkdir(path).then(() => true),
-      catch: error => error,
-    }).pipe(
-      Effect.catch(error => (hasCode(error, 'EEXIST') ? Effect.succeed(false) : Effect.fail(folderUnavailable()))),
+    const claimed = yield* fs.makeDirectory(path, { recursive: false }).pipe(
+      Effect.as(true),
+      Effect.catch(error =>
+        error.reason._tag === 'AlreadyExists' ? Effect.succeed(false) : Effect.fail(folderUnavailable()),
+      ),
     )
     if (claimed) {
       // A missing folder can still belong to an existing chat. Its stored path stays reserved.
@@ -143,8 +142,8 @@ export const prepareScratchCheckout = Effect.fnUntraced(function* (
   const id = scratchCheckoutId(conversationId)
   if (!detail.project.isScratch || detail.project.archivedAt)
     return yield* new WorkspaceStoreError({ code: 'membership-conflict', message: 'No project is unavailable.' })
-  const stored = yield* store.getProject(detail.project.id, { checkoutId: id })
-  const prior = stored.otherCheckouts.find(checkout => checkout.id === id)
+  const stored = yield* store.getProject(detail.project.id, { scratchConversationId: conversationId })
+  const prior = stored.otherCheckouts[0]
   if (prior) {
     if (prior.projectId !== detail.project.id || prior.scratchConversationId !== conversationId || prior.archivedAt)
       return yield* new WorkspaceStoreError({
@@ -153,10 +152,9 @@ export const prepareScratchCheckout = Effect.fnUntraced(function* (
       })
     return prior
   }
-  const root = yield* resolveScratchRoot(resolver, detail.mainCheckout.path, detail.mainCheckout.kind === 'main').pipe(
+  const root = yield* verifyScratchCheckoutPath(resolver, detail, detail.mainCheckout.path).pipe(
     Effect.catchTag('CheckoutResolverError', () => Effect.fail(folderUnavailable())),
   )
-  if (root !== detail.mainCheckout.path) return yield* folderUnavailable()
   return yield* claimFolder(root, conversationId, prompt, at, path =>
     store.registerCheckout({
       commandId: `internal:registerCheckout:${id}`,
@@ -172,6 +170,32 @@ export const prepareScratchCheckout = Effect.fnUntraced(function* (
   )
 }, scratchAdmission.withPermit)
 
-export const recreateScratchCheckout = Effect.fnUntraced(function* (path: string) {
-  yield* Effect.tryPromise({ try: () => mkdir(path, { recursive: true }), catch: folderUnavailable })
+export const verifyScratchCheckoutPath = Effect.fnUntraced(function* (
+  resolver: CheckoutResolver['Service'],
+  detail: WorkspaceProjectDetail,
+  checkoutPath: string,
+) {
+  const path = yield* Path.Path
+  const root = yield* resolveScratchRoot(resolver, detail.mainCheckout.path, detail.mainCheckout.kind === 'main')
+  if (
+    root !== detail.mainCheckout.path ||
+    (checkoutPath !== root && (path.resolve(checkoutPath) !== checkoutPath || path.dirname(checkoutPath) !== root))
+  )
+    return yield* folderUnavailable()
+  return root
+})
+
+export const recreateScratchCheckout = Effect.fnUntraced(function* (
+  resolver: CheckoutResolver['Service'],
+  detail: WorkspaceProjectDetail,
+  checkoutPath: string,
+) {
+  const root = yield* verifyScratchCheckoutPath(resolver, detail, checkoutPath)
+  if (checkoutPath === root) return yield* folderUnavailable()
+  const fs = yield* FileSystem.FileSystem
+  yield* fs
+    .makeDirectory(checkoutPath, { recursive: false })
+    .pipe(
+      Effect.catch(error => (error.reason._tag === 'AlreadyExists' ? Effect.void : Effect.fail(folderUnavailable()))),
+    )
 })

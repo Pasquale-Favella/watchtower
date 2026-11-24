@@ -6,6 +6,7 @@ import * as Option from 'effect/Option'
 import * as Schema from 'effect/Schema'
 import * as Semaphore from 'effect/Semaphore'
 
+import { SCRATCH_PROJECT_ID, SCRATCH_ROOT_CHECKOUT_ID } from '@/core/application/commands/scratch-checkouts.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { taskTitleFromPrompt } from '@/shared/lib/task-title.js'
 import { agentDriverEventSchema, type AgentRun } from '@/shared/schemas/execution.js'
@@ -433,32 +434,48 @@ export const WorkspaceSideChatsLive = Layer.effect(
             const detail = yield* store
               .readTaskDetail(request.parentTaskId, { limit: 50 })
               .pipe(Effect.mapError(unavailable))
-            if (!detail.conversations.some(item => item.id === request.parentConversationId)) return yield* missing()
-            const snapshot = yield* store.readTaskSnapshot(request.parentTaskId, 100).pipe(Effect.mapError(unavailable))
-            if (snapshot.task.sideChat)
-              return yield* new SideChatError({
-                code: 'nested',
-                message: 'Side chats cannot start side chats.',
-              })
+            const parentConversation = detail.conversations.find(item => item.id === request.parentConversationId)
+            if (!parentConversation) return yield* missing()
             const parent = yield* capture(request.parentConversationId)
             if (!parent.hasMessages)
               return yield* new SideChatError({
                 code: 'invalid-request',
                 message: 'Send a message before opening a side chat.',
               })
-            const inheritedCheckoutId = snapshot.runContexts?.find(
+            const snapshot = yield* store.readTaskSnapshot(request.parentTaskId, 100).pipe(Effect.mapError(unavailable))
+            if (snapshot.task.sideChat)
+              return yield* new SideChatError({
+                code: 'nested',
+                message: 'Side chats cannot start side chats.',
+              })
+            const latestCheckoutId = snapshot.runContexts?.find(
               item => item.conversationId === request.parentConversationId,
             )?.checkoutId
+            const scratch = detail.task.projectId === SCRATCH_PROJECT_ID
+            const inheritedCheckoutId =
+              scratch && parentConversation.inheritedCheckoutId
+                ? parentConversation.inheritedCheckoutId
+                : latestCheckoutId
+            const lookupByOwner =
+              scratch &&
+              !parentConversation.inheritedCheckoutId &&
+              (!latestCheckoutId || latestCheckoutId === SCRATCH_ROOT_CHECKOUT_ID)
             const project = yield* store
-              .getProject(detail.task.projectId, { checkoutId: inheritedCheckoutId })
+              .getProject(
+                detail.task.projectId,
+                lookupByOwner
+                  ? { scratchConversationId: request.parentConversationId }
+                  : { checkoutId: inheritedCheckoutId },
+              )
               .pipe(Effect.mapError(unavailable))
             if (project.project.isCoach)
               return yield* new SideChatError({
                 code: 'invalid-request',
                 message: 'Coach chats cannot have side chats.',
               })
-            // A side chat shares the checkout of the parent's latest Run, falling back to the main checkout.
-            const checkoutId = inheritedCheckoutId ?? project.mainCheckout.id
+            // A stale root Run can predate the parent's per-chat registration.
+            const ownedCheckout = lookupByOwner && project.project.isScratch ? project.otherCheckouts[0] : undefined
+            const checkoutId = ownedCheckout?.id ?? inheritedCheckoutId ?? project.mainCheckout.id
             if (
               ![project.mainCheckout, ...project.otherCheckouts].some(
                 item => item.id === checkoutId && !item.archivedAt,

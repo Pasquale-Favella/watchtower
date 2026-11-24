@@ -7,6 +7,7 @@ import {
   realpathSync,
   rmdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -15,15 +16,18 @@ import { basename, join } from 'node:path'
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
-import { describe, expect, it } from 'vitest'
+import * as Path from 'effect/Path'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   prepareScratchCheckout,
   SCRATCH_INSIDE_GIT_MESSAGE,
   SCRATCH_PROJECT_ID,
   SCRATCH_ROOT_CHECKOUT_ID,
+  scratchCheckoutId,
 } from '@/core/application/commands/scratch-checkouts.js'
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { CommandRunner } from '@/core/ports/process.js'
@@ -31,7 +35,14 @@ import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import { ensureScratchProject } from '@/platform/electron/main/workspace/scratch-project.js'
-import { conversationIdSchema, workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
+import {
+  agentRunIdSchema,
+  conversationIdSchema,
+  projectIdSchema,
+  taskIdSchema,
+  workspaceCheckoutIdSchema,
+} from '@/shared/schemas/workspace.js'
+import type { BeginRunCommand } from '@/shared/schemas/workspace-store.js'
 
 const at = '2026-11-23T08:00:00Z'
 const filesystem = Layer.merge(NodeFileSystem.layer, NodePath.layer)
@@ -64,7 +75,22 @@ async function scratchFixture(profile: string, runtime: ReturnType<typeof makeRu
   const resolver = await runtime.runPromise(CheckoutResolver)
   const root = join(realpathSync.native(profile), 'workspace', 'scratch')
   const ensure = ensureScratchProject(store, root)
-  return { root, profile, store, resolver, ensure, run: runtime.runPromise }
+  const createChat = (id: string) => {
+    const conversationId = conversationIdSchema.make(id)
+    return store
+      .createTask({
+        task: {
+          id: taskIdSchema.make(`task-${id}`),
+          projectId: SCRATCH_PROJECT_ID,
+          title: id,
+          description: '',
+          createdAt: at,
+        },
+        conversation: { id: conversationId, createdAt: at },
+      })
+      .pipe(Effect.as(conversationId))
+  }
+  return { root, profile, store, resolver, ensure, createChat, run: runtime.runPromise }
 }
 
 describe('No project', () => {
@@ -83,7 +109,7 @@ describe('No project', () => {
     }))
 
   it('keeps the legacy checkout and all its files while preparing a new directory checkout', () =>
-    withScratch(async ({ run, root, store, resolver, ensure }) => {
+    withScratch(async ({ run, root, store, resolver, ensure, createChat }) => {
       mkdirSync(join(root, '.git'), { recursive: true })
       writeFileSync(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
       writeFileSync(join(root, 'notes.txt'), 'keep me')
@@ -111,7 +137,7 @@ describe('No project', () => {
           store,
           resolver,
           detail,
-          conversationIdSchema.make('legacy-install-aabbccdd'),
+          await run(createChat('legacy-install-aabbccdd')),
           'A new chat',
           at,
         ),
@@ -122,11 +148,11 @@ describe('No project', () => {
     }))
 
   it('claims a distinct folder for each chat and reuses the registered checkout on a retry', () =>
-    withScratch(async ({ run, root, store, resolver, ensure }) => {
+    withScratch(async ({ run, root, store, resolver, ensure, createChat }) => {
       await run(ensure)
       const detail = await run(store.getProject(SCRATCH_PROJECT_ID))
-      const firstId = conversationIdSchema.make('chat-one-12345678')
-      const secondId = conversationIdSchema.make('chat-two-12345678')
+      const firstId = await run(createChat('chat-one-12345678'))
+      const secondId = await run(createChat('chat-two-12345678'))
       const prompt = '  Fix THE API -- today and ignore this  '
       const [first, second] = await Promise.all(
         [firstId, secondId].map(id => run(prepareScratchCheckout(store, resolver, detail, id, prompt, at))),
@@ -141,13 +167,13 @@ describe('No project', () => {
     }))
 
   it('uses a random suffix after both names collide and preserves occupied paths', () =>
-    withScratch(async ({ run, root, store, resolver, ensure }) => {
+    withScratch(async ({ run, root, store, resolver, ensure, createChat }) => {
       await run(ensure)
       writeFileSync(join(root, '2026-11-23-11112222'), 'existing user file')
       mkdirSync(join(root, '2026-11-23-chat-11112222'))
       const detail = await run(store.getProject(SCRATCH_PROJECT_ID))
       const checkout = await run(
-        prepareScratchCheckout(store, resolver, detail, conversationIdSchema.make('chat-11112222'), '?! 💬', at),
+        prepareScratchCheckout(store, resolver, detail, await run(createChat('chat-11112222')), '?! 💬', at),
       )
       expect(basename(checkout.path)).toMatch(/^2026-11-23-chat-11112222-[a-f0-9]{8}$/)
       expect(readdirSync(checkout.path)).toEqual([])
@@ -155,11 +181,11 @@ describe('No project', () => {
     }))
 
   it('falls back when a deleted folder still belongs to another chat', () =>
-    withScratch(async ({ run, root, store, resolver, ensure }) => {
+    withScratch(async ({ run, root, store, resolver, ensure, createChat }) => {
       await run(ensure)
       const detail = await run(store.getProject(SCRATCH_PROJECT_ID))
-      const firstId = conversationIdSchema.make('first-12345678')
-      const secondId = conversationIdSchema.make('second-12345678')
+      const firstId = await run(createChat('first-12345678'))
+      const secondId = await run(createChat('second-12345678'))
       const first = await run(prepareScratchCheckout(store, resolver, detail, firstId, 'Example', at))
       rmdirSync(first.path)
       const second = await run(prepareScratchCheckout(store, resolver, detail, secondId, 'Example', at))
@@ -167,14 +193,161 @@ describe('No project', () => {
       expect(await run(prepareScratchCheckout(store, resolver, detail, firstId, 'Example', at))).toEqual(first)
     }))
 
+  it('claims the folder through the provided Effect FileSystem and Path', () =>
+    withScratch(async ({ run, root, store, resolver, ensure, createChat }) => {
+      await run(ensure)
+      const detail = await run(store.getProject(SCRATCH_PROJECT_ID))
+      const conversationId = await run(createChat('effect-chat'))
+      const fs = await run(FileSystem.FileSystem)
+      const path = await run(Path.Path)
+      const makeDirectory = vi.fn(fs.makeDirectory)
+      const joined: Array<readonly string[]> = []
+      const claimed = await run(
+        prepareScratchCheckout(store, resolver, detail, conversationId, 'Example', at).pipe(
+          Effect.provideService(FileSystem.FileSystem, { ...fs, makeDirectory }),
+          Effect.provideService(Path.Path, {
+            ...path,
+            join(...segments) {
+              joined.push(segments)
+              return path.join(...segments)
+            },
+          }),
+        ),
+      )
+      expect(joined).toContainEqual([root, basename(claimed.path)])
+      expect(makeDirectory).toHaveBeenCalledWith(claimed.path, { recursive: false })
+    }))
+
   it('limits the slug to 48 characters', () =>
-    withScratch(async ({ run, root, store, resolver, ensure }) => {
+    withScratch(async ({ run, root, store, resolver, ensure, createChat }) => {
       await run(ensure)
       const detail = await run(store.getProject(SCRATCH_PROJECT_ID))
       const checkout = await run(
-        prepareScratchCheckout(store, resolver, detail, conversationIdSchema.make('chat-12345678'), 'A'.repeat(75), at),
+        prepareScratchCheckout(store, resolver, detail, await run(createChat('chat-12345678')), 'A'.repeat(75), at),
       )
       expect(checkout.path).toBe(join(root, '2026-11-23-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-12345678'))
+    }))
+
+  it('registers one canonical folder per chat and checks conversation ownership at admission', () =>
+    withScratch(async ({ run, root, profile, ensure, createChat, store }) => {
+      await run(ensure)
+      const owner = await run(createChat('folder-owner'))
+      const unrelated = await run(createChat('unrelated-chat'))
+      const otherProjectId = projectIdSchema.make('other-project')
+      const outside = join(profile, 'outside')
+      mkdirSync(outside)
+      const alias = join(root, 'redirected')
+      symlinkSync(outside, alias, 'junction')
+      await run(
+        store.registerProject({
+          project: { id: otherProjectId, name: 'Other project', createdAt: at, updatedAt: at },
+          mainCheckout: {
+            id: workspaceCheckoutIdSchema.make('other-root'),
+            kind: 'directory',
+            path: outside,
+            createdAt: at,
+          },
+        }),
+      )
+      const foreign = conversationIdSchema.make('foreign-chat')
+      await run(
+        store.createTask({
+          task: {
+            id: taskIdSchema.make('foreign-task'),
+            projectId: otherProjectId,
+            title: 'Foreign',
+            description: '',
+            createdAt: at,
+          },
+          conversation: { id: foreign, createdAt: at },
+        }),
+      )
+      const path = join(root, 'owner')
+      mkdirSync(path)
+      const register = (commandId: string, conversationId = owner, folder = path) =>
+        store.registerCheckout({
+          commandId,
+          checkout: {
+            id: workspaceCheckoutIdSchema.make(commandId),
+            projectId: SCRATCH_PROJECT_ID,
+            scratchConversationId: conversationId,
+            kind: 'directory',
+            path: folder,
+            createdAt: at,
+          },
+        })
+      for (const invalid of [
+        register('missing-owner', conversationIdSchema.make('missing-chat')),
+        register('foreign-owner', foreign),
+        register('outside-root', owner, outside),
+        register('root-itself', owner, root),
+        register('redirected-folder', owner, alias),
+      ]) {
+        await expect(run(invalid)).rejects.toMatchObject({ code: 'membership-conflict' })
+      }
+
+      const first = await run(register('register-first'))
+      const secondPath = join(root, 'other-name')
+      mkdirSync(secondPath)
+      expect(await run(register('register-again', owner, secondPath))).toMatchObject({
+        checkout: first.checkout,
+        replayed: true,
+      })
+      expect((await run(store.getProject(SCRATCH_PROJECT_ID))).otherCheckouts).toEqual([first.checkout])
+      const command: BeginRunCommand = {
+        commandId: 'use-folder',
+        runId: agentRunIdSchema.make('use-folder'),
+        taskId: taskIdSchema.make('task-unrelated-chat'),
+        conversationId: unrelated,
+        checkoutId: first.checkout.id,
+        issuedAt: at,
+        provisionalAgentSessionId: 'provisional-folder',
+        generation: 1,
+        driverId: 'driver',
+        connectionId: 'connection',
+        prompt: 'Open the folder',
+      }
+      await expect(run(store.beginRun(command))).rejects.toMatchObject({ code: 'membership-conflict' })
+    }))
+
+  it('promotes a queued root ID into the stored Conversation checkout in the dequeue transaction', () =>
+    withScratch(async ({ run, root, ensure, createChat, store }) => {
+      await run(ensure)
+      const conversationId = await run(createChat('queued-chat'))
+      const taskId = taskIdSchema.make('task-queued-chat')
+      const command: BeginRunCommand = {
+        commandId: 'promote-chat',
+        runId: agentRunIdSchema.make('promote-chat'),
+        taskId,
+        conversationId,
+        checkoutId: SCRATCH_ROOT_CHECKOUT_ID,
+        issuedAt: at,
+        provisionalAgentSessionId: 'provisional-promotion',
+        generation: 1,
+        driverId: 'driver',
+        connectionId: 'connection',
+        prompt: 'Open the folder',
+      }
+      await run(store.enqueueFollowUp({ ...command, commandId: 'queue-root' }))
+      const path = join(root, 'queued-chat')
+      mkdirSync(path)
+      const checkoutId = scratchCheckoutId(conversationId)
+      await run(
+        store.registerCheckout({
+          commandId: 'register-after-enqueue',
+          checkout: {
+            id: checkoutId,
+            projectId: SCRATCH_PROJECT_ID,
+            kind: 'directory',
+            path,
+            createdAt: at,
+            scratchConversationId: conversationId,
+          },
+        }),
+      )
+      const promoted = await run(store.promoteNextFollowUp(conversationId, command))
+      expect(promoted?.followUp.checkoutId).toBe(checkoutId)
+      expect((await run(store.readTaskSnapshot(taskId, 1))).runContexts?.[0]?.checkoutId).toBe(checkoutId)
     }))
 
   it.each(['directory', 'file'])('refuses an enclosing Git checkout with a .git %s', marker =>

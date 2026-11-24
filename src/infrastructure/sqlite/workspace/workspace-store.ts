@@ -1,12 +1,17 @@
 import { createHash } from 'node:crypto'
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
+import * as NodePath from '@effect/platform-node/NodePath'
 import * as Sqlite from '@effect/sql-sqlite-node'
 import * as Effect from 'effect/Effect'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
+import * as Path from 'effect/Path'
 import * as Predicate from 'effect/Predicate'
 import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/sql/SqlClient'
 
+import { SCRATCH_ROOT_CHECKOUT_ID } from '@/core/application/commands/scratch-checkouts.js'
 import { completeAgentGoalTurn, startAgentGoalTurn, transitionAgentRun } from '@/core/domain/execution/lifecycle.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import {
@@ -38,6 +43,7 @@ import {
   taskIdSchema,
   taskSchema,
   type WorkspaceCheckout,
+  workspaceCheckoutIdSchema,
   workspaceCheckoutSchema,
 } from '@/shared/schemas/workspace.js'
 import { MANAGED_PROJECT_FOLDER, type RegisterProjectWithPreparation } from '@/shared/schemas/workspace-projects.js'
@@ -586,6 +592,8 @@ function transition(
 }
 
 const makeService = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const path = yield* Path.Path
   const sql = yield* SqlClient.SqlClient
   yield* sql.unsafe('PRAGMA foreign_keys = ON')
   yield* sql.unsafe('PRAGMA journal_mode = WAL')
@@ -822,12 +830,48 @@ const makeService = Effect.gen(function* () {
               return yield* safeError('membership-conflict', 'Archived projects take no checkouts')
             if (command.checkout.kind === 'directory' && !project.isScratch)
               return yield* safeError('membership-conflict', 'Chat folders require the No project context')
-            const samePath =
-              yield* sql`SELECT id FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.path') = ${command.checkout.path} AND json_extract(payload, '$.archivedAt') IS NULL LIMIT 1`
-            if (samePath[0]) return yield* safeError('membership-conflict', 'Checkout path is already registered')
-            const checkout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)(command.checkout)
-            yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${checkout.id}, ${project.id}, ${encode(checkout)})`
-            const result = { commandId: command.commandId, checkout, replayed: false }
+            let checkout = yield* Schema.decodeUnknownEffect(workspaceCheckoutSchema)(command.checkout)
+            const owner = checkout.scratchConversationId
+            let reused = false
+            if (owner) {
+              const membership = yield* sql`
+                SELECT t.project_id FROM workspace_conversation c JOIN workspace_task t ON t.id = c.task_id
+                WHERE c.id = ${owner}
+              `
+              if (membership[0]?.project_id !== project.id)
+                return yield* safeError(
+                  'membership-conflict',
+                  'Chat folder must belong to a Conversation in this Project',
+                )
+              const { mainCheckout } = yield* getProject(project.id, { limit: 1 })
+              const invalidPath = safeError(
+                'membership-conflict',
+                'Chat folder must be a canonical child of the No project root',
+              )
+              if (path.resolve(checkout.path) !== checkout.path || path.dirname(checkout.path) !== mainCheckout.path)
+                return yield* invalidPath
+              const root = yield* fs.realPath(mainCheckout.path).pipe(Effect.mapError(() => invalidPath))
+              const folder = yield* fs.realPath(checkout.path).pipe(Effect.mapError(() => invalidPath))
+              const info = yield* fs.stat(folder).pipe(Effect.mapError(() => invalidPath))
+              if (root !== mainCheckout.path || folder !== checkout.path || info.type !== 'Directory')
+                return yield* invalidPath
+              const existing = yield* sql`
+                SELECT payload FROM workspace_checkout
+                WHERE project_id = ${project.id} AND json_extract(payload, '$.scratchConversationId') = ${owner}
+                LIMIT 1
+              `
+              if (existing[0]) {
+                checkout = yield* decodeJson(workspaceCheckoutSchema)(String(existing[0].payload))
+                reused = true
+              }
+            }
+            if (!reused) {
+              const samePath =
+                yield* sql`SELECT id FROM workspace_checkout WHERE project_id = ${project.id} AND json_extract(payload, '$.path') = ${checkout.path} AND json_extract(payload, '$.archivedAt') IS NULL LIMIT 1`
+              if (samePath[0]) return yield* safeError('membership-conflict', 'Checkout path is already registered')
+              yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${checkout.id}, ${project.id}, ${encode(checkout)})`
+            }
+            const result = { commandId: command.commandId, checkout, replayed: reused }
             yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('registerCheckout', command)}, ${encode(result)})`
             return result
           }),
@@ -1221,7 +1265,14 @@ const makeService = Effect.gen(function* () {
 
             const rows = yield* sql`
         SELECT t.project_id AS task_project, t.archived, c.task_id AS conversation_task,
-          w.project_id AS checkout_project
+          w.project_id AS checkout_project,
+          json_extract(w.payload, '$.scratchConversationId') AS checkout_owner,
+          CASE WHEN t.side_chat = 1 THEN json_extract(c.payload, '$.inheritedCheckoutId') END AS side_chat_checkout,
+          (SELECT r.checkout_id FROM workspace_delegation d
+            JOIN workspace_agent_run r ON r.id = d.parent_run_id
+            WHERE d.child_conversation_id = c.id AND d.child_task_id = t.id
+              AND json_extract(d.payload, '$.isolation') = 'shared'
+              AND json_extract(d.payload, '$.checkoutId') = r.checkout_id) AS delegated_checkout
         FROM workspace_task t
         JOIN workspace_conversation c ON c.id = ${command.conversationId}
         JOIN workspace_checkout w ON w.id = ${command.checkoutId}
@@ -1234,6 +1285,9 @@ const makeService = Effect.gen(function* () {
               archived: number
               conversation_task: string
               checkout_project: string
+              checkout_owner: string | null
+              side_chat_checkout: string | null
+              delegated_checkout: string | null
             }
             if (
               membership.archived ||
@@ -1247,6 +1301,14 @@ const makeService = Effect.gen(function* () {
                 ),
               )
             }
+
+            if (
+              membership.checkout_owner !== null &&
+              membership.checkout_owner !== command.conversationId &&
+              membership.side_chat_checkout !== command.checkoutId &&
+              membership.delegated_checkout !== command.checkoutId
+            )
+              return yield* safeError('membership-conflict', 'Chat folder belongs to another Conversation')
 
             if (command.nativeSessionId) {
               const knownSessions = yield* sql`
@@ -2413,10 +2475,35 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  const readScratchBinding = Effect.fnUntraced(function* (conversationId: BeginRunCommand['conversationId']) {
+    const bindings = yield* sql`
+      SELECT COALESCE(
+        json_extract(c.payload, '$.inheritedCheckoutId'),
+        (SELECT json_extract(d.payload, '$.checkoutId') FROM workspace_delegation d
+          WHERE d.child_conversation_id = c.id AND d.child_task_id = t.id),
+        (SELECT w.id FROM workspace_checkout w WHERE w.project_id = t.project_id
+          AND json_extract(w.payload, '$.scratchConversationId') = c.id
+          AND json_extract(w.payload, '$.archivedAt') IS NULL LIMIT 1)
+      ) AS checkout_id
+      FROM workspace_conversation c
+      JOIN workspace_task t ON t.id = c.task_id
+      JOIN workspace_project p ON p.id = t.project_id
+      WHERE json_extract(p.payload, '$.isScratch') = 1 AND c.id = ${conversationId}
+    `
+    return bindings[0]?.checkout_id
+      ? yield* Schema.decodeUnknownEffect(workspaceCheckoutIdSchema)(bindings[0].checkout_id)
+      : null
+  })
+
   const decodeQueuedFollowUp = Effect.fnUntraced(function* (row: Record<string, unknown>) {
     const command = yield* decodeJson(enqueueFollowUpCommandSchema)(String(row.payload))
+    const checkoutId =
+      command.checkoutId === SCRATCH_ROOT_CHECKOUT_ID
+        ? ((yield* readScratchBinding(command.conversationId)) ?? command.checkoutId)
+        : command.checkoutId
     return yield* Schema.decodeUnknownEffect(queuedFollowUpSchema)({
       ...command,
+      checkoutId,
       position: Number(row.position),
       held: Number(row.held ?? 0) === 1,
     }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored follow-up failed validation')))
@@ -2647,10 +2734,19 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(
                 safeError('membership-conflict', 'Promotion Task does not match queued follow-up'),
               )
-            const followUp = { ...followUpCommand, position: Number(head[0].position) }
+            const requestedCheckoutId = followUpCommand.checkoutId ?? command.checkoutId
+            const checkoutId =
+              requestedCheckoutId === SCRATCH_ROOT_CHECKOUT_ID
+                ? ((yield* readScratchBinding(conversationId)) ?? requestedCheckoutId)
+                : requestedCheckoutId
+            const followUp = {
+              ...followUpCommand,
+              ...(followUpCommand.checkoutId === SCRATCH_ROOT_CHECKOUT_ID ? { checkoutId } : {}),
+              position: Number(head[0].position),
+            }
             const receipt = yield* beginRun({
               ...command,
-              checkoutId: followUp.checkoutId ?? command.checkoutId,
+              checkoutId,
               generation: followUp.generation ?? command.generation,
               prompt: followUp.prompt,
               attachments: followUp.attachments ?? [],
@@ -3201,10 +3297,13 @@ const makeService = Effect.gen(function* () {
             const otherCheckouts: Array<WorkspaceCheckout> = []
             let checkoutCursor = page.afterCheckoutId
             let hasMore = false
-            for (let index = 0; index < (page.checkoutId ? 1 : page.limit); index += 1) {
+            const singleCheckout = page.checkoutId || page.scratchConversationId
+            for (let index = 0; index < (singleCheckout ? 1 : page.limit); index += 1) {
               const checkouts = page.checkoutId
                 ? yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id = ${page.checkoutId}`
-                : yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} ORDER BY id LIMIT 1`
+                : page.scratchConversationId
+                  ? yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND json_extract(payload, '$.scratchConversationId') = ${page.scratchConversationId} LIMIT 1`
+                  : yield* sql`SELECT id, project_id, payload FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} ORDER BY id LIMIT 1`
               const row = checkouts[0]
               if (!row) break
               const checkout = summarize(
@@ -3237,7 +3336,7 @@ const makeService = Effect.gen(function* () {
               otherCheckouts.push(checkout)
               checkoutCursor = checkout.id
             }
-            if (!hasMore && !page.checkoutId) {
+            if (!hasMore && !singleCheckout) {
               const more =
                 yield* sql`SELECT 1 AS found FROM workspace_checkout WHERE project_id = ${projectId} AND id <> ${mainCheckout.id} AND id > ${checkoutCursor} LIMIT 1`
               hasMore = more.length > 0
@@ -4342,5 +4441,7 @@ const makeService = Effect.gen(function* () {
 
 export const WorkspaceStoreLive = (options: { readonly filename: string }) => {
   const sqlLayer = Sqlite.SqliteClient.layer({ filename: options.filename })
-  return Layer.effect(WorkspaceStore, makeService).pipe(Layer.provide(sqlLayer))
+  return Layer.effect(WorkspaceStore, makeService).pipe(
+    Layer.provide(Layer.mergeAll(sqlLayer, NodeFileSystem.layer, NodePath.layer)),
+  )
 }

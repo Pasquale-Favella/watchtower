@@ -103,7 +103,7 @@ const fixture = (
         },
       }),
       NodePlatformLive,
-    ),
+    ).pipe(Layer.provide(NodePlatformLive)),
   )
   return { runtime, workers }
 }

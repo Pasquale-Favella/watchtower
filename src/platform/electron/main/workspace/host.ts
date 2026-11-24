@@ -5,8 +5,10 @@ import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as Path from 'effect/Path'
 import type * as ChildProcessSpawner from 'effect/process/ChildProcessSpawner'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
@@ -166,6 +168,8 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
     WorkspaceHost,
     Effect.gen(function* () {
       const appScope = yield* Scope.Scope
+      const filesystem = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
       const closeDeadlineMs = options.closeDeadlineMs ?? 10_000
       const gate = yield* Semaphore.make(1)
       const executionGate = yield* Semaphore.make(1)
@@ -557,6 +561,8 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
           serviceScope,
         ).pipe(
           Effect.provide(layers),
+          Effect.provideService(FileSystem.FileSystem, filesystem),
+          Effect.provideService(Path.Path, path),
           Effect.onExit(exit => (Exit.isFailure(exit) ? Scope.close(serviceScope, Exit.void) : Effect.void)),
         )
         const service = Context.get(serviceContext, ExecutionService)

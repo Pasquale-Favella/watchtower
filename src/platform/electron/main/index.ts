@@ -95,6 +95,7 @@ import { workspaceSideChatHandlers } from '@/platform/electron/main/rpc/workspac
 import { AppUpdates, updatesLayer } from '@/platform/electron/main/updates.js'
 import {
   type CheckoutPathFailure,
+  guardGitCheckoutPath,
   resolveCheckoutPath,
   resolveTaskCheckoutPath,
 } from '@/platform/electron/main/workspace/checkout-paths.js'
@@ -169,23 +170,24 @@ const rendererLifecycleLayer = lifecycleLayer<AppUpdates | HarnessSnapshot>({
 
 const sideChatStorageLayer = sideChatPersistenceLayer(join(app.getPath('userData'), 'workspace', 'side-chats'))
 
-const resolveRegisteredCheckoutPath = Effect.fnUntraced(function* (request: CheckoutScope) {
-  if (!request.checkoutId) return yield* resolveCheckoutPath(request)
+const resolveRegisteredCheckout = Effect.fnUntraced(function* (request: CheckoutScope) {
   const host = yield* WorkspaceHost
   const detail = yield* host.ensureOpen.pipe(
     Effect.andThen(Effect.suspend(() => host.store.getProject(request.projectId, { checkoutId: request.checkoutId }))),
     Effect.mapError((error): CheckoutPathFailure => (error.code === 'not-found' ? 'not-found' : 'unavailable')),
   )
-  const checkout = findProjectCheckout(detail, request.checkoutId)
+  const checkout = findProjectCheckout(detail, request.checkoutId ?? detail.mainCheckout.id)
   if (!checkout || detail.project.archivedAt) return yield* Effect.fail<CheckoutPathFailure>('not-found')
-  return checkout.path
+  return {
+    path: checkout.path,
+    directory: checkout.kind === 'directory' || detail.project.isCoach === true || detail.project.isScratch === true,
+  }
 })
 
-/** Git-backed handlers (status, stage, commit, pull requests) never resolve the Coach checkout, even a legacy Git folder. */
-const resolveGitCheckoutPath = (request: CheckoutScope) =>
-  request.projectId === COACH_PROJECT_ID
-    ? Effect.fail<CheckoutPathFailure>('unavailable')
-    : resolveRegisteredCheckoutPath(request)
+const resolveRegisteredCheckoutPath = (request: CheckoutScope) =>
+  resolveRegisteredCheckout(request).pipe(Effect.map(checkout => checkout.path))
+
+const resolveGitCheckoutPath = guardGitCheckoutPath(resolveRegisteredCheckoutPath)
 
 const resolveWorkspaceTerminalTaskCwd = Effect.fnUntraced(function* (
   taskId: TaskId,
@@ -258,7 +260,7 @@ const workspaceCheckoutInspectionHandlers = Layer.unwrap(
     })
     return checkoutInspectionHandlers({
       resolveCheckoutPath: request =>
-        resolveRegisteredCheckoutPath(request).pipe(
+        resolveRegisteredCheckout(request).pipe(
           Effect.mapError(code =>
             code === 'not-found'
               ? new CheckoutInspectionRpcError({ code, message: 'Checkout record was not found.' })

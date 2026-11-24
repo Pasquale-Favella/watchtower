@@ -505,6 +505,7 @@ export type WorkspaceTaskPageOptions = Schema.Schema.Type<typeof workspaceTaskPa
 export const workspaceCheckoutPageOptionsSchema = Schema.Struct({
   /** Fetches the named checkout alongside the main checkout, without paging. */
   checkoutId: Schema.optional(workspaceCheckoutIdSchema),
+  scratchConversationId: Schema.optional(conversationIdSchema),
   afterCheckoutId: Schema.optional(text),
   limit: Schema.optional(
     Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),

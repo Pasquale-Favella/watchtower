@@ -5,8 +5,10 @@ import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
 import * as Exit from 'effect/Exit'
 import * as Fiber from 'effect/Fiber'
+import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Option from 'effect/Option'
+import * as Path from 'effect/Path'
 import * as Queue from 'effect/Queue'
 import * as Schema from 'effect/Schema'
 import * as Scope from 'effect/Scope'
@@ -18,7 +20,8 @@ import {
   prepareScratchCheckout,
   recreateScratchCheckout,
   SCRATCH_PROJECT_ID,
-  scratchCheckoutId,
+  SCRATCH_ROOT_CHECKOUT_ID,
+  verifyScratchCheckoutPath,
 } from '@/core/application/commands/scratch-checkouts.js'
 import { sideChatBringBackPrompt } from '@/core/application/commands/workspace-side-chats.js'
 import { consumeCoalescedAgentEvents } from '@/core/application/execution/coalesced-event-consumer.js'
@@ -220,6 +223,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const drivers = yield* AgentDriverRegistry
     const connections = yield* HarnessConnectionResolver
     const checkouts = yield* CheckoutResolver
+    const filesystem = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
     const appScope = yield* Scope.Scope
     const workerScope = yield* Scope.make()
     const runPermits = yield* Semaphore.make(maxConcurrentRuns)
@@ -288,13 +293,14 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
             reason: 'background-failure',
             message: 'Registered checkout could not be verified for execution.',
           })
-        const directory = registered.kind === 'directory' || detail.project.isScratch
+        const directory = registered.kind === 'directory' || detail.project.isScratch || detail.project.isCoach
+        if (detail.project.isScratch) yield* verifyScratchCheckoutPath(checkouts, detail, claim.workspacePath)
         const resolved = yield* checkouts
           .resolve(claim.workspacePath, directory ? 'directory' : undefined)
           .pipe(
             Effect.catch(error =>
               registered.scratchConversationId && error.code === 'path-missing'
-                ? recreateScratchCheckout(claim.workspacePath).pipe(
+                ? recreateScratchCheckout(checkouts, detail, claim.workspacePath).pipe(
                     Effect.andThen(checkouts.resolve(claim.workspacePath, 'directory')),
                   )
                 : Effect.fail(error),
@@ -313,6 +319,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           })
         }
       },
+      Effect.provideService(FileSystem.FileSystem, filesystem),
+      Effect.provideService(Path.Path, path),
       Effect.mapError(
         () =>
           new ExecutionServiceError({
@@ -802,43 +810,48 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         }),
       )
 
-    const selectRunCheckout = Effect.fnUntraced(function* (
-      command: Pick<BeginRunCommand, 'checkoutId' | 'taskId' | 'conversationId' | 'prompt' | 'issuedAt'>,
-      prepare: boolean,
-    ) {
-      if (!isScratchCheckoutId(command.checkoutId)) return command.checkoutId
-      const task = yield* store.readTaskDetail(command.taskId, { limit: 50 })
-      const conversation = task.conversations.find(item => item.id === command.conversationId)
-      if (task.task.projectId !== SCRATCH_PROJECT_ID || task.task.archivedAt || !conversation) return command.checkoutId // Let beginRun report invalid membership without creating a folder.
-      if (conversation.inheritedCheckoutId) return conversation.inheritedCheckoutId
-      const detail = yield* store.getProject(SCRATCH_PROJECT_ID, { checkoutId: command.checkoutId })
-      const requested = findProjectCheckout(detail, command.checkoutId)
-      if (!detail.project.isScratch || !requested || requested.scratchConversationId === command.conversationId)
-        return command.checkoutId
-      const ownId = scratchCheckoutId(command.conversationId)
-      const own = findProjectCheckout(yield* store.getProject(SCRATCH_PROJECT_ID, { checkoutId: ownId }), ownId)
-      if (own) return own.id
-      if (!prepare) return command.checkoutId
-      const snapshot = yield* store.readTaskSnapshot(command.taskId, 1)
-      if (snapshot.task.sideChat) return command.checkoutId
-      // The first event distinguishes an existing legacy Conversation from an unsent one,
-      // even if a different Conversation has the Task's most recent Run.
-      const history = yield* store.readConversationPage(command.conversationId, 0, 1)
-      if (history.items.length > 0) return detail.mainCheckout.id
-      const checkout = yield* prepareScratchCheckout(
-        store,
-        checkouts,
-        detail,
-        command.conversationId,
-        command.prompt,
-        command.issuedAt,
-      ).pipe(
-        Effect.catchTag('ScratchProjectInsideGitError', error =>
-          Effect.fail(new ExecutionServiceError({ reason: 'scratch-inside-git', message: error.message })),
-        ),
-      )
-      return checkout.id
-    })
+    const selectRunCheckout = Effect.fnUntraced(
+      function* (
+        command: Pick<BeginRunCommand, 'checkoutId' | 'taskId' | 'conversationId' | 'prompt' | 'issuedAt'>,
+        prepare: boolean,
+      ) {
+        if (!isScratchCheckoutId(command.checkoutId)) return command.checkoutId
+        const task = yield* store.readTaskDetail(command.taskId, { limit: 50 })
+        const conversation = task.conversations.find(item => item.id === command.conversationId)
+        if (task.task.projectId !== SCRATCH_PROJECT_ID || task.task.archivedAt || !conversation)
+          return command.checkoutId
+        if (conversation.inheritedCheckoutId) return conversation.inheritedCheckoutId
+        const delegation = yield* store.getDelegationByChildTask(command.taskId)
+        if (delegation?.childConversationId === command.conversationId) return delegation.checkoutId
+        if (command.checkoutId !== SCRATCH_ROOT_CHECKOUT_ID) return command.checkoutId
+        const detail = yield* store.getProject(SCRATCH_PROJECT_ID, { scratchConversationId: command.conversationId })
+        if (!detail.project.isScratch) return command.checkoutId
+        const own = detail.otherCheckouts[0]
+        if (own && !own.archivedAt) return own.id
+        if (!prepare) return command.checkoutId
+        const snapshot = yield* store.readTaskSnapshot(command.taskId, 1)
+        if (snapshot.task.sideChat) return command.checkoutId
+        // The first event distinguishes an existing legacy Conversation from an unsent one,
+        // even if a different Conversation has the Task's most recent Run.
+        const history = yield* store.readConversationPage(command.conversationId, 0, 1)
+        if (history.items.length > 0) return detail.mainCheckout.id
+        const checkout = yield* prepareScratchCheckout(
+          store,
+          checkouts,
+          detail,
+          command.conversationId,
+          command.prompt,
+          command.issuedAt,
+        ).pipe(
+          Effect.catchTag('ScratchProjectInsideGitError', error =>
+            Effect.fail(new ExecutionServiceError({ reason: 'scratch-inside-git', message: error.message })),
+          ),
+        )
+        return checkout.id
+      },
+      Effect.provideService(FileSystem.FileSystem, filesystem),
+      Effect.provideService(Path.Path, path),
+    )
 
     const start = Effect.fn('ExecutionService.start')(function* (
       command: BeginRunCommand,
@@ -1023,12 +1036,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const enqueueFollowUp = Effect.fn('ExecutionService.enqueueFollowUp')(function* (command: EnqueueFollowUpCommand) {
       // A queued follow-up names its driver only when the caller knows it; promotion re-checks the rest.
       if (command.driverId !== undefined) yield* requireAccessModeSupport(command.driverId, command.accessMode)
-      const checkoutId = command.checkoutId
-        ? yield* selectRunCheckout({ ...command, checkoutId: command.checkoutId }, false)
-        : undefined
-      const receipt = yield* store.enqueueFollowUp(
-        checkoutId === command.checkoutId ? command : { ...command, checkoutId },
-      )
+      const receipt = yield* store.enqueueFollowUp(command)
       yield* pumpQueuedFollowUps.pipe(Effect.catchCause(() => Effect.void))
       return receipt
     })
@@ -1153,7 +1161,8 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           if (head.held || workers.size >= maxConcurrentRuns || nativeCleanupUnconfirmed) continue
           if (Array.from(workers.values()).some(state => state.claim.conversationId === head.conversationId)) continue
           const runStatus = head.context?.runStatus
-          if (runStatus && isActiveQueueRun(runStatus)) continue
+          // Enqueue can precede the first Run while its folder is being claimed.
+          if (!runStatus || isActiveQueueRun(runStatus)) continue
           if (runStatus !== 'completed') {
             yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
             continue

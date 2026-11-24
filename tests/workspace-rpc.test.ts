@@ -1,4 +1,5 @@
 import { NodeServices } from '@effect/platform-node'
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem'
 import * as NodePath from '@effect/platform-node/NodePath'
 import * as Cause from 'effect/Cause'
 import * as Deferred from 'effect/Deferred'
@@ -353,6 +354,8 @@ function makeWorkspace(
   }
   const base = Layer.mergeAll(
     WorkspaceStoreLive({ filename: ':memory:' }),
+    NodeFileSystem.layer,
+    NodePath.layerWin32,
     Layer.succeed(CheckoutResolver, options.checkoutResolver ?? resolver),
     Layer.succeed(ProjectProvisioner, {
       initialize: () => Effect.die('Unexpected initialization'),

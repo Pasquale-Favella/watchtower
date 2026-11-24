@@ -1,11 +1,23 @@
 import * as Effect from 'effect/Effect'
 
+import { SCRATCH_PROJECT_ID } from '@/core/application/commands/scratch-checkouts.js'
+import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
+import { COACH_PROJECT_ID } from './coach-project.js'
 import { WorkspaceHost } from './host.js'
 
 /** Why a checkout could not be resolved; callers map it onto their own fixed RPC errors. */
 export type CheckoutPathFailure = 'not-found' | 'unavailable'
+
+export function guardGitCheckoutPath<R>(
+  resolve: (request: CheckoutScope) => Effect.Effect<string, CheckoutPathFailure, R>,
+): (request: CheckoutScope) => Effect.Effect<string, CheckoutPathFailure, R> {
+  return request =>
+    request.projectId === COACH_PROJECT_ID || request.projectId === SCRATCH_PROJECT_ID
+      ? Effect.fail('unavailable')
+      : resolve(request)
+}
 
 /** Resolves a Project checkout (its main checkout when unnamed) to its stored path. Archived records do not resolve. */
 export const resolveCheckoutPath = Effect.fnUntraced(function* (request: {

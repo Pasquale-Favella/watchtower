@@ -20,6 +20,9 @@ import { WorkspaceRpcGroup } from '@/shared/rpc/workspace.js'
 import type { AgentCapabilities } from '@/shared/schemas/execution.js'
 import { workspaceConnectionListSchema } from '@/shared/schemas/workspace-connections.js'
 
+const workspaceHost = (options: Parameters<typeof WorkspaceHostLive>[0]) =>
+  WorkspaceHostLive(options).pipe(Layer.provide(NodeServices.layer))
+
 const rows = [
   {
     connectionId: 'harness-acp-a1b2c3',
@@ -216,7 +219,7 @@ describe('workspace connection catalog RPC', () => {
     const fixture = makeInspectionRegistry(() => Effect.void)
     const runtime = ManagedRuntime.make(
       Layer.mergeAll(
-        WorkspaceHostLive({
+        workspaceHost({
           filename: 'unused-workspace.db',
           workerPath: 'unused-workspace-worker.js',
           workerFactory: () => {
@@ -261,7 +264,7 @@ describe('workspace connection catalog RPC', () => {
       workspaceHandlers().pipe(
         Layer.provideMerge(
           Layer.mergeAll(
-            WorkspaceHostLive({
+            workspaceHost({
               filename: 'unused-workspace.db',
               workerPath: 'unused-workspace-worker.js',
               workerFactory: () => {
@@ -308,7 +311,7 @@ describe('workspace connection catalog RPC', () => {
       workspaceHandlers().pipe(
         Layer.provideMerge(
           Layer.mergeAll(
-            WorkspaceHostLive({
+            workspaceHost({
               filename: 'unused-workspace.db',
               workerPath: 'unused-workspace-worker.js',
               loadConnectionCatalog: () => Effect.succeed({ connections: [harnessConnection], rows }),
@@ -343,7 +346,7 @@ describe('workspace connection catalog RPC', () => {
     const started = Effect.runSync(Deferred.make<undefined>())
     const release = Effect.runSync(Deferred.make<undefined>())
     const runtime = ManagedRuntime.make(
-      WorkspaceHostLive({
+      workspaceHost({
         filename: 'unused-workspace.db',
         workerPath: 'unused-workspace-worker.js',
         workerFactory: () => {
@@ -388,7 +391,7 @@ describe('workspace connection catalog RPC', () => {
     let loads = 0
     const started = Effect.runSync(Deferred.make<undefined>())
     const runtime = ManagedRuntime.make(
-      WorkspaceHostLive({
+      workspaceHost({
         filename: 'unused-workspace.db',
         workerPath: 'unused-workspace-worker.js',
         loadConnections: () => Effect.succeed([]),
