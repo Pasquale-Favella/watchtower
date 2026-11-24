@@ -60,7 +60,7 @@ test('files and diffs support continuous review and navigation through a side ex
     const { window, pageErrors } = launched
     await dismissOnboarding(window)
     await window.getByRole('combobox', { name: 'Project', exact: true }).click()
-    await window.getByRole('option', { name: 'Add project', exact: true }).click()
+    await window.getByRole('option', { name: /^Add project/ }).click()
     const dialog = window.getByRole('dialog', { name: 'Add project', exact: true })
     await dialog.getByRole('option', { name: /^Local folder/ }).click()
     await dialog.getByRole('combobox', { name: 'Project folder', exact: true }).fill(repository)

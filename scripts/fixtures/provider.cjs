@@ -78,4 +78,16 @@ function prepareProviderFixture(profile) {
   }
 }
 
-module.exports = { prepareProviderFixture }
+/**
+ * Picks the Git executable a restricted PATH should expose. Git for Windows installs the same git.exe under
+ * `cmd` and under `mingw64\bin`: only `cmd\git.exe` is the launcher that puts Git's helper programs on PATH.
+ * The `mingw64\bin` copy crashes (access violation) as soon as a clone spawns `git-upload-pack` from a PATH of
+ * only the system, Node and its own directory, so it is used only when no launcher is installed.
+ */
+function selectGitExecutable(candidates) {
+  const listed = candidates.map(candidate => candidate.trim()).filter(Boolean)
+  const launcher = listed.find(candidate => path.win32.basename(path.win32.dirname(candidate)).toLowerCase() === 'cmd')
+  return launcher ?? listed[0]
+}
+
+module.exports = { prepareProviderFixture, selectGitExecutable }

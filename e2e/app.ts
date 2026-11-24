@@ -12,7 +12,7 @@ import {
   test,
 } from '@playwright/test'
 
-import { prepareProviderFixture } from '../scripts/fixtures/provider.cjs'
+import { prepareProviderFixture, selectGitExecutable } from '../scripts/fixtures/provider.cjs'
 
 /**
  * Shared Electron launch + first-run helpers for `e2e/*.spec.ts` (tracks
@@ -194,12 +194,12 @@ export async function launchApp(
       // Host ACP launchers can outlive their probe and inherit Electron's CDP
       // socket. Smoke fixtures need system tools and Git, not installed agents.
       const systemDirectory = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32')
-      const git = execFileSync(join(systemDirectory, 'where.exe'), ['git.exe'], {
-        encoding: 'utf8',
-        windowsHide: true,
-      })
-        .trim()
-        .split(/\r?\n/)[0]
+      const git = selectGitExecutable(
+        execFileSync(join(systemDirectory, 'where.exe'), ['git.exe'], { encoding: 'utf8', windowsHide: true }).split(
+          /\r?\n/,
+        ),
+      )
+      if (!git) throw new Error('git.exe was not found on PATH')
       env.PATH = [systemDirectory, dirname(process.execPath), dirname(git)].join(delimiter)
     }
     if (harnessDirectory) env.PATH = [harnessDirectory, env.PATH ?? process.env.PATH ?? ''].join(delimiter)

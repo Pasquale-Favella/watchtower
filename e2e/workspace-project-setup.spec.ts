@@ -36,7 +36,7 @@ test('add project registers folders without Git, creates new repositories and cl
     const addProject = window.getByRole('dialog', { name: 'Add project' })
     const openAddProject = async () => {
       await picker.click()
-      await window.getByRole('option', { name: 'Add project', exact: true }).click()
+      await window.getByRole('option', { name: /^Add project/ }).click()
       await expect(addProject).toBeVisible()
     }
 
@@ -94,7 +94,8 @@ test('add project registers folders without Git, creates new repositories and cl
     await addProject.getByRole('option', { name: /^Clone from Git URL/ }).click()
     await url.fill(remote)
     await url.press('Enter')
-    await destination.fill(join(directory, 'made-here'))
+    // made-here is an empty folder since projects no longer start with Git, so a non-empty destination is needed.
+    await destination.fill(join(directory, 'fresh-app'))
     await destination.press('Enter')
     await expect(addProject.getByRole('alert')).toHaveText('The destination folder is not empty.')
     expect(launched.pageErrors).toEqual([])
