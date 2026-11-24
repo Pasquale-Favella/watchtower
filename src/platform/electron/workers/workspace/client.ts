@@ -1,4 +1,5 @@
 import { Buffer } from 'node:buffer'
+import type { RegisterProjectWithPreparation } from '@/shared/schemas/workspace-projects.js'
 import { isAbsolute } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
@@ -314,10 +315,22 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
         })
 
       const store: WorkspaceStore['Service'] = {
-        registerProject: command =>
-          invoke('workspace-worker:registerProject', command, () =>
-            rawClient['workspace-worker:registerProject'](command),
-          ),
+        // The worker protocol carries only data, so a missing folder is created here, in the main process,
+        // after the managed-folder check and before the registration crosses to the worker.
+        registerProject: input =>
+          Effect.gen(function* () {
+            const prepared = 'prepareDirectory' in input ? (input as RegisterProjectWithPreparation) : null
+            let command: typeof input = input
+            if (prepared?.prepareDirectory) {
+              const { prepareDirectory, ...registration } = prepared
+              yield* store.checkUnmanagedProjectPath(registration.mainCheckout.path)
+              const path = yield* prepareDirectory
+              command = { ...registration, mainCheckout: { ...registration.mainCheckout, path } }
+            }
+            return yield* invoke('workspace-worker:registerProject', command, () =>
+              rawClient['workspace-worker:registerProject'](command),
+            )
+          }),
         checkUnmanagedProjectPath: path => {
           const payload = { path }
           return invoke('workspace-worker:checkUnmanagedProjectPath', payload, () =>

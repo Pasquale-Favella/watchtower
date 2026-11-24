@@ -30,6 +30,7 @@ import {
   initializeGitBlockedReason,
   shouldShowInitializeGit,
 } from './initialize-git-visibility.js'
+import { openProjectRequest } from './project-request.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
 import { useSideChats } from './side-chat/hooks.js'
@@ -59,7 +60,7 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
   const scope = props.projectId
     ? { projectId: props.projectId, ...(props.checkoutId ? { checkoutId: props.checkoutId } : {}) }
     : null
-  const project = useWorkspaceProject(scope && !props.isScratch ? { projectId: scope.projectId } : null)
+  const project = useWorkspaceProject(openProjectRequest(props.projectId))
   const initializeGit = shouldShowInitializeGit(project.data, props.checkoutId)
   const versionControlHeadingId = useId()
   const versionControlHeading = useRef<HTMLHeadingElement>(null)
