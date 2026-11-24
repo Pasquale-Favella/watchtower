@@ -10,8 +10,8 @@
 ## Context
 
 ADR 0047 amends the No project behavior described below. New No project chats
-use separate directory checkouts under the scratch root. The Coach checkout
-still uses Git.
+use separate directory checkouts under the scratch root. The Coach checkout is
+likewise a plain managed folder: it does not use Git (see decision 2).
 
 Coach & Skills (ADRs 0017 to 0022) ran on its own harness runtime: `agent-harnesses/runtime.ts` over
 `@mcpc-tech/acp-ai-provider` and the `ai` package, a coach coordinator, `coach:*` IPC and RPC, and renderer
@@ -37,8 +37,12 @@ the coach coordinator, the `coach:*` IPC and RPC, and the coach-only renderer co
 ### 2. An ephemeral chat under a hidden Coach project
 
 - The chat is a Task in an internal Project with the fixed id `workspace-coach-project`, marked `isCoach`, with the
-  fixed checkout id `workspace-coach-checkout`. Its checkout is a managed, git-initialised directory under the app
-  profile, created by `ensureManagedChatProject` exactly as the No-project scratch project is.
+  fixed checkout id `workspace-coach-checkout`. Its checkout is a plain managed directory under the app
+  profile with no Git: `ensureCoachProject` creates the folder and registers a `directory` checkout without a
+  repository identity, and never spawns Git. It works the same inside an enclosing Git repository. Git inspection,
+  status, branch, worktree and pull-request actions are refused for the Coach project and Diff is hidden. A
+  Git-backed Coach folder from an earlier install (a `main` checkout with an identity) is tolerated as it is:
+  nothing is converted or deleted, and Git is still never run against it for Coach.
 - The Project never appears in Project pickers, Task or Project listings, search, delegation capabilities or side
   chats. A Coach Task cannot have side chats.
 - There is exactly one live Coach Task. It survives navigation between sections.

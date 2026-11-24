@@ -114,8 +114,9 @@ import { TerminalRpcError, terminalRpcMessages } from '@/shared/rpc/terminal.js'
 import { pullRequestRpcMessages, WorkspacePullRequestRpcError } from '@/shared/rpc/workspace-pull-requests.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { LedgerMcpStartupMode } from '@/shared/schemas/ledger-mcp.js'
-import type { TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
+import type { ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceCheckout } from '@/shared/schemas/workspace.js'
+import type { WorkspaceProjectDetail } from '@/shared/schemas/workspace-store.js'
 
 /**
  * Main process (ADR 0023): windows, dialogs, IPC plumbing, updates, and the
@@ -180,6 +181,12 @@ const resolveRegisteredCheckoutPath = Effect.fnUntraced(function* (request: Chec
   return checkout.path
 })
 
+/** Git-backed handlers (status, stage, commit, pull requests) never resolve the Coach checkout, even a legacy Git folder. */
+const resolveGitCheckoutPath = (request: CheckoutScope) =>
+  request.projectId === COACH_PROJECT_ID
+    ? Effect.fail<CheckoutPathFailure>('unavailable')
+    : resolveRegisteredCheckoutPath(request)
+
 const resolveWorkspaceTerminalTaskCwd = Effect.fnUntraced(function* (
   taskId: TaskId,
   requestedCheckoutId?: WorkspaceCheckoutId,
@@ -203,26 +210,42 @@ const workspaceCheckoutInspectionHandlers = Layer.unwrap(
   Effect.gen(function* () {
     const host = yield* WorkspaceHost
     const inspection = yield* CheckoutInspection
+    // No project and Coach work in plain managed folders. Git never runs below their roots, even when a legacy
+    // Git-backed folder still has a repository.
+    const managedRoots = [
+      {
+        projectId: SCRATCH_PROJECT_ID,
+        managed: (detail: WorkspaceProjectDetail) => detail.project.isScratch,
+        name: 'No project',
+      },
+      {
+        projectId: COACH_PROJECT_ID,
+        managed: (detail: WorkspaceProjectDetail) => detail.project.isCoach,
+        name: 'Coach',
+      },
+    ] as const
     const gitOnly = <A>(path: string, inspect: Effect.Effect<A, CheckoutInspectionError>) =>
       Effect.gen(function* () {
-        const scratch = yield* host.store
-          .getProject(SCRATCH_PROJECT_ID, { limit: 1 })
-          .pipe(
-            Effect.catch(error =>
-              error.code === 'not-found'
-                ? Effect.succeed(null)
-                : Effect.fail(
-                    new CheckoutInspectionError({ code: 'unavailable', message: 'Cannot check the scratch root.' }),
-                  ),
-            ),
-          )
-        if (scratch?.project.isScratch) {
-          const fromRoot = relative(scratch.mainCheckout.path, path)
-          if (fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))
-            return yield* new CheckoutInspectionError({
-              code: 'not-repository',
-              message: 'Git inspection is unavailable for No project.',
-            })
+        for (const { projectId, managed, name } of managedRoots) {
+          const detail = yield* host.store
+            .getProject(projectId, { limit: 1 })
+            .pipe(
+              Effect.catch(error =>
+                error.code === 'not-found'
+                  ? Effect.succeed(null)
+                  : Effect.fail(
+                      new CheckoutInspectionError({ code: 'unavailable', message: `Cannot check the ${name} root.` }),
+                    ),
+              ),
+            )
+          if (detail && managed(detail)) {
+            const fromRoot = relative(detail.mainCheckout.path, path)
+            if (fromRoot !== '..' && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot))
+              return yield* new CheckoutInspectionError({
+                code: 'not-repository',
+                message: `Git inspection is unavailable for ${name}.`,
+              })
+          }
         }
         return yield* inspect
       })
@@ -395,19 +418,26 @@ const workspaceStoreLayer = Layer.effect(
 const workspaceCheckoutsLayer = Layer.effect(
   WorkspaceCheckouts,
   Effect.map(WorkspaceCheckouts, checkouts => {
-    const scratchGitUnavailable = new CheckoutResolverError({
-      code: 'not-a-repository',
-      message: 'Git is unavailable for No project.',
-    })
+    const gitUnavailable = (projectId: ProjectId) =>
+      projectId === SCRATCH_PROJECT_ID || projectId === COACH_PROJECT_ID
+        ? new CheckoutResolverError({
+            code: 'not-a-repository',
+            message: `Git is unavailable for ${projectId === COACH_PROJECT_ID ? 'Coach' : 'No project'}.`,
+          })
+        : null
     return WorkspaceCheckouts.of({
-      branches: request =>
-        request.projectId === SCRATCH_PROJECT_ID ? Effect.fail(scratchGitUnavailable) : checkouts.branches(request),
-      switchBranch: request =>
-        request.projectId === SCRATCH_PROJECT_ID ? Effect.fail(scratchGitUnavailable) : checkouts.switchBranch(request),
-      createWorktree: request =>
-        request.projectId === SCRATCH_PROJECT_ID
-          ? Effect.fail(scratchGitUnavailable)
-          : checkouts.createWorktree(request),
+      branches: request => {
+        const refused = gitUnavailable(request.projectId)
+        return refused ? Effect.fail(refused) : checkouts.branches(request)
+      },
+      switchBranch: request => {
+        const refused = gitUnavailable(request.projectId)
+        return refused ? Effect.fail(refused) : checkouts.switchBranch(request)
+      },
+      createWorktree: request => {
+        const refused = gitUnavailable(request.projectId)
+        return refused ? Effect.fail(refused) : checkouts.createWorktree(request)
+      },
     })
   }),
 ).pipe(Layer.provide(WorkspaceCheckoutsLive(join(app.getPath('userData'), 'worktrees'))))
@@ -716,14 +746,14 @@ app.whenReady().then(async () => {
                   ),
                 ),
                 workspaceCheckoutInspectionHandlers,
-                checkoutActionsHandlers({ resolveCheckoutPath: resolveRegisteredCheckoutPath }),
+                checkoutActionsHandlers({ resolveCheckoutPath: resolveGitCheckoutPath }),
                 checkoutNavigationHandlers({ resolveCheckoutPath: resolveRegisteredCheckoutPath }),
                 workspacePreviewHandlers(previews, sender),
                 workspaceDeviceHandlers(),
                 sourceControlHandlers.pipe(Layer.provide(CommandRunnerLive), Layer.provide(NodePlatformLive)),
                 workspacePullRequestHandlers({
                   resolveCheckoutPath: scope =>
-                    resolveRegisteredCheckoutPath(scope).pipe(
+                    resolveGitCheckoutPath(scope).pipe(
                       Effect.mapError(
                         () =>
                           new WorkspacePullRequestRpcError({

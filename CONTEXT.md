@@ -89,8 +89,8 @@ identities valid and stays out of the user Project picker.
 
 **Coach project**:
 The hidden internal Project under which the single live **Coach & Skills** chat runs. Like **No project**, it
-has a managed checkout under the app profile. It never appears in Project pickers, listings, search, delegation or
-side chats.
+has a managed checkout under the app profile: a plain directory without Git (a legacy Git-backed folder is
+tolerated, never used). It never appears in Project pickers, listings, search, delegation or side chats.
 _Avoid_: coach workspace, temp workspace
 
 **Task**:
