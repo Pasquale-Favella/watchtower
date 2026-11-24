@@ -18,13 +18,7 @@ export interface SplashProviderProgress {
 }
 
 export type ShortcutAction =
-  | Section
-  | 'refresh'
-  | 'toggleSidebar'
-  | 'commandPalette'
-  | 'summonOrb'
-  | 'addProject'
-  | 'newChatWithoutProject'
+  Section | 'refresh' | 'toggleSidebar' | 'commandPalette' | 'summonOrb' | 'addProject' | 'newChatWithoutProject'
 
 export type Platform = 'mac' | 'windows' | 'linux'
 
