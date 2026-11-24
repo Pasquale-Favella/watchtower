@@ -14,7 +14,14 @@ import {
 } from '@/renderer/features/workspace/source-control-preferences'
 
 import { useSourceControlDiscovery } from './source-control-hooks'
-import { githubSummary, githubTone, gitSummary, gitTone, type SourceControlTone } from './source-control-state'
+import {
+  githubSummary,
+  githubTone,
+  gitSummary,
+  gitTone,
+  isAccountRevealed,
+  type SourceControlTone,
+} from './source-control-state'
 
 const TONE_CLASSES: Record<SourceControlTone, string> = {
   available: 'bg-emerald-500',
@@ -139,8 +146,9 @@ function Switch({
 
 /** The account stays out of view until asked for: it is personal and rarely needed. */
 function AccountReveal({ account }: { readonly account: string | null }) {
-  const [revealed, setRevealed] = useState(false)
+  const [revealedAccount, setRevealedAccount] = useState<string | null>(null)
   if (account === null) return <span>Authenticated</span>
+  const revealed = isAccountRevealed(revealedAccount, account)
   return (
     <span>
       Authenticated as{' '}
@@ -149,7 +157,7 @@ function AccountReveal({ account }: { readonly account: string | null }) {
       ) : (
         <button
           type="button"
-          onClick={() => setRevealed(true)}
+          onClick={() => setRevealedAccount(account)}
           className="text-foreground focus-visible:ring-ring/50 rounded underline underline-offset-2 outline-none focus-visible:ring-3"
         >
           Click to reveal account

@@ -20,13 +20,14 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
+import { effectiveMergeMethod } from '@/renderer/features/settings/source-control-state.js'
 import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type {
   WorkspacePullRequestDetail,
   WorkspacePullRequestReviewRequest,
 } from '@/shared/schemas/workspace-pull-requests.js'
 
-import { useSourceControlPreferences } from '../source-control-preferences.js'
+import { type MergeMethod, useSourceControlPreferences } from '../source-control-preferences.js'
 import { usePullRequestReviewDraft } from './use-pull-request-preferences.js'
 import { usePullRequestCommands } from './use-pull-requests.js'
 
@@ -41,9 +42,6 @@ export function PullRequestActions(props: Props): React.JSX.Element {
   const commands = usePullRequestCommands()
   const [mergeOpen, setMergeOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
-  const preferences = useSourceControlPreferences()
-  const [chosenMergeMethod, setMergeMethod] = useState<'merge' | 'squash' | 'rebase' | null>(null)
-  const mergeMethod = chosenMergeMethod ?? preferences.mergeMethod
   const action = (value: 'close' | 'reopen' | 'ready' | 'draft' | 'update-branch') => {
     void commands
       .execute({
@@ -106,53 +104,69 @@ export function PullRequestActions(props: Props): React.JSX.Element {
         </DropdownMenuContent>
       </DropdownMenu>
       {editOpen && <EditPullRequest {...props} onClose={() => setEditOpen(false)} />}
-      <AlertDialog open={mergeOpen} onOpenChange={setMergeOpen}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Merge #{props.detail.number}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              {props.detail.title}. This merges commit {props.detail.headRevision.slice(0, 8)} into{' '}
-              {props.detail.baseRefName}.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <select
-            aria-label="Merge method"
-            value={mergeMethod}
-            onChange={event => setMergeMethod(event.target.value as typeof mergeMethod)}
-            className={FIELD}
-          >
-            <option value="squash">Squash and merge</option>
-            <option value="merge">Create a merge commit</option>
-            <option value="rebase">Rebase and merge</option>
-          </select>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={commands.pending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              disabled={commands.pending}
-              onClick={() => {
-                void commands
-                  .execute({
-                    tag: 'pull-requests:action',
-                    request: {
-                      ...props.scope,
-                      expectedRepository: props.detail.repositoryIdentity,
-                      number: props.detail.number,
-                      action: 'merge',
-                      mergeMethod,
-                      headRevision: props.detail.headRevision,
-                    },
-                  })
-                  .then(changed => {
-                    if (changed) props.onChanged()
-                  })
-              }}
-            >
-              Merge pull request
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {mergeOpen && <MergePullRequest {...props} onClose={() => setMergeOpen(false)} />}
     </>
+  )
+}
+
+/** Mounted only while open, so every open starts from the configured default merge method. */
+function MergePullRequest(props: Props & { readonly onClose: () => void }): React.JSX.Element {
+  const commands = usePullRequestCommands()
+  const preferences = useSourceControlPreferences()
+  const [chosenMergeMethod, setMergeMethod] = useState<MergeMethod | null>(null)
+  const mergeMethod = effectiveMergeMethod(chosenMergeMethod, preferences.mergeMethod)
+  return (
+    <AlertDialog
+      open
+      onOpenChange={open => {
+        if (!open) props.onClose()
+      }}
+    >
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Merge #{props.detail.number}?</AlertDialogTitle>
+          <AlertDialogDescription>
+            {props.detail.title}. This merges commit {props.detail.headRevision.slice(0, 8)} into{' '}
+            {props.detail.baseRefName}.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <select
+          aria-label="Merge method"
+          value={mergeMethod}
+          onChange={event => setMergeMethod(event.target.value as typeof mergeMethod)}
+          className={FIELD}
+        >
+          <option value="squash">Squash and merge</option>
+          <option value="merge">Create a merge commit</option>
+          <option value="rebase">Rebase and merge</option>
+        </select>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={commands.pending}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            disabled={commands.pending}
+            onClick={() => {
+              void commands
+                .execute({
+                  tag: 'pull-requests:action',
+                  request: {
+                    ...props.scope,
+                    expectedRepository: props.detail.repositoryIdentity,
+                    number: props.detail.number,
+                    action: 'merge',
+                    mergeMethod,
+                    headRevision: props.detail.headRevision,
+                  },
+                })
+                .then(changed => {
+                  if (changed) props.onChanged()
+                })
+            }}
+          >
+            Merge pull request
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   )
 }
 

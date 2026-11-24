@@ -1,3 +1,4 @@
+import type { MergeMethod } from '@/renderer/features/workspace/source-control-preferences.js'
 import type { GitHubCliState } from '@/shared/rpc/source-control.js'
 
 export type SourceControlTone = 'available' | 'unavailable' | 'checking'
@@ -29,4 +30,14 @@ export function githubSummary(cli: GitHubCliState | null): string {
     default:
       return 'Checking GitHub CLI…'
   }
+}
+
+/** The account is shown only while the one the user asked to see is still the signed-in one; a different account re-hides. */
+export function isAccountRevealed(revealedAccount: string | null, account: string | null): boolean {
+  return account !== null && revealedAccount === account
+}
+
+/** A merge starts from the configured default; `chosen` is only a selection made inside the open dialog. */
+export function effectiveMergeMethod(chosen: MergeMethod | null, configured: MergeMethod): MergeMethod {
+  return chosen ?? configured
 }
