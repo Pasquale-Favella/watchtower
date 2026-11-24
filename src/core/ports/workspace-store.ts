@@ -17,6 +17,7 @@ import type {
   ConvertDirectoryProjectCommand,
   CreateDelegationCommand,
   CreateTaskCommand,
+  DelegationCursor,
   DelegationQuery,
   DelegationReceipt,
   DeleteSideChatTaskCommand,
@@ -273,8 +274,10 @@ export class WorkspaceStore extends Context.Service<
       delegationId: string,
       requestedAt: string,
     ) => Effect.Effect<DelegationRecord, WorkspaceStoreError>
+    /** Pending wakes oldest first, after the cursor. A page can hold fewer than `limit` rows when results are large. */
     readonly listDueDelegationWakes: (
       limit: number,
+      after?: DelegationCursor,
     ) => Effect.Effect<ReadonlyArray<DelegationRecord>, WorkspaceStoreError>
   }
 >()('watchtower/core/WorkspaceStore') {}

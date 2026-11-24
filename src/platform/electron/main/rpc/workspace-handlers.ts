@@ -90,6 +90,7 @@ function sanitize(error: unknown): WorkspaceRpcError {
       case 'not-found':
         return failure('not-found')
       case 'database-unavailable':
+      case 'worker-overloaded':
         return failure('unavailable')
       case 'stale-epoch':
       case 'stale-request':

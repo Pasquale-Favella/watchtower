@@ -12,8 +12,8 @@ import { DelegationError, type DelegationId, type DelegationSummary } from '@/sh
 import {
   DELEGATION_TOOL_MODEL_MAX,
   DELEGATION_TOOL_SUMMARY_MAX_CHARS,
-  delegationToolCapabilitiesInputSchema,
   delegationToolCancelInputSchema,
+  delegationToolCapabilitiesInputSchema,
   delegationToolCapabilitiesOutputSchema,
   delegationToolErrorSchema,
   delegationToolListOutputSchema,
@@ -35,7 +35,7 @@ const TOOLS = [
   {
     name: 'delegation_capabilities',
     description:
-      'List connections, models, efforts and access modes for delegation_start, and `available`: how many more tasks you can start now. Model lists are short; `moreModels` counts the rest, and `search` finds them.',
+      'List connections, models, efforts and access modes for delegation_start, and whether you can start delegates. Eligible runs can start any number. Model lists are short; `moreModels` counts the rest, and `search` finds them.',
     input: delegationToolCapabilitiesInputSchema,
     readOnly: true,
   },
@@ -143,10 +143,7 @@ function invoke(scope: OrchestratorMcpScope, name: ToolName, input: unknown): Ef
       return delegations.capabilities(caller, request.search).pipe(
         Effect.map(capabilities => ({
           accessMode: capabilities.parentAccessMode,
-          // Free slots, not nesting depth: a Run that has no depth left is offered no tools at all.
-          available: Math.max(0, capabilities.maxActive - capabilities.activeCount),
-          active: capabilities.activeCount,
-          maxActive: capabilities.maxActive,
+          available: capabilities.remainingDepth > 0 ? 'unlimited' : 0,
           connections: capabilities.connections.map(connection => {
             const shown = connection.models.slice(0, DELEGATION_TOOL_MODEL_MAX)
             const more = (connection.modelCount ?? connection.models.length) - shown.length

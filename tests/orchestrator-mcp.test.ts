@@ -42,8 +42,6 @@ function fakeDelegations(remainingDepth: number) {
       parentAccessMode: 'auto',
       depth: 0,
       remainingDepth,
-      activeCount: 1,
-      maxActive: 4,
       connections: [
         {
           connectionId: 'opencode-1',
@@ -142,7 +140,7 @@ describe('watchtower-orchestrator endpoint', () => {
     expect(withoutStart).toEqual([])
   })
 
-  it('reports free slots, not depth, and counts the models past the short list', async () => {
+  it('reports unlimited delegation and counts the models past the short list', async () => {
     const { service, capabilities } = fakeDelegations(1)
     const result = await withEndpoint(service, async (url, token) => {
       const client = await connect(url, token)
@@ -152,7 +150,7 @@ describe('watchtower-orchestrator endpoint', () => {
     })
     expect(capabilities.mock.calls[0]?.[1]).toBe('flint free')
     const body = JSON.parse(text(result)) as Record<string, unknown> & { connections: Array<Record<string, unknown>> }
-    expect(body).toMatchObject({ available: 3, active: 1, maxActive: 4 })
+    expect(body).toMatchObject({ available: 'unlimited' })
     expect(body).not.toHaveProperty('remaining')
     expect(body.connections[0]?.['models']).toHaveLength(20)
     expect(body.connections[0]?.['moreModels']).toBe(429)

@@ -95,6 +95,65 @@ const legacyFingerprint = (value: unknown): string => {
 }
 
 describe('WorkspaceStore', () => {
+  it('admits only one concurrent direct start per Conversation across checkouts and fresh sessions', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      const otherCheckout = {
+        id: 'co-parallel' as never,
+        projectId: project.id,
+        kind: 'worktree' as const,
+        path: 'C:/repo/parallel',
+        branch: 'watchtower/parallel',
+        createdAt: command.issuedAt,
+      }
+      await run(store.registerCheckout({ commandId: 'register-parallel', checkout: otherCheckout }))
+      const second = {
+        ...command,
+        commandId: 'direct-2',
+        runId: 'run-direct-2' as never,
+        checkoutId: otherCheckout.id,
+        provisionalAgentSessionId: 'session-direct-2',
+      }
+      const results = await Promise.allSettled([run(store.beginRun(command)), run(store.beginRun(second))])
+      expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(1)
+      expect(results).toContainEqual({
+        status: 'rejected',
+        reason: expect.objectContaining({ code: 'admission-conflict' }),
+      })
+      expect((await run(store.readTaskSnapshot(task.id, 10))).runs).toHaveLength(1)
+    })
+  })
+
+  it('resumes all paused delegation wakes when promoting the head of a paged queue', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      for (let index = 0; index < 55; index++) {
+        await run(
+          store.enqueueFollowUp({
+            commandId: `wake-${index}`,
+            taskId: task.id,
+            conversationId: conversation.id,
+            issuedAt: command.issuedAt,
+            prompt: 'A delegation finished',
+            origin: 'delegation',
+            delegationId: `dlg-${index}` as never,
+          }),
+        )
+      }
+      await run(store.holdQueuedFollowUps(conversation.id, 7))
+      const firstPage = await run(store.listQueuedFollowUps(conversation.id, { limit: 50 }))
+      expect(firstPage).toMatchObject({ total: 55, truncated: true })
+      expect(firstPage.items.every(item => item.held)).toBe(true)
+      expect(await run(store.promoteNextFollowUp(conversation.id, command))).toMatchObject({
+        followUp: { commandId: 'wake-0' },
+      })
+      const resumed = await run(store.listQueuedFollowUps(conversation.id, { limit: 50 }))
+      const tail = await run(store.listQueuedFollowUps(conversation.id, { afterPosition: resumed.nextAfterPosition! }))
+      expect(tail.items).toHaveLength(4)
+      expect([...resumed.items, ...tail.items].every(item => !item.held)).toBe(true)
+    })
+  })
+
   it('keeps the durable session identity when a resumed run creates another approval', async () => {
     await withStore(async (store, run) => {
       await setup(store, run)
@@ -735,7 +794,7 @@ describe('WorkspaceStore', () => {
     }
   })
 
-  it('recovers every older owned intent and delivery while leaving never-claimed work dispatchable', async () => {
+  it('recovers every older owned intent and delivery and fails never-claimed work so its Conversation admits again', async () => {
     await withStore(async (store, run) => {
       const projects = [
         project,
@@ -858,10 +917,25 @@ describe('WorkspaceStore', () => {
           requestResponses: [{ requestId: owned.responseId, state: 'uncertain' }],
         })
       }
-      await expect(run(store.claimDispatch('never-claimed-run' as never, 8, command.issuedAt))).resolves.toMatchObject({
-        runId: 'never-claimed-run',
-        ownerEpoch: 8,
+      // The Run begun before the restart lost its owner before the claim; it fails instead of fencing its Conversation.
+      await expect(run(store.readTaskSnapshot(pendingTask.id, 10))).resolves.toMatchObject({
+        runs: [{ id: 'never-claimed-run', status: 'failed', failure: 'launch-failed' }],
       })
+      await expect(run(store.claimDispatch('never-claimed-run' as never, 8, command.issuedAt))).rejects.toMatchObject({
+        code: 'admission-conflict',
+        message: 'Dispatch intent is not pending',
+      })
+      const next = {
+        ...command,
+        commandId: 'after-restart-command',
+        runId: 'after-restart-run' as never,
+        taskId: pendingTask.id,
+        conversationId: pendingConversation.id,
+        checkoutId: pendingCheckout.id,
+        provisionalAgentSessionId: 'after-restart-session',
+      }
+      await expect(run(store.beginRun(next))).resolves.toMatchObject({ runId: 'after-restart-run', replayed: false })
+      await expect(run(store.claimDispatch(next.runId, 8, command.issuedAt))).resolves.toMatchObject({ ownerEpoch: 8 })
     })
   })
 
@@ -3216,6 +3290,7 @@ describe('WorkspaceStore', () => {
         checkoutId: 'co-working' as never,
         provisionalAgentSessionId: 'session-sidebar-working',
         modelId: 'model-sidebar',
+        modeId: 'high',
       }
       await acceptRun(store, run, workingRun, 7, 'native-working')
       await acceptRun(store, run)
@@ -3275,6 +3350,10 @@ describe('WorkspaceStore', () => {
           },
         ],
       })
+      // The composer shows the chat's last model and effort, so the Run context carries both.
+      expect((await run(store.readTaskSnapshot('t-working' as never, 10))).runContexts).toMatchObject([
+        { runId: workingRun.runId, modelId: 'model-sidebar', modeId: 'high' },
+      ])
       await expect(run(store.listProjects())).resolves.toMatchObject({
         items: [
           { id: project.id, runtime: { attentionCount: 1, workingCount: 0 } },

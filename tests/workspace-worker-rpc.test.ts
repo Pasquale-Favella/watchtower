@@ -216,7 +216,7 @@ describe('workspace worker RPC server', () => {
             task: { ...childTask, description: '' },
             conversation: childConversation,
             record,
-            limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+            limits: { maxDepth: 1 },
           }
           const receipt = yield* client['workspace-worker:createDelegation'](createCommand)
           const replay = yield* client['workspace-worker:createDelegation'](createCommand)
@@ -230,6 +230,10 @@ describe('workspace worker RPC server', () => {
             occurredAt: command.issuedAt,
           })
           const due = yield* client['workspace-worker:listDueDelegationWakes']({ limit: 10 })
+          const afterDue = yield* client['workspace-worker:listDueDelegationWakes']({
+            limit: 10,
+            after: { createdAt: woken.createdAt, id: woken.id },
+          })
           const settled = yield* client['workspace-worker:settleDelegation']({
             commandId: 'settle-rpc',
             delegationId,
@@ -246,7 +250,7 @@ describe('workspace worker RPC server', () => {
             delegationId,
             requestedAt: command.issuedAt,
           })
-          return { receipt, replay, byId, byChild, listed, woken, due, settled, read, cancelling }
+          return { receipt, replay, byId, byChild, listed, woken, due, afterDue, settled, read, cancelling }
         }).pipe(Effect.provide(workspaceWorkerRpcServerLayer({ store, onShutdown: Scope.close(sqlScope, Exit.void) }))),
       ),
     )
@@ -257,6 +261,7 @@ describe('workspace worker RPC server', () => {
     expect(result.listed.items.map(item => item.id)).toEqual([delegationId])
     expect(result.woken).toMatchObject({ wakeState: 'pending' })
     expect(result.due.map(item => item.id)).toEqual([delegationId])
+    expect(result.afterDue).toEqual([])
     expect(result.settled).toMatchObject({ status: 'completed', resultText: 'Audit done' })
     expect(result.read.resultReadAt).toBe(command.issuedAt)
     expect(result.cancelling.cancelRequestedAt).toBeNull()

@@ -12,6 +12,7 @@ import * as Schema from 'effect/Schema'
 import * as SqlClient from 'effect/sql/SqlClient'
 
 import { SCRATCH_ROOT_CHECKOUT_ID } from '@/core/application/commands/scratch-checkouts.js'
+import { delegationStatusFromRun, isSettledDelegationStatus } from '@/core/domain/delegation/status.js'
 import { completeAgentGoalTurn, startAgentGoalTurn, transitionAgentRun } from '@/core/domain/execution/lifecycle.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import {
@@ -20,7 +21,12 @@ import {
   UnsupportedLedgerSchemaVersion,
 } from '@/infrastructure/sqlite/sqlite-migrations.js'
 import { searchPromptConversations } from '@/infrastructure/sqlite/workspace/prompt-conversation-search.js'
-import { type DelegationList, type DelegationRecord, delegationRecordSchema } from '@/shared/schemas/delegation.js'
+import {
+  type DelegationList,
+  delegationPendingRequestSchema,
+  type DelegationRecord,
+  delegationRecordSchema,
+} from '@/shared/schemas/delegation.js'
 import type { AgentDriverEvent, AgentRun, AgentRunStatus } from '@/shared/schemas/execution.js'
 import {
   agentAccessModeSchema,
@@ -28,6 +34,7 @@ import {
   agentConfigValuesSchema,
   agentDriverEventSchema,
   agentRunSchema,
+  agentRunStatusSchema,
   DEFAULT_AGENT_ACCESS_MODE,
 } from '@/shared/schemas/execution.js'
 import { promptAttachmentsSchema } from '@/shared/schemas/prompt-context.js'
@@ -1387,14 +1394,17 @@ const makeService = Effect.gen(function* () {
             }
 
             yield* checkCheckoutAdmission(command.checkoutId)
+            // Unresolved outcomes retain their checkout/session fence. Active turns fence the whole Conversation.
             const sessionRuns = yield* sql`
         SELECT r.id FROM workspace_agent_run r
         JOIN workspace_dispatch_intent i ON i.run_id = r.id
-        WHERE ((i.conversation_id = ${command.conversationId} AND i.checkout_id = ${command.checkoutId})
+        WHERE ((i.conversation_id = ${command.conversationId}
+            AND (i.checkout_id = ${command.checkoutId} OR r.status NOT IN ('uncertain', 'recoveryRequired')))
           OR r.session_id = ${command.provisionalAgentSessionId}
           OR i.provisional_session_id = ${command.provisionalAgentSessionId})
           AND r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested', 'uncertain', 'recoveryRequired')
           AND i.state NOT IN ('settled', 'failed')
+        LIMIT 1
       `
             if (sessionRuns.length > 0)
               return yield* Effect.fail(
@@ -1538,6 +1548,7 @@ const makeService = Effect.gen(function* () {
             const run = yield* transition(current, 'starting', claimedAt)
             yield* sql`UPDATE workspace_dispatch_intent SET state = 'claimed', owner_epoch = ${ownerEpoch} WHERE run_id = ${runId} AND state = 'pending'`
             yield* persistRun(run)
+            yield* syncDelegationLiveState(run)
             yield* appendEvent(run, 'dispatchClaimed', claimedAt, { ownerEpoch })
             return {
               runId,
@@ -2043,6 +2054,9 @@ const makeService = Effect.gen(function* () {
                 : command.event
             const data = { eventId: command.eventId, event: storedEvent }
             const sequence = yield* appendEvent(updatedRun, 'driverEvent', command.occurredAt, data)
+            const requestChanged = event.kind === 'requestPending' || event.kind === 'requestResolved'
+            if (requestChanged || updatedRun.status !== run.status)
+              yield* syncDelegationLiveState(updatedRun, requestChanged)
             yield* sql`
               INSERT INTO workspace_driver_event_identity (run_id, event_id, fingerprint, sequence)
               VALUES (${runId}, ${command.eventId}, ${eventFingerprint}, ${sequence})
@@ -2289,6 +2303,8 @@ const makeService = Effect.gen(function* () {
               failure: command.reason,
             })
             yield* persistRun(failedRun)
+            yield* sql`UPDATE workspace_driver_request_state SET state = 'expired' WHERE run_id = ${runId} AND state = 'pending'`
+            yield* syncDelegationLiveState(failedRun)
             if (pendingLaunchFailure) {
               yield* sql`
                 UPDATE workspace_dispatch_intent SET state = 'failed', owner_epoch = ${command.ownerEpoch}
@@ -2332,6 +2348,7 @@ const makeService = Effect.gen(function* () {
               )
             const interrupted = yield* transition(run, 'interruptRequested', requestedAt)
             yield* persistRun(interrupted)
+            yield* syncDelegationLiveState(interrupted)
             yield* appendEvent(interrupted, 'runInterruptRequested', requestedAt, { ownerEpoch })
           }),
         )
@@ -2831,6 +2848,41 @@ const makeService = Effect.gen(function* () {
       }),
     )
 
+  // Promotion removes a wake from the follow-up queue, so a promoted wake Run that never launched leaves its wake owed but
+  // no longer queued. The wake stays `pending`; counting the lost delivery gives recovery a new command id, so its
+  // re-enqueue is not swallowed by the stored receipt of the first one.
+  const recordLostWakeDelivery = Effect.fnUntraced(function* (runId: string, parentTaskId: string) {
+    const messages =
+      yield* sql`SELECT delegation_id FROM workspace_message WHERE run_id = ${runId} AND origin = 'delegation' AND delegation_id IS NOT NULL`
+    for (const message of messages) {
+      const record = yield* loadDelegation(String(message.delegation_id))
+      if (!record || record.parentTaskId !== parentTaskId || record.wakeState !== 'pending') continue
+      yield* saveDelegation({ ...record, wakeAttempts: (record.wakeAttempts ?? 0) + 1 })
+    }
+  })
+
+  // A Run begun but never claimed has no owner left to launch it once a new owner takes over, and it would fence its
+  // Conversation forever. It never reached a driver, so it fails as a launch failure, as a never-claimed Delegated Task
+  // does. Only owner acquisition runs this, before the new owner can begin a Run of its own.
+  const failUnclaimedDispatches = Effect.fnUntraced(function* (replacedEpoch: number, recoveredAt: string) {
+    const orphans = yield* sql`
+      SELECT i.run_id, r.payload FROM workspace_dispatch_intent i JOIN workspace_agent_run r ON r.id = i.run_id
+      WHERE i.state = 'pending' AND i.owner_epoch IS NULL
+    `
+    for (const row of orphans) {
+      const runId = String(row.run_id)
+      const failedRun = yield* transition(yield* decodeRun(String(row.payload)), 'failed', recoveredAt, {
+        failure: 'launch-failed',
+      })
+      yield* persistRun(failedRun)
+      yield* syncDelegationLiveState(failedRun)
+      yield* sql`UPDATE workspace_dispatch_intent SET state = 'failed', owner_epoch = ${replacedEpoch} WHERE run_id = ${runId}`
+      yield* recordLostWakeDelivery(runId, failedRun.taskId)
+      yield* releaseSideChatBringBacks(runId)
+      yield* appendEvent(failedRun, 'runFailed', recoveredAt, { reason: 'launch-failed' })
+    }
+  })
+
   const recoverWorkerInTransaction = Effect.fnUntraced(function* (replacedEpoch: number, recoveredAt: string) {
     yield* sql`UPDATE workspace_worker_epoch SET retired_epoch = MAX(retired_epoch, ${replacedEpoch}) WHERE singleton = 1`
     const responseRows = yield* sql`
@@ -2882,12 +2934,14 @@ const makeService = Effect.gen(function* () {
     for (const row of intents as Array<Record<string, unknown>>) {
       const current = yield* decodeRun(String(row.payload))
       if (current.status === 'completed' || current.status === 'failed' || current.status === 'interrupted') {
+        yield* syncDelegationLiveState(current)
         yield* sql`UPDATE workspace_dispatch_intent SET state = 'settled' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${Number(row.owner_epoch)}`
         continue
       }
       const status = row.state === 'claimed' ? 'uncertain' : 'recoveryRequired'
       const run = yield* transition(current, status, recoveredAt)
       yield* persistRun(run)
+      yield* syncDelegationLiveState(run)
       yield* sql`UPDATE workspace_dispatch_intent SET state = 'recoveryRequired' WHERE run_id = ${String(row.run_id)} AND owner_epoch = ${Number(row.owner_epoch)}`
       yield* appendEvent(run, row.state === 'claimed' ? 'runUncertain' : 'runRecoveryRequired', recoveredAt, {
         replacedEpoch,
@@ -2977,6 +3031,7 @@ const makeService = Effect.gen(function* () {
             yield* sql`UPDATE workspace_worker_epoch SET allocated_epoch = ${ownerEpoch} WHERE singleton = 1`
             const recoveredCount =
               previousEpoch === 0 ? 0 : yield* recoverWorkerInTransaction(previousEpoch, recoveredAt)
+            if (previousEpoch > 0) yield* failUnclaimedDispatches(previousEpoch, recoveredAt)
             return yield* Schema.decodeUnknownEffect(ownerEpochAcquisitionSchema)({ ownerEpoch, recoveredCount }).pipe(
               Effect.mapError(() => safeError('invalid-data', 'Workspace owner epoch acquisition failed validation')),
             )
@@ -4003,7 +4058,7 @@ const makeService = Effect.gen(function* () {
               yield* sql`SELECT COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'workspace_execution_event'), 0) AS high`
             const runCountRows = yield* sql`SELECT COUNT(*) AS total FROM workspace_agent_run WHERE task_id = ${taskId}`
             const runRows = yield* sql`
-              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, i.access_mode, json_extract(c.payload, '$.path') AS workspace_path
+              SELECT r.payload, i.run_id AS intent_run_id, i.conversation_id, i.checkout_id, i.driver_id, i.connection_id, i.model_id, i.mode_id, i.access_mode, json_extract(c.payload, '$.path') AS workspace_path
               FROM workspace_agent_run r
               LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
               LEFT JOIN workspace_checkout c ON c.id = i.checkout_id
@@ -4033,6 +4088,7 @@ const makeService = Effect.gen(function* () {
                       driverId: row.driver_id,
                       connectionId: row.connection_id,
                       ...(row.model_id != null ? { modelId: row.model_id } : {}),
+                      ...(row.mode_id != null ? { modeId: row.mode_id } : {}),
                       ...(row.workspace_path != null ? { workspacePath: row.workspace_path } : {}),
                       ...(row.access_mode != null ? { accessMode: row.access_mode } : {}),
                     }).pipe(Effect.mapError(() => safeError('invalid-data', 'Stored Run context failed validation')))
@@ -4174,6 +4230,52 @@ const makeService = Effect.gen(function* () {
   const saveDelegation = (record: DelegationRecord) =>
     sql`UPDATE workspace_delegation SET status = ${record.status}, wake_state = ${record.wakeState}, settled_at = ${record.settledAt}, payload = ${encode(record)} WHERE id = ${record.id}`
 
+  function clearDelegationRequest(record: DelegationRecord): DelegationRecord {
+    if (record.pendingRequest === null && record.status !== 'waiting') return record
+    return { ...record, status: record.status === 'waiting' ? 'running' : record.status, pendingRequest: null }
+  }
+
+  // Keep the indexed status and request mirror in the same transaction as the child Run change.
+  const syncDelegationLiveState = Effect.fnUntraced(function* (run: AgentRun, requestChanged = false) {
+    const status = delegationStatusFromRun({ runStatus: run.status, cancelRequested: false, pendingRequest: false })
+
+    const rows = yield* sql`
+      SELECT payload FROM workspace_delegation
+      WHERE child_task_id = ${run.taskId} AND settled_at IS NULL AND json_extract(payload, '$.childRunId') = ${run.id}
+    `
+    if (!rows[0]) return
+    const current = yield* decodeJson(delegationRecordSchema)(String(rows[0].payload))
+    if (isSettledDelegationStatus(status)) {
+      const cleared = clearDelegationRequest(current)
+      if (cleared !== current) yield* saveDelegation(cleared)
+      return
+    }
+
+    let pendingRequest = current.pendingRequest
+    if (requestChanged) {
+      const pending = yield* sql`
+        SELECT json_extract(e.payload, '$.event.request.kind') AS kind, r.request_id AS requestId
+        FROM workspace_execution_event e JOIN workspace_driver_request_state r
+          ON r.run_id = e.run_id AND r.request_id = json_extract(e.payload, '$.event.request.requestId')
+        WHERE e.run_id = ${run.id} AND e.kind = 'driverEvent'
+          AND json_extract(e.payload, '$.event.kind') = 'requestPending' AND r.state = 'pending'
+        ORDER BY e.sequence DESC LIMIT 1
+      `
+      pendingRequest = pending[0]
+        ? yield* Schema.decodeUnknownEffect(delegationPendingRequestSchema)(pending[0]).pipe(
+            Effect.mapError(() => safeError('invalid-data', 'Stored Delegation request is invalid')),
+          )
+        : null
+    }
+    const nextStatus = delegationStatusFromRun({
+      runStatus: run.status,
+      cancelRequested: current.cancelRequestedAt !== null,
+      pendingRequest: pendingRequest !== null,
+    })
+    if (nextStatus !== current.status || requestChanged)
+      yield* saveDelegation({ ...current, status: nextStatus, pendingRequest })
+  })
+
   const createDelegation: WorkspaceStore['Service']['createDelegation'] = command =>
     guard(
       Effect.gen(function* () {
@@ -4213,10 +4315,6 @@ const makeService = Effect.gen(function* () {
             const depth = parentLink[0] ? Number(parentLink[0].depth) + 1 : 1
             if (depth !== command.record.depth || depth > command.limits.maxDepth)
               return yield* Effect.fail(safeError('admission-conflict', 'Delegation depth limit reached'))
-            const active =
-              yield* sql`SELECT COUNT(*) AS total FROM workspace_delegation WHERE parent_run_id = ${command.parentRunId} AND settled_at IS NULL`
-            if (Number(active[0]?.total ?? 0) >= command.limits.maxActivePerParentRun)
-              return yield* Effect.fail(safeError('admission-conflict', 'Parent Run has too many active delegations'))
             const projects = yield* sql`
               SELECT json_extract(payload, '$.isCoach') AS coach
               FROM workspace_project WHERE id = ${command.task.projectId}
@@ -4270,16 +4368,24 @@ const makeService = Effect.gen(function* () {
         const parentRunId = request.parentRunId ?? null
         const parentTaskId = request.parentTaskId ?? null
         const activeOnly = request.activeOnly === true ? 1 : 0
+        const wakeState = request.wakeState ?? null
+        const visibility = request.visibility ?? null
+        const before = request.before
         const rows = yield* sql`
           SELECT payload FROM workspace_delegation d
           WHERE ${listedDelegations} AND (${parentRunId} IS NULL OR parent_run_id = ${parentRunId})
             AND (${parentTaskId} IS NULL OR parent_task_id = ${parentTaskId})
             AND (${activeOnly} = 0 OR settled_at IS NULL)
+            AND (${wakeState} IS NULL OR wake_state = ${wakeState})
+            AND (${visibility} IS NOT 'current' OR settled_at IS NULL OR wake_state IN ('pending', 'queued'))
+            AND (${visibility} IS NOT 'history' OR (settled_at IS NOT NULL AND wake_state NOT IN ('pending', 'queued')))
+            AND (${before?.createdAt ?? null} IS NULL OR (created_at, id) < (${before?.createdAt ?? null}, ${before?.id ?? null}))
           ORDER BY created_at DESC, id DESC
           LIMIT ${limit + 1}
         `
-        const items = yield* decodeDelegationRows(rows)
-        return { items: items.slice(0, limit), truncated: items.length > limit } satisfies DelegationList
+        const decoded = yield* decodeDelegationRows(rows.slice(0, limit))
+        const items = boundedItems(decoded, WORKSPACE_STORE_READ_BYTE_CAPACITY, true)
+        return { items, truncated: items.length < rows.length } satisfies DelegationList
       }),
     )
 
@@ -4340,8 +4446,18 @@ const makeService = Effect.gen(function* () {
           Effect.gen(function* () {
             const current = yield* loadDelegation(command.delegationId)
             if (!current) return yield* Effect.fail(safeError('not-found', 'Delegation was not found'))
-            const next = { ...current, pendingRequest: command.pendingRequest }
-            yield* saveDelegation(next)
+            if (current.settledAt !== null) return current
+            const runs = yield* sql`SELECT status FROM workspace_agent_run WHERE id = ${current.childRunId}`
+            const runStatus = runs[0] ? yield* Schema.decodeUnknownEffect(agentRunStatusSchema)(runs[0].status) : null
+            const status = delegationStatusFromRun({
+              runStatus,
+              cancelRequested: current.cancelRequestedAt !== null,
+              pendingRequest: command.pendingRequest !== null,
+            })
+            const next = isSettledDelegationStatus(status)
+              ? clearDelegationRequest(current)
+              : { ...current, pendingRequest: command.pendingRequest, status }
+            if (next !== current) yield* saveDelegation(next)
             return next
           }),
         )
@@ -4375,8 +4491,7 @@ const makeService = Effect.gen(function* () {
             if (current.childRunId === command.childRunId) return current
             if (current.settledAt === null)
               return yield* Effect.fail(safeError('invalid-transition', 'Delegation is still running'))
-            // Admission is checked in the same transaction as the write, as creation does, so a parent that stops or
-            // reaches its limit meanwhile cannot gain a resumed child.
+            // Check parent liveness in the same transaction that reopens the Delegation.
             const parents =
               yield* sql`SELECT status, task_id FROM workspace_agent_run WHERE id = ${command.parentRunId}`
             const parent = parents[0]
@@ -4384,12 +4499,9 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(safeError('not-found', 'Parent Run does not exist for this Task'))
             if (!ACTIVE_PARENT_STATUSES.includes(String(parent.status)))
               return yield* Effect.fail(safeError('invalid-transition', 'Parent Run is not active'))
-            const active =
-              yield* sql`SELECT COUNT(*) AS total FROM workspace_delegation WHERE parent_run_id = ${command.parentRunId} AND settled_at IS NULL`
-            if (Number(active[0]?.total ?? 0) >= command.maxActivePerParentRun)
-              return yield* Effect.fail(safeError('admission-conflict', 'Parent Run has too many active delegations'))
+            const { wakeAttempts: _lostWakes, ...reopened } = current
             const next: DelegationRecord = {
-              ...current,
+              ...reopened,
               parentRunId: command.parentRunId,
               childRunId: command.childRunId,
               accessMode: command.accessMode,
@@ -4424,12 +4536,17 @@ const makeService = Effect.gen(function* () {
       ),
     )
 
-  const listDueDelegationWakes: WorkspaceStore['Service']['listDueDelegationWakes'] = limit =>
+  const listDueDelegationWakes: WorkspaceStore['Service']['listDueDelegationWakes'] = (limit, after) =>
     guard(
       Effect.gen(function* () {
-        const rows =
-          yield* sql`SELECT payload FROM workspace_delegation d WHERE wake_state = 'pending' AND ${listedDelegations} ORDER BY created_at, id LIMIT ${limit}`
-        return yield* decodeDelegationRows(rows)
+        const rows = yield* sql`
+          SELECT payload FROM workspace_delegation d
+          WHERE wake_state = 'pending' AND ${listedDelegations}
+            AND (${after?.createdAt ?? null} IS NULL OR (created_at, id) > (${after?.createdAt ?? null}, ${after?.id ?? null}))
+          ORDER BY created_at, id LIMIT ${limit}
+        `
+        // Results are up to 16 Ki chars each, so the page is cut by size too; callers page until it is empty.
+        return boundedItems(yield* decodeDelegationRows(rows), WORKSPACE_STORE_READ_BYTE_CAPACITY, true)
       }),
     )
 

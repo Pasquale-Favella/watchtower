@@ -21,7 +21,7 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as Stream from 'effect/Stream'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { ExecutionService, type ExecutionServiceOptions } from '@/core/application/commands/execution-service.js'
 import {
@@ -518,7 +518,7 @@ describe('ExecutionService', () => {
             createdAt: command.issuedAt,
             settledAt: null,
           },
-          limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+          limits: { maxDepth: 1 },
         }),
       )
       await run(execution.start(child))
@@ -1061,6 +1061,80 @@ describe('ExecutionService', () => {
       await first
       await run(Effect.exit(service.stopAll()))
     } finally {
+      await runtime.dispose()
+    }
+  })
+
+  it('launches every conversation and promotes an idle conversation while other Runs are active', async () => {
+    const releaseFirst = Deferred.makeUnsafe<undefined>()
+    const releaseOthers = Deferred.makeUnsafe<undefined>()
+    const submitted: string[] = []
+    const session = makeSession({
+      events: () => Stream.empty,
+    })
+    const sessionFor = (context: AgentSessionContext, native = `native-${context.runId}`) =>
+      Effect.succeed(
+        makeSession({
+          identity: { nativeSessionId: native, generation: context.generation },
+          submit: input =>
+            Effect.sync(() => {
+              submitted.push(input.messages[0]!.content)
+              return { nativeSessionId: native, nativeTurnId: 'native-turn', generation: context.generation }
+            }),
+          events: () =>
+            Stream.fromEffect(Deferred.await(context.runId === command.runId ? releaseFirst : releaseOthers)).pipe(
+              Stream.map(() => ({ kind: 'turnCompleted', nativeTurnId: 'native-turn' }) as const),
+            ),
+        }),
+      )
+    const runtime = makeRuntime(() =>
+      Effect.succeed(
+        makeConnection(session, {
+          openSession: context => sessionFor(context),
+          loadSession: (context, identity) => sessionFor(context, identity.nativeSessionId),
+        }),
+      ),
+    )
+
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      const run: RunEffect = effect => runtime.runPromise(effect)
+      await setup(store, run)
+      const service = await runtime.runPromise(ExecutionService)
+      await run(service.start(command))
+      const count = 24
+      for (let index = 1; index < count; index++) {
+        const nextTask = { ...task, id: `parallel-task-${index}` as typeof task.id }
+        const nextConversation = { ...conversation, id: `parallel-conversation-${index}` as typeof conversation.id }
+        await run(store.createTask({ task: nextTask, conversation: nextConversation }))
+        await run(
+          service.start({
+            ...command,
+            commandId: `parallel-command-${index}`,
+            runId: `parallel-run-${index}` as typeof command.runId,
+            taskId: nextTask.id,
+            conversationId: nextConversation.id,
+            provisionalAgentSessionId: `parallel-session-${index}`,
+          }),
+        )
+      }
+      await expect.poll(() => submitted.length).toBe(count)
+      await run(
+        service.enqueueFollowUp({
+          commandId: 'parallel-follow-up',
+          issuedAt: '2026-10-29T10:00:02Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Follow up in the first conversation',
+        }),
+      )
+      expect(submitted).toHaveLength(count)
+      await run(Deferred.succeed(releaseFirst, undefined))
+      await expect.poll(() => submitted.at(-1)).toBe('Follow up in the first conversation')
+      expect(submitted).toHaveLength(count + 1)
+    } finally {
+      await Effect.runPromise(Deferred.succeed(releaseFirst, undefined))
+      await Effect.runPromise(Deferred.succeed(releaseOthers, undefined))
       await runtime.dispose()
     }
   })
@@ -2153,23 +2227,21 @@ describe('ExecutionService', () => {
           return { nativeSessionId: 'native-session', nativeTurnId: 'native-turn', generation: 1 }
         }),
     })
-    const runtime = makeRuntime(
-      () =>
-        Effect.succeed(
-          makeConnection(session, {
-            loadSession: (context, identity) =>
-              Effect.sync(() => {
-                loadedSessions.push(identity.nativeSessionId)
-                loadedContexts.push({
-                  modelId: context.modelId,
-                  modeId: context.modeId,
-                  configValues: context.configValues,
-                })
-                return session
-              }),
-          }),
-        ),
-      { maxConcurrentRuns: 1 },
+    const runtime = makeRuntime(() =>
+      Effect.succeed(
+        makeConnection(session, {
+          loadSession: (context, identity) =>
+            Effect.sync(() => {
+              loadedSessions.push(identity.nativeSessionId)
+              loadedContexts.push({
+                modelId: context.modelId,
+                modeId: context.modeId,
+                configValues: context.configValues,
+              })
+              return session
+            }),
+        }),
+      ),
     )
 
     try {
@@ -2239,21 +2311,19 @@ describe('ExecutionService', () => {
         }),
       events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const),
     })
-    const runtime = makeRuntime(
-      () =>
-        Effect.succeed(
-          makeConnection(session, {
-            close: () =>
-              Effect.gen(function* () {
-                closeCalls += 1
-                if (closeCalls === 1) {
-                  yield* Deferred.succeed(firstCloseStarted, undefined)
-                  yield* Deferred.await(releaseFirstClose)
-                }
-              }),
-          }),
-        ),
-      { maxConcurrentRuns: 3 },
+    const runtime = makeRuntime(() =>
+      Effect.succeed(
+        makeConnection(session, {
+          close: () =>
+            Effect.gen(function* () {
+              closeCalls += 1
+              if (closeCalls === 1) {
+                yield* Deferred.succeed(firstCloseStarted, undefined)
+                yield* Deferred.await(releaseFirstClose)
+              }
+            }),
+        }),
+      ),
     )
 
     try {
@@ -2701,7 +2771,7 @@ describe('ExecutionService', () => {
     }
   })
 
-  it('returns an exact replay while the concurrency limit is exhausted', async () => {
+  it('returns an exact replay while the Run is still active', async () => {
     const streamStarted = await Effect.runPromise(Deferred.make<undefined>())
     const releaseStream = await Effect.runPromise(Deferred.make<undefined>())
     const session = makeSession({
@@ -2714,7 +2784,7 @@ describe('ExecutionService', () => {
           }),
         ),
     })
-    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)), { maxConcurrentRuns: 1 })
+    const runtime = makeRuntime(() => Effect.succeed(makeConnection(session)))
     let replay: Promise<Awaited<ReturnType<RunEffect>>> | undefined
 
     try {
@@ -3281,6 +3351,185 @@ describe('ExecutionService', () => {
       }
     } finally {
       await runtime.dispose().catch(() => {})
+    }
+  })
+
+  it('bounds shutdown behind a stalled admission and prevents its late native launch', async () => {
+    const claimStarted = Effect.runSync(Deferred.make<undefined>())
+    const releaseClaim = Effect.runSync(Deferred.make<undefined>())
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    const connect = vi.fn(() => Effect.succeed(makeConnection(makeSession())))
+    const runtime = makeRuntime(
+      connect,
+      { closeDeadlineMs: 50 },
+      WorkspaceStore.of({
+        ...store,
+        claimDispatch: (...args) =>
+          Deferred.succeed(claimStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releaseClaim)),
+            Effect.andThen(store.claimDispatch(...args)),
+          ),
+      }),
+    )
+    try {
+      await setup(store, runStore)
+      const service = await runtime.runPromise(ExecutionService)
+      const start = runtime.runPromise(Effect.flip(service.start(command)))
+      await runStore(Deferred.await(claimStarted))
+      const shutdown = await Promise.race([
+        runtime.runPromise(Effect.flip(service.stopAll())),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('Shutdown is still waiting for admission')), 500),
+        ),
+      ])
+      expect(shutdown).toMatchObject({ nativeCleanup: 'unconfirmed', message: expect.stringContaining('admitted') })
+      await runStore(Deferred.succeed(releaseClaim, undefined))
+      await expect(start).resolves.toMatchObject({ reason: 'service-stopped' })
+      expect(connect).not.toHaveBeenCalled()
+      expect((await runStore(store.readTaskSnapshot(task.id, 10))).runs[0]?.status).toBe('failed')
+    } finally {
+      await runStore(Deferred.succeed(releaseClaim, undefined))
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
+  it('stops within its deadline while the queue pump is stalled inside an admitted promotion', async () => {
+    const promoteStarted = Effect.runSync(Deferred.make<undefined>())
+    const releasePromote = Effect.runSync(Deferred.make<undefined>())
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    const session = makeSession({
+      events: () => Stream.succeed({ kind: 'turnCompleted', nativeTurnId: 'native-turn' } as const),
+    })
+    const runtime = makeRuntime(
+      () => Effect.succeed(makeConnection(session)),
+      { closeDeadlineMs: 60 },
+      WorkspaceStore.of({
+        ...store,
+        promoteNextFollowUp: (...args) =>
+          Deferred.succeed(promoteStarted, undefined).pipe(
+            Effect.andThen(Deferred.await(releasePromote)),
+            Effect.andThen(store.promoteNextFollowUp(...args)),
+          ),
+      }),
+    )
+    try {
+      await setup(store, runStore)
+      const service = await runtime.runPromise(ExecutionService)
+      await runtime.runPromise(service.start(command))
+      await expect
+        .poll(async () => (await runStore(store.readTaskSnapshot(task.id, 10))).runs[0]?.status)
+        .toBe('completed')
+      await runtime.runPromise(
+        service.enqueueFollowUp({
+          commandId: 'stalled-follow-up',
+          issuedAt: '2026-10-29T10:00:02Z',
+          taskId: task.id,
+          conversationId: conversation.id,
+          prompt: 'Follow up',
+        }),
+      )
+      await runStore(Deferred.await(promoteStarted))
+      const shutdown = await Promise.race([
+        runtime.runPromise(Effect.flip(service.stopAll())),
+        new Promise<never>((_resolve, reject) =>
+          setTimeout(() => reject(new Error('Shutdown is still waiting for the stalled promotion')), 1_000),
+        ),
+      ])
+      expect(shutdown).toMatchObject({ nativeCleanup: 'unconfirmed' })
+    } finally {
+      await runStore(Deferred.succeed(releasePromote, undefined))
+      await runtime.dispose()
+      await storeRuntime.dispose()
+    }
+  })
+
+  it('bounds the shutdown interrupt fan-out and reaches every Run past an individual refusal', async () => {
+    const storeRuntime = ManagedRuntime.make(WorkspaceStoreLive({ filename: ':memory:' }))
+    const store = await storeRuntime.runPromise(WorkspaceStore)
+    const runStore: RunEffect = effect => storeRuntime.runPromise(effect)
+    const count = 20
+    const interrupted = new Set<string>()
+    const fenced = new Set<string>()
+    let inFlight = 0
+    let maxInFlight = 0
+    let submitted = 0
+    const refuseFirst = (calls: Set<string>) =>
+      calls.size === 1
+        ? Effect.fail(new WorkspaceStoreError({ code: 'database-unavailable', message: 'Refused' }))
+        : Effect.void
+    const sessionFor = (context: AgentSessionContext) => {
+      const nativeSessionId = `native-${context.runId}`
+      return Effect.succeed(
+        makeSession({
+          identity: { nativeSessionId, generation: 1 },
+          events: () => Stream.never,
+          submit: () =>
+            Effect.sync(() => {
+              submitted += 1
+              return { nativeSessionId, nativeTurnId: 'native-turn', generation: 1 }
+            }),
+        }),
+      )
+    }
+    const runtime = makeRuntime(
+      () => Effect.succeed(makeConnection(makeSession(), { openSession: sessionFor })),
+      { closeDeadlineMs: 400 },
+      WorkspaceStore.of({
+        ...store,
+        requestInterrupt: (runId, ...rest) =>
+          Effect.gen(function* () {
+            interrupted.add(runId)
+            inFlight += 1
+            maxInFlight = Math.max(maxInFlight, inFlight)
+            yield* Effect.sleep('5 millis')
+            inFlight -= 1
+            yield* refuseFirst(interrupted)
+            return yield* store.requestInterrupt(runId, ...rest)
+          }),
+        failDispatch: (runId, failure) =>
+          Effect.suspend(() => {
+            fenced.add(runId)
+            return refuseFirst(fenced).pipe(Effect.andThen(store.failDispatch(runId, failure)))
+          }),
+      }),
+    )
+    try {
+      await setup(store, runStore)
+      const service = await runtime.runPromise(ExecutionService)
+      const runIds: string[] = []
+      for (let index = 0; index < count; index++) {
+        const nextTask = { ...task, id: `fan-task-${index}` as typeof task.id }
+        const nextConversation = { ...conversation, id: `fan-conversation-${index}` as typeof conversation.id }
+        await runStore(store.createTask({ task: nextTask, conversation: nextConversation }))
+        const runId = `fan-run-${index}` as typeof command.runId
+        runIds.push(runId)
+        await runtime.runPromise(
+          service.start({
+            ...command,
+            commandId: `fan-command-${index}`,
+            runId,
+            taskId: nextTask.id,
+            conversationId: nextConversation.id,
+            provisionalAgentSessionId: `fan-session-${index}`,
+          }),
+        )
+      }
+      await expect.poll(() => submitted).toBe(count)
+      await expect(runtime.runPromise(Effect.flip(service.stopAll()))).resolves.toMatchObject({
+        reason: 'background-failure',
+      })
+      expect([...interrupted].sort()).toEqual([...runIds].sort())
+      expect(maxInFlight).toBeGreaterThan(1)
+      expect(maxInFlight).toBeLessThanOrEqual(8)
+      expect([...fenced].sort()).toEqual([...runIds].sort())
+    } finally {
+      await runtime.dispose()
+      await storeRuntime.dispose()
     }
   })
 

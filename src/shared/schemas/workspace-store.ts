@@ -53,6 +53,7 @@ export const workspaceStoreErrorCodeSchema = Schema.Literals([
   'invalid-transition',
   'invalid-data',
   'database-unavailable',
+  'worker-overloaded',
 ])
 export type WorkspaceStoreErrorCode = Schema.Schema.Type<typeof workspaceStoreErrorCodeSchema>
 
@@ -233,7 +234,7 @@ export const createDelegationCommandSchema = Schema.Struct({
   task: createTaskCommandSchema.fields.task,
   conversation: createTaskCommandSchema.fields.conversation,
   record: delegationRecordSchema,
-  limits: Schema.Struct({ maxDepth: positiveCount, maxActivePerParentRun: positiveCount }),
+  limits: Schema.Struct({ maxDepth: positiveCount }),
 })
 export type CreateDelegationCommand = Schema.Schema.Type<typeof createDelegationCommandSchema>
 export const delegationReceiptSchema = Schema.Struct({
@@ -274,14 +275,19 @@ export const reopenDelegationCommandSchema = Schema.Struct({
   parentRunId: agentRunIdSchema,
   childRunId: agentRunIdSchema,
   accessMode: agentAccessModeSchema,
-  maxActivePerParentRun: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
   occurredAt: timestamp,
 })
 export type ReopenDelegationCommand = Schema.Schema.Type<typeof reopenDelegationCommandSchema>
+export const delegationCursorSchema = Schema.Struct({ createdAt: timestamp, id: delegationIdSchema })
+export type DelegationCursor = Schema.Schema.Type<typeof delegationCursorSchema>
+
 export const delegationQuerySchema = Schema.Struct({
   parentRunId: Schema.optional(agentRunIdSchema),
   parentTaskId: Schema.optional(taskIdSchema),
   activeOnly: Schema.optional(Schema.Boolean),
+  wakeState: Schema.optional(delegationWakeStateSchema),
+  visibility: Schema.optional(Schema.Literals(['current', 'history'])),
+  before: Schema.optional(delegationCursorSchema),
   limit: Schema.optional(
     Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(200)),
   ),
@@ -876,6 +882,7 @@ export const workspaceRunContextSchema = Schema.Struct({
   driverId: text,
   connectionId: text,
   modelId: Schema.optional(Schema.NullOr(Schema.String)),
+  modeId: Schema.optional(Schema.NullOr(Schema.String)),
   workspacePath: Schema.optional(text),
   accessMode: Schema.optional(agentAccessModeSchema),
 })

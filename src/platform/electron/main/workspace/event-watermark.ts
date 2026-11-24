@@ -4,11 +4,10 @@ import * as Exit from 'effect/Exit'
 import type { WorkspaceStore } from '@/core/ports/workspace-store.js'
 
 /**
- * Writes that commit a run event no driver event will publish: a queued follow-up promoted into a Run (`runQueued`),
- * and a Run failed before its driver accepted it (`runFailed`). Without the watermark moving, the event stream and the
- * conversation reads it bounds hide them until a later driver event moves it.
+ * Promote, claim and launch failure commit events before the driver publishes anything. Advance the watermark so
+ * the renderer can see those events and refresh the Delegation status when its child is claimed.
  */
-const WATERMARK_WRITES: ReadonlySet<string> = new Set(['promoteNextFollowUp', 'failDispatch'])
+const WATERMARK_WRITES: ReadonlySet<string> = new Set(['promoteNextFollowUp', 'claimDispatch', 'failDispatch'])
 
 export function withEventWatermark(
   store: WorkspaceStore['Service'],

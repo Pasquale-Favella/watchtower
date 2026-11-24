@@ -197,9 +197,7 @@ export const delegationToolListOutputSchema = Schema.Struct({
 
 export const delegationToolCapabilitiesOutputSchema = Schema.Struct({
   accessMode: agentAccessModeSchema,
-  available: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  active: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-  maxActive: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
+  available: Schema.Literals([0, 'unlimited']),
   connections: Schema.Array(
     Schema.Struct({
       connection: Schema.String,

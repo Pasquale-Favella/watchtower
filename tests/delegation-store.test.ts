@@ -77,7 +77,7 @@ const createCommand: CreateDelegationCommand = {
   task: { ...childTask, projectId: project.id, title: 'Audit' },
   conversation: childConversation,
   record,
-  limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+  limits: { maxDepth: 1 },
 }
 
 const withStore = async (use: (store: WorkspaceStore['Service']) => Promise<void>, filename = ':memory:') => {
@@ -305,6 +305,28 @@ describe('delegation store', () => {
     })
   })
 
+  it('projects a claimed child as running in task detail before its driver starts', async () => {
+    await withStore(async store => {
+      await run(store.createDelegation(createCommand), store)
+      const child = {
+        ...parentRun,
+        commandId: 'child-start',
+        runId: record.childRunId!,
+        taskId: childTask.id,
+        conversationId: childConversation.id,
+        provisionalAgentSessionId: 'child-session',
+      }
+      await run(store.beginRun(child), store)
+      expect(await run(store.readTaskDetail(childTask.id), store)).toMatchObject({
+        delegatedFrom: { delegationId: record.id, status: 'queued' },
+      })
+      await run(store.claimDispatch(child.runId, 7, ts), store)
+      expect(await run(store.readTaskDetail(childTask.id), store)).toMatchObject({
+        delegatedFrom: { delegationId: record.id, status: 'running' },
+      })
+    })
+  })
+
   it('counts pending approvals and questions only while their Delegation is unsettled', async () => {
     await withStore(async store => {
       await run(store.createDelegation(createCommand), store)
@@ -409,6 +431,80 @@ describe('delegation store', () => {
         origin: 'delegation',
         delegation: { delegationId: 'dlg-1', childTaskId: childTask.id, title: 'Audit', status: 'queued' },
       })
+    })
+  })
+
+  it('counts a wake delivery lost to an unclaimed promoted Run, so its re-enqueue is not a receipt replay', async () => {
+    await withStore(async store => {
+      await run(store.createDelegation(createCommand), store)
+      await run(
+        store.recordDriverEvent(parentRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'parent-completed',
+          occurredAt: ts,
+          event: { kind: 'turnCompleted' },
+        }),
+        store,
+      )
+      await run(
+        store.settleDelegation({
+          commandId: 'settle-1',
+          delegationId: 'dlg-1' as never,
+          status: 'completed',
+          resultText: 'Audit done',
+          resultTruncated: false,
+          occurredAt: ts,
+        }),
+        store,
+      )
+      await run(
+        store.setDelegationWake({
+          commandId: 'wake-1',
+          delegationId: 'dlg-1' as never,
+          wakeState: 'pending',
+          occurredAt: ts,
+        }),
+        store,
+      )
+      const wake = {
+        commandId: 'delegation-wake:dlg-1',
+        issuedAt: ts,
+        taskId: parentTask.id,
+        conversationId: parentConversation.id,
+        prompt: 'The delegated task finished',
+        origin: 'delegation' as const,
+        delegationId: 'dlg-1' as never,
+      }
+      await run(store.enqueueFollowUp(wake), store)
+      await run(
+        store.promoteNextFollowUp(parentConversation.id, {
+          ...parentRun,
+          commandId: 'promote-wake',
+          runId: 'run-wake' as never,
+          provisionalAgentSessionId: 'session-wake',
+        }),
+        store,
+      )
+      // The Run was begun but the app exits before it is claimed; the next owners fail it.
+      await run(store.acquireOwnerEpoch(ts), store)
+      await run(store.acquireOwnerEpoch(ts), store)
+      expect(
+        (await run(store.readTaskSnapshot(parentTask.id, 20), store)).runs.find(r => r.id === 'run-wake'),
+      ).toMatchObject({
+        status: 'failed',
+      })
+      expect(await run(store.getDelegation('dlg-1'), store)).toMatchObject({ wakeState: 'pending', wakeAttempts: 1 })
+      expect((await run(store.listDueDelegationWakes(10), store)).map(item => item.id)).toEqual(['dlg-1'])
+      // The receipt of the promoted wake still answers its own id, but the next delivery has an id of its own.
+      expect(await run(store.enqueueFollowUp(wake), store)).toMatchObject({ replayed: true })
+      expect((await run(store.listQueuedFollowUps(parentConversation.id, { limit: 10 }), store)).items).toHaveLength(0)
+      expect(
+        await run(store.enqueueFollowUp({ ...wake, commandId: 'delegation-wake:dlg-1:retry-1' }), store),
+      ).toMatchObject({
+        replayed: false,
+      })
+      expect((await run(store.listQueuedFollowUps(parentConversation.id, { limit: 10 }), store)).items).toHaveLength(1)
     })
   })
 })

@@ -11,6 +11,10 @@ const recordingStore = (calls: Array<string>) =>
         calls.push('promoteNextFollowUp')
         return null
       }),
+    claimDispatch: () =>
+      Effect.sync(() => {
+        calls.push('claimDispatch')
+      }),
     failDispatch: () =>
       Effect.sync(() => {
         calls.push('failDispatch')
@@ -33,12 +37,13 @@ const advance = (calls: Array<string>) =>
   })
 
 describe('withEventWatermark', () => {
-  it('advances the watermark after a promoted Run and a failed launch commit their events', async () => {
+  it('advances the watermark after promotion, claim, and launch failure commit their events', async () => {
     const calls: Array<string> = []
     const store = withEventWatermark(recordingStore(calls), advance(calls))
     await Effect.runPromise(store.promoteNextFollowUp('conversation' as never, {} as never))
+    await Effect.runPromise(store.claimDispatch('run' as never, 7, '2026-11-24T12:00:00Z'))
     await Effect.runPromise(store.failDispatch('run' as never, {} as never))
-    expect(calls).toEqual(['promoteNextFollowUp', 'advance', 'failDispatch', 'advance'])
+    expect(calls).toEqual(['promoteNextFollowUp', 'advance', 'claimDispatch', 'advance', 'failDispatch', 'advance'])
   })
 
   it('leaves the watermark alone for other writes, reads, and a launch failure that did not commit', async () => {

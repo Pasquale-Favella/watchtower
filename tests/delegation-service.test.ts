@@ -17,6 +17,7 @@ import { AgentDriver } from '@/core/ports/agent-driver.js'
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
+import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { WorkspaceCheckout } from '@/shared/schemas/workspace.js'
 import type { BeginRunCommand } from '@/shared/schemas/workspace-store.js'
 
@@ -90,6 +91,8 @@ interface HarnessOptions {
   readonly settleChildOnLaunch?: boolean
   /** Cancels each new delegation right after it is created and before its child is launched. */
   readonly cancelAfterCreate?: boolean
+  /** Replaces store operations, such as a read that returns an older record. */
+  readonly wrapStore?: (store: WorkspaceStore['Service']) => WorkspaceStore['Service']
 }
 
 /**
@@ -141,7 +144,10 @@ function buildHarness(options: HarnessOptions = {}) {
       }),
     ]),
   )
-  const base = Layer.merge(storeLayer, registry)
+  const wrappedStoreLayer = options.wrapStore
+    ? Layer.effect(WorkspaceStore, Effect.map(WorkspaceStore, options.wrapStore)).pipe(Layer.provide(storeLayer))
+    : storeLayer
+  const base = Layer.merge(wrappedStoreLayer, registry)
   const execution = Layer.effect(
     ExecutionService,
     Effect.gen(function* () {
@@ -249,7 +255,6 @@ describe('DelegationService', () => {
       const { service } = await openParent(built, true)
       await expect(built.runtime.runPromise(service.capabilities(parentCaller))).resolves.toMatchObject({
         remainingDepth: 0,
-        maxActive: 0,
         connections: [],
       })
       await expect(built.runtime.runPromise(service.list(parentCaller, 10))).resolves.toEqual({
@@ -454,7 +459,7 @@ describe('DelegationService', () => {
     }
   })
 
-  it('answers a replay even when the parent has since reached its limit', async () => {
+  it('replays the original start after other delegates have started', async () => {
     const built = buildHarness()
     try {
       const { service } = await openParent(built)
@@ -512,18 +517,182 @@ describe('DelegationService', () => {
     }
   })
 
-  it('refuses the fifth active delegation of one parent Run', async () => {
+  it('starts more than one page of concurrent delegates and stops them when their parent is interrupted', async () => {
     const built = buildHarness()
     try {
-      const { service } = await openParent(built)
-      for (const id of ['a', 'b', 'c', 'd']) {
-        await built.runtime.runPromise(service.start(parentCaller, request({ clientRequestId: id })))
+      const { store, service } = await openParent(built)
+      const run = built.runtime.runPromise.bind(built.runtime)
+      const coordinator = await run(DelegationCoordinator)
+      const count = 55
+      for (let index = 0; index < count; index++) {
+        const child = await run(service.start(parentCaller, request({ clientRequestId: `child-${index}` })))
+        expect(child).toMatchObject({ status: 'running', settled: false })
       }
-      const refused = await built.runtime.runPromise(
-        service.start(parentCaller, request({ clientRequestId: 'e' })).pipe(Effect.flip),
+      expect(built.starts).toHaveLength(count)
+      expect(new Set(built.starts.map(child => child.conversationId)).size).toBe(count)
+      const activeRuns = new Set(built.starts.map(child => child.runId))
+      let heldId: string | undefined
+      for (const key of ['held', 'older-history', 'newer-history']) {
+        const child = await run(service.start(parentCaller, request({ clientRequestId: key })))
+        const id = child.delegationId
+        await run(
+          store.settleDelegation({
+            commandId: `settle-${key}`,
+            delegationId: id,
+            status: 'completed',
+            resultText: null,
+            resultTruncated: false,
+            occurredAt: ts,
+          }),
+        )
+        await run(
+          store.setDelegationWake({
+            commandId: `wake-${key}`,
+            delegationId: id,
+            wakeState: key === 'held' ? 'pending' : 'delivered',
+            occurredAt: ts,
+          }),
+        )
+        if (key === 'held') heldId = id
+      }
+      const list = await run(service.listForTask({ taskId: parentTask.id, runId: parentCommand.runId, limit: 1 }))
+      expect(list.items.filter(record => record.settledAt === null)).toHaveLength(count)
+      expect(list.items.find(record => record.id === heldId)?.wakeState).toBe('pending')
+      expect(list.items.filter(record => record.wakeState === 'delivered')).toHaveLength(1)
+      expect(list.truncated).toBe(true)
+
+      await run(
+        store.recordDriverEvent(parentCommand.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'parent-interrupted',
+          occurredAt: ts,
+          event: { kind: 'turnInterrupted', nativeTurnId: 'native-turn' },
+        }),
       )
-      expect(refused.code).toBe('limit-exceeded')
-      expect(built.starts).toHaveLength(4)
+      await run(coordinator.runFinished({ runId: parentCommand.runId, taskId: parentTask.id }))
+      expect(new Set(built.interrupts)).toEqual(activeRuns)
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('returns live status on the renderer list and both direct record reads', async () => {
+    const built = buildHarness()
+    try {
+      const { store, service } = await openParent(built)
+      const run = built.runtime.runPromise.bind(built.runtime)
+      const { delegationId, childTaskId } = await run(service.start(parentCaller, request()))
+      const child = built.starts[0]!
+      async function verifyStatus(status: 'running' | 'waiting') {
+        const list = await run(service.listForTask({ taskId: parentTask.id, runId: parentCommand.runId, limit: 50 }))
+        expect(list.items).toMatchObject([{ id: delegationId, status, settledAt: null }])
+        expect(await run(store.getDelegation(delegationId))).toMatchObject({ status })
+        expect(await run(store.getDelegationByChildTask(childTaskId))).toMatchObject({ status })
+        expect(await run(service.status(parentCaller, delegationId))).toMatchObject({ status })
+      }
+      await verifyStatus('running')
+      await run(
+        store.recordDriverEvent(child.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'approval-pending',
+          occurredAt: ts,
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'approval',
+              runId: child.runId,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Run the tests?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      await verifyStatus('waiting')
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('reports no pending request once the child Run has ended after its record was read', async () => {
+    let stale: DelegationRecord | null = null
+    const built = buildHarness({
+      wrapStore: real => ({
+        ...real,
+        getDelegation: id => (stale?.id === id ? Effect.succeed(stale) : real.getDelegation(id)),
+      }),
+    })
+    try {
+      const { store, service } = await openParent(built)
+      const run = built.runtime.runPromise.bind(built.runtime)
+      const { delegationId } = await run(service.start(parentCaller, request()))
+      const child = built.starts[0]
+      if (!child) throw new Error('The child Run was not started.')
+      await run(
+        store.recordDriverEvent(child.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'approval-pending',
+          occurredAt: ts,
+          event: {
+            kind: 'requestPending',
+            request: {
+              requestId: 'approval',
+              runId: child.runId,
+              generation: 1,
+              kind: 'approval',
+              prompt: 'Run the tests?',
+              questions: [],
+            },
+          },
+        }),
+      )
+      stale = await run(store.getDelegation(delegationId))
+      expect(stale).toMatchObject({ pendingRequest: { kind: 'approval' } })
+      await run(
+        store.recordDriverEvent(child.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'child-completed',
+          occurredAt: ts,
+          event: { kind: 'turnCompleted', nativeTurnId: 'native-turn' },
+        }),
+      )
+      await expect(run(service.status(parentCaller, delegationId))).resolves.toMatchObject({
+        status: 'completed',
+        settled: true,
+        pendingRequest: null,
+      })
+    } finally {
+      await built.runtime.dispose()
+    }
+  })
+
+  it('lists result previews for the renderer while the record keeps the whole result', async () => {
+    const built = buildHarness()
+    try {
+      const { store, service } = await openParent(built)
+      const run = built.runtime.runPromise.bind(built.runtime)
+      const { delegationId } = await run(service.start(parentCaller, request()))
+      const resultText = 'r'.repeat(5_000)
+      await run(
+        store.settleDelegation({
+          commandId: 'settle-long',
+          delegationId,
+          status: 'completed',
+          resultText,
+          resultTruncated: false,
+          occurredAt: ts,
+        }),
+      )
+      const list = await run(service.listForTask({ taskId: parentTask.id, limit: 50 }))
+      expect(list.items).toHaveLength(1)
+      expect(list.items[0]?.resultText?.length).toBeLessThanOrEqual(1_000)
+      expect(resultText.startsWith(list.items[0]?.resultText ?? 'missing')).toBe(true)
+      expect((await run(store.getDelegation(delegationId)))?.resultText).toBe(resultText)
     } finally {
       await built.runtime.dispose()
     }

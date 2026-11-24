@@ -23,7 +23,7 @@ Watchtower runs delegated tasks on the user's connected harnesses and models. ${
 
 - When the user asks to delegate, hand off, or run work with another harness, connection or model (for example "an opencode delegate using <model>" or "have claude review this"), call \`delegation_capabilities\`, match their words to a connection and model, and call \`delegation_start\`, not config files, scripts or native subagents.
 - Native subagents (Claude \`Agent\`, Codex \`spawn_agent\`) are only for children on your own harness and model with no settings beyond yours. Use \`delegation_start\` for another connection or model, a different effort or access mode, a separate checkout (\`isolation:"worktree"\`), or a background child. Ordinary coding tasks need neither.
-- Model lists are short: if the named model is missing, call \`delegation_capabilities\` with \`search\` set to the user's words (such as "flint free") before calling it unavailable. \`available\` is how many tasks you can start now; start one per requested delegate. Never switch models unasked.
+- Model lists are short: if the named model is missing, call \`delegation_capabilities\` with \`search\` set to the user's words (such as "flint free") before calling it unavailable. Start one task per requested delegate. Each starts in its own conversation. Never switch models unasked.
 - The child sees only \`task\`: make it complete. No secrets in it.
 - Completion wakes this run: follow \`next\`, never poll with \`delegation_status\`, sleeps or watchers, and end your turn when no other work is left.
 - Follow up on a delegated task or answer its question with \`delegation_send\`. A new review or re-check is a new \`delegation_start\`. Stop one you no longer need with \`delegation_cancel\`.

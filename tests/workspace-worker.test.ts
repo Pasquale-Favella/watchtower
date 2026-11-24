@@ -3,14 +3,16 @@ import { join, resolve } from 'node:path'
 import { Worker } from 'node:worker_threads'
 
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
+import * as TestClock from 'effect/testing/TestClock'
 import { build } from 'esbuild'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import { WorkspaceWorkerStoreLive } from '@/platform/electron/workers/workspace/client.js'
-import { WORKSPACE_WORKER_PROTOCOL_VERSION } from '@/shared/rpc/workspace-worker.js'
+import { WORKSPACE_WORKER_PROTOCOL_VERSION, WORKSPACE_WORKER_REQUEST_CAPACITY } from '@/shared/rpc/workspace-worker.js'
 import {
   type BeginRunCommand,
   type QueuedFollowUpPage,
@@ -68,6 +70,7 @@ const makeRuntime = (
   options: {
     readonly workerPath?: string
     readonly initializationTimeoutMs?: number
+    readonly requestTimeoutMs?: number
     readonly closeTimeoutMs?: number
     readonly workerFactory?: (workerPath: string | URL, workerData: { readonly filename: string }) => Worker
   } = {},
@@ -81,6 +84,7 @@ const makeRuntime = (
         ? {}
         : { initializationTimeoutMs: options.initializationTimeoutMs }),
       ...(options.closeTimeoutMs === undefined ? {} : { closeTimeoutMs: options.closeTimeoutMs }),
+      ...(options.requestTimeoutMs === undefined ? {} : { requestTimeoutMs: options.requestTimeoutMs }),
       workerFactory: (path, data) => {
         const worker = options.workerFactory
           ? options.workerFactory(path, data)
@@ -1075,7 +1079,59 @@ describe('workspace worker RPC client', () => {
     }
   }, 5_000)
 
-  it('rejects invalid and oversized requests, bounds concurrency, and keeps the worker usable', async () => {
+  it('queues callers beyond transport capacity without spending their deadline or reporting overload', async () => {
+    let stall = false
+    const held: Array<() => void> = []
+    const capacity = WORKSPACE_WORKER_REQUEST_CAPACITY
+    const { runtime } = makeRuntime(join(fixtureDirectory, 'backpressure.db'), {
+      requestTimeoutMs: 10_000,
+      workerFactory: (path, workerData) => {
+        const worker = new Worker(path, { workerData })
+        const post = worker.postMessage.bind(worker)
+        worker.postMessage = (...args: Parameters<Worker['postMessage']>) => {
+          if (stall) held.push(() => post(...args))
+          else post(...args)
+        }
+        return worker
+      },
+    })
+    const stalled: Promise<unknown>[] = []
+    try {
+      const store = await runtime.runPromise(WorkspaceStore)
+      stall = true
+      const request = store.pageEvents(0, 1)
+      for (let index = 0; index < capacity; index++) stalled.push(Effect.runPromise(request))
+      await expect.poll(() => held.length).toBe(capacity)
+
+      await Effect.runPromise(
+        Effect.gen(function* () {
+          let settled = 0
+          const waiters = yield* Effect.forEach(Array.from({ length: 3 * capacity }), () =>
+            Effect.forkChild(request.pipe(Effect.ensuring(Effect.sync(() => (settled += 1)))), {
+              startImmediately: true,
+            }),
+          )
+          // Time spent waiting for a slot is not request time, so no waiter fails and nothing more is sent.
+          yield* TestClock.adjust(30_000)
+          expect(settled).toBe(0)
+          expect(held).toHaveLength(capacity)
+          stall = false
+          for (const send of held.splice(0)) send()
+          const pages = yield* Fiber.joinAll(waiters)
+          expect(pages).toHaveLength(3 * capacity)
+        }).pipe(Effect.provide(TestClock.layer())),
+      )
+      await expect(Promise.all(stalled)).resolves.toHaveLength(capacity)
+      await expect(Effect.runPromise(store.pageEvents(0, 1))).resolves.toBeDefined()
+    } finally {
+      stall = false
+      for (const send of held.splice(0)) send()
+      await Promise.allSettled(stalled)
+      await runtime.dispose()
+    }
+  }, 10_000)
+
+  it('rejects invalid and oversized requests and serves concurrent requests beyond transport capacity', async () => {
     const { runtime } = makeRuntime(join(fixtureDirectory, 'limits.db'))
     try {
       const store = await runtime.runPromise(WorkspaceStore)
@@ -1094,16 +1150,7 @@ describe('workspace worker RPC client', () => {
       })
 
       const requests = Array.from({ length: 65 }, () => Effect.runPromise(store.pageEvents(0, 500)))
-      const results = await Promise.allSettled(requests)
-      expect(
-        results.some(
-          result =>
-            result.status === 'rejected' &&
-            result.reason instanceof Error &&
-            'message' in result.reason &&
-            result.reason.message === 'Workspace worker request limit exceeded.',
-        ),
-      ).toBe(true)
+      await expect(Promise.all(requests)).resolves.toHaveLength(65)
       await expect(Effect.runPromise(store.readTaskSnapshot(task.id, 10))).resolves.toMatchObject({
         task: { id: task.id },
       })

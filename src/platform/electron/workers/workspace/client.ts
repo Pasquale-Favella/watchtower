@@ -6,13 +6,16 @@ import { Worker } from 'node:worker_threads'
 import * as NodeWorkerPlatform from '@effect/platform-node/NodeWorker'
 import * as Cause from 'effect/Cause'
 import * as Context from 'effect/Context'
+import * as Deferred from 'effect/Deferred'
 import * as Duration from 'effect/Duration'
 import * as Effect from 'effect/Effect'
 import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import { RpcClient, RpcGroup, RpcWorker } from 'effect/rpc'
 import type { RpcClientError } from 'effect/rpc/RpcClientError'
+import * as Schedule from 'effect/Schedule'
 import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
 
 import { WorkspaceStore, type NativeTurnAcknowledgement } from '@/core/ports/workspace-store.js'
 import {
@@ -49,6 +52,7 @@ const DEFAULT_INITIALIZATION_TIMEOUT_MS = 5_000
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
 const DEFAULT_CLOSE_TIMEOUT_MS = 3_000
 const NATIVE_WORKER_TERMINATION_BUDGET_MS = 250
+const OVERLOAD_RETRY_MS = 10
 const TRANSPORT_FAILURE_MESSAGE = 'Workspace storage is unavailable.'
 const CLEANUP_FAILURE_MESSAGE = 'Workspace worker cleanup did not complete.'
 const REQUEST_LIMIT_MESSAGE = 'Workspace worker request limit exceeded.'
@@ -208,7 +212,7 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
     : new Worker(options.workerPath, { workerData })
   const startup = deferred<ReadyWorkspaceWorker>()
   const stop = deferred<undefined>()
-  const failureSignal = deferred<WorkspaceStoreError>()
+  const failureSignal = Deferred.makeUnsafe<never, WorkspaceStoreError>()
   const exited = deferred<number>()
 
   let fiber: Fiber.Fiber<void, unknown> | null = null
@@ -224,7 +228,7 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
   const failGeneration = (error: WorkspaceStoreError): void => {
     if (generationFailure) return
     generationFailure = error
-    failureSignal.resolve(error)
+    Deferred.doneUnsafe(failureSignal, Effect.fail(error))
     if (!client) startup.reject(error)
     stop.resolve(undefined)
   }
@@ -239,10 +243,7 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
   worker.on('error', onError)
   worker.on('exit', onExit)
 
-  const awaitFailure = Effect.flatMap(
-    Effect.promise(() => failureSignal.promise),
-    error => Effect.fail(error),
-  )
+  const awaitFailure = Deferred.await(failureSignal)
   const program = Effect.scoped(
     Effect.gen(function* () {
       const protocol = yield* Layer.build(protocolLayer(worker))
@@ -253,6 +254,7 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
 
       yield* withTimeout(rawClient['workspace-worker:ready'](undefined), initializationTimeoutMs)
 
+      const requestSlots = yield* Semaphore.make(WORKSPACE_WORKER_REQUEST_CAPACITY)
       const invoke = <A>(
         tag: WorkspaceWorkerRpcTag,
         payload: unknown,
@@ -273,45 +275,62 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             return Effect.fail(invalidRequestFailure())
           }
           if (bytes > WORKSPACE_WORKER_REQUEST_BYTE_CAPACITY) return Effect.fail(requestLimitFailure())
-          if (activeRequests >= WORKSPACE_WORKER_REQUEST_CAPACITY) return Effect.fail(requestLimitFailure())
 
-          if (activeRequests === 0) {
-            idleRequests = new Promise<void>(resolve => {
-              resolveIdle = resolve
-            })
-          }
-          activeRequests += 1
-
-          const call = Effect.raceFirst(operation(), awaitFailure).pipe(
-            Effect.flatMap(result => {
-              if (generationFailure || worker.threadId === -1)
+          // Callers beyond the transport capacity wait for a slot. The deadline starts once the request is sent, so
+          // waiting here never reads as a stalled worker, and overload is never reported to the caller.
+          const request = requestSlots.withPermit(
+            Effect.suspend(() => {
+              if (closing || generationFailure || worker.threadId === -1)
                 return Effect.fail(generationFailure ?? transportFailure())
-              try {
-                if (byteLength(result) > WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY)
-                  return Effect.fail(responseLimitFailure())
-              } catch {
-                return Effect.fail(responseLimitFailure())
-              }
-              return Effect.succeed(result)
-            }),
-            Effect.catchCause(cause =>
-              Cause.hasInterruptsOnly(cause)
-                ? Effect.interrupt
-                : Effect.fail(generationFailure ?? workspaceErrorFromCause(cause)),
-            ),
-          )
 
-          return withTimeout(call, requestTimeoutMs).pipe(
-            Effect.ensuring(
-              Effect.sync(() => {
-                activeRequests -= 1
-                if (activeRequests === 0) {
-                  resolveIdle?.()
-                  resolveIdle = null
-                }
-              }),
-            ),
+              if (activeRequests === 0) {
+                idleRequests = new Promise<void>(resolve => {
+                  resolveIdle = resolve
+                })
+              }
+              activeRequests += 1
+
+              const send = Effect.suspend(operation).pipe(
+                Effect.flatMap(result => {
+                  if (generationFailure || worker.threadId === -1)
+                    return Effect.fail(generationFailure ?? transportFailure())
+                  try {
+                    if (byteLength(result) > WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY)
+                      return Effect.fail(responseLimitFailure())
+                  } catch {
+                    return Effect.fail(responseLimitFailure())
+                  }
+                  return Effect.succeed(result)
+                }),
+                Effect.catchCause(cause =>
+                  Cause.hasInterruptsOnly(cause)
+                    ? Effect.interrupt
+                    : Effect.fail(generationFailure ?? workspaceErrorFromCause(cause)),
+                ),
+              )
+              // The worker refuses work only while an interrupted request still runs there, so a refusal is retried.
+              return withTimeout(
+                send.pipe(
+                  Effect.retry({
+                    while: error => error.code === 'worker-overloaded',
+                    schedule: Schedule.spaced(Duration.millis(OVERLOAD_RETRY_MS)),
+                  }),
+                ),
+                requestTimeoutMs,
+              ).pipe(
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    activeRequests -= 1
+                    if (activeRequests === 0) {
+                      resolveIdle?.()
+                      resolveIdle = null
+                    }
+                  }),
+                ),
+              )
+            }),
           )
+          return Effect.raceFirst(request, awaitFailure)
         })
 
       const store: WorkspaceStore['Service'] = {
@@ -587,8 +606,8 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
             rawClient['workspace-worker:markDelegationRead'](payload),
           )
         },
-        listDueDelegationWakes: limit => {
-          const payload = { limit }
+        listDueDelegationWakes: (limit, after) => {
+          const payload = { limit, after }
           return invoke('workspace-worker:listDueDelegationWakes', payload, () =>
             rawClient['workspace-worker:listDueDelegationWakes'](payload),
           )

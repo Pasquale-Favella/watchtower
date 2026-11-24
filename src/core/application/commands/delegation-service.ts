@@ -15,7 +15,6 @@ import { agentDriverAccessModes, UnsupportedAgentOperation } from '@/core/ports/
 import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import {
-  DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
   DELEGATION_MAX_DEPTH,
   type DelegationCaller,
   type DelegationCapabilities,
@@ -39,7 +38,7 @@ import type {
   WorkspaceCheckout,
   WorkspaceCheckoutId,
 } from '@/shared/schemas/workspace.js'
-import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import { type DelegationCursor, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 /** The Run that makes a call. Built by the platform layer from the endpoint, never from tool arguments. */
 export interface DelegationCallerScope extends DelegationCaller {
@@ -130,6 +129,15 @@ const TITLE_MAX = 80
 const NEXT_LIVE = 'Completion wakes this run. Do not poll; continue other work or end your turn.'
 const READ_MESSAGE_MAX = 4_000
 const READ_PAGE = 200
+/** The UI list carries a result preview; a reader that needs the whole result loads the record. */
+const LIST_RESULT_PREVIEW_CHARS = 1_000
+/** Current Delegations listed for the UI at most, so one response stays well inside the RPC frame. */
+const LIST_CURRENT_MAX = 1_000
+
+const listedRecord = (record: DelegationRecord): DelegationRecord =>
+  record.resultText !== null && record.resultText.length > LIST_RESULT_PREVIEW_CHARS
+    ? { ...record, resultText: record.resultText.slice(0, LIST_RESULT_PREVIEW_CHARS) }
+    : record
 
 /** The task as the child receives it. A role other than `general` frames it. */
 const framedTask = (task: string, role: DelegationRole | undefined) =>
@@ -173,7 +181,10 @@ const writeFailure = (error: WorkspaceStoreError): DelegationError => {
     case 'not-found':
       return new DelegationError({ code: 'parent-not-active', message: 'This run is no longer active.' })
     case 'admission-conflict':
-      return new DelegationError({ code: 'limit-exceeded', message: 'The run cannot start another delegation now.' })
+      return new DelegationError({
+        code: 'depth-exceeded',
+        message: 'A delegated task cannot start another delegated task.',
+      })
     case 'command-conflict':
       return new DelegationError({ code: 'conflict', message: 'This client request id was used with other input.' })
     default:
@@ -222,7 +233,10 @@ export class DelegationService extends Context.Service<
       delegationId: DelegationId,
       request: SendDelegationRequest,
     ) => Effect.Effect<DelegationSummary, DelegationError>
-    /** Read for the Workspace UI, scoped to one Task's own delegations, optionally to one parent Run. */
+    /**
+     * Read current records (newest first, bounded) and limited settled history for one Task, optionally scoped to one
+     * parent Run. Each result is a preview; the full result is read per Delegation.
+     */
     readonly listForTask: (query: {
       readonly taskId: TaskId
       readonly runId?: AgentRunId | undefined
@@ -253,11 +267,11 @@ export class DelegationService extends Context.Service<
         const liveStatus = Effect.fn('DelegationService.liveStatus')(function* (record: DelegationRecord) {
           if (record.settledAt !== null) return record.status
           const snapshot = yield* store.readTaskSnapshot(record.childTaskId, 20).pipe(Effect.option)
-          const runStatus = Option.isSome(snapshot)
-            ? (snapshot.value.runs.find(run => run.id === record.childRunId)?.status ?? null)
-            : null
+          if (Option.isNone(snapshot)) return record.status
+          const run = snapshot.value.runs.find(run => run.id === record.childRunId)
+          if (!run) return record.status
           return delegationStatusFromRun({
-            runStatus,
+            runStatus: run.status,
             cancelRequested: record.cancelRequestedAt !== null,
             pendingRequest: record.pendingRequest !== null,
           })
@@ -281,7 +295,8 @@ export class DelegationService extends Context.Service<
             accessMode: record.accessMode,
             accessModeSteppedDownFrom: record.accessModeSteppedDownFrom,
             isolation: record.isolation,
-            pendingRequest: record.pendingRequest,
+            // The Run can have ended after the record was read; a settled child has no open request.
+            pendingRequest: settled ? null : record.pendingRequest,
             resultText: record.resultText,
             resultTruncated: record.resultTruncated,
             waitTimedOut,
@@ -312,18 +327,9 @@ export class DelegationService extends Context.Service<
               parentAccessMode: caller.accessMode,
               depth: 0,
               remainingDepth: 0,
-              activeCount: 0,
-              maxActive: 0,
               connections: [],
             } satisfies DelegationCapabilities
           const link = yield* store.getDelegationByChildTask(caller.taskId).pipe(Effect.mapError(storeFailure))
-          const active = yield* store
-            .listDelegations({
-              parentRunId: caller.runId,
-              activeOnly: true,
-              limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
-            })
-            .pipe(Effect.mapError(storeFailure))
           const loaded = yield* options.loadConnections()
           const connections: Array<DelegationTargetChoice> = []
           for (const connection of loaded.slice(0, 64)) {
@@ -347,8 +353,6 @@ export class DelegationService extends Context.Service<
             parentAccessMode: caller.accessMode,
             depth,
             remainingDepth: Math.max(0, DELEGATION_MAX_DEPTH - depth),
-            activeCount: active.items.length,
-            maxActive: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
             connections,
           } satisfies DelegationCapabilities
         })
@@ -374,19 +378,6 @@ export class DelegationService extends Context.Service<
             return yield* new DelegationError({
               code: 'depth-exceeded',
               message: 'A delegated task cannot start another delegated task.',
-            })
-
-          const active = yield* store
-            .listDelegations({
-              parentRunId: caller.runId,
-              activeOnly: true,
-              limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
-            })
-            .pipe(Effect.mapError(storeFailure))
-          if (active.items.length >= DELEGATION_MAX_ACTIVE_PER_PARENT_RUN)
-            return yield* new DelegationError({
-              code: 'limit-exceeded',
-              message: `This run already has ${DELEGATION_MAX_ACTIVE_PER_PARENT_RUN} active delegations.`,
             })
 
           const connections = yield* options.loadConnections()
@@ -510,7 +501,7 @@ export class DelegationService extends Context.Service<
                 inheritedCheckoutId: checkoutId,
               },
               record,
-              limits: { maxDepth: DELEGATION_MAX_DEPTH, maxActivePerParentRun: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN },
+              limits: { maxDepth: DELEGATION_MAX_DEPTH },
             })
             .pipe(Effect.mapError(writeFailure))
 
@@ -738,18 +729,6 @@ export class DelegationService extends Context.Service<
           key: string,
         ) {
           yield* liveParent(caller)
-          const active = yield* store
-            .listDelegations({
-              parentRunId: caller.runId,
-              activeOnly: true,
-              limit: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
-            })
-            .pipe(Effect.mapError(storeFailure))
-          if (active.items.length >= DELEGATION_MAX_ACTIVE_PER_PARENT_RUN)
-            return yield* new DelegationError({
-              code: 'limit-exceeded',
-              message: `This run already has ${DELEGATION_MAX_ACTIVE_PER_PARENT_RUN} active delegations.`,
-            })
           const snapshot = yield* store.readTaskSnapshot(record.childTaskId, 20).pipe(Effect.mapError(storeFailure))
           const context = snapshot.runContexts?.find(item => item.runId === record.childRunId)
           const driverId = context?.driverId ?? record.driverId
@@ -788,7 +767,6 @@ export class DelegationService extends Context.Service<
                 parentRunId: caller.runId,
                 childRunId,
                 accessMode: narrowing.mode,
-                maxActivePerParentRun: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
                 occurredAt: yield* now,
               },
               {
@@ -880,13 +858,31 @@ export class DelegationService extends Context.Service<
           read,
           send,
           listForTask: query =>
-            store
-              .listDelegations({
-                parentTaskId: query.taskId,
-                ...(query.runId ? { parentRunId: query.runId } : {}),
-                limit: query.limit,
-              })
-              .pipe(Effect.mapError(storeFailure)),
+            Effect.gen(function* () {
+              const scope = { parentTaskId: query.taskId, parentRunId: query.runId }
+              const items = new Map<DelegationId, DelegationRecord>()
+              let truncated = false
+              for (const visibility of ['current', 'history'] as const) {
+                let before: DelegationCursor | undefined
+                let remaining = visibility === 'current' ? Infinity : query.limit
+                while (remaining > 0) {
+                  const page = yield* store.listDelegations({
+                    ...scope,
+                    visibility,
+                    before,
+                    limit: Math.min(25, remaining),
+                  })
+                  for (const record of page.items) items.set(record.id, listedRecord(record))
+                  remaining -= page.items.length
+                  if (visibility === 'current' && items.size >= LIST_CURRENT_MAX) remaining = 0
+                  const last = page.items.at(-1)
+                  if (!page.truncated || !last) break
+                  before = { createdAt: last.createdAt, id: last.id }
+                  if (remaining === 0) truncated = true
+                }
+              }
+              return { items: [...items.values()], truncated }
+            }).pipe(Effect.mapError(storeFailure)),
           cancelFromUser: delegationId =>
             coordinator
               .cancel(delegationId)

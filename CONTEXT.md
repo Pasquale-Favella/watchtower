@@ -204,6 +204,7 @@ _Avoid_: realized savings, guaranteed savings
 
 ## Rules
 
+- A parent Run can start any number of Delegated Tasks. Each starts in its own Conversation. Delegation depth is limited to 1.
 - A Delegated Task's Runs never exceed the access mode of the Run that started them.
 - The README's platform claim (Windows | macOS | Linux) is the product
   promise; packaging config must never regress below it (ADR 0015).

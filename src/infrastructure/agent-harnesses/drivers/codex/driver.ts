@@ -399,7 +399,6 @@ const TOOL_OUTPUT_CHUNK_SIZE = 8192
 const MAX_PENDING_NATIVE_REQUESTS = 128
 const MAX_RETAINED_RUNS = 8
 const MAX_RUN_ID_FENCES = 128
-const MAX_ACTIVE_SESSIONS = 16
 const MAX_RUN_EVENTS = 64
 const MAX_PRE_ACCEPT_EVENTS = 64
 const MAX_PRE_ACCEPT_BYTES = 64 * 1024
@@ -653,8 +652,6 @@ function openSession(
   connectionScope: import('effect/Scope').Scope,
 ): Effect.Effect<AgentDriverSession, AgentDriverError | UnsupportedAgentOperation> {
   return Effect.gen(function* () {
-    if (sessions.size >= MAX_ACTIVE_SESSIONS)
-      return yield* failure('invalid-state', 'This Codex connection reached its active session limit.')
     if (native && sessions.has(native.nativeSessionId))
       return yield* failure('invalid-state', 'This Codex thread is already loaded by the connection.')
     if (native && native.generation !== context.generation)

@@ -5,7 +5,6 @@ import { describe, expect, it } from 'vitest'
 import { ApplicationRpcGroup } from '../src/shared/rpc/application.js'
 import { WorkspaceDelegationRpcGroup } from '../src/shared/rpc/workspace-delegations.js'
 import {
-  DELEGATION_MAX_ACTIVE_PER_PARENT_RUN,
   DELEGATION_MAX_DEPTH,
   DELEGATION_WAIT_MAX_MS,
   delegationListSchema,
@@ -73,7 +72,6 @@ describe('delegation contracts', () => {
 
   it('keeps a delegation at depth one with a closed status and a shared default', () => {
     expect(DELEGATION_MAX_DEPTH).toBe(1)
-    expect(DELEGATION_MAX_ACTIVE_PER_PARENT_RUN).toBe(4)
     expect(decodes(delegationRecordSchema, record)).toBe(true)
     expect(decodes(delegationRecordSchema, { ...record, depth: 2 })).toBe(false)
     expect(decodes(delegationRecordSchema, { ...record, status: 'done' })).toBe(false)
@@ -92,6 +90,12 @@ describe('delegation contracts', () => {
     expect(decodes(workspaceConversationMessageSchema, { id: 'message-a', content: 'hello', createdAt: ts })).toBe(true)
     expect(decodes(workspaceTaskPageOptionsSchema, { limit: 10 })).toBe(true)
     expect(decodes(agentToolMetadataSchema, { category: 'subagent', command: 'ls' })).toBe(true)
+  })
+
+  it('accepts a renderer response with more than 256 live delegations', () => {
+    const items = Array.from({ length: 257 }, (_, index) => ({ ...record, id: `dlg-${index}` }))
+    const rpc = WorkspaceDelegationRpcGroup.requests.get('delegation:list')!
+    expect(decodes(rpc.successSchema, { items, truncated: false })).toBe(true)
   })
 
   it('carries delegation provenance, wake origin and orchestration references', () => {
@@ -134,12 +138,13 @@ describe('delegation contracts', () => {
       task: { id: 'child-task', projectId: 'project', title: 'Investigate parser', description: '', createdAt: ts },
       conversation: { id: 'child-conversation', createdAt: ts },
       record,
-      limits: { maxDepth: DELEGATION_MAX_DEPTH, maxActivePerParentRun: DELEGATION_MAX_ACTIVE_PER_PARENT_RUN },
+      limits: { maxDepth: DELEGATION_MAX_DEPTH },
     }
     expect(decodes(createDelegationCommandSchema, command)).toBe(true)
     expect(
-      decodes(createDelegationCommandSchema, { ...command, limits: { maxDepth: 0, maxActivePerParentRun: 4 } }),
-    ).toBe(false)
+      decodes(createDelegationCommandSchema, { ...command, limits: { ...command.limits, maxActivePerParentRun: 4 } }),
+    ).toBe(true)
+    expect(decodes(createDelegationCommandSchema, { ...command, limits: { maxDepth: 0 } })).toBe(false)
     expect(
       decodes(setDelegationWakeCommandSchema, {
         commandId: 'wake-state-a',

@@ -242,10 +242,10 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
     expect(byName.get('delegation_cancel')?.inputSchema).toEqual(expectedSchema(delegationToolCancelInputSchema))
   }, 30_000)
 
-  it('reports connections and free slots through delegation_capabilities', async () => {
+  it('reports connections and unlimited delegation through delegation_capabilities', async () => {
     const result = await callTool(parentClient, 'delegation_capabilities')
     expect(result.isError).toBeFalsy()
-    expect(result.structuredContent).toMatchObject({ accessMode: 'auto', available: 4 })
+    expect(result.structuredContent).toMatchObject({ accessMode: 'auto', available: 'unlimited' })
     expect(result.structuredContent?.['connections']).toEqual([
       expect.objectContaining({ connection: 'codex-1', label: 'Codex' }),
     ])
@@ -353,14 +353,7 @@ describe('orchestrator MCP endpoint over the real delegation service', () => {
     const listed = await proxy.listTools()
     expect(listed.tools.map(tool => tool.name)).toContain('delegation_start')
     const capabilities = await callTool(proxy, 'delegation_capabilities')
-    const slots = capabilities.structuredContent as {
-      accessMode: string
-      available: number
-      active: number
-      maxActive: number
-    }
-    // Earlier cases leave delegations running, so free slots are the cap less those.
-    expect(slots).toMatchObject({ accessMode: 'auto', available: slots.maxActive - slots.active })
+    expect(capabilities.structuredContent).toMatchObject({ accessMode: 'auto', available: 'unlimited' })
     const missing = await callTool(proxy, 'delegation_status', { id: 'dlg-missing' })
     expect(errorCodeOf(missing)).toBe('not-found')
     await proxy.close()

@@ -33,6 +33,7 @@ const safeMessages = {
   'invalid-transition': 'Workspace state transition is invalid.',
   'invalid-data': 'Workspace operation data is invalid.',
   'database-unavailable': 'Workspace database operation failed.',
+  'worker-overloaded': 'Workspace worker is busy.',
 } satisfies Record<WorkspaceStoreError['code'], string>
 
 const safeError = (code: WorkspaceStoreError['code']): WorkspaceStoreError =>
@@ -100,9 +101,10 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
           if (!rpc || Schema.decodeUnknownResult(rpc.payloadSchema)(payload)._tag === 'Failure') {
             return Effect.fail(safeError('invalid-data'))
           }
-          if (closing || activeRequests >= WORKSPACE_WORKER_REQUEST_CAPACITY) {
+          if (closing) {
             return Effect.fail(safeError('database-unavailable'))
           }
+          if (activeRequests >= WORKSPACE_WORKER_REQUEST_CAPACITY) return Effect.fail(safeError('worker-overloaded'))
 
           activeRequests += 1
           const release = Effect.suspend(() => {
@@ -473,8 +475,10 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
         () => options.store.markDelegationRead(delegationId, readAt),
         true,
       ),
-    'workspace-worker:listDueDelegationWakes': ({ limit }) =>
-      execute('workspace-worker:listDueDelegationWakes', { limit }, () => options.store.listDueDelegationWakes(limit)),
+    'workspace-worker:listDueDelegationWakes': query =>
+      execute('workspace-worker:listDueDelegationWakes', query, () =>
+        options.store.listDueDelegationWakes(query.limit, query.after),
+      ),
     'workspace-worker:shutdown': () => Effect.flatMap(WorkspaceWorkerRpcState, state => state.shutdown()),
   })
 

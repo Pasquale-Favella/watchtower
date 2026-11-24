@@ -1,4 +1,5 @@
 import * as Cause from 'effect/Cause'
+import * as Clock from 'effect/Clock'
 import * as Context from 'effect/Context'
 import * as DateTime from 'effect/DateTime'
 import * as Deferred from 'effect/Deferred'
@@ -66,11 +67,12 @@ import {
 import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 const positiveInteger = Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))
+/** Shutdown writes one interrupt or fence per Run; this bounds how many are in flight at once. */
+const SHUTDOWN_CONCURRENCY = 8
+
 const executionOptionsSchema = Schema.Struct({
   ownerEpoch: workerEpochSchema,
   closeDeadlineMs: Schema.optional(positiveInteger),
-  maxConcurrentRuns: Schema.optional(positiveInteger),
-  maxQueuedRuns: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
 })
 const nativeTurnAcceptanceSchema = Schema.Struct({
   nativeSessionId: Schema.String.check(Schema.isTrimmed(), Schema.isMinLength(1)),
@@ -107,8 +109,6 @@ export interface ExecutionServiceOptions {
   ) => Effect.Effect<readonly ResolvedPromptAttachment[], AgentDriverError>
   readonly ownerEpoch: number
   readonly closeDeadlineMs?: number | undefined
-  readonly maxConcurrentRuns?: number | undefined
-  readonly maxQueuedRuns?: number | undefined
   /** The target model's context window in tokens, when the connection catalog reports it. Absent keeps the default budget. */
   readonly modelContextWindowTokens?: ((connectionId: string, modelId: string) => number | undefined) | undefined
   readonly publishCommittedEvent?: ((event: WorkspaceExecutionEvent) => Effect.Effect<void, unknown>) | undefined
@@ -205,20 +205,16 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const parsedOptions = yield* Schema.decodeUnknownEffect(executionOptionsSchema)({
       ownerEpoch: input.ownerEpoch,
       closeDeadlineMs: input.closeDeadlineMs,
-      maxConcurrentRuns: input.maxConcurrentRuns,
-      maxQueuedRuns: input.maxQueuedRuns,
     }).pipe(
       Effect.mapError(
         () =>
           new ExecutionServiceError({
             reason: 'invalid-options',
-            message: 'Execution owner epoch, close deadline, or concurrency limit is invalid',
+            message: 'Execution owner epoch or close deadline is invalid',
           }),
       ),
     )
     const closeDeadlineMs = parsedOptions.closeDeadlineMs ?? 10_000
-    const maxConcurrentRuns = parsedOptions.maxConcurrentRuns ?? 4
-    const maxQueuedRuns = parsedOptions.maxQueuedRuns ?? 16
     const store = yield* WorkspaceStore
     const drivers = yield* AgentDriverRegistry
     const connections = yield* HarnessConnectionResolver
@@ -227,7 +223,6 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const path = yield* Path.Path
     const appScope = yield* Scope.Scope
     const workerScope = yield* Scope.make()
-    const runPermits = yield* Semaphore.make(maxConcurrentRuns)
     const admission = yield* Semaphore.make(1)
     const workers = new Map<AgentRunId, ManagedRun>()
     const controlFibers = new Set<Fiber.Fiber<unknown, unknown>>()
@@ -236,6 +231,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     let holdAllQueuedFollowUps: Effect.Effect<void, WorkspaceStoreError> = Effect.void
     let pumpQueuedFollowUps: Effect.Effect<void, WorkspaceStoreError | ExecutionServiceError> = Effect.void
     let stopping = false
+    let admissionExpired = false
     let workerScopeClosed = false
     let nativeCleanupUnconfirmed = false
     const shutdownGate = yield* Semaphore.make(1)
@@ -266,6 +262,16 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         message: `Access mode ${requested} is not available for the selected agent connection`,
       })
     })
+
+    /**
+     * Waits at most `budgetMs` for an effect. On expiry the effect keeps running detached, so an uninterruptible step
+     * inside it, such as an admitted promotion stalled on storage, cannot hold shutdown past its deadline.
+     */
+    const awaitWithin = <A, E>(effect: Effect.Effect<A, E>, budgetMs: number) =>
+      Effect.gen(function* () {
+        const fiber = yield* Effect.forkDetach(effect, { startImmediately: true })
+        return yield* Fiber.await(fiber).pipe(Effect.timeoutOption(budgetMs))
+      })
 
     const failUnresolved = (
       state: ManagedRun,
@@ -718,18 +724,14 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
     const trackedWorker = (state: ManagedRun) =>
       Effect.gen(function* () {
         yield* Deferred.await(state.ready)
-        yield* runPermits.withPermit(
-          Effect.gen(function* () {
-            const result = yield* Effect.exit(supervise(state))
-            if (Exit.isFailure(result) && !state.settled) backgroundFailures.push(result.cause)
-            if (state.settled && !state.terminal && state.cleanupConfirmed) {
-              const released = yield* Effect.exit(
-                store.releaseDispatchAfterCleanup(state.claim.runId, state.claim.ownerEpoch),
-              )
-              if (Exit.isFailure(released)) backgroundFailures.push(released.cause)
-            }
-          }),
-        )
+        const result = yield* Effect.exit(supervise(state))
+        if (Exit.isFailure(result) && !state.settled) backgroundFailures.push(result.cause)
+        if (state.settled && !state.terminal && state.cleanupConfirmed) {
+          const released = yield* Effect.exit(
+            store.releaseDispatchAfterCleanup(state.claim.runId, state.claim.ownerEpoch),
+          )
+          if (Exit.isFailure(released)) backgroundFailures.push(released.cause)
+        }
         // Delegation settlement runs before queued follow-ups are pumped, so a settled child's wake is promoted in turn.
         yield* finishedHook(state.claim)
         if ((state.terminal || state.settled) && !stopping) {
@@ -761,6 +763,18 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           shuttingDown: false,
           cleanupConfirmed: true,
           eventCounter: 0,
+        }
+        if (admissionExpired) {
+          yield* store.failDispatch(claim.runId, {
+            ownerEpoch: claim.ownerEpoch,
+            occurredAt: yield* timestamp,
+            outcome: 'failed',
+            reason: 'launch-failed',
+          })
+          return yield* new ExecutionServiceError({
+            reason: 'service-stopped',
+            message: 'Execution shutdown expired before the run could launch',
+          })
         }
         workers.set(claim.runId, state)
         state.fiber = yield* Effect.forkIn(Effect.interruptible(trackedWorker(state)), workerScope, {
@@ -870,21 +884,6 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
               const checkoutId = yield* selectRunCheckout(command, true)
               const receipt = yield* store.beginRun({ ...command, checkoutId })
               if (receipt.replayed) return receipt
-              if (workers.size >= maxConcurrentRuns + maxQueuedRuns) {
-                const failed = yield* Effect.exit(
-                  store.failDispatch(receipt.runId, {
-                    ownerEpoch: parsedOptions.ownerEpoch,
-                    occurredAt: yield* timestamp,
-                    outcome: 'failed',
-                    reason: 'launch-failed',
-                  }),
-                )
-                if (Exit.isFailure(failed)) return yield* Effect.failCause(failed.cause)
-                return yield* new ExecutionServiceError({
-                  reason: 'background-failure',
-                  message: 'Execution queue is full; the Run was recorded as a launch failure',
-                })
-              }
               const claimResult = yield* Effect.exit(
                 store.claimDispatch(receipt.runId, parsedOptions.ownerEpoch, yield* timestamp),
               )
@@ -1071,11 +1070,6 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 code: 'admission-conflict',
                 message: 'A native run still owns this Conversation',
               })
-            if (workers.size >= maxConcurrentRuns + maxQueuedRuns)
-              return yield* new ExecutionServiceError({
-                reason: 'background-failure',
-                message: 'Execution queue is full; queued follow-up remains queued',
-              })
             // Check the head the store will promote, using the same driver and mode precedence it applies.
             if (next)
               yield* requireAccessModeSupport(next.driverId ?? command.driverId, next.accessMode ?? command.accessMode)
@@ -1153,12 +1147,12 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
 
     const scanQueuedFollowUps = Effect.gen(function* () {
       let afterPosition = 0
-      while (workers.size < maxConcurrentRuns && !stopping && !nativeCleanupUnconfirmed) {
+      while (!stopping && !nativeCleanupUnconfirmed) {
         const page = yield* store.listQueuedFollowUpHeads({ afterPosition, limit: 50 })
         if (page.items.length === 0) return
         for (const head of page.items) {
           afterPosition = head.position
-          if (head.held || workers.size >= maxConcurrentRuns || nativeCleanupUnconfirmed) continue
+          if (head.held || stopping || nativeCleanupUnconfirmed) continue
           if (Array.from(workers.values()).some(state => state.claim.conversationId === head.conversationId)) continue
           const runStatus = head.context?.runStatus
           // Enqueue can precede the first Run while its folder is being claimed.
@@ -1175,13 +1169,7 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
           const result = yield* Effect.exit(promoteQueuedFollowUp(head.conversationId, command))
           if (Exit.isFailure(result)) {
             const failure = result.cause.reasons.find(Cause.isFailReason)?.error
-            if (
-              (failure instanceof WorkspaceStoreError && failure.code === 'admission-conflict') ||
-              (failure instanceof ExecutionServiceError &&
-                failure.reason === 'background-failure' &&
-                failure.message.includes('queue is full'))
-            )
-              continue
+            if (failure instanceof WorkspaceStoreError && failure.code === 'admission-conflict') continue
             yield* store.holdQueuedFollowUps(head.conversationId, parsedOptions.ownerEpoch)
           }
         }
@@ -1265,12 +1253,19 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
       ExecutionServiceError
     > {
       stopping = true
-      yield* admission.withPermit(Effect.void)
+      const forcedCleanupBudgetMs = Math.max(1, Math.ceil(closeDeadlineMs / 3))
+      const forcedFiberBudgetMs = Math.max(1, Math.floor(forcedCleanupBudgetMs / 2))
+      const forcedScopeBudgetMs = Math.max(1, forcedCleanupBudgetMs - forcedFiberBudgetMs)
+      const drainBudgetMs = Math.max(1, closeDeadlineMs - forcedCleanupBudgetMs)
+      const drainDeadline = (yield* Clock.currentTimeMillis) + drainBudgetMs
+      const admitted = yield* admission.withPermit(Effect.void).pipe(Effect.timeoutOption(drainBudgetMs))
+      admissionExpired = Option.isNone(admitted)
       const states = Array.from(workers.values())
-      const interruptionFibers = yield* Effect.forEach(
-        states,
-        state =>
-          forkOwnedControl(
+      // Each Run's interrupt is isolated, so one refusal does not stop the others, and the writes are bounded.
+      const interruption = yield* forkOwnedControl(
+        Effect.forEach(
+          states,
+          state =>
             Effect.gen(function* () {
               if (state.terminal) return
               const requested = yield* Effect.exit(
@@ -1287,62 +1282,61 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
                 ),
               )
             }),
-          ),
-        { concurrency: 'unbounded' },
-      )
-      const fibers = yield* Effect.forEach(
-        states,
-        state =>
-          Effect.gen(function* () {
-            yield* Deferred.await(state.ready)
-            return state.fiber
-          }),
-        { concurrency: 'unbounded' },
+          { concurrency: SHUTDOWN_CONCURRENCY, discard: true },
+        ),
       )
       const allFibers = Array.from(
         new Set<Fiber.Fiber<unknown, unknown>>([
-          ...fibers.filter((fiber): fiber is Fiber.Fiber<void, never> => fiber !== undefined),
-          ...interruptionFibers,
+          ...states.flatMap(state => (state.fiber ? [state.fiber] : [])),
+          interruption,
           ...controlFibers,
         ]),
       )
       const drain = Effect.forEach(allFibers, fiber => Fiber.await(fiber), {
         concurrency: 'unbounded',
       })
-      const forcedCleanupBudgetMs = Math.max(1, Math.ceil(closeDeadlineMs / 3))
-      const forcedFiberBudgetMs = Math.max(1, Math.floor(forcedCleanupBudgetMs / 2))
-      const forcedScopeBudgetMs = Math.max(1, forcedCleanupBudgetMs - forcedFiberBudgetMs)
-      const drainBudgetMs = Math.max(1, closeDeadlineMs - forcedCleanupBudgetMs)
       const closeOwnedResources = (budgetMs: number) =>
         Effect.gen(function* () {
           if (workerScopeClosed) return !nativeCleanupUnconfirmed
-          const closed = yield* Scope.close(workerScope, Exit.void).pipe(Effect.timeoutOption(budgetMs))
+          const closed = yield* awaitWithin(Scope.close(workerScope, Exit.void), budgetMs)
           if (Option.isNone(closed)) return false
           workerScopeClosed = true
           return !nativeCleanupUnconfirmed
         })
-      const completed = yield* drain.pipe(Effect.timeoutOption(drainBudgetMs))
+      const remainingDrainMs = drainDeadline - (yield* Clock.currentTimeMillis)
+      const completed =
+        admissionExpired || remainingDrainMs <= 0
+          ? Option.none()
+          : yield* drain.pipe(Effect.timeoutOption(remainingDrainMs))
       if (Option.isNone(completed)) {
         for (const state of states) state.shuttingDown = true
-        const forced = yield* Effect.all(
-          [
-            Effect.exit(
-              Effect.forEach(states, state => failUnresolved(state, 'shutdown', 'uncertain'), {
-                concurrency: 'unbounded',
-              }),
-            ),
-            Effect.forEach(allFibers, fiber => Fiber.interrupt(fiber), { concurrency: 'unbounded' }),
-          ],
-          { concurrency: 'unbounded' },
-        ).pipe(Effect.timeoutOption(forcedFiberBudgetMs))
-        if (Option.isNone(forced)) {
+        const forced = yield* awaitWithin(
+          Effect.all(
+            [
+              // Every Run is fenced even when another Run's write fails; the failures are reported together.
+              Effect.forEach(states, state => Effect.exit(failUnresolved(state, 'shutdown', 'uncertain')), {
+                concurrency: SHUTDOWN_CONCURRENCY,
+              }).pipe(
+                Effect.flatMap(exits => {
+                  const failures = exits.flatMap(exit => (Exit.isFailure(exit) ? [exit.cause] : []))
+                  return failures.length === 0 ? Effect.void : Effect.failCause(failures.reduce(Cause.combine))
+                }),
+                Effect.exit,
+              ),
+              Effect.forEach(allFibers, fiber => Fiber.interrupt(fiber), { concurrency: 'unbounded' }),
+            ],
+            { concurrency: 'unbounded' },
+          ),
+          forcedFiberBudgetMs,
+        )
+        if (Option.isNone(forced) || Exit.isFailure(forced.value)) {
           return yield* new ExecutionServiceError({
             reason: 'background-failure',
             message: 'Shutdown deadline expired before execution resource cleanup completed',
             nativeCleanup: 'unconfirmed',
           })
         }
-        const [settlement] = forced.value
+        const [settlement] = forced.value.value
         const resourcesClosed = yield* Effect.exit(closeOwnedResources(forcedScopeBudgetMs))
         if (Exit.isFailure(resourcesClosed) || !resourcesClosed.value) {
           return yield* new ExecutionServiceError({
@@ -1362,8 +1356,10 @@ const makeExecutionService = (input: ExecutionServiceOptions) =>
         }
         return yield* new ExecutionServiceError({
           reason: 'background-failure',
-          message: 'Shutdown deadline expired before execution resource cleanup completed',
-          nativeCleanup: 'confirmed',
+          message: admissionExpired
+            ? 'Shutdown deadline expired while waiting for an admitted execution operation'
+            : 'Shutdown deadline expired before execution resource cleanup completed',
+          nativeCleanup: admissionExpired ? 'unconfirmed' : 'confirmed',
         })
       }
       const resourcesClosed = yield* Effect.exit(closeOwnedResources(forcedCleanupBudgetMs))

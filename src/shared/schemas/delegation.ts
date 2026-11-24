@@ -1,6 +1,6 @@
 import * as Schema from 'effect/Schema'
 
-import { agentAccessModeSchema } from '@/shared/schemas/execution.js'
+import { agentAccessModeSchema, agentRequestIdSchema } from '@/shared/schemas/execution.js'
 import {
   agentRunIdSchema,
   conversationIdSchema,
@@ -10,7 +10,6 @@ import {
 } from '@/shared/schemas/workspace.js'
 
 export const DELEGATION_MAX_DEPTH = 1
-export const DELEGATION_MAX_ACTIVE_PER_PARENT_RUN = 4
 export const DELEGATION_PROMPT_MAX_CHARS = 32 * 1024
 export const DELEGATION_RESULT_MAX_CHARS = 16 * 1024
 export const DELEGATION_WAIT_DEFAULT_MS = 30_000
@@ -21,7 +20,6 @@ const boundedText = (max: number) => text.check(Schema.isMaxLength(max))
 const timestamp = Schema.String.check(
   Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/),
 )
-const positiveInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1))
 const nonNegativeInt = Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))
 
 export const delegationIdSchema = boundedText(128).pipe(Schema.brand('DelegationId'))
@@ -69,7 +67,7 @@ export const delegationWakeStateSchema = Schema.Literals(['notDue', 'pending', '
 export type DelegationWakeState = Schema.Schema.Type<typeof delegationWakeStateSchema>
 
 export const delegationPendingRequestSchema = Schema.Struct({
-  requestId: boundedText(256),
+  requestId: agentRequestIdSchema,
   kind: Schema.Literals(['approval', 'question']),
 })
 export type DelegationPendingRequest = Schema.Schema.Type<typeof delegationPendingRequestSchema>
@@ -139,6 +137,8 @@ export const delegationRecordSchema = Schema.Struct({
   status: delegationStatusSchema,
   wake: delegationWakeSchema,
   wakeState: delegationWakeStateSchema,
+  /** Wake deliveries lost because their promoted parent Run never launched. Absent means none. */
+  wakeAttempts: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
   pendingRequest: Schema.NullOr(delegationPendingRequestSchema),
   resultText: Schema.NullOr(Schema.String.check(Schema.isMaxLength(DELEGATION_RESULT_MAX_CHARS))),
   resultTruncated: Schema.Boolean,
@@ -150,7 +150,7 @@ export const delegationRecordSchema = Schema.Struct({
 export type DelegationRecord = Schema.Schema.Type<typeof delegationRecordSchema>
 
 export const delegationListSchema = Schema.Struct({
-  items: Schema.Array(delegationRecordSchema).check(Schema.isMaxLength(256)),
+  items: Schema.Array(delegationRecordSchema),
   truncated: Schema.Boolean,
 })
 export type DelegationList = Schema.Schema.Type<typeof delegationListSchema>
@@ -202,8 +202,6 @@ export const delegationCapabilitiesSchema = Schema.Struct({
   parentAccessMode: agentAccessModeSchema,
   depth: nonNegativeInt,
   remainingDepth: nonNegativeInt,
-  activeCount: nonNegativeInt,
-  maxActive: positiveInt,
   connections: Schema.Array(delegationTargetChoiceSchema).check(Schema.isMaxLength(64)),
 })
 export type DelegationCapabilities = Schema.Schema.Type<typeof delegationCapabilitiesSchema>

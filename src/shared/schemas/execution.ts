@@ -216,8 +216,10 @@ export const agentToolMetadataSchema = Schema.Struct({
 })
 export type AgentToolMetadata = Schema.Schema.Type<typeof agentToolMetadataSchema>
 
+export const agentRequestIdSchema = text
+
 export const agentRequestSchema = Schema.Struct({
-  requestId: text,
+  requestId: agentRequestIdSchema,
   runId: agentRunIdSchema,
   sessionId: Schema.optional(Schema.NullOr(agentSessionIdSchema)),
   generation: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(1)),
@@ -331,7 +333,11 @@ export const agentDriverEventSchema = Schema.Union([
     entries: Schema.Array(agentPlanEntrySchema),
   }),
   Schema.Struct({ kind: Schema.Literal('requestPending'), request: agentRequestSchema }),
-  Schema.Struct({ kind: Schema.Literal('requestResolved'), requestId: text, decision: agentRequestDecisionSchema }),
+  Schema.Struct({
+    kind: Schema.Literal('requestResolved'),
+    requestId: agentRequestIdSchema,
+    decision: agentRequestDecisionSchema,
+  }),
   Schema.Struct({
     kind: Schema.Literal('sessionMetadataUpdated'),
     title: Schema.optional(Schema.NullOr(Schema.String)),

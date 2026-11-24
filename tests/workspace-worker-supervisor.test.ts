@@ -361,9 +361,10 @@ describe('workspace worker supervisor', () => {
         .poll(() => Effect.runPromise(SubscriptionRef.get(supervisor.ownerEpoch)), { timeout: 12_000 })
         .toBe(2)
       const snapshot = await Effect.runPromise(store.readTaskSnapshot(task.id, 10))
-      expect(snapshot.runs).toMatchObject([{ id: 'flight-run', status: 'queued' }])
+      // The replacement owner never resends it; the unclaimed Run fails as a launch failure instead of fencing its Conversation.
+      expect(snapshot.runs).toMatchObject([{ id: 'flight-run', status: 'failed', failure: 'launch-failed' }])
       const page = await Effect.runPromise(store.pageEvents(0, 100))
-      expect(page.events.map(event => event.kind)).toEqual(['runQueued'])
+      expect(page.events.map(event => event.kind)).toEqual(['runQueued', 'runFailed'])
       expect(mutationMessages).toBe(1)
       expect(workers).toHaveLength(2)
     } finally {

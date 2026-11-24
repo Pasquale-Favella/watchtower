@@ -153,7 +153,7 @@ export async function seedWorkspaceDelegation(profile: string, checkoutPath: str
             task: { id: record.childTaskId, projectId, title: record.title, description: '', createdAt: at },
             conversation: { id: record.childConversationId, title: record.title, createdAt: at },
             record,
-            limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+            limits: { maxDepth: 1 },
           }),
         ),
       )

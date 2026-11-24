@@ -847,7 +847,7 @@ describe('delegation recovery before the workspace opens', () => {
       },
       conversation: { id: record.childConversationId, title: 'Audit', createdAt: input.task.createdAt },
       record,
-      limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+      limits: { maxDepth: 1 },
     }
     const first = fixture(suffix, undefined, AgentDriverRegistry.fromDrivers([]))
     try {

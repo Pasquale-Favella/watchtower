@@ -3,13 +3,14 @@ import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as TestClock from 'effect/testing/TestClock'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { ExecutionService } from '@/core/application/commands/execution-service.js'
-import { DelegationCoordinator } from '@/core/application/execution/delegation-coordinator.js'
+import { DelegationCoordinator, makeKeyedLock } from '@/core/application/execution/delegation-coordinator.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
-import type { DelegationRecord } from '@/shared/schemas/delegation.js'
+import { WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY } from '@/shared/rpc/workspace-worker.js'
+import { DELEGATION_RESULT_MAX_CHARS, type DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { AgentDriverEvent } from '@/shared/schemas/execution.js'
 import type { BeginRunCommand, CreateDelegationCommand } from '@/shared/schemas/workspace-store.js'
 
@@ -78,7 +79,7 @@ const createCommand = (wake: 'always' | 'settledOnly'): CreateDelegationCommand 
   task: { ...childTask, projectId: project.id, title: 'Audit' },
   conversation: childConversation,
   record: childRecord(wake),
-  limits: { maxDepth: 1, maxActivePerParentRun: 4 },
+  limits: { maxDepth: 1 },
 })
 
 const childCommand: BeginRunCommand = {
@@ -107,15 +108,20 @@ const acceptRun = (store: WorkspaceStore['Service'], command: BeginRunCommand) =
   })
 
 /** A real SQLite store with a recording execution service, so settlement reads genuine Run state. */
-function coordinatorRuntime(followUps: Array<string>, interrupts: Array<string>) {
+type FollowUpHook = (store: WorkspaceStore['Service'], commandId: string) => Effect.Effect<unknown, unknown>
+
+function coordinatorRuntime(followUps: Array<string>, interrupts: Array<string>, onFollowUp?: FollowUpHook) {
   const execution = Layer.effect(
     ExecutionService,
-    Effect.sync(() =>
+    Effect.map(WorkspaceStore, store =>
       ExecutionService.of({
         enqueueFollowUp: (command: { readonly commandId: string }) =>
           Effect.sync(() => {
             followUps.push(command.commandId)
-          }).pipe(Effect.as({} as never)),
+          }).pipe(
+            Effect.andThen(onFollowUp ? Effect.orDie(onFollowUp(store, command.commandId)) : Effect.void),
+            Effect.as({} as never),
+          ),
         cancelQueuedFollowUp: () => Effect.void,
         interrupt: (runId: string) =>
           Effect.sync(() => {
@@ -143,10 +149,11 @@ async function harness(
   wake: 'always' | 'settledOnly' = 'always',
   seeded = true,
   childClaimed = true,
+  onFollowUp?: FollowUpHook,
 ): Promise<Harness> {
   const followUps: Array<string> = []
   const interrupts: Array<string> = []
-  const runtime = coordinatorRuntime(followUps, interrupts)
+  const runtime = coordinatorRuntime(followUps, interrupts, onFollowUp)
   const store = await runtime.runPromise(WorkspaceStore)
   const coordinator = await runtime.runPromise(DelegationCoordinator)
   if (seeded) {
@@ -174,6 +181,47 @@ const childTerminal = (h: Harness, terminal: AgentDriverEvent): Effect.Effect<De
     yield* childEvent(h.store, 'child-terminal', terminal)
     yield* h.coordinator.runFinished({ runId: childRunId, taskId: childTask.id })
     return yield* h.store.getDelegation('dlg-1')
+  })
+
+/** Creates a Delegation under the seeded parent Run. Its child Run is not begun. */
+const createDelegationFor = (store: WorkspaceStore['Service'], id: string) => {
+  const create = createCommand('always')
+  const taskId = `task-${id}` as never
+  const conversationId = `conv-${id}` as never
+  const commandId = `create-${id}`
+  return store.createDelegation({
+    ...create,
+    commandId,
+    task: { ...create.task, id: taskId },
+    conversation: { ...create.conversation, id: conversationId },
+    record: {
+      ...create.record,
+      id: id as never,
+      commandId,
+      childTaskId: taskId,
+      childConversationId: conversationId,
+      childRunId: `run-${id}` as never,
+    },
+  })
+}
+
+const createSettledWithPendingWake = (h: Harness, id: string, resultText: string | null) =>
+  Effect.gen(function* () {
+    yield* createDelegationFor(h.store, id)
+    yield* h.store.settleDelegation({
+      commandId: `settle-${id}`,
+      delegationId: id as never,
+      status: 'completed',
+      resultText,
+      resultTruncated: false,
+      occurredAt: ts,
+    })
+    yield* h.store.setDelegationWake({
+      commandId: `wake-${id}`,
+      delegationId: id as never,
+      wakeState: 'pending',
+      occurredAt: ts,
+    })
   })
 
 describe('DelegationCoordinator settlement', () => {
@@ -235,14 +283,15 @@ describe('DelegationCoordinator settlement', () => {
 
   it('mirrors a pending approval onto the Delegation without waking the parent, and clears it on resolution', async () => {
     const h = await harness()
+    const requestId = `${'thread-id-'.repeat(40)}:approval`
     try {
       const pending = await h.runtime.runPromise(
         Effect.gen(function* () {
           yield* childEvent(h.store, 'child-start', { kind: 'turnStarted', nativeTurnId: 'native-turn' })
-          const committed = yield* childEvent(h.store, 'child-request', {
+          yield* childEvent(h.store, 'child-request', {
             kind: 'requestPending',
             request: {
-              requestId: 'req-1',
+              requestId,
               runId: childRunId,
               generation: 1,
               kind: 'approval',
@@ -250,30 +299,103 @@ describe('DelegationCoordinator settlement', () => {
               questions: [],
             },
           })
-          yield* h.coordinator.observe(committed)
           return yield* h.store.getDelegation('dlg-1')
         }),
       )
-      expect(pending?.pendingRequest).toEqual({ requestId: 'req-1', kind: 'approval' })
+      expect(pending).toMatchObject({ status: 'waiting', pendingRequest: { requestId, kind: 'approval' } })
       expect(h.followUps).toEqual([])
+
+      await h.runtime.runPromise(
+        childEvent(h.store, 'child-request-second', {
+          kind: 'requestPending',
+          request: {
+            requestId: 'req-2',
+            runId: childRunId,
+            generation: 1,
+            kind: 'approval',
+            prompt: 'Run the linter?',
+            questions: [],
+          },
+        }),
+      )
+      await h.runtime.runPromise(
+        childEvent(h.store, 'child-resolved-second', {
+          kind: 'requestResolved',
+          requestId: 'req-2',
+          decision: { kind: 'approve' },
+        }),
+      )
+      expect(await h.runtime.runPromise(h.store.getDelegation('dlg-1'))).toMatchObject({
+        status: 'waiting',
+        pendingRequest: { requestId, kind: 'approval' },
+      })
 
       const resolved = await h.runtime.runPromise(
         Effect.gen(function* () {
-          const committed = yield* childEvent(h.store, 'child-resolved', {
+          yield* childEvent(h.store, 'child-resolved', {
             kind: 'requestResolved',
-            requestId: 'req-1',
+            requestId,
             decision: { kind: 'approve' },
           })
-          yield* h.coordinator.observe(committed)
           return yield* h.store.getDelegation('dlg-1')
         }),
       )
-      expect(resolved?.pendingRequest).toBeNull()
+      expect(resolved).toMatchObject({ status: 'running', pendingRequest: null })
       expect(h.followUps).toEqual([])
     } finally {
       await h.runtime.dispose()
     }
   })
+
+  it.each(['turnCompleted', 'turnInterrupted', 'turnFailed', 'dispatch failure', 'worker recovery'] as const)(
+    'clears the mirrored request on %s before the coordinator settles the delegation',
+    async kind => {
+      const h = await harness()
+      try {
+        await h.runtime.runPromise(
+          Effect.gen(function* () {
+            yield* childEvent(h.store, 'child-start', { kind: 'turnStarted', nativeTurnId: 'native-turn' })
+            yield* childEvent(h.store, 'child-request', {
+              kind: 'requestPending',
+              request: {
+                requestId: 'pending-approval',
+                runId: childRunId,
+                generation: 1,
+                kind: 'approval',
+                prompt: 'Approve?',
+                questions: [],
+              },
+            })
+            expect(yield* h.store.getDelegation('dlg-1')).toMatchObject({ status: 'waiting' })
+            if (kind === 'dispatch failure') {
+              yield* h.store.failDispatch(childRunId, {
+                ownerEpoch: 7,
+                outcome: 'uncertain',
+                occurredAt: ts,
+                reason: 'event-stream-ended',
+              })
+            } else if (kind === 'worker recovery') {
+              yield* h.store.recoverWorker(7, ts)
+            } else {
+              yield* childEvent(
+                h.store,
+                'child-terminal',
+                kind === 'turnFailed' ? { kind, message: 'Child failed' } : { kind },
+              )
+            }
+            expect(yield* h.store.getDelegation('dlg-1')).toMatchObject({
+              pendingRequest: null,
+              settledAt: null,
+              wakeState: 'notDue',
+            })
+            expect(h.followUps).toEqual([])
+          }),
+        )
+      } finally {
+        await h.runtime.dispose()
+      }
+    },
+  )
 
   it('disposes the wake when a waiting caller receives the settled result directly', async () => {
     const h = await harness('settledOnly')
@@ -431,31 +553,189 @@ describe('DelegationCoordinator settlement', () => {
     }
   })
 
-  it('re-queues a due wake that was still pending when the app stopped', async () => {
+  it('replays pending wakes oldest first in bounded pages, even while they remain pending', async () => {
     const h = await harness('always', true)
     try {
+      const ids = ['dlg-1', ...Array.from({ length: 54 }, (_, index) => `dlg-batch-${String(index).padStart(2, '0')}`)]
+      const listDue = h.store.listDueDelegationWakes
+      const enqueuedBeforeRead: number[] = []
+      const reads = vi.spyOn(h.store, 'listDueDelegationWakes').mockImplementation((...args) => {
+        enqueuedBeforeRead.push(h.followUps.length)
+        return listDue(...args)
+      })
       await h.runtime.runPromise(
         Effect.gen(function* () {
-          yield* h.store.settleDelegation({
-            commandId: 'settle-before-restart',
-            delegationId: 'dlg-1' as never,
-            status: 'failed',
-            resultText: null,
-            resultTruncated: false,
-            occurredAt: ts,
-          })
-          yield* h.store.setDelegationWake({
-            commandId: 'wake-before-restart',
-            delegationId: 'dlg-1' as never,
-            wakeState: 'pending',
-            occurredAt: ts,
-          })
+          for (const id of ids) {
+            if (id !== 'dlg-1') {
+              const create = createCommand('always')
+              const taskId = `task-${id}` as never
+              const conversationId = `conv-${id}` as never
+              const commandId = `create-${id}`
+              yield* h.store.createDelegation({
+                ...create,
+                commandId,
+                task: { ...create.task, id: taskId },
+                conversation: { ...create.conversation, id: conversationId },
+                record: {
+                  ...create.record,
+                  id: id as never,
+                  commandId,
+                  childTaskId: taskId,
+                  childConversationId: conversationId,
+                  childRunId: `run-${id}` as never,
+                },
+              })
+            }
+            yield* h.store.settleDelegation({
+              commandId: `settle-${id}`,
+              delegationId: id as never,
+              status: 'failed',
+              resultText: null,
+              resultTruncated: false,
+              occurredAt: ts,
+            })
+            yield* h.store.setDelegationWake({
+              commandId: `wake-${id}`,
+              delegationId: id as never,
+              wakeState: 'pending',
+              occurredAt: ts,
+            })
+          }
           yield* h.coordinator.recover(8)
         }),
       )
-      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child'])
+      expect(reads.mock.calls).toEqual([
+        [50, undefined],
+        [50, { createdAt: ts, id: ids[49] }],
+        [50, { createdAt: ts, id: ids[54] }],
+      ])
+      expect(enqueuedBeforeRead).toEqual([0, 50, 55])
+      expect(h.followUps).toEqual(ids.map(id => `delegation-wake:${id}:${id === 'dlg-1' ? 'run-child' : `run-${id}`}`))
     } finally {
       await h.runtime.dispose()
     }
+  })
+  it('cuts due-wake pages by size, so maximum results stay inside the worker response cap', async () => {
+    const h = await harness('always', true)
+    try {
+      // Control characters are escaped six bytes each, the worst case for an encoded result.
+      const resultText = String.fromCharCode(1).repeat(DELEGATION_RESULT_MAX_CHARS)
+      const ids = Array.from({ length: 50 }, (_, index) => `dlg-large-${String(index).padStart(2, '0')}`)
+      const listDue = h.store.listDueDelegationWakes
+      const pageBytes: number[] = []
+      vi.spyOn(h.store, 'listDueDelegationWakes').mockImplementation((...args) =>
+        listDue(...args).pipe(Effect.tap(page => Effect.sync(() => pageBytes.push(JSON.stringify(page).length)))),
+      )
+      await h.runtime.runPromise(
+        Effect.gen(function* () {
+          for (const id of ids) yield* createSettledWithPendingWake(h, id, resultText)
+          yield* h.coordinator.recover(8)
+        }),
+      )
+      expect(pageBytes.length).toBeGreaterThan(2)
+      expect(Math.max(...pageBytes)).toBeLessThan(WORKSPACE_WORKER_RESPONSE_BYTE_CAPACITY)
+      expect(h.followUps).toEqual(ids.map(id => `delegation-wake:${id}:run-${id}`))
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+
+  it('never settles a Delegation that a replayed wake creates during recovery', async () => {
+    const h = await harness('always', true, true, (store, commandId) =>
+      commandId === 'delegation-wake:dlg-old:run-dlg-old' ? createDelegationFor(store, 'dlg-new') : Effect.void,
+    )
+    try {
+      await h.runtime.runPromise(
+        Effect.gen(function* () {
+          yield* createSettledWithPendingWake(h, 'dlg-old', null)
+          yield* h.coordinator.recover(8)
+        }),
+      )
+      expect(h.followUps).toContain('delegation-wake:dlg-old:run-dlg-old')
+      expect(await h.runtime.runPromise(h.store.getDelegation('dlg-new'))).toMatchObject({ settledAt: null })
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+
+  it('settles a never-claimed child that owner recovery failed as a failed launch', async () => {
+    const h = await harness('always', true, false)
+    try {
+      await h.runtime.runPromise(h.store.acquireOwnerEpoch(ts))
+      await h.runtime.runPromise(h.store.acquireOwnerEpoch(ts))
+      await h.runtime.runPromise(h.coordinator.recover(9))
+      expect(await h.runtime.runPromise(h.store.getDelegation('dlg-1'))).toMatchObject({
+        status: 'failed',
+        resultText: 'The delegated task could not start.',
+      })
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+
+  it('re-delivers a wake whose promoted parent Run never launched, under a new command id', async () => {
+    const h = await harness('always', true, true)
+    try {
+      await h.runtime.runPromise(
+        Effect.gen(function* () {
+          yield* h.store.recordDriverEvent(parentCommand.runId, {
+            ownerEpoch: 7,
+            generation: 1,
+            eventId: 'parent-completed',
+            occurredAt: ts,
+            event: { kind: 'turnCompleted' },
+          })
+          yield* childEvent(h.store, 'child-start', { kind: 'turnStarted', nativeTurnId: 'native-turn' })
+          yield* childEvent(h.store, 'child-terminal', { kind: 'turnCompleted', nativeTurnId: 'native-turn' })
+          yield* h.coordinator.runFinished({ runId: childRunId, taskId: childTask.id })
+          // The wake is queued, then promoted into a parent Run that the app never claimed before it exited.
+          const wakeCommandId = 'delegation-wake:dlg-1:run-child'
+          expect(h.followUps).toEqual([wakeCommandId])
+          yield* h.store.enqueueFollowUp({
+            commandId: wakeCommandId,
+            issuedAt: ts,
+            taskId: parentTask.id,
+            conversationId: parentConversation.id,
+            prompt: 'The delegated task finished',
+            origin: 'delegation',
+            delegationId: 'dlg-1' as never,
+          })
+          yield* h.store.promoteNextFollowUp(parentConversation.id, {
+            ...parentCommand,
+            commandId: 'promote-wake',
+            runId: 'run-wake' as never,
+            provisionalAgentSessionId: 'session-wake',
+          })
+          yield* h.store.acquireOwnerEpoch(ts)
+          yield* h.store.acquireOwnerEpoch(ts)
+          h.followUps.length = 0
+          yield* h.coordinator.recover(9)
+        }),
+      )
+      expect(h.followUps).toEqual(['delegation-wake:dlg-1:run-child:retry-1'])
+      expect(await h.runtime.runPromise(h.store.getDelegation('dlg-1'))).toMatchObject({ wakeState: 'pending' })
+    } finally {
+      await h.runtime.dispose()
+    }
+  })
+})
+
+describe('Delegation locks', () => {
+  it('drops each lock once its last holder or waiter leaves', async () => {
+    const { withLock, size } = makeKeyedLock<string>()
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const holder = yield* Effect.forkChild(withLock('a', Effect.never), { startImmediately: true })
+        const waiter = yield* Effect.forkChild(withLock('a', Effect.void), { startImmediately: true })
+        yield* withLock('b', Effect.void)
+        expect(size()).toBe(1)
+        yield* Fiber.interrupt(waiter)
+        expect(size()).toBe(1)
+        yield* Fiber.interrupt(holder)
+        expect(size()).toBe(0)
+        yield* Effect.all([withLock('c', Effect.void), withLock('c', Effect.void)], { concurrency: 'unbounded' })
+        expect(size()).toBe(0)
+      }),
+    )
   })
 })
