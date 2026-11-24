@@ -55,7 +55,12 @@ function makeHandlers(options: { readonly failSnapshot?: boolean } = {}) {
   )
   const handlers = workspaceHandlers().pipe(
     Layer.provide(host),
-    Layer.provide(Layer.succeed(WorkspaceProjects, { register: () => Effect.die('unused') })),
+    Layer.provide(
+      Layer.succeed(WorkspaceProjects, {
+        register: () => Effect.die('unused'),
+        initializeGit: () => Effect.die('unused'),
+      }),
+    ),
   )
   return { handlers, counts: () => ({ opened, executionAccesses }) }
 }

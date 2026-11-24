@@ -22,6 +22,7 @@ import { AgentDriverRegistry } from '@/core/ports/agent-driver-registry.js'
 import { CheckoutBranches } from '@/core/ports/checkout-branches.js'
 import { CheckoutResolver, CheckoutResolverError } from '@/core/ports/checkout-resolver.js'
 import { HarnessConnectionResolver } from '@/core/ports/harness-connections.js'
+import { ProjectProvisioner } from '@/core/ports/project-provisioner.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
 import { workspaceHandlers } from '@/platform/electron/main/rpc/workspace-handlers.js'
@@ -58,9 +59,53 @@ const failingHost = (mode: 'typed' | 'failure' | 'defect' | 'throw') =>
     })
   })
 
-const failingProjects = Layer.succeed(WorkspaceProjects, { register: () => Effect.fail(failure) })
+const failingProjects = Layer.succeed(WorkspaceProjects, {
+  register: () => Effect.fail(failure),
+  initializeGit: () => Effect.fail(failure),
+})
 
 describe('Workspace renderer RPC', () => {
+  it('returns a fixed message for in-place Git initialization failure', async () => {
+    const workspace = makeWorkspace({
+      checkoutResolver: {
+        ...resolver,
+        resolve: path =>
+          Effect.succeed({
+            kind: 'directory',
+            canonicalPath: path,
+            repositoryIdentity: null,
+            mainCheckoutPath: null,
+            branch: null,
+            headRevision: null,
+            dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+          }),
+      },
+      initializeInPlace: () =>
+        Effect.fail(new ProjectSetupError({ code: 'init-failed', message: 'Private Git subprocess error' })),
+    })
+    try {
+      const result = await workspace.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            const project = yield* client['workspace:registerProject']({
+              commandId: 'register-plain',
+              name: 'Project',
+              path: 'C:/folder',
+            })
+            return yield* client['workspace:initializeProjectGit']({
+              commandId: 'initialize-plain',
+              projectId: project.project.id,
+            }).pipe(Effect.flip)
+          }),
+        ),
+      )
+      expect(result).toMatchObject({ code: 'init-failed', message: 'Git could not initialize the folder.' })
+    } finally {
+      await workspace.runtime.dispose()
+    }
+  })
+
   it('uses the fixed install message for a Git setup failure', async () => {
     const workspace = makeWorkspace({
       projectSetup: {
@@ -266,6 +311,7 @@ function makeWorkspace(
     readonly respondGate?: Deferred.Deferred<undefined>
     readonly checkoutResolver?: CheckoutResolver['Service']
     readonly projectSetup?: WorkspaceProjectSetup['Service']
+    readonly initializeInPlace?: ProjectProvisioner['Service']['initializeInPlace']
   } = {},
 ) {
   const nativeEvents = Effect.runSync(Queue.unbounded<AgentDriverEvent>())
@@ -308,6 +354,14 @@ function makeWorkspace(
   const base = Layer.mergeAll(
     WorkspaceStoreLive({ filename: ':memory:' }),
     Layer.succeed(CheckoutResolver, options.checkoutResolver ?? resolver),
+    Layer.succeed(ProjectProvisioner, {
+      initialize: () => Effect.die('Unexpected initialization'),
+      initializeInPlace: options.initializeInPlace ?? (() => Effect.die('Unexpected in-place initialization')),
+      clone: () => Effect.die('Unexpected clone'),
+      publishToGitHub: () => Effect.die('Unexpected publish'),
+      lookupGitHubRepository: () => Effect.die('Unexpected lookup'),
+      readiness: Effect.die('Unexpected readiness check'),
+    }),
     Layer.succeed(CheckoutBranches, {
       list: () => Effect.die('Unexpected Git branch listing'),
       switchBranch: () => Effect.die('Unexpected Git branch switch'),

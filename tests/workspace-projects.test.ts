@@ -23,6 +23,7 @@ import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { makeRecordingCommandRunner } from '@/core/ports/process.js'
 import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
+import { ProjectProvisionerLive } from '@/infrastructure/filesystem/project-provisioner.js'
 import { NodePlatformLive } from '@/infrastructure/platform/platform-live.js'
 import { CommandRunnerLive } from '@/infrastructure/process/command-runner.js'
 import { WorkspaceStoreLive } from '@/infrastructure/sqlite/workspace/workspace-store.js'
@@ -58,6 +59,7 @@ function fixture(resolve: CheckoutResolver['Service']['resolve'], pathLayer = No
         ),
       ),
       Layer.provide(pathLayer),
+      Layer.provide(ProjectProvisionerLive.pipe(Layer.provide(CommandRunnerLive))),
       Layer.provide(NodePlatformLive),
     ),
   )
@@ -221,7 +223,7 @@ describe('workspace project registration', () => {
         Layer.provideMerge(
           Layer.merge(
             WorkspaceStoreLive({ filename: ':memory:' }),
-            CheckoutResolverLive.pipe(Layer.provide(runner.layer)),
+            Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(runner.layer)),
           ),
         ),
         Layer.provide(NodePlatformLive),
@@ -275,6 +277,72 @@ describe('workspace project registration', () => {
     }
   })
 
+  it('initializes a nested directory as its own repository and replays the conversion', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const parent = mkdtempSync(join(cache, 'workspace-initialize-git-'))
+    if (!resolvePath(parent).startsWith(`${cache}${sep}`)) throw new Error('Unexpected fixture cleanup path')
+    const nested = join(parent, 'nested')
+    mkdirSync(nested)
+    const gitServices = Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(CommandRunnerLive))
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(Layer.merge(WorkspaceStoreLive({ filename: ':memory:' }), gitServices)),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      execFileSync('git', ['-C', parent, 'init', '--quiet'], { windowsHide: true, stdio: 'pipe' })
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const folder = await runtime.runPromise(projects.register(request('nested', nested)))
+      expect(folder.mainCheckout.kind).toBe('directory')
+
+      const intent = { commandId: 'initialize-nested', projectId: folder.project.id }
+      const converted = await runtime.runPromise(projects.initializeGit(intent))
+      expect(converted).toMatchObject({
+        project: { id: folder.project.id, repositoryIdentity: realpathSync.native(join(nested, '.git')) },
+        mainCheckout: { ...folder.mainCheckout, kind: 'main', branch: expect.any(String) },
+        replayed: false,
+      })
+      expect(await runtime.runPromise(projects.initializeGit(intent))).toEqual({ ...converted, replayed: true })
+    } finally {
+      await runtime.dispose()
+      rmSync(parent, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses existing Git metadata that resolves to another checkout root', async () => {
+    const target = '/alias/project'
+    let selected: ResolvedCheckout = {
+      ...main,
+      kind: 'directory',
+      canonicalPath: target,
+      mainCheckoutPath: null,
+      repositoryIdentity: null,
+      branch: null,
+      headRevision: null,
+    }
+    const runtime = fixture(() => Effect.sync(() => selected))
+    try {
+      const projects = await runtime.runPromise(WorkspaceProjects)
+      const original = await runtime.runPromise(projects.register(request()))
+      selected = main
+      expect(
+        await runtime.runPromise(
+          projects
+            .initializeGit({ commandId: 'initialize-mismatched', projectId: original.project.id })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'checkout-root-mismatch' })
+      const store = await runtime.runPromise(WorkspaceStore)
+      const unchanged = await runtime.runPromise(store.getProject(original.project.id))
+      expect(unchanged.project).toEqual(original.project)
+      expect(unchanged.mainCheckout).toEqual(original.mainCheckout)
+    } finally {
+      await runtime.dispose()
+    }
+  })
+
   it('uses real Git identities to distinguish same-name repositories and share aliases of one checkout', async () => {
     const cache = resolvePath('node_modules/.cache')
     mkdirSync(cache, { recursive: true })
@@ -290,10 +358,10 @@ describe('workspace project registration', () => {
     const second = repository('second')
     const alias = join(directory, 'alias')
     symlinkSync(first, alias, process.platform === 'win32' ? 'junction' : 'dir')
-    const resolver = CheckoutResolverLive.pipe(Layer.provide(CommandRunnerLive), Layer.provide(NodePlatformLive))
+    const gitServices = Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(CommandRunnerLive))
     const runtime = ManagedRuntime.make(
       WorkspaceProjectsLive.pipe(
-        Layer.provideMerge(Layer.merge(WorkspaceStoreLive({ filename: ':memory:' }), resolver)),
+        Layer.provideMerge(Layer.merge(WorkspaceStoreLive({ filename: ':memory:' }), gitServices)),
         Layer.provide(NodePlatformLive),
       ),
     )

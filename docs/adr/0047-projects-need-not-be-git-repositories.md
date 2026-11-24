@@ -10,13 +10,31 @@ branch or repository identity. This checkout keeps the same role in Task,
 Agent Session, and Run records as a Git Project's main checkout. Worktrees,
 branches, and Git diff are unavailable for directory Projects.
 
-Directory Projects are reused by canonical path. If the folder later becomes
-a Git repository, registration reuses the directory Project and preserves its
-checkout. Existing Tasks and Runs keep their checkout IDs and folder paths.
+Directory Projects are reused by canonical path.
 
 New project initializes a Git repository on the configured default branch,
 falling back to `main`. It adds a README and attempts an initial commit. The
 repository can still be registered if Git refuses the commit.
+
+## Initialize Git later
+
+Conversation details offers **Initialize Git** for an existing directory
+Project. It runs plain `git init` in the folder, uses Git's configured default
+branch, and leaves working files and history untouched. Watchtower verifies
+that the folder is the root of its own main Git checkout, then sets the
+repository identity and branch in one database transaction. The Project
+and checkout keep their IDs, so existing Tasks and Runs keep their
+checkout references. Managed No project and Coach folders are ineligible.
+
+A folder inside another Git checkout can become the root of a separate
+repository. If existing metadata points to a different checkout root,
+Watchtower refuses initialization before running Git. If verification or
+persistence fails after Git succeeds, the Project keeps its directory
+registration and the repository stays on disk. The user can retry or
+register the folder again to complete the conversion.
+
+Registering a folder again after Git was initialized externally performs the
+same database conversion using the existing Project and checkout IDs.
 
 ## No project
 

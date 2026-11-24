@@ -105,6 +105,8 @@ export const projectSetupErrorCodeSchema = Schema.Literals([
   'remote-not-found',
   'clone-failed',
   'init-failed',
+  'already-git',
+  'checkout-root-mismatch',
   'publish-failed',
   'timeout',
 ])
@@ -119,6 +121,8 @@ export const PROJECT_SETUP_MESSAGES = {
   'remote-not-found': 'The repository was not found or is not accessible.',
   'clone-failed': 'Git could not clone the repository.',
   'init-failed': 'Git could not initialize the folder.',
+  'already-git': 'This project already uses Git.',
+  'checkout-root-mismatch': 'The project folder must be the root of its own Git checkout.',
   'publish-failed': 'GitHub CLI could not create the repository.',
   timeout: 'The operation timed out.',
 } as const satisfies Record<ProjectSetupErrorCode, string>

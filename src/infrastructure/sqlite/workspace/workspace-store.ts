@@ -31,6 +31,7 @@ import {
   agentRunIdSchema,
   agentSessionIdSchema,
   type ConversationId,
+  type Project,
   projectIdSchema,
   projectSchema,
   type Task,
@@ -63,6 +64,8 @@ import {
   commandReceiptSchema,
   type ConsumeSideChatBringBackCommand,
   consumeSideChatBringBackCommandSchema,
+  type ConvertDirectoryProjectCommand,
+  convertDirectoryProjectCommandSchema,
   type CreateTaskCommand,
   createTaskCommandSchema,
   type DeleteSideChatTaskCommand,
@@ -441,6 +444,7 @@ const fingerprint = (value: unknown): string => {
 
 const receiptServerFields = {
   registerProject: [],
+  convertDirectoryProject: ['repository'],
   registerCheckout: [],
   createTask: [],
   createDelegation: [],
@@ -621,7 +625,63 @@ const makeService = Effect.gen(function* () {
     }
   })
 
-  const registerProject = ({ prepareDirectory, ...registration }: RegisterProjectWithPreparation) =>
+  const persistGitConversion = Effect.fnUntraced(function* (
+    project: Project,
+    mainCheckout: WorkspaceCheckout,
+    repository: NonNullable<ConvertDirectoryProjectCommand['repository']>,
+  ) {
+    if (project.isScratch || project.isCoach) return yield* safeError('membership-conflict', MANAGED_PROJECT_FOLDER)
+    if (project.archivedAt || mainCheckout.archivedAt)
+      return yield* safeError('membership-conflict', 'Archived projects cannot be converted')
+    if (
+      project.repositoryIdentity !== undefined ||
+      mainCheckout.kind !== 'directory' ||
+      mainCheckout.branch !== undefined
+    )
+      return yield* safeError('membership-conflict', 'The project must have a directory main checkout')
+    if (mainCheckout.path !== repository.path)
+      return yield* safeError('membership-conflict', 'Repository main checkout path differs from its registration')
+    const existing = yield* sql`
+      SELECT id FROM workspace_project
+      WHERE json_extract(payload, '$.archivedAt') IS NULL
+        AND json_extract(payload, '$.repositoryIdentity') = ${repository.identity}
+      LIMIT 1`
+    if (existing.length > 0) return yield* safeError('membership-conflict', 'Repository is already registered')
+    const gitProject = { ...project, repositoryIdentity: repository.identity, updatedAt: repository.updatedAt }
+    const gitCheckout = { ...mainCheckout, kind: 'main' as const, branch: repository.branch }
+    yield* sql`UPDATE workspace_project SET payload = ${encode(gitProject)} WHERE id = ${project.id}`
+    yield* sql`UPDATE workspace_checkout SET payload = ${encode(gitCheckout)} WHERE id = ${mainCheckout.id}`
+    return { project: gitProject, mainCheckout: gitCheckout }
+  })
+
+  const convertDirectoryProject = (input: ConvertDirectoryProjectCommand) =>
+    guard(
+      Effect.gen(function* () {
+        const command = yield* Schema.decodeUnknownEffect(convertDirectoryProjectCommandSchema)(input).pipe(
+          Effect.mapError(() => safeError('invalid-data', 'Git conversion data is invalid')),
+        )
+        const { commandId, projectId, repository } = command
+        return yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const { key: commandKey, prior } = yield* lookupReceipt(commandId)
+            if (prior[0]) {
+              if (!matchesReceipt(String(prior[0].fingerprint), 'convertDirectoryProject', command))
+                return yield* safeError('command-conflict', 'Command ID was already used with different input')
+              const receipt = yield* decodeJson(projectRegistrationReceiptSchema)(String(prior[0].payload))
+              return { ...receipt, replayed: true }
+            }
+            if (!repository) return yield* safeError('not-found', 'Git initialization receipt was not found')
+            const { project, mainCheckout } = yield* getProject(projectId, { limit: 1 })
+            const converted = yield* persistGitConversion(project, mainCheckout, repository)
+            const result = { ...converted, commandId, replayed: false, reused: true }
+            yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('convertDirectoryProject', command)}, ${encode(result)})`
+            return result
+          }),
+        )
+      }),
+    )
+
+  const registerNewOrExistingProject = ({ prepareDirectory, ...registration }: RegisterProjectWithPreparation) =>
     guard(
       Effect.gen(function* () {
         yield* Schema.decodeUnknownEffect(registerProjectCommandSchema)(registration).pipe(
@@ -716,6 +776,16 @@ const makeService = Effect.gen(function* () {
                   'membership-conflict',
                   'Repository main checkout path differs from its registration',
                 )
+              if (repositoryIdentity !== null && mainCheckout.kind === 'directory') {
+                const converted = yield* persistGitConversion(project, mainCheckout, {
+                  path: command.mainCheckout.path,
+                  identity: repositoryIdentity,
+                  branch: command.mainCheckout.branch,
+                  updatedAt: requestedProject.updatedAt,
+                })
+                project = converted.project
+                mainCheckout = converted.mainCheckout
+              }
             } else {
               yield* sql`INSERT INTO workspace_project (id, payload) VALUES (${project.id}, ${encode(project)})`
               yield* sql`INSERT INTO workspace_checkout (id, project_id, payload) VALUES (${mainCheckout.id}, ${project.id}, ${encode(mainCheckout)})`
@@ -4208,7 +4278,8 @@ const makeService = Effect.gen(function* () {
 
   return WorkspaceStore.of({
     searchPromptConversations: request => guard(searchPromptConversations(sql, request)),
-    registerProject,
+    registerProject: command =>
+      '_tag' in command ? convertDirectoryProject(command) : registerNewOrExistingProject(command),
     registerCheckout,
     createTask,
     listActiveCoachRuns,

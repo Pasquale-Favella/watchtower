@@ -1,4 +1,12 @@
-import { ArrowUpRight, FileDiff, Folder, GitPullRequest, LoaderCircle, MessageSquare } from 'lucide-react'
+import {
+  ArrowUpRight,
+  FileDiff,
+  Folder,
+  GitBranchPlus,
+  GitPullRequest,
+  LoaderCircle,
+  MessageSquare,
+} from 'lucide-react'
 import { type ReactNode, useCallback, useEffect, useState } from 'react'
 
 import { LoadingRegion } from '@/renderer/components/skeletons'
@@ -9,8 +17,15 @@ import type { CheckoutScope } from '@/shared/schemas/checkout-inspection.js'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { DelegationDetails } from './delegation/DelegationDetails.js'
-import { useErrorToast } from './error-toast.js'
-import { useSwitchBranch, useWorkspaceBranches, useWorkspaceProject, useWorkspaceTaskSnapshot } from './hooks.js'
+import { showErrorToast, useErrorToast } from './error-toast.js'
+import {
+  useInitializeProjectGit,
+  useSwitchBranch,
+  useWorkspaceBranches,
+  useWorkspaceProject,
+  useWorkspaceTaskSnapshot,
+} from './hooks.js'
+import { shouldShowInitializeGit } from './initialize-git-visibility.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
 import { useSideChats } from './side-chat/hooks.js'
@@ -40,6 +55,8 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
   const scope = props.projectId
     ? { projectId: props.projectId, ...(props.checkoutId ? { checkoutId: props.checkoutId } : {}) }
     : null
+  const project = useWorkspaceProject(scope && !props.isScratch ? { projectId: scope.projectId } : null)
+  const initializeGit = shouldShowInitializeGit(project.data, props.checkoutId)
   const sideChats = useSideChats(props.visible.sideChats ? (props.taskId ?? null) : null)
   const sideChatItems = sideChats.items.filter(
     item => !props.conversationId || item.parentConversationId === props.conversationId,
@@ -78,31 +95,38 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
       )}
       {scope &&
         !props.isScratch &&
-        (props.taskId || props.checkoutControls) &&
+        !project.data?.project.isCoach &&
+        (initializeGit || props.taskId || props.checkoutControls || props.onOpenDiff) &&
         (props.visible.branch || props.visible.changes || props.visible.pullRequests) && (
           <section aria-label="Version control" className="py-1">
-            {props.visible.branch && props.checkoutControls}
-            {!props.checkoutControls && props.taskId && props.checkoutId && (
-              <TaskGitControls
-                key={props.checkoutId}
-                projectId={scope.projectId}
-                checkoutId={props.checkoutId}
-                workspacePath={workspacePath}
-                disabled={props.activeRun ?? false}
-                showBranch={props.visible.branch}
-                onOpenDiff={props.visible.changes ? props.onOpenDiff : undefined}
-                onOpenPullRequests={props.visible.pullRequests ? props.onOpenPullRequests : undefined}
-              />
-            )}
-            {!props.taskId && props.visible.changes && props.onOpenDiff && (
-              <ConversationDiffRow scope={scope} activeRun={false} onOpen={props.onOpenDiff} />
-            )}
-            {!props.taskId && props.visible.pullRequests && props.onOpenPullRequests && (
-              <ActionRow
-                icon={<GitPullRequest aria-hidden="true" />}
-                label="Pull requests"
-                onClick={props.onOpenPullRequests}
-              />
+            {initializeGit ? (
+              <InitializeGitRow projectId={scope.projectId} />
+            ) : (
+              <>
+                {props.visible.branch && props.checkoutControls}
+                {!props.checkoutControls && props.taskId && props.checkoutId && (
+                  <TaskGitControls
+                    key={props.checkoutId}
+                    projectId={scope.projectId}
+                    checkoutId={props.checkoutId}
+                    workspacePath={workspacePath}
+                    disabled={props.activeRun ?? false}
+                    showBranch={props.visible.branch}
+                    onOpenDiff={props.visible.changes ? props.onOpenDiff : undefined}
+                    onOpenPullRequests={props.visible.pullRequests ? props.onOpenPullRequests : undefined}
+                  />
+                )}
+                {!props.taskId && props.visible.changes && props.onOpenDiff && (
+                  <ConversationDiffRow scope={scope} activeRun={false} onOpen={props.onOpenDiff} />
+                )}
+                {!props.taskId && props.visible.pullRequests && props.onOpenPullRequests && (
+                  <ActionRow
+                    icon={<GitPullRequest aria-hidden="true" />}
+                    label="Pull requests"
+                    onClick={props.onOpenPullRequests}
+                  />
+                )}
+              </>
             )}
           </section>
         )}
@@ -218,10 +242,12 @@ function ActionRow({
   icon,
   label,
   onClick,
+  disabled,
 }: {
   readonly icon: React.ReactNode | null
   readonly label: string
   readonly onClick: () => void
+  readonly disabled?: boolean
 }): React.JSX.Element {
   return (
     <Button
@@ -229,11 +255,32 @@ function ActionRow({
       variant="ghost"
       className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-left text-[13px]"
       onClick={onClick}
+      disabled={disabled}
     >
       {icon && <span className="text-muted-foreground [&_svg]:size-4">{icon}</span>}
       <span className="flex-1">{label}</span>
       <ArrowUpRight aria-hidden="true" className="text-muted-foreground size-3" />
     </Button>
+  )
+}
+
+function InitializeGitRow({ projectId }: { readonly projectId: ProjectId }): React.JSX.Element {
+  const initialize = useInitializeProjectGit()
+  return (
+    <ActionRow
+      icon={<GitBranchPlus aria-hidden="true" />}
+      label={initialize.pending ? 'Initializing...' : 'Initialize Git'}
+      disabled={initialize.pending}
+      onClick={() => {
+        initialize.execute({ projectId }).catch(cause => {
+          showErrorToast(
+            `workspace:project:${projectId}:initialize-git`,
+            'Git initialization failed',
+            cause instanceof Error ? cause.message : 'Git could not initialize the folder.',
+          )
+        })
+      }}
+    />
   )
 }
 
@@ -311,13 +358,13 @@ function TaskGitControls({
   readonly onOpenPullRequests?: (() => void) | undefined
 }): React.JSX.Element {
   const project = useWorkspaceProject({ projectId })
-  const branches = useWorkspaceBranches({ projectId, checkoutId })
   const switchBranch = useSwitchBranch()
   const [error, setError] = useState<string | null>(null)
   useErrorToast(`workspace:checkout:${checkoutId}:branch`, "Couldn't switch branch", error)
   const checkout = [project.data?.mainCheckout, ...(project.data?.otherCheckouts ?? [])].find(
     item => item?.id === checkoutId,
   )
+  const branches = useWorkspaceBranches(checkout && checkout.kind !== 'directory' ? { projectId, checkoutId } : null)
   if (!checkout) {
     if (project.error)
       return (

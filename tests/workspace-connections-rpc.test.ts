@@ -34,6 +34,7 @@ const rows = [
 
 const unusedProjects = Layer.succeed(WorkspaceProjects, {
   register: () => Effect.die('unused'),
+  initializeGit: () => Effect.die('unused'),
 })
 const unusedCheckoutResolver = Layer.succeed(CheckoutResolver, {
   resolve: () => Effect.die('unused'),

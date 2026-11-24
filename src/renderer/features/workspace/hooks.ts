@@ -13,6 +13,7 @@ import {
   createProjectAtom,
   createTaskAtom,
   enqueueFollowUpAtom,
+  initializeProjectGitAtom,
   interruptAtom,
   makeCreateWorktreeAtom,
   promoteQueuedFollowUpAtom,
@@ -169,6 +170,7 @@ function useWorkspaceCommand<Input, Value, Error>(atom: Atom.AtomResultFn<Input,
 }
 
 export const useRegisterProject = () => useWorkspaceCommand(registerProjectAtom)
+export const useInitializeProjectGit = () => useWorkspaceCommand(initializeProjectGitAtom)
 export const useCreateProject = () => useWorkspaceCommand(createProjectAtom)
 export const useCloneProject = () => useWorkspaceCommand(cloneProjectAtom)
 export const useCreateTask = () => useWorkspaceCommand(createTaskAtom)

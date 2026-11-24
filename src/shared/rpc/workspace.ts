@@ -17,6 +17,7 @@ import {
   cloneWorkspaceProjectSchema,
   createWorkspaceProjectSchema,
   githubRepositorySchema,
+  PROJECT_SETUP_MESSAGES,
   ProjectSetupError,
   registerWorkspaceProjectSchema,
   remoteRepositorySchema,
@@ -110,7 +111,10 @@ export const workspaceStartRunRequestSchema = Schema.Struct({
 
 const error = WorkspaceRpcError
 /** Project setup reports its own fixed-message codes so the user learns which step failed. */
-const setupError = Schema.Union([WorkspaceRpcError, ProjectSetupError])
+const setupError = Schema.Union([
+  WorkspaceRpcError,
+  ProjectSetupError.check(Schema.makeFilter(error => error.message === PROJECT_SETUP_MESSAGES[error.code])),
+])
 /** Command IDs bind durable client intent, not regenerated server timestamps/epochs/Run IDs.
  * Start/respond/steer/enqueue/promote return the original store receipt on replay.
  * Registration/task creation return durable receipts. Registration reuses an active repository's
@@ -229,6 +233,11 @@ export const WorkspaceRpcGroup = RpcGroup.make(
     }),
     success: workspaceProjectRegistrationSchema,
     error,
+  }),
+  Rpc.make('workspace:initializeProjectGit', {
+    payload: Store.initializeProjectGitRequestSchema.mapFields(fields => ({ ...fields, commandId })),
+    success: workspaceProjectRegistrationSchema,
+    error: setupError,
   }),
   Rpc.make('workspace:createTask', {
     payload: Schema.Struct({

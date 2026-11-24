@@ -267,7 +267,7 @@ describe('WorkspaceStore', () => {
     }
   })
 
-  it('reuses a directory by path even if the folder becomes a Git repository', async () => {
+  it('converts a directory by path when it is registered again after Git initialization', async () => {
     await withStore(async (store, run) => {
       const registration = {
         commandId: 'register-directory',
@@ -288,14 +288,96 @@ describe('WorkspaceStore', () => {
         ...registered,
         replayed: true,
       })
-      expect(
-        await run(store.registerProject({ commandId: 'reuse-after-init', project, mainCheckout: checkout })),
-      ).toEqual({
-        ...registered,
+      const registeredAgain = {
         commandId: 'reuse-after-init',
+        project: { ...project, id: 'new-project' as never },
+        mainCheckout: { ...checkout, id: 'new-checkout' as never, branch: 'trunk' },
+      }
+      const converted = await run(store.registerProject(registeredAgain))
+      expect(converted).toMatchObject({
+        project,
+        mainCheckout: { ...checkout, projectId: project.id, branch: 'trunk' },
         reused: true,
       })
+      expect(await run(store.getProject(project.id))).toMatchObject({
+        project: converted.project,
+        mainCheckout: converted.mainCheckout,
+      })
+      expect(await run(store.registerProject(registeredAgain))).toEqual({ ...converted, replayed: true })
       expect((await run(store.listProjects())).total).toBe(1)
+    })
+  })
+
+  it('converts a directory checkout in place and binds the receipt to one project', async () => {
+    await withStore(async (store, run) => {
+      const original = await run(
+        store.registerProject({
+          project: { ...project, repositoryIdentity: undefined },
+          mainCheckout: { ...checkout, kind: 'directory' },
+        }),
+      )
+      await run(store.createTask({ task, conversation }))
+      await run(store.beginRun(command))
+      const intent = { _tag: 'ConvertDirectoryProject' as const, commandId: 'convert-directory', projectId: project.id }
+      const repository = { path: checkout.path, identity: 'git:one', branch: 'trunk', updatedAt: command.issuedAt }
+      const convert = (metadata: typeof repository) => store.registerProject({ ...intent, repository: metadata })
+
+      expect(await run(convert({ ...repository, identity: '' }).pipe(Effect.flip))).toMatchObject({
+        code: 'invalid-data',
+      })
+      expect(await run(convert({ ...repository, path: 'C:/different' }).pipe(Effect.flip))).toMatchObject({
+        code: 'membership-conflict',
+      })
+      const unchanged = await run(store.getProject(project.id))
+      expect(unchanged.project).toEqual(original.project)
+      expect(unchanged.mainCheckout).toEqual(original.mainCheckout)
+      const result = await run(convert(repository))
+      expect(result).toMatchObject({
+        project: { ...original.project, repositoryIdentity: 'git:one', updatedAt: command.issuedAt },
+        mainCheckout: { ...original.mainCheckout, kind: 'main', branch: 'trunk' },
+        replayed: false,
+      })
+      expect(await run(store.getProject(project.id))).toMatchObject({
+        project: result.project,
+        mainCheckout: result.mainCheckout,
+      })
+      expect(await run(store.readTaskSnapshot(task.id, 1))).toMatchObject({
+        runContexts: [{ checkoutId: original.mainCheckout.id }],
+      })
+      expect(await run(store.registerProject(intent))).toEqual({ ...result, replayed: true })
+      expect(await run(convert({ ...repository, branch: 'later' }))).toEqual({ ...result, replayed: true })
+      expect(
+        await run(store.registerProject({ ...intent, projectId: 'different' as never }).pipe(Effect.flip)),
+      ).toMatchObject({ code: 'command-conflict' })
+      expect(
+        await run(store.registerProject({ ...intent, commandId: 'another', repository }).pipe(Effect.flip)),
+      ).toMatchObject({ code: 'membership-conflict' })
+    })
+  })
+
+  it.each(['isScratch', 'isCoach'] as const)('refuses to convert a managed directory marked %s', async marker => {
+    await withStore(async (store, run) => {
+      const original = await run(
+        store.registerProject({
+          project: { ...project, [marker]: true, repositoryIdentity: undefined },
+          mainCheckout: { ...checkout, kind: 'directory' },
+        }),
+      )
+      expect(
+        await run(
+          store
+            .registerProject({
+              _tag: 'ConvertDirectoryProject',
+              commandId: 'convert-managed',
+              projectId: original.project.id,
+              repository: { path: checkout.path, identity: 'git:one', updatedAt: command.issuedAt },
+            })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'membership-conflict', message: 'This folder is managed by Watchtower.' })
+      const unchanged = await run(store.getProject(original.project.id))
+      expect(unchanged.project).toEqual(original.project)
+      expect(unchanged.mainCheckout).toEqual(original.mainCheckout)
     })
   })
 

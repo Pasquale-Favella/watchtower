@@ -18,7 +18,7 @@ const CLONE_TIMEOUT_MS = 10 * 60_000
 /** gh's documented exit status when a command needs authentication. */
 const GH_AUTH_REQUIRED = 4
 
-/** gh reads this host's sign-in state; readiness and Source control discovery share the same probe. */
+/** gh reads this host's sign-in state for the add-project readiness check. */
 export const GH_AUTH_STATUS_ARGS = ['auth', 'status', '--hostname', 'github.com'] as const
 
 // No terminal is attached, and ambient Git overrides must not redirect writes to another checkout.
@@ -84,6 +84,32 @@ export const ProjectProvisionerLive = Layer.effect(
       if (stat.value.type !== 'Directory') return yield* fail('target-not-empty')
       const entries = yield* fs.readDirectory(target).pipe(Effect.orElseSucceed(() => ['unreadable']))
       if (entries.length > 0) return yield* fail('target-not-empty')
+    })
+
+    const initializeInPlace = Effect.fn('ProjectProvisioner.initializeInPlace')(function* (target: string) {
+      const gitOverrides = Object.fromEntries(
+        Object.keys(process.env)
+          .filter(key => /^GIT_/i.test(key))
+          .map(key => [key, undefined]),
+      )
+      const result = yield* runner
+        .run('git', ['init'], {
+          cwd: target,
+          timeoutMs: LOCAL_TIMEOUT_MS,
+          env: { ...gitOverrides, ...env },
+          extendEnv: true,
+          windowsHide: true,
+        })
+        .pipe(
+          Effect.catchTag('CommandError', error =>
+            fail(
+              error.reason === 'spawn' && /^(?:NotFound:)|\bENOENT\b/.test(error.message)
+                ? 'git-unavailable'
+                : 'init-failed',
+            ),
+          ),
+        )
+      if (result.exitCode !== 0) return yield* fail('init-failed')
     })
 
     const initialize = Effect.fn('ProjectProvisioner.initialize')(function* (input: string, name: string) {
@@ -168,6 +194,13 @@ export const ProjectProvisionerLive = Layer.effect(
       Effect.withSpan('ProjectProvisioner.readiness'),
     )
 
-    return ProjectProvisioner.of({ initialize, clone, publishToGitHub, lookupGitHubRepository, readiness })
+    return ProjectProvisioner.of({
+      initialize,
+      initializeInPlace,
+      clone,
+      publishToGitHub,
+      lookupGitHubRepository,
+      readiness,
+    })
   }),
 )

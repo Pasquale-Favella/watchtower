@@ -5,18 +5,22 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
+import * as Semaphore from 'effect/Semaphore'
 
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
-import { WorkspaceStore } from '@/core/ports/workspace-store.js'
+import { ProjectProvisioner } from '@/core/ports/project-provisioner.js'
+import { convertDirectoryProject, WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { CheckoutResolverError } from '@/shared/schemas/checkout.js'
 import {
   CHOOSE_LOCAL_PROJECT_FOLDER,
+  MANAGED_PROJECT_FOLDER,
+  ProjectSetupError,
   type RegisterProjectWithPreparation,
   type RegisterWorkspaceProject,
   registerWorkspaceProjectSchema,
   type WorkspaceProjectRegistration,
 } from '@/shared/schemas/workspace-projects.js'
-import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import { type InitializeProjectGitRequest, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 export class WorkspaceProjects extends Context.Service<
   WorkspaceProjects,
@@ -24,6 +28,9 @@ export class WorkspaceProjects extends Context.Service<
     readonly register: (
       request: RegisterWorkspaceProject,
     ) => Effect.Effect<WorkspaceProjectRegistration, CheckoutResolverError | WorkspaceStoreError>
+    readonly initializeGit: (
+      request: InitializeProjectGitRequest,
+    ) => Effect.Effect<WorkspaceProjectRegistration, CheckoutResolverError | WorkspaceStoreError | ProjectSetupError>
   }
 >()('watchtower/core/application/WorkspaceProjects') {}
 
@@ -33,6 +40,8 @@ export const WorkspaceProjectsLive = Layer.effect(
   Effect.gen(function* () {
     const resolver = yield* CheckoutResolver
     const store = yield* WorkspaceStore
+    const provisioner = yield* ProjectProvisioner
+    const gitInitialization = yield* Semaphore.make(1)
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const register = Effect.fn('WorkspaceProjects.register')(function* (input: RegisterWorkspaceProject) {
@@ -99,6 +108,45 @@ export const WorkspaceProjectsLive = Layer.effect(
       }
       return yield* store.registerProject(command)
     })
-    return WorkspaceProjects.of({ register })
+    const initializeGit = Effect.fn('WorkspaceProjects.initializeGit')(function* (
+      request: InitializeProjectGitRequest,
+    ) {
+      const { project, mainCheckout } = yield* store.getProject(request.projectId, { limit: 1 })
+      const replay = yield* convertDirectoryProject(store, request).pipe(
+        Effect.catch(error => (error.code === 'not-found' ? Effect.succeed(null) : Effect.fail(error))),
+      )
+      if (replay) return replay
+      if (project.isScratch || project.isCoach)
+        return yield* new WorkspaceStoreError({ code: 'membership-conflict', message: MANAGED_PROJECT_FOLDER })
+      if (project.archivedAt || mainCheckout.archivedAt)
+        return yield* new WorkspaceStoreError({ code: 'membership-conflict', message: 'This project is archived.' })
+      if (mainCheckout.kind !== 'directory') return yield* ProjectSetupError.of('already-git')
+
+      const target = mainCheckout.path
+      const before = yield* resolver.resolve(target, 'registration')
+      if (before.canonicalPath !== target || (before.kind !== 'directory' && before.mainCheckoutPath !== target))
+        return yield* ProjectSetupError.of('checkout-root-mismatch')
+      if (before.kind === 'directory') yield* provisioner.initializeInPlace(target)
+      const resolved = yield* resolver.resolve(target)
+      if (
+        resolved.kind !== 'main' ||
+        resolved.mainCheckoutPath !== target ||
+        resolved.canonicalPath !== target ||
+        resolved.repositoryIdentity === null
+      ) {
+        return yield* ProjectSetupError.of('checkout-root-mismatch')
+      }
+      return yield* convertDirectoryProject(store, {
+        ...request,
+        repository: {
+          path: target,
+          identity: resolved.repositoryIdentity,
+          branch: resolved.branch ?? undefined,
+          updatedAt: DateTime.formatIso(yield* DateTime.now),
+        },
+      })
+    }, gitInitialization.withPermit)
+
+    return WorkspaceProjects.of({ register, initializeGit })
   }),
 )

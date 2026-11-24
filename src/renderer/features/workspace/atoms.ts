@@ -237,6 +237,9 @@ export function createWorkspaceAtoms(
   const registerProjectAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:registerProject'>) =>
     rpc('workspace:registerProject', request),
   )
+  const initializeProjectGitAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:initializeProjectGit'>) =>
+    rpc('workspace:initializeProjectGit', request),
+  )
   const createProjectAtom = makeCommand((rpc, request: WorkspaceRequest<'workspace:createProject'>) =>
     rpc('workspace:createProject', request),
   )
@@ -359,6 +362,7 @@ export function createWorkspaceAtoms(
     workspaceStreamStateAtom,
     workspaceSubscriptionAtom,
     registerProjectAtom,
+    initializeProjectGitAtom,
     createProjectAtom,
     cloneProjectAtom,
     createTaskAtom,
@@ -400,6 +404,7 @@ export const {
   workspaceStreamStateAtom,
   workspaceSubscriptionAtom,
   registerProjectAtom,
+  initializeProjectGitAtom,
   createProjectAtom,
   cloneProjectAtom,
   createTaskAtom,

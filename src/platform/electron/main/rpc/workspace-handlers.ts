@@ -431,6 +431,8 @@ export function workspaceHandlers<R = never>(
               }),
             ),
           ),
+        'workspace:initializeProjectGit': request =>
+          setupMutation(Effect.suspend(() => projects.initializeGit(request))),
         'workspace:createTask': request =>
           mutation(
             Effect.gen(function* () {

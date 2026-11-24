@@ -94,7 +94,12 @@ it.each(['', 'rvw'])(
           Effect.succeed({ mainCheckout: { path: 'managed-scratch' } } as WorkspaceProjectRegistration),
       }).pipe(
         Layer.provide(host),
-        Layer.provide(Layer.succeed(WorkspaceProjects, { register: () => Effect.die('unused') })),
+        Layer.provide(
+          Layer.succeed(WorkspaceProjects, {
+            register: () => Effect.die('unused'),
+            initializeGit: () => Effect.die('unused'),
+          }),
+        ),
         Layer.provide(Layer.succeed(WorkspacePullRequests, pulls)),
         Layer.provide(NodeServices.layer),
       ),

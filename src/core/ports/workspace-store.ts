@@ -14,6 +14,7 @@ import type {
   CoachChat,
   CommandReceipt,
   ConsumeSideChatBringBackCommand,
+  ConvertDirectoryProjectCommand,
   CreateDelegationCommand,
   CreateTaskCommand,
   DelegationQuery,
@@ -78,8 +79,9 @@ export interface NativeTurnAcknowledgement {
 export class WorkspaceStore extends Context.Service<
   WorkspaceStore,
   {
+    /** Project registration and in-place conversion share the worker's registration exchange. */
     readonly registerProject: (
-      command: RegisterProjectCommand,
+      command: RegisterProjectCommand | ConvertDirectoryProjectCommand,
     ) => Effect.Effect<ProjectRegistrationReceipt, WorkspaceStoreError>
     readonly registerCheckout: (
       command: RegisterCheckoutCommand,
@@ -273,3 +275,10 @@ export class WorkspaceStore extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<DelegationRecord>, WorkspaceStoreError>
   }
 >()('watchtower/core/WorkspaceStore') {}
+
+export function convertDirectoryProject(
+  store: WorkspaceStore['Service'],
+  command: Omit<ConvertDirectoryProjectCommand, '_tag'>,
+): Effect.Effect<ProjectRegistrationReceipt, WorkspaceStoreError> {
+  return store.registerProject({ ...command, _tag: 'ConvertDirectoryProject' })
+}

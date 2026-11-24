@@ -151,6 +151,7 @@ export const unexpectedWorkspaceHandlers = WorkspaceRpcGroup.toLayer({
   'workspace:createProject': unexpected,
   'workspace:cloneProject': unexpected,
   'workspace:registerProject': unexpected,
+  'workspace:initializeProjectGit': unexpected,
   'workspace:createTask': unexpected,
   'workspace:renameTask': unexpected,
   'workspace:setTaskArchived': unexpected,

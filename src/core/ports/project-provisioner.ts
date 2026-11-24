@@ -18,6 +18,8 @@ export class ProjectProvisioner extends Context.Service<
   {
     /** Initializes a new repository with a README and attempts its first commit. */
     readonly initialize: (path: string, name: string) => Effect.Effect<void, ProjectSetupError>
+    /** Initializes only Git metadata in an existing folder. */
+    readonly initializeInPlace: (path: string) => Effect.Effect<void, ProjectSetupError>
     /** Clones into a missing or empty destination. */
     readonly clone: (source: ProjectRemoteSource, destinationPath: string) => Effect.Effect<void, ProjectSetupError>
     /** Creates a private GitHub repository as `origin`; a checkout that already has `origin` is left alone. */

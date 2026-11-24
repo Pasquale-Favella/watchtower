@@ -108,7 +108,7 @@ export const taskMutationReceiptSchema = Schema.Struct({
 })
 export type TaskMutationReceipt = Schema.Schema.Type<typeof taskMutationReceiptSchema>
 
-export const registerProjectCommandSchema = Schema.Struct({
+const projectRegistrationCommandSchema = Schema.Struct({
   // Optional only for existing internal callers; renderer commands always provide an ID.
   commandId: Schema.optional(text),
   project: Schema.Struct({
@@ -134,7 +134,25 @@ export const registerProjectCommandSchema = Schema.Struct({
       (mainCheckout.kind === 'main' || mainCheckout.branch === undefined),
   ),
 )
-export type RegisterProjectCommand = Schema.Schema.Type<typeof registerProjectCommandSchema>
+export type RegisterProjectCommand = Schema.Schema.Type<typeof projectRegistrationCommandSchema>
+
+export const initializeProjectGitRequestSchema = Schema.Struct({ commandId: text, projectId: projectIdSchema })
+export type InitializeProjectGitRequest = typeof initializeProjectGitRequestSchema.Type
+
+export const convertDirectoryProjectCommandSchema = Schema.TaggedStruct('ConvertDirectoryProject', {
+  ...initializeProjectGitRequestSchema.fields,
+  // Without Git metadata, only look up the durable receipt for this intent.
+  repository: Schema.optional(
+    Schema.Struct({ path: text, identity: text, branch: optionalText, updatedAt: timestamp }),
+  ),
+})
+export type ConvertDirectoryProjectCommand = typeof convertDirectoryProjectCommandSchema.Type
+
+// Both operations use the existing project registration exchange with the SQLite worker.
+export const registerProjectCommandSchema = Schema.Union([
+  projectRegistrationCommandSchema,
+  convertDirectoryProjectCommandSchema,
+])
 
 /** Registers an additional checkout. The main checkout is registered with its Project. */
 export const registerCheckoutCommandSchema = Schema.Struct({

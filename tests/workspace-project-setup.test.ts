@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve as resolvePath, sep } from 'node:path'
 
 import * as Effect from 'effect/Effect'
@@ -83,6 +83,18 @@ const provisioner = <A, E, UseError>(
 ) => Effect.runPromise(Effect.flatMap(ProjectProvisioner, use).pipe(Effect.provide(layer)))
 
 describe('ProjectProvisionerLive with real Git', () => {
+  it('initializes Git in place with the configured branch and no working-tree changes or commits', async () => {
+    const target = join(root, 'initialize-in-place')
+    mkdirSync(target)
+    writeFileSync(join(target, 'notes.md'), 'keep me')
+    await provisioner(liveProvisioner(), service => service.initializeInPlace(target))
+    expect(readdirSync(target).sort()).toEqual(['.git', 'notes.md'])
+    expect(readFileSync(join(target, 'notes.md'), 'utf8')).toBe('keep me')
+    expect(git(target, 'symbolic-ref', '--short', 'HEAD')).toBe('trunk')
+    expect(git(target, 'rev-list', '--all', '--count')).toBe('0')
+    expect(git(target, 'ls-files')).toBe('')
+  })
+
   it('creates a missing folder as a repository and leaves an existing repository alone', async () => {
     const target = join(root, 'created', 'nested')
     await provisioner(liveProvisioner(), service => service.initialize(target, 'Project heading'))
@@ -230,6 +242,7 @@ describe('WorkspaceProjectSetup', () => {
             mkdirSync(path, { recursive: true })
             git(path, 'init', '--quiet')
           }),
+        initializeInPlace: () => Effect.die('Unexpected in-place initialization'),
         clone: (source, path) =>
           Effect.sync(() => {
             calls.push(`clone ${source._tag} ${path}`)
@@ -244,8 +257,8 @@ describe('WorkspaceProjectSetup', () => {
   ) =>
     ManagedRuntime.make(
       WorkspaceProjectSetupLive.pipe(
-        Layer.provide(provisionerLayer),
         Layer.provideMerge(WorkspaceProjectsLive),
+        Layer.provide(provisionerLayer),
         Layer.provideMerge(
           Layer.merge(
             WorkspaceStoreLive({ filename: ':memory:' }),
