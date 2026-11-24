@@ -48,7 +48,8 @@ _Avoid_: page, tab
 
 **Application vertical**:
 One of the app's two working areas, Analytics or Workspace. The sidebar switcher
-selects the vertical and its navigation. Workspace groups Projects and Tasks;
+selects the vertical and its navigation. Workspace lists Tasks from every Project in
+one list grouped by status, each naming its Project;
 Analytics groups Sections.
 _Avoid_: workspace section
 
@@ -206,6 +207,7 @@ _Avoid_: realized savings, guaranteed savings
 
 - A parent Run can start any number of Delegated Tasks. Each starts in its own Conversation. Delegation depth is limited to 1.
 - A Delegated Task's Runs never exceed the access mode of the Run that started them.
+- Delegated Tasks are not listed in the sidebar; their parent's row stands for them. Archiving or restoring a Task does the same to its Delegated Tasks.
 - The README's platform claim (Windows | macOS | Linux) is the product
   promise; packaging config must never regress below it (ADR 0015).
 - Providers auto-detect from local files and never require API keys (ADR 0012).

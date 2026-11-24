@@ -30,7 +30,7 @@ An Agent Run needs to hand work to another agent, possibly on a different Harnes
 ## Consequences
 
 - Cross-harness delegation works without changing how native subagents render.
-- Child Tasks are real Tasks. The sidebar does not list them: their parent's row rolls up their pending approvals, questions and running work, and opening a child reveals its parent row. A child whose parent is archived or missing is listed on its own. `listTasks` applies the same rule unless `includeDelegated` is set.
+- Child Tasks are real Tasks. The sidebar never lists them: their parent's row rolls up their pending approvals, questions and running work, and opening a child reveals its parent row. Archiving a parent archives its children with it (and is refused while any child Run is active or unresolved); restoring the parent restores them. Only a child whose parent no longer exists is listed on its own. `listTasks` applies the same rule unless `includeDelegated` is set.
 - Tool results are compact: an id, status, bounded result and a `next` hint. `delegation_capabilities` reports `available: "unlimited"` for eligible Runs and lists at most 20 models per connection, with `moreModels` counting the rest; its `search` filters each connection's whole catalog, so a model past the cap can be found and named. Prompts and results never enter the operational log.
 - Plan-mode narrowing is not applied: Watchtower has no interaction mode to narrow.
 

@@ -1264,11 +1264,22 @@ const makeService = Effect.gen(function* () {
             const rows = yield* sql`SELECT archived, payload FROM workspace_task WHERE id = ${command.taskId}`
             if (!rows[0]) return yield* safeError('not-found', 'Task was not found')
             const task = yield* decodeJson(taskSchema)(String(rows[0].payload))
+            // Delegated Tasks follow their parent into and out of the archive, at every depth.
+            const descendantRows = yield* sql`
+              WITH RECURSIVE descendants(id) AS (
+                SELECT child_task_id FROM workspace_delegation WHERE parent_task_id = ${command.taskId}
+                UNION
+                SELECT d.child_task_id FROM workspace_delegation d JOIN descendants ON d.parent_task_id = descendants.id
+              )
+              SELECT t.id, t.archived, t.payload FROM workspace_task t JOIN descendants ON descendants.id = t.id
+              WHERE t.id <> ${command.taskId}
+            `
+            const descendantIds = descendantRows.map(row => String(row.id))
             if (command.archived && Number(rows[0].archived) === 0) {
               const activeRuns = yield* sql`
                 SELECT r.id FROM workspace_agent_run r
                 LEFT JOIN workspace_dispatch_intent i ON i.run_id = r.id
-                WHERE r.task_id = ${command.taskId}
+                WHERE r.task_id IN ${sql.in([command.taskId, ...descendantIds])}
                   AND (r.status IN ('queued', 'starting', 'running', 'awaitingInput', 'interruptRequested')
                     OR (r.status IN ('uncertain', 'recoveryRequired')
                       AND COALESCE(i.state, 'pending') NOT IN ('settled', 'failed')))
@@ -1277,7 +1288,9 @@ const makeService = Effect.gen(function* () {
               if (activeRuns.length > 0)
                 return yield* safeError(
                   'invalid-transition',
-                  'A Task with an active or unresolved Run cannot be archived',
+                  descendantIds.length > 0
+                    ? 'A Task whose own or Delegated Task Run is active or unresolved cannot be archived'
+                    : 'A Task with an active or unresolved Run cannot be archived',
                 )
             }
             const updatedTask = yield* Schema.decodeUnknownEffect(taskSchema)({
@@ -1287,6 +1300,17 @@ const makeService = Effect.gen(function* () {
               updatedAt: command.updatedAt,
             })
             yield* sql`UPDATE workspace_task SET archived = ${command.archived ? 1 : 0}, payload = ${encode(updatedTask)} WHERE id = ${command.taskId}`
+            for (const row of descendantRows) {
+              if (Number(row.archived) === (command.archived ? 1 : 0)) continue
+              const descendant = yield* decodeJson(taskSchema)(String(row.payload))
+              const updatedDescendant = yield* Schema.decodeUnknownEffect(taskSchema)({
+                ...descendant,
+                status: command.archived ? 'archived' : 'open',
+                archivedAt: command.archived ? command.updatedAt : null,
+                updatedAt: command.updatedAt,
+              })
+              yield* sql`UPDATE workspace_task SET archived = ${command.archived ? 1 : 0}, payload = ${encode(updatedDescendant)} WHERE id = ${String(row.id)}`
+            }
             const result = {
               commandId: command.commandId,
               taskId: command.taskId,
@@ -3484,7 +3508,7 @@ const makeService = Effect.gen(function* () {
         const includeDelegatedFlag = includeDelegated ? 1 : 0
         const delegatedFilter = sql`(${includeDelegatedFlag} = 1 OR NOT EXISTS (
           SELECT 1 FROM workspace_delegation d
-          JOIN workspace_task parent ON parent.id = d.parent_task_id AND parent.archived = 0
+          JOIN workspace_task parent ON parent.id = d.parent_task_id
           WHERE d.child_task_id = task.id
         ))`
         return yield* sql.withTransaction(

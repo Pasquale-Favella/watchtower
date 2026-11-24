@@ -263,7 +263,7 @@ describe('delegation store', () => {
     })
   })
 
-  it('lists a Delegated Task separately when its parent is archived', async () => {
+  it('archives Delegated Tasks with their parent and keeps them out of every list', async () => {
     await withStore(async store => {
       await run(store.createDelegation(createCommand), store)
       await run(
@@ -286,22 +286,66 @@ describe('delegation store', () => {
         store,
       )
 
+      expect(await run(store.readTaskDetail(childTask.id), store)).toMatchObject({
+        task: { status: 'archived', archivedAt: ts },
+      })
       const visible = await run(store.listTasks(project.id), store)
-      expect(visible.total).toBe(1)
-      expect(visible.items.map(item => item.id)).toEqual([childTask.id])
-      const withArchived = await run(store.listTasks(project.id, { includeArchived: true, limit: 1 }), store)
-      expect(withArchived.total).toBe(2)
-      expect(withArchived.items.map(item => item.id)).toEqual([childTask.id])
-      expect(withArchived.nextAfterId).toBe(childTask.id)
-      const next = await run(
-        store.listTasks(project.id, {
-          includeArchived: true,
-          afterId: childTask.id,
-          limit: 1,
+      expect(visible.total).toBe(0)
+      const withArchived = await run(store.listTasks(project.id, { includeArchived: true }), store)
+      expect(withArchived.items.map(item => item.id)).toEqual([parentTask.id])
+
+      await run(
+        store.setTaskArchived({
+          commandId: 'restore-parent',
+          taskId: parentTask.id,
+          archived: false,
+          updatedAt: ts,
         }),
         store,
       )
-      expect(next.items.map(item => item.id)).toEqual([parentTask.id])
+      expect(await run(store.readTaskDetail(childTask.id), store)).toMatchObject({
+        task: { status: 'open', archivedAt: null },
+      })
+      expect((await run(store.listTasks(project.id), store)).items.map(item => item.id)).toEqual([parentTask.id])
+    })
+  })
+
+  it('refuses to archive a parent while a Delegated Task Run is active', async () => {
+    await withStore(async store => {
+      await run(store.createDelegation(createCommand), store)
+      await run(
+        store.beginRun({
+          ...parentRun,
+          commandId: 'child-start',
+          runId: 'run-child' as never,
+          taskId: childTask.id,
+          conversationId: childConversation.id,
+          provisionalAgentSessionId: 'child-session',
+        }),
+        store,
+      )
+      await run(
+        store.recordDriverEvent(parentRun.runId, {
+          ownerEpoch: 7,
+          generation: 1,
+          eventId: 'parent-interrupted',
+          occurredAt: ts,
+          event: { kind: 'turnInterrupted' },
+        }),
+        store,
+      )
+      await expect(
+        run(
+          store.setTaskArchived({
+            commandId: 'archive-busy-parent',
+            taskId: parentTask.id,
+            archived: true,
+            updatedAt: ts,
+          }),
+          store,
+        ),
+      ).rejects.toMatchObject({ code: 'invalid-transition' })
+      expect(await run(store.readTaskDetail(childTask.id), store)).toMatchObject({ task: { status: 'open' } })
     })
   })
 
