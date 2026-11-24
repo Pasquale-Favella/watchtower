@@ -15,6 +15,7 @@ import type { ProjectSetupError } from '@/shared/schemas/workspace-projects.js'
 import { createWorkspaceIntent, retryWorkspaceIntent } from './commands.js'
 import { applyWorkspaceFrame, createWorkspaceProjection, workspaceResume } from './events.js'
 import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
+import { newChatProject } from './new-chat-atoms.js'
 import { createWorkspaceQueryPolling, type WorkspaceQueryRefreshTarget } from './polling.js'
 import { deliverConversationSubmission } from './submission-lifecycle.js'
 
@@ -157,6 +158,8 @@ export function createWorkspaceAtoms(
     workspaceSteerIntents,
     // Branches change outside the app too, so a mounted strip keeps them current.
     workspaceBranches,
+    // The new-chat draft reads its own project query, which commands such as Initialize Git must also refresh.
+    newChatProject,
   ]
   const scopedQueries = new Set<WorkspaceQueryRefreshTarget>()
   const registerScopedWorkspaceQueries = (targets: readonly WorkspaceQueryRefreshTarget[]): (() => void) => {

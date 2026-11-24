@@ -7,7 +7,7 @@ import {
   LoaderCircle,
   MessageSquare,
 } from 'lucide-react'
-import { type ReactNode, useCallback, useEffect, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 
 import { LoadingRegion } from '@/renderer/components/skeletons'
 import { Button } from '@/renderer/components/ui/button'
@@ -25,7 +25,11 @@ import {
   useWorkspaceProject,
   useWorkspaceTaskSnapshot,
 } from './hooks.js'
-import { shouldShowInitializeGit } from './initialize-git-visibility.js'
+import {
+  INITIALIZE_GIT_SUCCESS_MESSAGE,
+  initializeGitBlockedReason,
+  shouldShowInitializeGit,
+} from './initialize-git-visibility.js'
 import { ChangeStats } from './right-panel/inspection-ui.js'
 import { useCheckoutDiffPreview } from './right-panel/use-checkout-inspection.js'
 import { useSideChats } from './side-chat/hooks.js'
@@ -57,6 +61,31 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
     : null
   const project = useWorkspaceProject(scope && !props.isScratch ? { projectId: scope.projectId } : null)
   const initializeGit = shouldShowInitializeGit(project.data, props.checkoutId)
+  const versionControlHeadingId = useId()
+  const versionControlHeading = useRef<HTMLHeadingElement>(null)
+  const [announcement, setAnnouncement] = useState('')
+  const [focusVersionControl, setFocusVersionControl] = useState(false)
+  const onGitInitialized = useCallback(() => {
+    setAnnouncement(INITIALIZE_GIT_SUCCESS_MESSAGE)
+    setFocusVersionControl(true)
+  }, [])
+  // The Initialize Git row unmounts once the project refreshes, so focus moves to the section heading, which stays.
+  // The heading can lag the refresh by a render, so keep trying until it mounts, then give up after a moment.
+  useEffect(() => {
+    if (!focusVersionControl || initializeGit) return
+    if (versionControlHeading.current) {
+      versionControlHeading.current.focus()
+      setFocusVersionControl(false)
+      return
+    }
+    const giveUp = setTimeout(() => setFocusVersionControl(false), 5000)
+    return () => clearTimeout(giveUp)
+  }, [focusVersionControl, initializeGit, project.data])
+  useEffect(() => {
+    if (announcement === '') return
+    const clear = setTimeout(() => setAnnouncement(''), 5000)
+    return () => clearTimeout(clear)
+  }, [announcement])
   const sideChats = useSideChats(props.visible.sideChats ? (props.taskId ?? null) : null)
   const sideChatItems = sideChats.items.filter(
     item => !props.conversationId || item.parentConversationId === props.conversationId,
@@ -78,6 +107,9 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
 
   return (
     <div className="divide-y">
+      <p role="status" className="sr-only">
+        {announcement}
+      </p>
       {props.visible.workspace && workspacePath && (
         <section aria-label="Workspace">
           <div className="flex min-w-0 items-center gap-2 px-2.5 py-2">
@@ -98,9 +130,16 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
         !project.data?.project.isCoach &&
         (initializeGit || props.taskId || props.checkoutControls || props.onOpenDiff) &&
         (props.visible.branch || props.visible.changes || props.visible.pullRequests) && (
-          <section aria-label="Version control" className="py-1">
+          <section aria-labelledby={versionControlHeadingId} className="py-1">
+            <h3 id={versionControlHeadingId} ref={versionControlHeading} tabIndex={-1} className="sr-only outline-none">
+              Version control
+            </h3>
             {initializeGit ? (
-              <InitializeGitRow projectId={scope.projectId} />
+              <InitializeGitRow
+                projectId={scope.projectId}
+                activeRun={props.activeRun}
+                onInitialized={onGitInitialized}
+              />
             ) : (
               <>
                 {props.visible.branch && props.checkoutControls}
@@ -243,42 +282,62 @@ function ActionRow({
   label,
   onClick,
   disabled,
+  blockedReason,
 }: {
   readonly icon: React.ReactNode | null
   readonly label: string
   readonly onClick: () => void
   readonly disabled?: boolean
+  /** Keeps the row focusable but inert, and explains why in a tooltip. */
+  readonly blockedReason?: string | null
 }): React.JSX.Element {
-  return (
+  const blocked = blockedReason != null
+  const row = (
     <Button
       type="button"
       variant="ghost"
-      className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-left text-[13px]"
-      onClick={onClick}
+      className="text-foreground/80 h-8 w-full min-w-0 justify-start gap-2.5 px-2.5 text-left text-[13px] aria-disabled:cursor-default aria-disabled:opacity-50"
+      onClick={() => {
+        if (!blocked) onClick()
+      }}
       disabled={disabled}
+      aria-disabled={blocked || undefined}
     >
       {icon && <span className="text-muted-foreground [&_svg]:size-4">{icon}</span>}
       <span className="flex-1">{label}</span>
       <ArrowUpRight aria-hidden="true" className="text-muted-foreground size-3" />
     </Button>
   )
+  return blocked ? <TextTooltip label={blockedReason} side="left" trigger={row} /> : row
 }
 
-function InitializeGitRow({ projectId }: { readonly projectId: ProjectId }): React.JSX.Element {
+function InitializeGitRow({
+  projectId,
+  activeRun,
+  onInitialized,
+}: {
+  readonly projectId: ProjectId
+  readonly activeRun?: boolean | undefined
+  readonly onInitialized: () => void
+}): React.JSX.Element {
   const initialize = useInitializeProjectGit()
   return (
     <ActionRow
       icon={<GitBranchPlus aria-hidden="true" />}
       label={initialize.pending ? 'Initializing...' : 'Initialize Git'}
       disabled={initialize.pending}
+      blockedReason={initializeGitBlockedReason(activeRun)}
       onClick={() => {
-        initialize.execute({ projectId }).catch(cause => {
-          showErrorToast(
-            `workspace:project:${projectId}:initialize-git`,
-            'Git initialization failed',
-            cause instanceof Error ? cause.message : 'Git could not initialize the folder.',
-          )
-        })
+        initialize
+          .execute({ projectId })
+          .then(onInitialized)
+          .catch(cause => {
+            showErrorToast(
+              `workspace:project:${projectId}:initialize-git`,
+              'Git initialization failed',
+              cause instanceof Error ? cause.message : 'Git could not initialize the folder.',
+            )
+          })
       }}
     />
   )

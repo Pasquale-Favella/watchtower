@@ -1,11 +1,24 @@
 import * as Schema from 'effect/Schema'
 import { describe, expect, it } from 'vitest'
 
-import { shouldShowInitializeGit } from '@/renderer/features/workspace/initialize-git-visibility.js'
+import {
+  INITIALIZE_GIT_BUSY_REASON,
+  initializeGitBlockedReason,
+  shouldShowInitializeGit,
+} from '@/renderer/features/workspace/initialize-git-visibility.js'
 import { workspaceCheckoutIdSchema } from '@/shared/schemas/workspace.js'
 
 const checkoutId = Schema.decodeUnknownSync(workspaceCheckoutIdSchema)('checkout')
 const directory = { project: {}, mainCheckout: { id: checkoutId, kind: 'directory' as const } }
+
+describe('Initialize Git while an agent runs', () => {
+  it('blocks the row with an explanation only while a run is active', () => {
+    expect(initializeGitBlockedReason(true)).toBe(INITIALIZE_GIT_BUSY_REASON)
+    expect(INITIALIZE_GIT_BUSY_REASON).toBe('Wait for the agent to finish.')
+    expect(initializeGitBlockedReason(false)).toBeNull()
+    expect(initializeGitBlockedReason(undefined)).toBeNull()
+  })
+})
 
 describe('Initialize Git in conversation details', () => {
   it('appears for a directory main checkout in a task and in a draft', () => {

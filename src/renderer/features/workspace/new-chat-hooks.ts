@@ -8,6 +8,7 @@ import { pinWindowAtom, querySnapshot, useRemoteQuery } from '@/renderer/stores/
 import type { AgentAccessMode } from '@/shared/schemas/execution.js'
 import type { ConversationId } from '@/shared/schemas/workspace.js'
 
+import { retainWorkspaceQuery } from './atoms.js'
 import { workspaceQueryKey, type WorkspaceRequest } from './lib.js'
 import {
   clearCoachNewChatDraftIfUnchangedAtom,
@@ -40,6 +41,12 @@ export function useNewChatProjects(request: WorkspaceRequest<'workspace:listProj
 }
 
 export function useNewChatProject(request: WorkspaceRequest<'workspace:getProject'> | null) {
+  const registry = useContext(RegistryContext)
+  const active = request !== null
+  // Retained so workspace commands and the fallback poll refresh it like the other project reads.
+  useEffect(() => {
+    if (active) return retainWorkspaceQuery(registry, newChatProject)
+  }, [registry, active])
   return useRemoteQuery(newChatProject, request, workspaceQueryKey)
 }
 
