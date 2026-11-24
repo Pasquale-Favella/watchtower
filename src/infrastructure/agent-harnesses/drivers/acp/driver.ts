@@ -945,6 +945,8 @@ const declaredEfforts = (configOptions: ReadonlyArray<SessionConfigOption> | nul
 
 /** Config option categories a Run's mode ID may select. */
 const SELECTABLE_MODE_CATEGORIES: ReadonlyArray<string> = ['mode', 'thought_level']
+/** A config id that names a reasoning effort, which agents publish per model. */
+const MODEL_EFFORT_CONFIG_ID = /(?:^|[-_ ])(?:effort|thought[-_ ]?level|reasoning)(?:$|[-_ ])/i
 
 /**
  * Reads the per-model reasoning efforts of an agent that publishes them only for the session's current
@@ -1262,6 +1264,7 @@ function selectSessionOptions(
 ): Effect.Effect<ReadonlyArray<SessionConfigOption>, AgentDriverError | UnsupportedAgentOperation> {
   return Effect.gen(function* () {
     let configOptions = optionsForSession(response)
+    const sessionDefaults = configOptions
     // The model goes first: an agent such as OpenCode offers different effort levels per model.
     if (context.modelId) {
       const nativeModel = response.models?.availableModels.find(model => model.modelId === context.modelId)
@@ -1336,6 +1339,10 @@ function selectSessionOptions(
       }
       const option = configOptions.find(candidate => candidate.id === configId)
       if (!option || !optionValues(option).some(choice => choice.value === value)) {
+        // Effort levels belong to the model: one the selected model does not offer leaves its own default in place.
+        const known = option ?? sessionDefaults.find(candidate => candidate.id === configId)
+        const modelBound = known ? known.category === 'thought_level' : MODEL_EFFORT_CONFIG_ID.test(configId)
+        if (context.modelId && modelBound) continue
         return yield* unsupported('openSession', 'Requested ACP configuration is not present in the session catalog.')
       }
       const updated = yield* Effect.tryPromise({
@@ -2305,7 +2312,9 @@ function createConnection(
             state.modeState = { ...state.modeState, currentModeId: value }
           }
           state.configOptions = state.configOptions.map(option =>
-            option.id === configId ? { ...option, currentValue: value } : option,
+            option.id === configId && optionValues(option).some(choice => choice.value === value)
+              ? { ...option, currentValue: value }
+              : option,
           )
         }
         state.liveCapabilities = {

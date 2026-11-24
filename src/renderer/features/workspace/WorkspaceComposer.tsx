@@ -289,7 +289,11 @@ function WorkspaceComposerContent({
   const activeCheckout = checkoutChoices.find(checkout => checkout.id === checkoutId) ?? null
   const branchRequest = useMemo(
     () =>
-      !coach && activeCheckout && project.data && (!project.data.project.isScratch || allowInitialCheckoutChoice)
+      !coach &&
+      activeCheckout &&
+      activeCheckout.kind !== 'directory' &&
+      project.data &&
+      (!project.data.project.isScratch || allowInitialCheckoutChoice)
         ? { projectId: task.projectId, checkoutId: activeCheckout.id }
         : null,
     [activeCheckout, project.data, task.projectId, allowInitialCheckoutChoice, coach],
@@ -1142,6 +1146,8 @@ function WorkspaceComposerContent({
             !coach &&
             !embedded &&
             activeCheckout &&
+            // A plain folder has no branches or worktrees to choose.
+            activeCheckout.kind !== 'directory' &&
             project.data &&
             (!project.data.project.isScratch || choosingInitialCheckout) ? (
               <CheckoutStrip

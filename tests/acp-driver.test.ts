@@ -1053,6 +1053,29 @@ describe('generic ACP driver', () => {
     ])
   })
 
+  it('leaves the model default effort in place when the selected model does not offer the requested one', async () => {
+    const openWith = async (modelId: string, effort: string) => {
+      const fake = makeFakeAcp()
+      fake.modelDependentEffort = true
+      const configOptions = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const connection = yield* fake.driver.connect({ connectionId: 'acp-model-efforts' })
+            const session = yield* connection.openSession({ ...context, modelId, configValues: { effort } })
+            return session.capabilities.configOptions
+          }),
+        ),
+      )
+      return { calls: fake.configCalls, configOptions }
+    }
+    const unoffered = await openWith('openai/gpt', 'medium')
+    expect(unoffered.calls).toEqual([{ configId: 'model', value: 'openai/gpt' }])
+    expect(unoffered.configOptions).toContainEqual(expect.objectContaining({ id: 'effort', currentValue: 'medium' }))
+    const effortless = await openWith('plain/model', 'high')
+    expect(effortless.calls).toEqual([{ configId: 'model', value: 'plain/model' }])
+    expect(effortless.configOptions?.some(option => option.id === 'effort')).toBe(false)
+  })
+
   it('probes the model and mode catalogs with a disposable session that never occupies the connection', async () => {
     const fake = makeFakeAcp()
     const result = await Effect.runPromise(
