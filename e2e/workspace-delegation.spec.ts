@@ -70,7 +70,7 @@ test('a Delegated Task opens from its parent and reveals the parent in the sideb
       messages.getByRole('article', { name: 'User message', exact: true }).filter({ hasText: 'settled as completed' }),
     ).toHaveCount(0)
 
-    // Details: settled children fold under Previous, with their status and a hover card.
+    // Details: settled children show their status and a hover card.
     const detailsTrigger = selected.getByRole('button', { name: 'Conversation details', exact: true })
     const details = window
       .getByRole('dialog', { name: 'Conversation details', exact: true })
@@ -81,11 +81,14 @@ test('a Delegated Task opens from its parent and reveals the parent in the sideb
     await setDetails(true)
     const lineage = details.getByRole('region', { name: 'Delegated tasks', exact: true })
     await expect(lineage.getByRole('heading')).toHaveText('Delegated tasks')
-    await lineage.getByRole('button', { name: 'Previous tasks (2)', exact: true }).click()
+    // The failed child's result still waits for the parent, so it stays in view; the delivered one folds away.
+    const pendingResults = lineage.getByRole('list', { name: 'Pending delegation results', exact: true })
+    await expect(pendingResults.getByRole('listitem')).toHaveCount(1)
+    await expect(pendingResults).toContainText(LIVE)
+    await expect(pendingResults).toContainText('Failed')
+    await lineage.getByRole('button', { name: 'Previous tasks (1)', exact: true }).click()
     const previous = lineage.getByRole('list', { name: 'Previous delegated tasks', exact: true })
-    await expect(previous.getByRole('listitem')).toHaveCount(2)
-    await expect(previous).toContainText(LIVE)
-    await expect(previous).toContainText('Failed')
+    await expect(previous.getByRole('listitem')).toHaveCount(1)
     await expect(previous).toContainText(SETTLED)
     await expect(previous).toContainText('Completed')
     await previous.getByRole('button', { name: new RegExp(`^Open delegated task ${SETTLED}`) }).hover()
@@ -99,6 +102,9 @@ test('a Delegated Task opens from its parent and reveals the parent in the sideb
     // Opening a child reveals its parent in the sidebar, and the child links back to the parent.
     await projectGroup.click()
     await expect(projectGroup).toHaveAttribute('aria-expanded', 'false')
+    // The strip opens its list on demand unless a delegate needs an answer.
+    const stripToggle = strip.getByRole('button', { name: /Details$/ })
+    if ((await stripToggle.getAttribute('aria-expanded')) === 'false') await stripToggle.click()
     await strip.getByRole('button', { name: `Open delegated task ${LIVE}`, exact: true }).click()
     await expect(selected.getByRole('heading', { name: LIVE, exact: true })).toBeVisible()
     await expect(projectGroup).toHaveAttribute('aria-expanded', 'true')
@@ -109,7 +115,7 @@ test('a Delegated Task opens from its parent and reveals the parent in the sideb
     await setDetails(true)
     await expect(details.getByRole('button', { name: `Delegated from ${PARENT}`, exact: true })).toBeVisible()
     await setDetails(false)
-    await messages.getByRole('button', { name: 'Open parent', exact: true }).click()
+    await messages.getByRole('button', { name: PARENT, exact: true }).click()
     await expect(selected.getByRole('heading', { name: PARENT, exact: true })).toBeVisible()
 
     expect(pageErrors).toEqual([])

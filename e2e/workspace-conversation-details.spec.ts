@@ -20,7 +20,7 @@ test('conversation details remember inline visibility and keep popovers transien
       'data-side',
       'left',
     )
-    await details.getByRole('button', { name: 'Customize conversation details', exact: true }).click()
+    await details.click({ button: 'right' })
     const branchItem = window.getByRole('menu').getByRole('menuitemcheckbox', { name: 'Branch', exact: true })
     await expect(window.getByRole('menuitemcheckbox', { name: 'Agent runs', exact: true })).toHaveCount(0)
     await expect(branchItem).toHaveAttribute('aria-checked', 'true')
@@ -97,7 +97,7 @@ test('conversation details remember inline visibility and keep popovers transien
     ).toHaveAttribute('aria-pressed', 'false')
     await toggle.click()
     await expect(details).toHaveAttribute('data-conversation-details-panel', 'inline')
-    await details.getByRole('button', { name: 'Customize conversation details', exact: true }).click()
+    await details.click({ button: 'right' })
     await expect(
       window.getByRole('menu').getByRole('menuitemcheckbox', { name: 'Branch', exact: true }),
     ).toHaveAttribute('aria-checked', 'false')
@@ -109,7 +109,7 @@ test('conversation details remember inline visibility and keep popovers transien
       'false',
     )
     await window.keyboard.press('Escape')
-    await details.getByRole('button', { name: 'Close conversation details', exact: true }).click()
+    await toggle.click()
     await expect(details).toHaveCount(0)
   })
 })
