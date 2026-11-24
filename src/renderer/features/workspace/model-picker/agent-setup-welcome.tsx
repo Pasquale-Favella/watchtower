@@ -1,4 +1,4 @@
-import { WatchtowerGreeting } from '@/renderer/components/shell/WatchtowerGreeting.js'
+import { WatchtowerGreeting } from '@/renderer/components/mascot/WatchtowerGreeting.js'
 
 export function AgentSetupWelcome({ hasConnections }: { readonly hasConnections: boolean }): React.JSX.Element {
   return (

@@ -1,13 +1,11 @@
 import { useGSAP } from '@gsap/react'
 import gsap from 'gsap'
 import { useRef } from 'react'
-import { GenIcon, type IconBaseProps, type IconTree } from 'react-icons'
+import { IconBase, type IconBaseProps } from 'react-icons'
 
-import greeting from '@/renderer/assets/images/watchtower-greeting.json'
 import { motionEnabled } from '@/renderer/shared/lib/motion'
 
-const iconTree = greeting as IconTree
-const GreetingIcon = GenIcon(iconTree)
+import { mascotArt, mascotViewBox, origins } from './mascot-art.js'
 
 /** The greeting artwork uses the same icon tree and theme color as the brand mark. */
 export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
@@ -19,7 +17,7 @@ export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
       const defaults = { duration: 3.5, repeat: -1, ease: 'none' }
       gsap.to(q('[data-greeting=mascot]'), {
         ...defaults,
-        svgOrigin: '675 1010',
+        svgOrigin: origins.body,
         keyframes: {
           '0%': { x: 0, y: 0, rotation: 0 },
           '12%': { x: 0, y: -5, rotation: -2 },
@@ -33,7 +31,7 @@ export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
       })
       gsap.to(q('[data-greeting=head]'), {
         ...defaults,
-        svgOrigin: '680 575',
+        svgOrigin: origins.head,
         keyframes: {
           '0%': { x: 0, y: 0, rotation: 0 },
           '12%': { x: -12, y: -10, rotation: -8 },
@@ -47,7 +45,7 @@ export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
       })
       gsap.to(q('[data-greeting=base]'), {
         ...defaults,
-        svgOrigin: '675 1010',
+        svgOrigin: origins.body,
         keyframes: {
           '0%': { y: 0, scaleX: 1, scaleY: 1 },
           '15%': { y: 7, scaleX: 1.02, scaleY: 0.984 },
@@ -71,7 +69,7 @@ export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
       })
       gsap.to(q('[data-greeting=leftEye]'), {
         ...defaults,
-        svgOrigin: '655 403',
+        svgOrigin: origins.leftEye,
         keyframes: {
           '0%': { scaleY: 1 },
           '26%': { scaleY: 1 },
@@ -86,7 +84,7 @@ export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
       })
       gsap.to(q('[data-greeting=rightEye]'), {
         ...defaults,
-        svgOrigin: '796 405',
+        svgOrigin: origins.rightEye,
         keyframes: {
           '0%': { scaleY: 1 },
           '54%': { scaleY: 1 },
@@ -102,7 +100,9 @@ export function WatchtowerGreeting(props: IconBaseProps): React.JSX.Element {
 
   return (
     <span ref={root} className="inline-flex shrink-0">
-      <GreetingIcon {...props} />
+      <IconBase viewBox={mascotViewBox} {...props}>
+        {mascotArt}
+      </IconBase>
     </span>
   )
 }

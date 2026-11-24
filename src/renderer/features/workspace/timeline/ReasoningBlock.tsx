@@ -2,6 +2,7 @@ import { BrainIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
+import { WatchtowerMascot } from '@/renderer/components/mascot/WatchtowerMascot'
 import {
   TraceCollapsible,
   TraceCollapsibleContent,
@@ -32,9 +33,7 @@ export function ReasoningBlock({
       <div className="flex min-w-0 items-center gap-1">
         <TraceCollapsibleTrigger className="min-w-0">
           <TraceLine status={streaming ? 'running' : undefined} className="text-xs">
-            <TraceIcon>
-              <BrainIcon />
-            </TraceIcon>
+            <TraceIcon>{streaming ? <WatchtowerMascot mood="thinking" /> : <BrainIcon />}</TraceIcon>
             <TraceTitle className="shrink-0 overflow-visible font-medium">
               {streaming ? 'Thinking…' : 'Reasoning'}
             </TraceTitle>

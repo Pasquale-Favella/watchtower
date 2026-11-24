@@ -1,6 +1,7 @@
 import { BotIcon, CheckIcon, CircleAlertIcon, CircleHelpIcon, LoaderCircleIcon } from 'lucide-react'
 import { useState } from 'react'
 
+import { WatchtowerMascot } from '@/renderer/components/mascot/WatchtowerMascot'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   TraceCollapsible,
@@ -69,7 +70,7 @@ export function DelegateRow({ tool }: { readonly tool: ToolBlock }): React.JSX.E
         >
           <TraceIcon>
             {effectiveStatus === 'running' ? (
-              <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" />
+              <WatchtowerMascot className="size-4" mood="delegating" />
             ) : (
               <BotIcon className="size-3.5" />
             )}

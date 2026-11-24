@@ -9,7 +9,6 @@ import {
   FileTextIcon,
   GlobeIcon,
   ListChecksIcon,
-  LoaderCircleIcon,
   NetworkIcon,
   PlugIcon,
   SearchIcon,
@@ -18,6 +17,7 @@ import {
 } from 'lucide-react'
 import { useState } from 'react'
 
+import { WatchtowerMascot } from '@/renderer/components/mascot/WatchtowerMascot'
 import { Button } from '@/renderer/components/ui/button'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
@@ -45,7 +45,7 @@ import type { ToolBlock, ToolCategory, WorkSummary } from './work-log.js'
 import { toolCategoryFor } from './work-log.js'
 
 const toolStatus = {
-  running: { label: 'Running', Icon: LoaderCircleIcon, className: 'motion-safe:animate-spin', trace: 'running' },
+  running: { label: 'Running', Icon: Clock3Icon, className: '', trace: 'running' },
   completed: { label: 'Completed', Icon: CheckIcon, className: 'text-success', trace: undefined },
   failed: { label: 'Failed', Icon: CircleAlertIcon, className: 'text-destructive', trace: 'error' },
   unknown: { label: 'Status unavailable', Icon: CircleHelpIcon, className: 'text-muted-foreground', trace: 'pending' },
@@ -76,11 +76,13 @@ function FailureMarker({ count }: { readonly count: number }): React.JSX.Element
 /** One agent call, with literal input/output and explicit native metadata. */
 export function ToolRow({
   tool,
+  animateRunning = true,
   disclosureKey,
   disclosureChoices,
   onDisclosureChange,
 }: {
   readonly tool: ToolBlock
+  readonly animateRunning?: boolean
   readonly disclosureKey?: string
   readonly disclosureChoices?: Readonly<Record<string, boolean>>
   readonly onDisclosureChange?: (key: string, open: boolean) => void
@@ -98,8 +100,8 @@ export function ToolRow({
   const CategoryIcon = categoryIcons[presentation.category]
   const status = toolStatus[tool.status]
   const orchestration = presentation.category === 'delegation'
-  const staticRunning = orchestration && tool.status === 'running'
-  const StatusIcon = staticRunning ? Clock3Icon : status.Icon
+  const staticRunning = (orchestration || !animateRunning) && tool.status === 'running'
+  const StatusIcon = status.Icon
   const url = safeToolUrl(presentation.url)
   return (
     <TraceCollapsible open={open} onOpenChange={changeOpen} className="text-xs">
@@ -132,7 +134,11 @@ export function ToolRow({
           )}
           {tool.status !== 'completed' && (
             <TraceIcon>
-              <StatusIcon className={cn('size-3', !staticRunning && status.className)} />
+              {tool.status === 'running' && !staticRunning ? (
+                <WatchtowerMascot mood="working" className="size-4" />
+              ) : (
+                <StatusIcon className={cn('size-3', status.className)} />
+              )}
             </TraceIcon>
           )}
         </TraceLine>
@@ -245,6 +251,7 @@ export function WorkGroupRow({
         }}
       />
     )
+  const liveTool = group.tools.findLast(tool => tool.status === 'running' && toolCategoryFor(tool) !== 'delegation')
   return (
     <WorkLogCollapsible
       summary={group.summary}
@@ -252,12 +259,13 @@ export function WorkGroupRow({
       onOpenChange={next => {
         if (groupKey && turnId) onDisclosureChange?.(groupKey, next, turnId, withinFold)
       }}
-      active={group.tools.some(tool => tool.status === 'running' && toolCategoryFor(tool) !== 'delegation')}
+      active={liveTool !== undefined}
     >
       {group.tools.map(tool => (
         <ToolRow
           key={tool.toolCallId}
           tool={tool}
+          animateRunning={tool === liveTool}
           disclosureKey={turnId === undefined ? undefined : toolDisclosureKey(turnId, tool)}
           disclosureChoices={disclosureChoices}
           onDisclosureChange={(key, next) => {
@@ -286,9 +294,10 @@ function WorkLogCollapsible({
 }): React.JSX.Element {
   const [localOpen, setLocalOpen] = useState(false)
   const isControlled = open !== undefined
+  const expanded = open ?? localOpen
   return (
     <TraceCollapsible
-      open={open ?? localOpen}
+      open={expanded}
       onOpenChange={next => {
         if (isControlled) onOpenChange?.(next)
         else setLocalOpen(next)
@@ -298,8 +307,8 @@ function WorkLogCollapsible({
       <TraceCollapsibleTrigger className="max-w-full">
         <TraceLine status={active ? 'running' : undefined} className="text-xs">
           <TraceIcon>
-            {active ? (
-              <LoaderCircleIcon className="size-3.5 motion-safe:animate-spin" />
+            {active && !expanded ? (
+              <WatchtowerMascot mood="working" className="size-4" />
             ) : (
               <ListChecksIcon className="size-3.5" />
             )}
