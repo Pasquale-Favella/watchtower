@@ -56,6 +56,15 @@ export const workspaceStoreErrorCodeSchema = Schema.Literals([
 ])
 export type WorkspaceStoreErrorCode = Schema.Schema.Type<typeof workspaceStoreErrorCodeSchema>
 
+export const AGENT_RUN_BLOCKS_GIT_INITIALIZATION = 'Wait for the agent to finish before initializing Git.'
+export const GIT_INITIALIZATION_IN_PROGRESS = 'Git initialization is already in progress for this checkout.'
+export const GIT_INITIALIZATION_BLOCKS_AGENT_RUN = 'Wait for Git initialization to finish before starting an agent.'
+export const gitInitializationConflictMessages = [
+  AGENT_RUN_BLOCKS_GIT_INITIALIZATION,
+  GIT_INITIALIZATION_IN_PROGRESS,
+  GIT_INITIALIZATION_BLOCKS_AGENT_RUN,
+] as const
+
 export class WorkspaceStoreError extends Schema.TaggedError<WorkspaceStoreError>()('WorkspaceStoreError', {
   code: workspaceStoreErrorCodeSchema,
   message: Schema.String,
@@ -143,7 +152,13 @@ export const convertDirectoryProjectCommandSchema = Schema.TaggedStruct('Convert
   ...initializeProjectGitRequestSchema.fields,
   // Without Git metadata, only look up the durable receipt for this intent.
   repository: Schema.optional(
-    Schema.Struct({ path: text, identity: text, branch: optionalText, updatedAt: timestamp }),
+    Schema.Struct({
+      checkoutId: workspaceCheckoutIdSchema,
+      path: text,
+      identity: text,
+      branch: optionalText,
+      updatedAt: timestamp,
+    }),
   ),
 })
 export type ConvertDirectoryProjectCommand = typeof convertDirectoryProjectCommandSchema.Type

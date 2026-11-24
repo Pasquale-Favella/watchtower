@@ -16,10 +16,12 @@ export { CheckoutResolverError } from '@/shared/schemas/checkout.js'
 export class CheckoutResolver extends Context.Service<
   CheckoutResolver,
   {
-    /** Registration probes Git only at checkout roots. Directory mode verifies only the physical folder. */
+    /** Registration probes checkout-root identity. Identity mode also discovers enclosing repositories.
+     * Directory mode verifies only the physical folder.
+     */
     readonly resolve: (
       path: string,
-      mode?: 'registration' | 'directory',
+      mode?: 'registration' | 'identity' | 'directory',
     ) => Effect.Effect<ResolvedCheckout, CheckoutResolverError>
     readonly createIsolatedWorktree: (
       request: CreateIsolatedWorktreeRequest,

@@ -74,7 +74,7 @@ const messages = {
   'managed-folder': MANAGED_PROJECT_FOLDER,
   'scratch-inside-git': SCRATCH_INSIDE_GIT_MESSAGE,
 } as const
-function failure(code: WorkspaceRpcError['code']): WorkspaceRpcError {
+function failure(code: keyof typeof messages): WorkspaceRpcError {
   return new WorkspaceRpcError({ code, message: messages[code] })
 }
 function sanitize(error: unknown): WorkspaceRpcError {
@@ -82,8 +82,11 @@ function sanitize(error: unknown): WorkspaceRpcError {
   if (Schema.is(ScratchProjectInsideGitError)(error)) return failure('scratch-inside-git')
   if (Schema.is(Store.WorkspaceStoreError)(error)) {
     switch (error.code) {
-      case 'admission-conflict':
+      case 'admission-conflict': {
+        const message = Store.gitInitializationConflictMessages.find(message => message === error.message)
+        if (message) return new WorkspaceRpcError({ code: 'git-initialization-conflict', message })
         return failure('conversation-in-use')
+      }
       case 'not-found':
         return failure('not-found')
       case 'database-unavailable':
@@ -432,7 +435,11 @@ export function workspaceHandlers<R = never>(
             ),
           ),
         'workspace:initializeProjectGit': request =>
-          setupMutation(Effect.suspend(() => projects.initializeGit(request))),
+          setupMutation(
+            Effect.suspend(() => projects.initializeGit(request)).pipe(
+              Effect.ensuring(host.wakeQueuedFollowUps ?? Effect.void),
+            ),
+          ),
         'workspace:createTask': request =>
           mutation(
             Effect.gen(function* () {

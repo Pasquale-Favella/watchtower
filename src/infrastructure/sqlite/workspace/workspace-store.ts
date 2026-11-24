@@ -62,6 +62,7 @@ import {
   settleDelegationCommandSchema,
 } from '@/shared/schemas/workspace-store.js'
 import {
+  AGENT_RUN_BLOCKS_GIT_INITIALIZATION,
   type BeginRunCommand,
   beginRunCommandSchema,
   checkoutRegistrationReceiptSchema,
@@ -80,6 +81,8 @@ import {
   dispatchFailureCommandSchema,
   enqueueFollowUpCommandSchema,
   followUpReceiptSchema,
+  GIT_INITIALIZATION_BLOCKS_AGENT_RUN,
+  GIT_INITIALIZATION_IN_PROGRESS,
   nativeSessionBindingSchema,
   ownerEpochAcquisitionSchema,
   projectRegistrationReceiptSchema,
@@ -605,6 +608,8 @@ const makeService = Effect.gen(function* () {
         : error,
     ),
   )
+  // Reservations share the dispatch admission connection and live only as long as its worker.
+  yield* sql`CREATE TEMP TABLE workspace_git_initialization (path TEXT PRIMARY KEY, reservation_id TEXT NOT NULL)`
   const guard = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, WorkspaceStoreError> =>
     Effect.provideService(effect, SqlClient.SqlClient, sql).pipe(
       Effect.mapError(error =>
@@ -633,22 +638,77 @@ const makeService = Effect.gen(function* () {
     }
   })
 
+  const reserveGitInitialization: WorkspaceStore['Service']['reserveGitInitialization'] = (path, reservationId) =>
+    guard(
+      sql.withTransaction(
+        Effect.gen(function* () {
+          const active = yield* sql`
+            SELECT 1 FROM workspace_dispatch_intent i
+            JOIN workspace_checkout c ON c.id = i.checkout_id
+            WHERE json_extract(c.payload, '$.path') = ${path}
+              AND i.state NOT IN ('settled', 'failed')
+            LIMIT 1`
+          if (active.length > 0) return yield* safeError('admission-conflict', AGENT_RUN_BLOCKS_GIT_INITIALIZATION)
+          const existing = yield* sql`SELECT 1 FROM workspace_git_initialization WHERE path = ${path}`
+          if (existing.length > 0) return yield* safeError('admission-conflict', GIT_INITIALIZATION_IN_PROGRESS)
+          yield* sql`INSERT INTO workspace_git_initialization (path, reservation_id) VALUES (${path}, ${reservationId})`
+        }),
+      ),
+    )
+
+  const releaseGitInitialization: WorkspaceStore['Service']['releaseGitInitialization'] = (path, reservationId) =>
+    guard(
+      sql`DELETE FROM workspace_git_initialization WHERE path = ${path} AND reservation_id = ${reservationId}`.pipe(
+        Effect.asVoid,
+      ),
+    )
+
+  const checkCheckoutAdmission = Effect.fnUntraced(function* (checkoutId: string) {
+    const initializing = yield* sql`
+      SELECT 1 FROM workspace_checkout c
+      JOIN workspace_git_initialization g ON g.path = json_extract(c.payload, '$.path')
+      WHERE c.id = ${checkoutId}`
+    if (initializing.length > 0) return yield* safeError('admission-conflict', GIT_INITIALIZATION_BLOCKS_AGENT_RUN)
+  })
+
+  const checkProjectPathMembership = Effect.fnUntraced(function* (
+    path: string,
+    membership?: { readonly scratch: boolean; readonly coach: boolean; readonly projectId: string },
+  ) {
+    const conflictingPath = yield* sql`
+      SELECT 1 FROM workspace_checkout c JOIN workspace_project p ON p.id = c.project_id
+      WHERE json_extract(c.payload, '$.path') = ${path}
+        AND (
+          COALESCE(json_extract(p.payload, '$.isScratch'), 0) <> ${Number(membership?.scratch ?? false)}
+          OR COALESCE(json_extract(p.payload, '$.isCoach'), 0) <> ${Number(membership?.coach ?? false)}
+          OR (${membership?.projectId ?? null} IS NOT NULL AND p.id <> ${membership?.projectId ?? null})
+        )
+      LIMIT 1`
+    if (conflictingPath.length > 0)
+      return yield* safeError(
+        'membership-conflict',
+        membership ? 'Chat checkout identity is invalid.' : MANAGED_PROJECT_FOLDER,
+      )
+  })
+
   const persistGitConversion = Effect.fnUntraced(function* (
     project: Project,
     mainCheckout: WorkspaceCheckout,
-    repository: NonNullable<ConvertDirectoryProjectCommand['repository']>,
+    repository: Omit<NonNullable<ConvertDirectoryProjectCommand['repository']>, 'checkoutId'>,
   ) {
     if (project.isScratch || project.isCoach) return yield* safeError('membership-conflict', MANAGED_PROJECT_FOLDER)
     if (project.archivedAt || mainCheckout.archivedAt)
       return yield* safeError('membership-conflict', 'Archived projects cannot be converted')
+    if (mainCheckout.path !== repository.path)
+      return yield* safeError('membership-conflict', 'Repository main checkout path differs from its registration')
+    if (mainCheckout.kind === 'main' && project.repositoryIdentity === repository.identity)
+      return { project, mainCheckout }
     if (
       project.repositoryIdentity !== undefined ||
       mainCheckout.kind !== 'directory' ||
       mainCheckout.branch !== undefined
     )
       return yield* safeError('membership-conflict', 'The project must have a directory main checkout')
-    if (mainCheckout.path !== repository.path)
-      return yield* safeError('membership-conflict', 'Repository main checkout path differs from its registration')
     const existing = yield* sql`
       SELECT id FROM workspace_project
       WHERE json_extract(payload, '$.archivedAt') IS NULL
@@ -680,6 +740,8 @@ const makeService = Effect.gen(function* () {
             }
             if (!repository) return yield* safeError('not-found', 'Git initialization receipt was not found')
             const { project, mainCheckout } = yield* getProject(projectId, { limit: 1 })
+            if (mainCheckout.id !== repository.checkoutId)
+              return yield* safeError('membership-conflict', 'The project main checkout has changed')
             const converted = yield* persistGitConversion(project, mainCheckout, repository)
             const result = { ...converted, commandId, replayed: false, reused: true }
             yield* sql`INSERT INTO workspace_command_receipt (command_id, fingerprint, payload) VALUES (${commandKey}, ${receiptFingerprint('convertDirectoryProject', command)}, ${encode(result)})`
@@ -738,16 +800,10 @@ const makeService = Effect.gen(function* () {
                   mainCheckout: { ...registration.mainCheckout, path: yield* prepareDirectory },
                 }
               : registration
-            const conflictingPath = yield* sql`
-              SELECT 1 FROM workspace_checkout c JOIN workspace_project p ON p.id = c.project_id
-              WHERE json_extract(c.payload, '$.path') = ${command.mainCheckout.path}
-                AND (
-                  COALESCE(json_extract(p.payload, '$.isScratch'), 0) <> ${Number(scratch)}
-                  OR COALESCE(json_extract(p.payload, '$.isCoach'), 0) <> ${Number(coach)}
-                  OR (${Number(managed)} = 1 AND p.id <> ${requestedProject.id})
-                )
-              LIMIT 1`
-            if (conflictingPath.length > 0) return yield* membershipConflict
+            yield* checkProjectPathMembership(
+              command.mainCheckout.path,
+              managed ? { scratch, coach, projectId: requestedProject.id } : undefined,
+            )
 
             const existing = yield* sql`
               SELECT p.id, p.payload FROM workspace_project p
@@ -1330,6 +1386,7 @@ const makeService = Effect.gen(function* () {
               }
             }
 
+            yield* checkCheckoutAdmission(command.checkoutId)
             const sessionRuns = yield* sql`
         SELECT r.id FROM workspace_agent_run r
         JOIN workspace_dispatch_intent i ON i.run_id = r.id
@@ -1455,6 +1512,7 @@ const makeService = Effect.gen(function* () {
               return yield* Effect.fail(
                 safeError('membership-conflict', 'Dispatch checkout payload does not match stored membership'),
               )
+            yield* checkCheckoutAdmission(checkout.id)
             const accessMode = yield* Schema.decodeUnknownEffect(agentAccessModeSchema)(intent.access_mode).pipe(
               Effect.mapError(() => safeError('invalid-data', 'Stored access mode failed validation')),
             )
@@ -4379,6 +4437,9 @@ const makeService = Effect.gen(function* () {
     searchPromptConversations: request => guard(searchPromptConversations(sql, request)),
     registerProject: command =>
       '_tag' in command ? convertDirectoryProject(command) : registerNewOrExistingProject(command),
+    checkUnmanagedProjectPath: path => guard(checkProjectPathMembership(path)),
+    reserveGitInitialization,
+    releaseGitInitialization,
     registerCheckout,
     createTask,
     listActiveCoachRuns,

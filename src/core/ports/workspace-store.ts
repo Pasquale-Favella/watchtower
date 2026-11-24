@@ -83,6 +83,9 @@ export class WorkspaceStore extends Context.Service<
     readonly registerProject: (
       command: RegisterProjectCommand | ConvertDirectoryProjectCommand,
     ) => Effect.Effect<ProjectRegistrationReceipt, WorkspaceStoreError>
+    readonly checkUnmanagedProjectPath: (path: string) => Effect.Effect<void, WorkspaceStoreError>
+    readonly reserveGitInitialization: (path: string, reservationId: string) => Effect.Effect<void, WorkspaceStoreError>
+    readonly releaseGitInitialization: (path: string, reservationId: string) => Effect.Effect<void, WorkspaceStoreError>
     readonly registerCheckout: (
       command: RegisterCheckoutCommand,
     ) => Effect.Effect<CheckoutRegistrationReceipt, WorkspaceStoreError>

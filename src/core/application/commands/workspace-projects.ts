@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import * as Context from 'effect/Context'
 import * as DateTime from 'effect/DateTime'
 import * as Effect from 'effect/Effect'
@@ -5,7 +7,6 @@ import * as FileSystem from 'effect/FileSystem'
 import * as Layer from 'effect/Layer'
 import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
-import * as Semaphore from 'effect/Semaphore'
 
 import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { ProjectProvisioner } from '@/core/ports/project-provisioner.js'
@@ -41,7 +42,6 @@ export const WorkspaceProjectsLive = Layer.effect(
     const resolver = yield* CheckoutResolver
     const store = yield* WorkspaceStore
     const provisioner = yield* ProjectProvisioner
-    const gitInitialization = yield* Semaphore.make(1)
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
     const register = Effect.fn('WorkspaceProjects.register')(function* (input: RegisterWorkspaceProject) {
@@ -65,7 +65,8 @@ export const WorkspaceProjectsLive = Layer.effect(
           return Effect.succeed(null)
         }),
       )
-      const main = selected?.kind === 'worktree' ? yield* resolver.resolve(selected.mainCheckoutPath) : selected
+      const main =
+        selected?.kind === 'worktree' ? yield* resolver.resolve(selected.mainCheckoutPath, 'identity') : selected
       if (
         selected?.kind === 'worktree' &&
         (main?.kind !== 'main' || main.repositoryIdentity !== selected.repositoryIdentity)
@@ -123,29 +124,41 @@ export const WorkspaceProjectsLive = Layer.effect(
       if (mainCheckout.kind !== 'directory') return yield* ProjectSetupError.of('already-git')
 
       const target = mainCheckout.path
-      const before = yield* resolver.resolve(target, 'registration')
-      if (before.canonicalPath !== target || (before.kind !== 'directory' && before.mainCheckoutPath !== target))
-        return yield* ProjectSetupError.of('checkout-root-mismatch')
-      if (before.kind === 'directory') yield* provisioner.initializeInPlace(target)
-      const resolved = yield* resolver.resolve(target)
-      if (
-        resolved.kind !== 'main' ||
-        resolved.mainCheckoutPath !== target ||
-        resolved.canonicalPath !== target ||
-        resolved.repositoryIdentity === null
-      ) {
-        return yield* ProjectSetupError.of('checkout-root-mismatch')
-      }
-      return yield* convertDirectoryProject(store, {
-        ...request,
-        repository: {
-          path: target,
-          identity: resolved.repositoryIdentity,
-          branch: resolved.branch ?? undefined,
-          updatedAt: DateTime.formatIso(yield* DateTime.now),
-        },
-      })
-    }, gitInitialization.withPermit)
+      const reservationId = randomUUID()
+      return yield* Effect.acquireUseRelease(
+        store.reserveGitInitialization(target, reservationId),
+        () =>
+          Effect.gen(function* () {
+            const before = yield* resolver.resolve(target, 'registration')
+            if (before.canonicalPath !== target) return yield* ProjectSetupError.of('checkout-root-mismatch')
+            const resolved =
+              before.kind === 'directory'
+                ? yield* provisioner
+                    .initializeInPlace(target)
+                    .pipe(Effect.andThen(() => resolver.resolve(target, 'identity')))
+                : before
+            if (
+              resolved.kind !== 'main' ||
+              resolved.mainCheckoutPath !== target ||
+              resolved.canonicalPath !== target ||
+              resolved.repositoryIdentity === null
+            ) {
+              return yield* ProjectSetupError.of('checkout-root-mismatch')
+            }
+            return yield* convertDirectoryProject(store, {
+              ...request,
+              repository: {
+                checkoutId: mainCheckout.id,
+                path: target,
+                identity: resolved.repositoryIdentity,
+                branch: resolved.branch ?? undefined,
+                updatedAt: DateTime.formatIso(yield* DateTime.now),
+              },
+            })
+          }),
+        () => store.releaseGitInitialization(target, reservationId),
+      )
+    })
 
     return WorkspaceProjects.of({ register, initializeGit })
   }),

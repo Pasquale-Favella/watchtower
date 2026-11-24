@@ -1,5 +1,15 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { join, resolve as resolvePath, sep } from 'node:path'
 
 import * as Effect from 'effect/Effect'
@@ -14,6 +24,7 @@ import {
 import { WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
 import { CommandError, type CommandResult, CommandRunner, makeRecordingCommandRunner } from '@/core/ports/process.js'
 import { ProjectProvisioner } from '@/core/ports/project-provisioner.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { CheckoutResolverLive } from '@/infrastructure/filesystem/checkout-resolver.js'
 import {
   githubRepositoryName,
@@ -344,6 +355,51 @@ describe('WorkspaceProjectSetup', () => {
       )
       expect(failure).toMatchObject({ code: 'invalid-input' })
       expect(calls).toEqual([])
+    } finally {
+      await app.dispose()
+    }
+  })
+
+  it.each(['isScratch', 'isCoach'] as const)('refuses create and clone for a folder marked %s', async marker => {
+    const calls: string[] = []
+    const app = runtime(calls)
+    const target = join(root, marker)
+    const alias = join(root, `${marker}-alias`)
+    mkdirSync(target)
+    symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      const store = await app.runPromise(WorkspaceStore)
+      const setup = await app.runPromise(WorkspaceProjectSetup)
+      const at = '2026-10-30T08:00:00Z'
+      const managed = ids(marker)
+      await app.runPromise(
+        store.registerProject({
+          project: { id: managed.projectId, name: marker, [marker]: true, createdAt: at, updatedAt: at },
+          mainCheckout: {
+            id: managed.checkoutId,
+            path: realpathSync.native(target),
+            kind: 'directory',
+            createdAt: at,
+          },
+        }),
+      )
+      const failure = { code: 'membership-conflict', message: 'This folder is managed by Watchtower.' }
+      const request = { ...ids(`${marker}-new`), path: alias, name: 'Project' }
+      expect(
+        await app.runPromise(setup.create({ ...request, publish: 'github-private' }).pipe(Effect.flip)),
+      ).toMatchObject(failure)
+      expect(
+        await app.runPromise(
+          setup
+            .clone({
+              ...request,
+              source: { _tag: 'git', remoteUrl: 'https://example.invalid/repo.git' },
+            })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject(failure)
+      expect(calls).toEqual([])
+      expect(readdirSync(target)).toEqual([])
     } finally {
       await app.dispose()
     }

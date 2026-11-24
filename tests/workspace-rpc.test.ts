@@ -65,22 +65,25 @@ const failingProjects = Layer.succeed(WorkspaceProjects, {
   initializeGit: () => Effect.fail(failure),
 })
 
+const directoryResolver: CheckoutResolver['Service'] = {
+  resolve: path =>
+    Effect.succeed({
+      kind: 'directory',
+      canonicalPath: path,
+      repositoryIdentity: null,
+      mainCheckoutPath: null,
+      branch: null,
+      headRevision: null,
+      dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
+    }),
+  createIsolatedWorktree: () => Effect.die('Unexpected worktree creation'),
+  removeWorktree: () => Effect.die('Unexpected worktree removal'),
+}
+
 describe('Workspace renderer RPC', () => {
   it('returns a fixed message for in-place Git initialization failure', async () => {
     const workspace = makeWorkspace({
-      checkoutResolver: {
-        ...resolver,
-        resolve: path =>
-          Effect.succeed({
-            kind: 'directory',
-            canonicalPath: path,
-            repositoryIdentity: null,
-            mainCheckoutPath: null,
-            branch: null,
-            headRevision: null,
-            dirty: { trackedChanges: 0, untrackedCount: 0, ignoredCount: 0 },
-          }),
-      },
+      checkoutResolver: directoryResolver,
       initializeInPlace: () =>
         Effect.fail(new ProjectSetupError({ code: 'init-failed', message: 'Private Git subprocess error' })),
     })
@@ -104,6 +107,41 @@ describe('Workspace renderer RPC', () => {
       expect(result).toMatchObject({ code: 'init-failed', message: 'Git could not initialize the folder.' })
     } finally {
       await workspace.runtime.dispose()
+    }
+  })
+
+  it('refuses run admission during initialization and returns the fixed message for an active agent', async () => {
+    const workspace = makeWorkspace({ checkoutResolver: directoryResolver })
+    try {
+      await workspace.runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* RpcTest.makeClient(WorkspaceRpcGroup)
+            const store = yield* WorkspaceStore
+            const { registration, request } = yield* seed
+            const path = registration.mainCheckout.path
+            yield* store.reserveGitInitialization(path, 'initializing')
+            expect(yield* client['workspace:startRun'](request).pipe(Effect.flip)).toMatchObject({
+              code: 'git-initialization-conflict',
+              message: 'Wait for Git initialization to finish before starting an agent.',
+            })
+            yield* store.releaseGitInitialization(path, 'initializing')
+            yield* client['workspace:startRun'](request)
+            yield* Deferred.await(workspace.submitted).pipe(Effect.timeout('2 seconds'))
+            expect(
+              yield* client['workspace:initializeProjectGit']({
+                commandId: 'initialize-during-run',
+                projectId: registration.project.id,
+              }).pipe(Effect.flip),
+            ).toMatchObject({
+              code: 'git-initialization-conflict',
+              message: 'Wait for the agent to finish before initializing Git.',
+            })
+          }),
+        ),
+      )
+    } finally {
+      await workspace.close()
     }
   })
 

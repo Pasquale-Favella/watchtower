@@ -100,6 +100,21 @@ export const WorkspaceWorkerRpcGroup = RpcGroup.make(
     success: projectRegistrationReceiptSchema,
     error,
   }),
+  Rpc.make('workspace-worker:checkUnmanagedProjectPath', {
+    payload: Schema.Struct({ path: Schema.String }),
+    success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:reserveGitInitialization', {
+    payload: Schema.Struct({ path: Schema.String, reservationId: Schema.String }),
+    success: Schema.Void,
+    error,
+  }),
+  Rpc.make('workspace-worker:releaseGitInitialization', {
+    payload: Schema.Struct({ path: Schema.String, reservationId: Schema.String }),
+    success: Schema.Void,
+    error,
+  }),
   Rpc.make('workspace-worker:registerCheckout', {
     payload: registerCheckoutCommandSchema,
     success: checkoutRegistrationReceiptSchema,

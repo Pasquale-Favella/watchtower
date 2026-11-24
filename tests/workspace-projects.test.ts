@@ -12,10 +12,13 @@ import {
 import { join, resolve as resolvePath, sep } from 'node:path'
 
 import * as NodePath from '@effect/platform-node/NodePath'
+import * as Deferred from 'effect/Deferred'
 import * as Effect from 'effect/Effect'
+import * as Fiber from 'effect/Fiber'
 import * as Layer from 'effect/Layer'
 import * as ManagedRuntime from 'effect/ManagedRuntime'
 import * as Schema from 'effect/Schema'
+import * as Stream from 'effect/Stream'
 import { describe, expect, it } from 'vitest'
 
 import { WorkspaceProjects, WorkspaceProjectsLive } from '@/core/application/commands/workspace-projects.js'
@@ -340,6 +343,92 @@ describe('workspace project registration', () => {
       expect(unchanged.mainCheckout).toEqual(original.mainCheckout)
     } finally {
       await runtime.dispose()
+    }
+  })
+
+  it('completes initialization when registration wins the race, without enumerating untracked files', async () => {
+    const cache = resolvePath('node_modules/.cache')
+    mkdirSync(cache, { recursive: true })
+    const directory = mkdtempSync(join(cache, 'workspace-large-project-'))
+    const target = realpathSync.native(directory)
+    const initialized = Effect.runSync(Deferred.make<undefined>())
+    const resumeInitialization = Effect.runSync(Deferred.make<undefined>())
+    const runner = makeRecordingCommandRunner(
+      (_command, args) =>
+        Effect.gen(function* () {
+          expect(args).toEqual(['init'])
+          mkdirSync(join(target, '.git'))
+          yield* Deferred.succeed(initialized, undefined)
+          yield* Deferred.await(resumeInitialization)
+          return { stdout: '', exitCode: 0 }
+        }),
+      (_command, args) => {
+        const command = args.slice(1).join(' ')
+        const outputs: Record<string, string> = {
+          'rev-parse --is-inside-work-tree': 'true\n',
+          'rev-parse --show-toplevel': target,
+          'rev-parse --path-format=absolute --git-common-dir': join(target, '.git'),
+          'worktree list --porcelain -z': `worktree ${target}\0`,
+          'symbolic-ref --quiet --short HEAD': 'main\n',
+          'rev-parse --verify --quiet HEAD': '',
+        }
+        const status = args[1] === 'status'
+        if (!status) expect(outputs[command]).toBeDefined()
+        const stdout = status ? new Uint8Array(1024 * 1024 + 1) : Buffer.from(outputs[command] ?? '')
+        return Effect.succeed({
+          pid: -1,
+          exitCode: Effect.succeed(command === 'rev-parse --verify --quiet HEAD' ? 1 : 0),
+          isRunning: Effect.succeed(false),
+          stdout: Stream.succeed(stdout),
+          stderr: Stream.empty,
+          all: Stream.empty,
+          kill: Effect.void,
+        })
+      },
+    )
+    const runtime = ManagedRuntime.make(
+      WorkspaceProjectsLive.pipe(
+        Layer.provideMerge(
+          Layer.merge(
+            WorkspaceStoreLive({ filename: ':memory:' }),
+            Layer.merge(CheckoutResolverLive, ProjectProvisionerLive).pipe(Layer.provide(runner.layer)),
+          ),
+        ),
+        Layer.provide(NodePlatformLive),
+      ),
+    )
+    try {
+      await runtime.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const projects = yield* WorkspaceProjects
+            const store = yield* WorkspaceStore
+            const resolver = yield* CheckoutResolver
+            const folder = yield* projects.register(request('large-folder', target))
+            const intent = { commandId: 'initialize-large-folder', projectId: folder.project.id }
+            const result = yield* Effect.forkScoped(projects.initializeGit(intent))
+            yield* Effect.raceFirst(Deferred.await(initialized), Fiber.join(result).pipe(Effect.asVoid))
+            const registered = yield* projects.register(request('register-large-git', target))
+            expect(registered).toMatchObject({
+              project: { id: folder.project.id, repositoryIdentity: join(target, '.git') },
+              mainCheckout: { id: folder.mainCheckout.id, kind: 'main', branch: 'main' },
+            })
+            yield* Deferred.succeed(resumeInitialization, undefined)
+            const converted = yield* Fiber.join(result)
+            expect(converted).toEqual({ ...registered, commandId: intent.commandId, replayed: false })
+            expect(yield* projects.initializeGit(intent)).toEqual({ ...converted, replayed: true })
+            expect((yield* store.getProject(folder.project.id)).mainCheckout).toEqual(converted.mainCheckout)
+            expect(runner.starts.some(call => call.args[1] === 'status')).toBe(false)
+            expect(yield* resolver.resolve(target).pipe(Effect.flip)).toMatchObject({
+              code: 'git-failed',
+              message: 'Git output exceeded 1 MiB',
+            })
+          }),
+        ),
+      )
+    } finally {
+      await runtime.dispose()
+      rmSync(directory, { recursive: true, force: true })
     }
   })
 

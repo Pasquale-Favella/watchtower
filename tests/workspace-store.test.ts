@@ -319,7 +319,13 @@ describe('WorkspaceStore', () => {
       await run(store.createTask({ task, conversation }))
       await run(store.beginRun(command))
       const intent = { _tag: 'ConvertDirectoryProject' as const, commandId: 'convert-directory', projectId: project.id }
-      const repository = { path: checkout.path, identity: 'git:one', branch: 'trunk', updatedAt: command.issuedAt }
+      const repository = {
+        checkoutId: checkout.id,
+        path: checkout.path,
+        identity: 'git:one',
+        branch: 'trunk',
+        updatedAt: command.issuedAt,
+      }
       const convert = (metadata: typeof repository) => store.registerProject({ ...intent, repository: metadata })
 
       expect(await run(convert({ ...repository, identity: '' }).pipe(Effect.flip))).toMatchObject({
@@ -350,8 +356,61 @@ describe('WorkspaceStore', () => {
         await run(store.registerProject({ ...intent, projectId: 'different' as never }).pipe(Effect.flip)),
       ).toMatchObject({ code: 'command-conflict' })
       expect(
-        await run(store.registerProject({ ...intent, commandId: 'another', repository }).pipe(Effect.flip)),
+        await run(
+          store
+            .registerProject({
+              ...intent,
+              commandId: 'another',
+              repository: { ...repository, identity: 'git:different' },
+            })
+            .pipe(Effect.flip),
+        ),
       ).toMatchObject({ code: 'membership-conflict' })
+      expect(
+        await run(
+          store
+            .registerProject({
+              ...intent,
+              commandId: 'another-checkout',
+              repository: { ...repository, checkoutId: 'different' as never },
+            })
+            .pipe(Effect.flip),
+        ),
+      ).toMatchObject({ code: 'membership-conflict' })
+    })
+  })
+
+  it('coordinates Git initialization with dispatch admission by checkout path', async () => {
+    await withStore(async (store, run) => {
+      await setup(store, run)
+      await run(store.reserveGitInitialization(checkout.path, 'initialization'))
+      await run(store.releaseGitInitialization(checkout.path, 'different-reservation'))
+      expect(await run(store.beginRun(command).pipe(Effect.flip))).toMatchObject({
+        code: 'admission-conflict',
+        message: 'Wait for Git initialization to finish before starting an agent.',
+      })
+      await run(store.releaseGitInitialization(checkout.path, 'initialization'))
+
+      await run(store.beginRun(command))
+      const reserve = store.reserveGitInitialization(checkout.path, 'initialization')
+      const blocked = {
+        code: 'admission-conflict',
+        message: 'Wait for the agent to finish before initializing Git.',
+      }
+      expect(await run(reserve.pipe(Effect.flip))).toMatchObject(blocked)
+      await run(store.claimDispatch(command.runId, 7, command.issuedAt))
+      expect(await run(reserve.pipe(Effect.flip))).toMatchObject(blocked)
+      await run(store.reserveGitInitialization('C:/another-checkout', 'other'))
+
+      await run(
+        store.failDispatch(command.runId, {
+          ownerEpoch: 7,
+          occurredAt: command.issuedAt,
+          outcome: 'failed',
+          reason: 'launch-failed',
+        }),
+      )
+      await run(reserve)
     })
   })
 
@@ -370,7 +429,12 @@ describe('WorkspaceStore', () => {
               _tag: 'ConvertDirectoryProject',
               commandId: 'convert-managed',
               projectId: original.project.id,
-              repository: { path: checkout.path, identity: 'git:one', updatedAt: command.issuedAt },
+              repository: {
+                checkoutId: checkout.id,
+                path: checkout.path,
+                identity: 'git:one',
+                updatedAt: command.issuedAt,
+              },
             })
             .pipe(Effect.flip),
         ),

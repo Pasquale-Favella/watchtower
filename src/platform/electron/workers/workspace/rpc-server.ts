@@ -14,7 +14,8 @@ import {
   WORKSPACE_WORKER_PROTOCOL_VERSION,
   WorkspaceWorkerRpcGroup,
 } from '@/shared/rpc/workspace-worker.js'
-import { WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
+import { MANAGED_PROJECT_FOLDER } from '@/shared/schemas/workspace-projects.js'
+import { gitInitializationConflictMessages, WorkspaceStoreError } from '@/shared/schemas/workspace-store.js'
 
 type WorkspaceRpcDefinition = RpcGroup.Rpcs<typeof WorkspaceWorkerRpcGroup>
 type WorkspaceRpcTag = WorkspaceRpcDefinition['_tag']
@@ -37,8 +38,16 @@ const safeMessages = {
 const safeError = (code: WorkspaceStoreError['code']): WorkspaceStoreError =>
   new WorkspaceStoreError({ code, message: safeMessages[code] })
 
-const sanitizeError = (error: unknown): WorkspaceStoreError =>
-  error instanceof WorkspaceStoreError ? safeError(error.code) : safeError('database-unavailable')
+function sanitizeError(error: unknown): WorkspaceStoreError {
+  if (!(error instanceof WorkspaceStoreError)) return safeError('database-unavailable')
+  if (error.code === 'membership-conflict' && error.message === MANAGED_PROJECT_FOLDER) return error
+  if (
+    error.code === 'admission-conflict' &&
+    gitInitializationConflictMessages.some(message => message === error.message)
+  )
+    return error
+  return safeError(error.code)
+}
 
 const byteLength = (value: unknown): number => {
   try {
@@ -175,6 +184,24 @@ export function workspaceWorkerRpcServerLayer(options: WorkspaceWorkerRpcServerO
       ),
     'workspace-worker:registerProject': command =>
       execute('workspace-worker:registerProject', command, () => options.store.registerProject(command), true),
+    'workspace-worker:checkUnmanagedProjectPath': request =>
+      execute('workspace-worker:checkUnmanagedProjectPath', request, () =>
+        options.store.checkUnmanagedProjectPath(request.path),
+      ),
+    'workspace-worker:reserveGitInitialization': request =>
+      execute(
+        'workspace-worker:reserveGitInitialization',
+        request,
+        () => options.store.reserveGitInitialization(request.path, request.reservationId),
+        true,
+      ),
+    'workspace-worker:releaseGitInitialization': request =>
+      execute(
+        'workspace-worker:releaseGitInitialization',
+        request,
+        () => options.store.releaseGitInitialization(request.path, request.reservationId),
+        true,
+      ),
     'workspace-worker:registerCheckout': command =>
       execute('workspace-worker:registerCheckout', command, () => options.store.registerCheckout(command), true),
     'workspace-worker:createTask': command =>

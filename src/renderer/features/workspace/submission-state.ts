@@ -26,6 +26,7 @@ export function isRejectedSubmission(error: unknown): boolean {
       'conflict',
       'checkout-busy',
       'conversation-in-use',
+      'git-initialization-conflict',
     ].includes(error.code)
   )
 }

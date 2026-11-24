@@ -116,6 +116,7 @@ export class WorkspaceHost extends Context.Service<
       E | WorkspaceHostError | WorkspaceStoreError | ExecutionServiceError | HarnessConnectionResolutionError,
       R | ChildProcessSpawner.ChildProcessSpawner
     >
+    readonly wakeQueuedFollowUps?: Effect.Effect<void>
     /** Lazy catalog read that does not open the workspace worker or acquire ExecutionService. */
     readonly listConnections?: Effect.Effect<ReadonlyArray<WorkspaceConnection>, WorkspaceHostError>
     /** Already observed facts, read without starting a native catalog probe. */
@@ -746,6 +747,10 @@ export const WorkspaceHostLive = (options: WorkspaceHostOptions) =>
         store,
         ensureOpen,
         withExecution,
+        wakeQueuedFollowUps: Effect.suspend(() => {
+          if (!execution || execution.retiring) return Effect.void
+          return execution.service.wakeQueuedFollowUps().pipe(Effect.ignore)
+        }),
         listConnections: getConnectionCatalog.pipe(Effect.map(catalog => catalog.rows)),
         inspectConnection,
         observedConnectionInspections: Effect.sync(() => [...observedInspections.values()]),

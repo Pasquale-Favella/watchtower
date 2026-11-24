@@ -1,10 +1,13 @@
 import * as Context from 'effect/Context'
 import * as Effect from 'effect/Effect'
 import * as Layer from 'effect/Layer'
+import * as Path from 'effect/Path'
 import * as Schema from 'effect/Schema'
 
 import { WorkspaceProjects } from '@/core/application/commands/workspace-projects.js'
+import { CheckoutResolver } from '@/core/ports/checkout-resolver.js'
 import { ProjectProvisioner } from '@/core/ports/project-provisioner.js'
+import { WorkspaceStore } from '@/core/ports/workspace-store.js'
 import { CheckoutResolverError } from '@/shared/schemas/checkout.js'
 import {
   type CloneWorkspaceProject,
@@ -40,11 +43,27 @@ export const WorkspaceProjectSetupLive = Layer.effect(
   Effect.gen(function* () {
     const projects = yield* WorkspaceProjects
     const provisioner = yield* ProjectProvisioner
+    const resolver = yield* CheckoutResolver
+    const store = yield* WorkspaceStore
+    const path = yield* Path.Path
+
+    const checkSetupPath = Effect.fnUntraced(function* (target: string) {
+      const canonicalPath = yield* resolver.resolve(target, 'directory').pipe(
+        Effect.map(checkout => checkout.canonicalPath),
+        Effect.catch(error =>
+          error.code === 'path-missing' || error.code === 'not-a-directory'
+            ? Effect.succeed(path.resolve(target))
+            : Effect.fail(error),
+        ),
+      )
+      yield* store.checkUnmanagedProjectPath(canonicalPath)
+    })
 
     const create = Effect.fn('WorkspaceProjectSetup.create')(function* (input: CreateWorkspaceProject) {
       const { publish, ...registration } = yield* Schema.decodeUnknownEffect(createWorkspaceProjectSchema)(input).pipe(
         Effect.mapError(invalid),
       )
+      yield* checkSetupPath(registration.path)
       yield* provisioner.initialize(registration.path, registration.name)
       if (publish === 'github-private') yield* provisioner.publishToGitHub(registration.path, registration.name)
       return yield* projects.register(registration)
@@ -54,6 +73,7 @@ export const WorkspaceProjectSetupLive = Layer.effect(
       const { source, ...registration } = yield* Schema.decodeUnknownEffect(cloneWorkspaceProjectSchema)(input).pipe(
         Effect.mapError(invalid),
       )
+      yield* checkSetupPath(registration.path)
       yield* provisioner.clone(source, registration.path)
       return yield* projects.register(registration)
     })

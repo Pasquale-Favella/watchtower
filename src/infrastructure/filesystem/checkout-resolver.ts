@@ -47,7 +47,7 @@ export const CheckoutResolverLive = Layer.effect(
     })
     const resolve = Effect.fn('CheckoutResolver.resolve')(function* (
       input: string,
-      mode?: 'registration' | 'directory',
+      mode?: 'registration' | 'identity' | 'directory',
     ): Effect.fn.Return<ResolvedCheckout, CheckoutResolverError> {
       yield* Schema.decodeUnknownEffect(resolveCheckoutRequestSchema)({ path: input }).pipe(
         Effect.mapError(() => failure('invalid-input', 'Invalid checkout path')),
@@ -86,9 +86,17 @@ export const CheckoutResolverLive = Layer.effect(
       if (!firstPath) return yield* failure('not-a-repository', 'Git did not identify a main checkout')
       const mainCheckoutPath = yield* canonical(firstPath)
       const branchResult = yield* runGit(directory, ['symbolic-ref', '--quiet', '--short', 'HEAD'])
-      const headResult = yield* runGit(directory, ['rev-parse', '--verify', '--quiet', 'HEAD'])
       if (branchResult.exitCode !== 0 && branchResult.exitCode !== 1)
         return yield* failure('git-failed', 'Cannot inspect the checkout branch')
+      const identity: ResolvedCheckout = {
+        ...asDirectory(canonicalPath),
+        kind: canonicalPath === mainCheckoutPath ? 'main' : 'worktree',
+        repositoryIdentity,
+        mainCheckoutPath,
+        branch: branchResult.exitCode === 0 ? branchResult.stdout.trimEnd() : null,
+      }
+      if (mode === 'registration' || mode === 'identity') return identity
+      const headResult = yield* runGit(directory, ['rev-parse', '--verify', '--quiet', 'HEAD'])
       if (headResult.exitCode !== 0 && headResult.exitCode !== 1)
         return yield* failure('git-failed', 'Cannot inspect the checkout revision')
       const status = yield* gitText(directory, [
@@ -113,11 +121,7 @@ export const CheckoutResolverLive = Layer.effect(
         }
       }
       return {
-        canonicalPath,
-        kind: canonicalPath === mainCheckoutPath ? 'main' : 'worktree',
-        repositoryIdentity,
-        mainCheckoutPath,
-        branch: branchResult.exitCode === 0 ? branchResult.stdout.trimEnd() : null,
+        ...identity,
         headRevision: headResult.exitCode === 0 ? headResult.stdout.trimEnd() : null,
         dirty,
       }

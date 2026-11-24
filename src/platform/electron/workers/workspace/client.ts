@@ -318,6 +318,24 @@ async function openWorkspaceWorker(options: WorkspaceWorkerStoreOptions): Promis
           invoke('workspace-worker:registerProject', command, () =>
             rawClient['workspace-worker:registerProject'](command),
           ),
+        checkUnmanagedProjectPath: path => {
+          const payload = { path }
+          return invoke('workspace-worker:checkUnmanagedProjectPath', payload, () =>
+            rawClient['workspace-worker:checkUnmanagedProjectPath'](payload),
+          )
+        },
+        reserveGitInitialization: (path, reservationId) => {
+          const payload = { path, reservationId }
+          return invoke('workspace-worker:reserveGitInitialization', payload, () =>
+            rawClient['workspace-worker:reserveGitInitialization'](payload),
+          )
+        },
+        releaseGitInitialization: (path, reservationId) => {
+          const payload = { path, reservationId }
+          return invoke('workspace-worker:releaseGitInitialization', payload, () =>
+            rawClient['workspace-worker:releaseGitInitialization'](payload),
+          )
+        },
         registerCheckout: command =>
           invoke('workspace-worker:registerCheckout', command, () =>
             rawClient['workspace-worker:registerCheckout'](command),
