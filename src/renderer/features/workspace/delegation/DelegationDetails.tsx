@@ -14,6 +14,7 @@ import { useWorkspaceConnections } from '../connection-hooks.js'
 import { useErrorToast } from '../error-toast.js'
 import { useWorkspaceProject } from '../hooks.js'
 import { type ParentTaskLink, useParentTaskLink } from './chat-delegation-hooks.js'
+import { delegationTally, delegationTallyLabel } from './delegation-status.js'
 import { delegationView } from './delegation-view.js'
 import { DelegationDetailsTooltip } from './DelegationTooltip.js'
 import { groupDelegationDetails } from './details-view.js'
@@ -123,7 +124,8 @@ export function DelegationDetailsView({
   )
   if (!parent && records.length === 0) return null
 
-  const { active, previous } = groupDelegationDetails(records)
+  const { active, pending, previous } = groupDelegationDetails(records)
+  const tally = delegationTallyLabel(delegationTally(active))
   const renderRow = (record: DelegationRecord) => (
     <DelegatedTaskRow
       key={record.id}
@@ -141,7 +143,7 @@ export function DelegationDetailsView({
     <section aria-label="Delegated tasks" className="space-y-1 p-2">
       <h3 className="text-muted-foreground flex items-center gap-2 px-1 text-xs">
         <NetworkIcon aria-hidden="true" className="size-3.5" />
-        {active.length > 0 ? `Delegated tasks · ${active.length} running` : 'Delegated tasks'}
+        {tally ? `Delegated tasks · ${tally}` : 'Delegated tasks'}
       </h3>
       {parent}
       {error && (
@@ -162,6 +164,11 @@ export function DelegationDetailsView({
       {active.length > 0 && (
         <ul aria-label="Active delegated tasks" className="space-y-0.5">
           {active.map(renderRow)}
+        </ul>
+      )}
+      {pending.length > 0 && (
+        <ul aria-label="Pending delegation results" className="space-y-0.5">
+          {pending.map(renderRow)}
         </ul>
       )}
       {previous.length > 0 && (
@@ -185,7 +192,7 @@ export function DelegationDetailsView({
         </>
       )}
       {truncated && records.length > 0 && (
-        <p className="text-muted-foreground px-1 text-xs">Showing the latest {records.length}</p>
+        <p className="text-muted-foreground px-1 text-xs">Older settled delegations are omitted.</p>
       )}
     </section>
   )

@@ -185,7 +185,7 @@ export function TimelineScroller<Row extends { readonly id: string }>({
         keyExtractor={rowKey}
         getItemType={getRowType}
         renderItem={({ item }) => (
-          <div data-message-id={item.id} className="min-w-0 px-4 pb-3">
+          <div data-message-id={item.id} className="min-w-0 ps-4 pe-[calc(1rem+var(--chat-lane-inset-end,0px))] pb-3">
             <div className="max-w-chat mx-auto w-full">{renderRow(item)}</div>
           </div>
         )}
@@ -207,11 +207,11 @@ export function TimelineScroller<Row extends { readonly id: string }>({
         onScroll={rememberPosition}
         role="region"
         aria-label="Messages"
-        className="h-full min-h-0 flex-1 scrollbar-thin scrollbar-gutter-stable overflow-x-hidden overscroll-contain [overflow-anchor:none]"
+        className="h-full min-h-0 flex-1 scrollbar-gutter-stable overflow-x-hidden overscroll-contain [overflow-anchor:none]"
         style={{ visibility: restorationPending ? 'hidden' : undefined }}
         aria-busy={restorationPending}
         ListHeaderComponent={
-          <div data-timeline-header className="px-4 pt-4">
+          <div data-timeline-header className="ps-4 pe-[calc(1rem+var(--chat-lane-inset-end,0px))] pt-4">
             <div className="max-w-chat mx-auto w-full">{header}</div>
           </div>
         }
@@ -219,7 +219,10 @@ export function TimelineScroller<Row extends { readonly id: string }>({
       />
       {minimapItems && !restorationPending && <TimelineMinimap items={minimapItems} list={getList} onSelect={jumpTo} />}
       {restorationPending && (
-        <p role="status" className="text-muted-foreground absolute inset-x-4 top-4 text-sm">
+        <p
+          role="status"
+          className="text-muted-foreground absolute start-4 end-[calc(1rem+var(--chat-lane-inset-end,0px))] top-4 text-sm"
+        >
           Restoring reading position…
         </p>
       )}
@@ -234,7 +237,7 @@ export function TimelineScroller<Row extends { readonly id: string }>({
             aria-label="Scroll to end"
             aria-hidden={follow.pill !== 'visible'}
             tabIndex={follow.pill === 'visible' ? 0 : -1}
-            className="border-border bg-background text-foreground hover:bg-muted hover:text-foreground absolute bottom-4 left-1/2 z-10 -translate-x-1/2 transition-[translate,scale,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)]"
+            className="border-border bg-background text-foreground hover:bg-muted hover:text-foreground absolute bottom-4 left-[calc((100%-var(--chat-lane-inset-end,0px))/2)] z-10 -translate-x-1/2 transition-[translate,scale,opacity] duration-200 data-[active=false]:pointer-events-none data-[active=false]:translate-y-full data-[active=false]:scale-95 data-[active=false]:opacity-0 data-[active=false]:duration-400 data-[active=false]:ease-[cubic-bezier(0.7,0,0.84,0)] data-[active=true]:translate-y-0 data-[active=true]:scale-100 data-[active=true]:opacity-100 data-[active=true]:ease-[cubic-bezier(0.23,1,0.32,1)]"
             onClick={() => {
               restoredRef.current = true
               setRestorationPending(false)

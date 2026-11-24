@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { type CSSProperties, useEffect, useState } from 'react'
 
 export type ConversationDetailsMode = 'inline' | 'popover'
 
@@ -19,6 +19,14 @@ export function conversationDetailsReservedWidth(): number {
 
 /** Preserve the centered chat lane until it would touch the card. */
 export const CONVERSATION_DETAILS_LANE_INSET = `clamp(0px, calc(${conversationDetailsReservedWidth() * 2}px + 46rem - 100%), ${conversationDetailsReservedWidth()}px)`
+
+/**
+ * Set on the element that holds the timeline, composer and inline card. Scrollers stay full width, so their
+ * scrollbar keeps to the edge, and only the chat lane inside them steps aside from the card.
+ */
+export const CONVERSATION_DETAILS_LANE_STYLE = {
+  '--chat-lane-inset-end': CONVERSATION_DETAILS_LANE_INSET,
+} as CSSProperties
 
 /**
  * Inline is only used when the card fits beside a still-usable conversation

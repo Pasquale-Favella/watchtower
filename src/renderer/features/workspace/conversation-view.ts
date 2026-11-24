@@ -25,24 +25,30 @@ import {
 
 import type { WorkspaceRequest } from './lib.js'
 
-/** Source and target labels for a handoff notice. An unavailable source never shows its stale connection. */
-export function handoffEndpointLabels(
+/** One side of a handoff: the connection's display name and the model it ran, when known. */
+export interface HandoffEndpoint {
+  readonly connectionId: string
+  readonly connection: string
+  readonly model: string | undefined
+}
+
+/** Source and target of a handoff notice. An unavailable source is `null` so its stale connection never shows. */
+export function handoffEndpoints(
   handoff: ConversationHandoffData,
   connectionLabels: ReadonlyMap<string, string>,
-): { readonly source: string; readonly target: string } {
-  const endpoint = (connection: string, model: string | null | undefined) => {
-    const name = model?.trim()
-    return name ? `${connection} · ${name}` : connection
+): { readonly source: HandoffEndpoint | null; readonly target: HandoffEndpoint } {
+  const endpoint = (connectionId: string, model: string | null | undefined): HandoffEndpoint => ({
+    connectionId,
+    connection: connectionLabels.get(connectionId) ?? connectionId,
+    model: model?.trim() || undefined,
+  })
+  return {
+    source:
+      handoff.sourceConnectionStatus === 'unavailable'
+        ? null
+        : endpoint(handoff.sourceConnectionId, handoff.sourceModelId),
+    target: endpoint(handoff.targetConnectionId, handoff.targetModelId),
   }
-  const source =
-    handoff.sourceConnectionStatus === 'unavailable'
-      ? 'Unavailable connection'
-      : endpoint(connectionLabels.get(handoff.sourceConnectionId) ?? handoff.sourceConnectionId, handoff.sourceModelId)
-  const target = endpoint(
-    connectionLabels.get(handoff.targetConnectionId) ?? handoff.targetConnectionId,
-    handoff.targetModelId,
-  )
-  return { source, target }
 }
 
 /** Merge durable pages by event sequence, keeping the earliest user-message association. */

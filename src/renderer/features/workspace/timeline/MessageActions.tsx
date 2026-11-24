@@ -38,10 +38,21 @@ export function MessageActions({
   )
 }
 
-export function CopyTextButton({ text, label }: { readonly text: string; readonly label: string }): React.JSX.Element {
-  const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
+/**
+ * A function text is read when the button is pressed, for text that is not at hand yet. While it loads the button is
+ * busy, and a failed read reports why instead of copying something else.
+ */
+export function CopyTextButton({
+  text,
+  label,
+}: {
+  readonly text: string | (() => Promise<string>)
+  readonly label: string
+}): React.JSX.Element {
+  const [status, setStatus] = useState<'idle' | 'copying' | 'copied' | 'failed'>('idle')
+  const [failure, setFailure] = useState('Could not copy to clipboard')
   useEffect(() => {
-    if (status === 'idle') return
+    if (status === 'idle' || status === 'copying') return
     const id = window.setTimeout(() => {
       setStatus('idle')
     }, COPIED_FEEDBACK_MS)
@@ -51,32 +62,53 @@ export function CopyTextButton({ text, label }: { readonly text: string; readonl
   }, [status])
   const copied = status === 'copied'
   const copy = async () => {
+    if (status === 'copying') return
     if (!navigator.clipboard) {
+      setFailure('Could not copy to clipboard')
       setStatus('failed')
       return
     }
+    let value: string
+    if (typeof text === 'string') value = text
+    else {
+      setStatus('copying')
+      try {
+        value = await text()
+      } catch (cause) {
+        setFailure(
+          cause instanceof Error && cause.message
+            ? `Could not copy: ${cause.message}`
+            : 'Could not load the text to copy',
+        )
+        setStatus('failed')
+        return
+      }
+    }
     try {
-      await navigator.clipboard.writeText(text)
+      await navigator.clipboard.writeText(value)
       setStatus('copied')
     } catch {
+      setFailure('Could not copy to clipboard')
       setStatus('failed')
     }
   }
   return (
     <TextTooltip
-      label={status === 'failed' ? 'Could not copy to clipboard' : label}
+      label={status === 'failed' ? failure : status === 'copying' ? `${label}, loading` : label}
       trigger={
         <Button
           type="button"
           variant="ghost"
           size="icon-xs"
           aria-label={copied ? `${label} copied` : label}
+          aria-busy={status === 'copying'}
+          disabled={status === 'copying'}
           onClick={() => void copy()}
         >
           {copied ? <CheckIcon aria-hidden /> : <CopyIcon aria-hidden />}
           {status === 'failed' && (
             <span role="status" className="sr-only">
-              Could not copy to clipboard
+              {failure}
             </span>
           )}
         </Button>

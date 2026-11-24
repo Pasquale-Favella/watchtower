@@ -9,16 +9,42 @@ import {
 describe('delegation details groups', () => {
   it('puts live tasks first and orders each group by creation time', () => {
     const records = [
-      { title: 'Running', status: 'running', createdAt: '2026-11-19T10:00:00Z', settledAt: null },
-      { title: 'Failed', status: 'failed', createdAt: '2026-11-19T10:01:00Z', settledAt: '2026-11-19T10:02:00Z' },
-      { title: 'Waiting', status: 'waiting', createdAt: '2026-11-19T11:02:00+01:00', settledAt: null },
-      { title: 'Queued', status: 'queued', createdAt: '2026-11-19T10:03:00Z', settledAt: null },
-      { title: 'Completed', status: 'completed', createdAt: '2026-11-19T10:04:00Z', settledAt: '2026-11-19T10:05:00Z' },
+      { title: 'Running', status: 'running', wakeState: 'notDue', createdAt: '2026-11-19T10:00:00Z', settledAt: null },
+      {
+        title: 'Failed',
+        status: 'failed',
+        wakeState: 'disposed',
+        createdAt: '2026-11-19T10:01:00Z',
+        settledAt: '2026-11-19T10:02:00Z',
+      },
+      {
+        title: 'Waiting',
+        status: 'waiting',
+        wakeState: 'notDue',
+        createdAt: '2026-11-19T11:02:00+01:00',
+        settledAt: null,
+      },
+      { title: 'Queued', status: 'queued', wakeState: 'notDue', createdAt: '2026-11-19T10:03:00Z', settledAt: null },
+      {
+        title: 'Completed',
+        status: 'completed',
+        wakeState: 'delivered',
+        createdAt: '2026-11-19T10:04:00Z',
+        settledAt: '2026-11-19T10:05:00Z',
+      },
+      {
+        title: 'Wake pending',
+        status: 'completed',
+        wakeState: 'pending',
+        createdAt: '2026-11-19T10:02:00Z',
+        settledAt: '2026-11-19T10:03:00Z',
+      },
     ] as const
 
-    const { active, previous } = groupDelegationDetails(records)
+    const { active, pending, previous } = groupDelegationDetails(records)
 
     expect(active.map(record => record.title)).toEqual(['Queued', 'Waiting', 'Running'])
+    expect(pending.map(record => record.title)).toEqual(['Wake pending'])
     expect(previous.map(record => record.title)).toEqual(['Completed', 'Failed'])
   })
 })

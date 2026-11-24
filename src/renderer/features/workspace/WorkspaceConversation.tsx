@@ -1,10 +1,9 @@
-import { BotIcon } from 'lucide-react'
+import { ArrowUpRight, BotIcon } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
 import { MarkdownNavigationContext } from '@/renderer/components/markdown/MarkdownNavigation'
 import { LoadingRegion, SkeletonLines } from '@/renderer/components/skeletons'
-import { Button } from '@/renderer/components/ui/button'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { useWorkspaceConnections } from '@/renderer/features/workspace/connection-hooks.js'
@@ -34,7 +33,7 @@ import {
   decodeConversationPayload,
   driverEventSummary,
   eventSummary,
-  handoffEndpointLabels,
+  handoffEndpoints,
   isActiveRunStatus,
   mergeConversationItems,
   messagePayloadReference,
@@ -55,6 +54,7 @@ import {
 import { PromptMessageContent } from './PromptMessageContent.js'
 import { optimisticUserMessage, submissionEcho } from './submission-state.js'
 import { ActivityRow } from './timeline/ActivityRow.js'
+import { ContextHandoffNotice } from './timeline/ContextHandoffNotice.js'
 import { readExpandedFolds, readScrollAnchor, setFoldExpanded } from './timeline/conversation-memory.js'
 import { DelegateRow } from './timeline/DelegateRow.js'
 import { delegationStartId } from './timeline/delegation-tools.js'
@@ -450,7 +450,8 @@ function WorkspaceConversationView({
       const entry = optimisticUserMessage(submission)
       timeline.push({ kind: 'user', id: entry.id, entry, delivery: submission.state })
     }
-    if (hasLeading) timeline.unshift({ kind: 'leading', id: 'timeline-leading' })
+    // The origin marks where the chat began, so it waits until no older page is left above it.
+    if (hasLeading && !hasOlderHistory) timeline.unshift({ kind: 'leading', id: 'timeline-leading' })
     return timeline
   }, [
     items,
@@ -461,6 +462,7 @@ function WorkspaceConversationView({
     sessionIdsByRunId,
     runContextsByRunId,
     hasLeading,
+    hasOlderHistory,
   ])
   const minimapItems = useMemo(() => buildTimelineMinimapItems(rows), [rows])
   useEffect(() => {
@@ -593,7 +595,7 @@ function WorkspaceConversationView({
             />
           }
           renderRow={row => {
-            if (row.kind === 'leading') return leading ?? (parentTask && <DelegatedByDivider parent={parentTask} />)
+            if (row.kind === 'leading') return leading ?? (parentTask && <DelegatedByOrigin parent={parentTask} />)
             if (row.kind === 'user') {
               const entry = row.entry
               const reference = messagePayloadReference(entry.message)
@@ -612,7 +614,13 @@ function WorkspaceConversationView({
             }
             if (row.kind === 'activity') return <ActivityRow activity={row.activity} />
             if (row.kind === 'status')
-              return <ConversationStatusEntry entry={row.entry} connectionLabels={connectionLabels} />
+              return (
+                <ConversationStatusEntry
+                  entry={row.entry}
+                  connectionLabels={connectionLabels}
+                  harnessKinds={harnessKinds}
+                />
+              )
             if (row.kind === 'turnEnd')
               return <AssistantTurnEnd entry={row.turn} assistantAction={coach?.assistantAction} />
             const segment = row.segment
@@ -672,19 +680,26 @@ function WorkspaceConversationView({
   )
 }
 
-function DelegatedByDivider({ parent }: { readonly parent: ParentTaskLink }): React.JSX.Element {
+function DelegatedByOrigin({ parent }: { readonly parent: ParentTaskLink }): React.JSX.Element {
   return (
-    <div className="text-muted-foreground flex min-w-0 items-center gap-2 px-3 py-2 text-xs">
-      <span className="bg-border h-px min-w-2 flex-1" />
-      <BotIcon aria-hidden className="size-3.5 shrink-0" />
-      <TextTooltip
-        label={`Delegated by ${parent.title}`}
-        trigger={<span className="min-w-0 truncate">Delegated by {parent.title}</span>}
-      />
-      <Button type="button" size="xs" variant="ghost" className="shrink-0" onClick={parent.open}>
-        Open parent
-      </Button>
-      <span className="bg-border h-px min-w-2 flex-1" />
+    <div className="flex justify-center px-3 pt-1 pb-4">
+      <div className="bg-muted/40 text-muted-foreground flex max-w-full min-w-0 items-center gap-2 rounded-full border px-3 py-1 text-xs">
+        <BotIcon aria-hidden className="size-3.5 shrink-0" />
+        <span className="shrink-0">Delegated by</span>{' '}
+        <TextTooltip
+          label={`Open ${parent.title}`}
+          trigger={
+            <button
+              type="button"
+              className="text-foreground focus-visible:ring-ring/50 inline-flex min-w-0 items-center gap-0.5 rounded-sm font-medium outline-none hover:underline focus-visible:ring-3"
+              onClick={parent.open}
+            >
+              <span className="truncate">{parent.title}</span>
+              <ArrowUpRight aria-hidden className="size-3 shrink-0" />
+            </button>
+          }
+        />
+      </div>
     </div>
   )
 }
@@ -860,25 +875,23 @@ function TurnBlock({
 function ConversationStatusEntry({
   entry,
   connectionLabels,
+  harnessKinds,
 }: {
   readonly entry: ConversationStatusNotice
   readonly connectionLabels: ReadonlyMap<string, string>
+  readonly harnessKinds: ReadonlyMap<string, string>
 }): React.JSX.Element {
   if (entry.notice === 'delegationWake') return <DelegationWakeNotice delegation={entry.delegation} />
   if (entry.notice === 'contextHandoff' && entry.handoff) {
-    const handoff = entry.handoff
-    const labels = handoffEndpointLabels(handoff, connectionLabels)
+    const { source, target } = handoffEndpoints(entry.handoff, connectionLabels)
     return (
-      <article className="text-muted-foreground py-2 text-center text-xs" aria-label="Context handoff prepared">
-        <p>Context handoff prepared for the next agent attempt</p>
-        <p className="mt-0.5 break-words">
-          {labels.source} → {labels.target}
-        </p>
-        <p className="mt-0.5">
-          Includes conversation through event {handoff.highWatermark}
-          {handoff.truncated ? ' · context shortened' : ''}
-        </p>
-      </article>
+      <ContextHandoffNotice
+        source={source}
+        target={target}
+        highWatermark={entry.handoff.highWatermark}
+        truncated={entry.handoff.truncated}
+        harnessKinds={harnessKinds}
+      />
     )
   }
   if (entry.notice === 'newSession') {

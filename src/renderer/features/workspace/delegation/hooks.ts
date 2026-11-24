@@ -18,6 +18,7 @@ import {
   delegationRecordAtom,
   emptyDelegationListAtom,
   idleDelegationRecordAtom,
+  readDelegationAtom,
 } from './delegation-atoms.js'
 import { DelegationStopGuard } from './delegation-stop.js'
 
@@ -94,6 +95,12 @@ export function useDelegationRecord(delegationId: DelegationId | null) {
   const atom = delegationId ? delegationRecordAtom(delegationId) : null
   usePollWhileMounted(atom)
   return querySnapshot(useAtomValue(atom ?? idleDelegationRecordAtom))
+}
+
+/** Reads one Delegation record now, for an action that needs the whole result rather than the list's preview. */
+export function useReadDelegation(): (delegationId: DelegationId) => Promise<DelegationRecord> {
+  const read = useWorkspaceOperation(readDelegationAtom)
+  return useCallback((delegationId: DelegationId) => read({ delegationId }), [read])
 }
 
 /**

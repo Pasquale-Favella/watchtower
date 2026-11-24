@@ -1,5 +1,5 @@
 import { ChevronRightIcon, CircleStopIcon } from 'lucide-react'
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/renderer/components/ui/collapsible'
@@ -9,11 +9,18 @@ import { cn } from '@/renderer/shared/lib/utils'
 import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 import type { TaskId } from '@/shared/schemas/workspace.js'
 
-import { delegationStatusLabel } from '../delegation/delegation-status.js'
 import { type DelegateView, delegationView, nativeDelegateView } from '../delegation/delegation-view.js'
 import { DelegationTooltipBody } from '../delegation/DelegationTooltip.js'
-import { toTaskId, useCancelDelegation, useOpenDelegatedTask } from '../delegation/hooks.js'
+import {
+  toTaskId,
+  useCancelDelegation,
+  useDelegationRecord,
+  useOpenDelegatedTask,
+  useReadDelegation,
+} from '../delegation/hooks.js'
+import { readFullResult, resultCopySource } from '../delegation/result-copy.js'
 import { toneDotClass, toneTextClass } from '../delegation/tone-classes.js'
+import { showErrorToast } from '../error-toast.js'
 import { CopyTextButton } from './MessageActions.js'
 import { ToolOutputPanel } from './ToolOutputPanel.js'
 import type { ToolBlock } from './work-log.js'
@@ -32,6 +39,25 @@ export function DelegationRow({
   const cancel = useCancelDelegation()
   const openTask = useOpenDelegatedTask()
   const childTaskId: TaskId | null = delegation?.childTaskId ?? toTaskId(tool.orchestration?.childTaskId)
+  // The list carries a result preview, so an open row reads the whole result from the record.
+  const [expanded, setExpanded] = useState(false)
+  const full = useDelegationRecord(expanded && delegation?.resultText ? delegation.id : null)
+  const readRecord = useReadDelegation()
+  const delegationId = delegation?.id
+  // Copy never takes the preview: when the whole result is not loaded yet, it is read now.
+  const loadFullResult = useCallback(async () => {
+    if (!delegationId) throw new Error('The delegated task is not loaded.')
+    try {
+      return await readFullResult(() => readRecord(delegationId))
+    } catch (cause) {
+      showErrorToast(
+        `workspace:delegation:${delegationId}:copy`,
+        "Couldn't copy delegated task result",
+        cause instanceof Error ? cause.message : null,
+      )
+      throw cause
+    }
+  }, [delegationId, readRecord])
   return (
     <DelegationRowView
       tool={tool}
@@ -39,6 +65,9 @@ export function DelegationRow({
       childTaskId={childTaskId}
       connectionLabels={connectionLabels}
       harnessKind={harnessKind}
+      fullResultText={full.data?.resultText}
+      loadFullResult={loadFullResult}
+      onOpenChange={setExpanded}
       stopPending={delegation ? cancel.isPending(delegation.id) : false}
       stopError={cancel.error}
       onOpen={openTask}
@@ -55,6 +84,9 @@ export function DelegationRowView({
   childTaskId,
   connectionLabels,
   harnessKind,
+  fullResultText,
+  loadFullResult,
+  onOpenChange,
   stopPending,
   stopError = null,
   onOpen,
@@ -65,21 +97,31 @@ export function DelegationRowView({
   readonly childTaskId: TaskId | null
   readonly connectionLabels?: ReadonlyMap<string, string>
   readonly harnessKind?: string
+  /** The whole result, once loaded; the delegation record from the list holds only a preview. */
+  readonly fullResultText?: string | null | undefined
+  /** Reads the whole result for Copy while it is not loaded. A failed read rejects. */
+  readonly loadFullResult?: (() => Promise<string>) | undefined
+  readonly onOpenChange?: ((open: boolean) => void) | undefined
   readonly stopPending: boolean
   readonly stopError?: string | null
   readonly onOpen: (taskId: TaskId) => void
   readonly onStop: (record: DelegationRecord) => void
 }): React.JSX.Element {
-  const baseView = delegation
+  const view: DelegateView = delegation
     ? delegationView(delegation, connectionLabels)
     : nativeDelegateView({ ...tool, status: 'unknown' })
-  const view: DelegateView =
-    delegation?.status === 'cancelled' ? { ...baseView, statusLabel: delegationStatusLabel('interrupted') } : baseView
   const [open, setOpen] = useState(view.tone === 'failure')
+  useEffect(() => onOpenChange?.(open), [open, onOpenChange])
   const live = view.live
   const detail = (live ? null : delegation && view.preview) ?? view.statusLabel
   const rowClass = 'flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-2.5 py-2 text-left'
-  const result = delegation?.resultText ?? tool.output
+  const result = fullResultText ?? delegation?.resultText ?? tool.output
+  const copySource = resultCopySource({
+    fullResultText,
+    hasRecordResult: delegation?.resultText != null,
+    fallbackText: tool.output,
+    loadFullResult,
+  })
   return (
     <Collapsible
       open={open}
@@ -176,11 +218,13 @@ export function DelegationRowView({
         )}
         {view.isolation && <p className="text-muted-foreground">{view.isolation}</p>}
         {tool.input && <ToolOutputPanel text={tool.input} label="Task details" />}
-        {result !== null && <ToolOutputPanel text={result} label="Result" running={live} />}
+        {result !== null && (
+          <ToolOutputPanel text={result} label="Result" running={live} copySource={copySource ?? undefined} />
+        )}
         {tool.error && <ToolOutputPanel text={tool.error} label="Error" error />}
         <div className="flex items-center gap-2">
           <span className="text-muted-foreground min-w-0 flex-1 truncate font-mono text-[10px]">{tool.toolCallId}</span>
-          {result && <CopyTextButton text={result} label="Copy delegated task result" />}
+          {result && copySource !== null && <CopyTextButton text={copySource} label="Copy delegated task result" />}
         </div>
       </CollapsibleContent>
     </Collapsible>

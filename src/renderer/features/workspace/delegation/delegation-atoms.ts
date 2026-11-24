@@ -27,6 +27,13 @@ export const cancelDelegationAtom = () =>
     { concurrent: true },
   )
 
+/** A one-off read of the whole record, for an action that must not act on the list's result preview. */
+export const readDelegationAtom = () =>
+  runtime.fn<{ readonly delegationId: DelegationId }>()(
+    request => Effect.flatMap(ApplicationClient, client => client('delegation:get', request)),
+    { concurrent: true },
+  )
+
 export const emptyDelegationListAtom = Atom.make(AsyncResult.success<DelegationList>({ items: [], truncated: false }))
 
 export const idleDelegationRecordAtom = Atom.make(

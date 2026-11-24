@@ -5,6 +5,7 @@ import { Button } from '@/renderer/components/ui/button'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import { cn } from '@/renderer/shared/lib/utils'
 
+import type { CopySource } from '../delegation/result-copy.js'
 import { CopyTextButton } from './MessageActions.js'
 import { terminalOutputSpans } from './terminal-output.js'
 import { formatToolValue } from './tool-presentation.js'
@@ -15,12 +16,15 @@ export function ToolOutputPanel({
   terminal = false,
   running = false,
   error = false,
+  copySource,
 }: {
   readonly text: string
   readonly label: string
   readonly terminal?: boolean
   readonly running?: boolean
   readonly error?: boolean
+  /** Replaces the displayed text as what Copy takes, for output that shows only part of the whole. */
+  readonly copySource?: CopySource | undefined
 }): React.JSX.Element {
   const [wrapped, setWrapped] = useState(false)
   const viewport = useRef<HTMLPreElement | null>(null)
@@ -54,7 +58,7 @@ export function ToolOutputPanel({
             </Button>
           }
         />
-        <CopyTextButton text={copyText} label={`Copy ${label.toLowerCase()}`} />
+        <CopyTextButton text={copySource ?? copyText} label={`Copy ${label.toLowerCase()}`} />
       </div>
       <pre
         ref={viewport}

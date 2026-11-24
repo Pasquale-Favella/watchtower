@@ -52,7 +52,7 @@ import { useTerminalAdoption } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { PREVIOUS_CHECKOUT_DRAWER } from './terminal/use-terminal-group-context.js'
 import { type TerminalExcerpt, WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
-import { CONVERSATION_DETAILS_LANE_INSET, useConversationDetailsLayout } from './use-conversation-details-layout.js'
+import { CONVERSATION_DETAILS_LANE_STYLE, useConversationDetailsLayout } from './use-conversation-details-layout.js'
 import { useConversationDetailsVisibility } from './use-conversation-details-visibility.js'
 import { usePendingStart } from './use-pending-start.js'
 import { transferDraftPanelContext, useDraftPanelContext } from './use-workspace-panel-context.js'
@@ -502,102 +502,198 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
           ref={measureContainer}
           className={`flex min-h-0 min-w-0 flex-1 overflow-hidden ${!coach && panel.maximized ? 'min-[980px]:hidden' : ''}`}
         >
-          <div
-            className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-            style={
-              !coach && detailsOpen && detailsMode === 'inline'
-                ? { paddingRight: CONVERSATION_DETAILS_LANE_INSET }
-                : undefined
-            }
-          >
-            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-8">
-              <section className="max-w-chat w-full" aria-label="New chat">
-                {coach && <coach.Welcome onSeed={seedPrompt} disabled={creating || starting || Boolean(intent)} />}
-                {!coach && (
-                  <div className="mb-8 flex flex-col items-center gap-2 text-center">
-                    {projectId && selectedProject && !archivedProject ? (
-                      <>
-                        <h2 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
-                          <span>What should we build in</span>
-                          <WorkspaceProjectPicker
-                            projectId={projectId}
-                            label={selectedProject.name}
-                            projects={pickerProjects}
-                            hasMore={Boolean(projects.data?.nextAfterId)}
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+            <div
+              className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+              style={!coach && detailsOpen && detailsMode === 'inline' ? CONVERSATION_DETAILS_LANE_STYLE : undefined}
+            >
+              <div className="flex min-h-0 flex-1 scrollbar-gutter-stable items-center-safe justify-center overflow-auto py-8 ps-4 pe-[calc(1rem+var(--chat-lane-inset-end,0px))]">
+                <section className="max-w-chat w-full" aria-label="New chat">
+                  {coach && <coach.Welcome onSeed={seedPrompt} disabled={creating || starting || Boolean(intent)} />}
+                  {!coach && (
+                    <div className="mb-8 flex flex-col items-center gap-2 text-center">
+                      {projectId && selectedProject && !archivedProject ? (
+                        <>
+                          <h2 className="flex w-full flex-wrap items-baseline justify-center gap-x-2 text-2xl font-normal tracking-tight sm:text-3xl">
+                            <span>What should we build in</span>
+                            <WorkspaceProjectPicker
+                              projectId={projectId}
+                              label={selectedProject.name}
+                              projects={pickerProjects}
+                              hasMore={Boolean(projects.data?.nextAfterId)}
+                              disabled={creating || starting}
+                              onSelect={selectProject}
+                              onLoadMore={loadMoreProjects}
+                              onRefresh={projects.refresh}
+                            />
+                            <span>?</span>
+                          </h2>
+                          <button
+                            type="button"
                             disabled={creating || starting}
-                            onSelect={selectProject}
-                            onLoadMore={loadMoreProjects}
-                            onRefresh={projects.refresh}
-                          />
-                          <span>?</span>
-                        </h2>
-                        <button
-                          type="button"
-                          disabled={creating || starting}
-                          className="text-muted-foreground hover:text-foreground rounded text-sm outline-none focus-visible:ring-2"
-                          onClick={() => selectProject(null)}
-                        >
-                          or start without a project
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
-                        <div className="text-muted-foreground text-sm">
-                          <WorkspaceProjectPicker
-                            projectId={null}
-                            label="No project"
-                            projects={pickerProjects}
-                            hasMore={Boolean(projects.data?.nextAfterId)}
-                            disabled={creating || starting}
-                            onSelect={selectProject}
-                            onLoadMore={loadMoreProjects}
-                            onRefresh={projects.refresh}
-                          />
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
-                <WorkspacePromptInput
-                  onOpenFile={coach ? undefined : panel.openFile}
-                  reviewOwnerKey={coach ? undefined : panelContext.key}
-                  hideFileMentions={Boolean(coach)}
-                  value={draft}
-                  onChange={writeDraft}
-                  onKeyDown={keyDown}
-                  inputRef={promptRef}
-                  autoFocus
-                  attachments={attachments}
-                  projectId={projectId}
-                  connectionId={connectionId}
-                  maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
-                  onOpenModelPicker={query => agentPickerRef.current?.open(query)}
-                  controls={
-                    <WorkspaceAgentPicker
-                      controlRef={agentPickerRef}
-                      connections={connections.data?.items ?? []}
-                      connectionId={connectionId}
-                      modelId={modelId}
-                      modeId={modeId}
-                      configValues={rememberedConfigValues}
-                      inspection={inspected}
-                      pending={inspect.pending}
-                      access={{ ...access, onChange: setAccessMode }}
-                      onConnectionChange={selected => {
-                        setConnectionId(selected)
-                      }}
-                      onModelChange={id => {
-                        setModelId(id, inspected?.capabilities.configOptions ?? [])
-                        setModeId('')
-                      }}
-                      onModeChange={setModeId}
-                      onConfigValueChange={setConfigValue}
-                    />
-                  }
-                  contextStrip={
+                            className="text-muted-foreground hover:text-foreground rounded text-sm outline-none focus-visible:ring-2"
+                            onClick={() => selectProject(null)}
+                          >
+                            or start without a project
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <h2 className="text-2xl font-normal tracking-tight sm:text-3xl">What should we work on?</h2>
+                          <div className="text-muted-foreground text-sm">
+                            <WorkspaceProjectPicker
+                              projectId={null}
+                              label="No project"
+                              projects={pickerProjects}
+                              hasMore={Boolean(projects.data?.nextAfterId)}
+                              disabled={creating || starting}
+                              onSelect={selectProject}
+                              onLoadMore={loadMoreProjects}
+                              onRefresh={projects.refresh}
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  <WorkspacePromptInput
+                    onOpenFile={coach ? undefined : panel.openFile}
+                    reviewOwnerKey={coach ? undefined : panelContext.key}
+                    hideFileMentions={Boolean(coach)}
+                    value={draft}
+                    onChange={writeDraft}
+                    onKeyDown={keyDown}
+                    inputRef={promptRef}
+                    autoFocus
+                    attachments={attachments}
+                    projectId={projectId}
+                    connectionId={connectionId}
+                    maxLength={NEW_CHAT_DRAFT_MAX_LENGTH}
+                    onOpenModelPicker={query => agentPickerRef.current?.open(query)}
+                    controls={
+                      <WorkspaceAgentPicker
+                        controlRef={agentPickerRef}
+                        connections={connections.data?.items ?? []}
+                        connectionId={connectionId}
+                        modelId={modelId}
+                        modeId={modeId}
+                        configValues={rememberedConfigValues}
+                        inspection={inspected}
+                        pending={inspect.pending}
+                        access={{ ...access, onChange: setAccessMode }}
+                        onConnectionChange={selected => {
+                          setConnectionId(selected)
+                        }}
+                        onModelChange={id => {
+                          setModelId(id, inspected?.capabilities.configOptions ?? [])
+                          setModeId('')
+                        }}
+                        onModeChange={setModeId}
+                        onConfigValueChange={setConfigValue}
+                      />
+                    }
+                    contextStrip={
+                      gitProject ? (
+                        <CheckoutStrip
+                          mode={checkout.mode}
+                          onModeChange={mode => {
+                            setBranchError(null)
+                            setCheckoutChoice({ projectId, mode, baseBranch: checkout.baseBranch })
+                          }}
+                          branch={shownBranch}
+                          branches={branches.data}
+                          pending={switchBranch.pending}
+                          disabled={creating || starting || switchBranch.pending}
+                          onBranchSelect={selectBranch}
+                          error={branches.error}
+                          trailing={permissionsChip}
+                        />
+                      ) : (
+                        <div className="ms-auto">{permissionsChip}</div>
+                      )
+                    }
+                    actions={
+                      <ComposerActionTooltip
+                        busy={false}
+                        canSteer={false}
+                        trigger={
+                          <Button
+                            type="button"
+                            size="icon-sm"
+                            className="rounded-full"
+                            aria-label="Send"
+                            disabled={
+                              !promptWithReviewComments(
+                                promptWithAttachments(draft, attachments.items),
+                                reviewComments.items,
+                              ) ||
+                              attachmentBlocked ||
+                              !canSubmit ||
+                              creating ||
+                              starting ||
+                              !projectReady ||
+                              Boolean(intent)
+                            }
+                            onClick={submit}
+                          >
+                            <ArrowUp />
+                          </Button>
+                        }
+                      />
+                    }
+                  />
+                  {attachmentBlocked && (
+                    <p className="text-muted-foreground mt-2 text-xs" role="status">
+                      The selected agent has not confirmed support for these attachments. Choose a compatible agent or
+                      remove them.
+                    </p>
+                  )}
+                  {inspected && !canSubmit && (
+                    <p className="text-muted-foreground mt-3 text-center text-xs" role="status">
+                      This agent cannot start a conversation with the selected setup.
+                    </p>
+                  )}
+                  {(error || inspect.error) && (
+                    <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="alert">
+                      <span className="text-destructive">{error ?? inspect.error}</span>
+                      {intent && !creating && (
+                        <Button type="button" size="sm" variant="outline" onClick={retryCreation}>
+                          Retry
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                  {(projects.error || connections.error || project.error) && (
+                    <p className="text-destructive mt-3 text-center text-sm" role="alert">
+                      {projects.error || connections.error || project.error}
+                    </p>
+                  )}
+                  {archivedProject && (
+                    <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="status">
+                      <span>This Project is archived.</span>
+                      <Button type="button" size="sm" variant="outline" onClick={() => onProjectChange?.(null)}>
+                        Continue with No project
+                      </Button>
+                    </div>
+                  )}
+                </section>
+              </div>
+              {!coach && (
+                <WorkspaceConversationDetails
+                  open={detailsOpen}
+                  mode={detailsMode}
+                  projectId={projectReady ? (projectId ?? undefined) : undefined}
+                  checkoutId={project.data?.mainCheckout.id}
+                  workspacePath={project.data?.mainCheckout.path}
+                  isScratch={!selectedProject}
+                  onOpenFiles={() => panel.openSurface('files')}
+                  onOpenDiff={diffAvailable && checkout.mode === 'local' ? () => panel.openSurface('diff') : undefined}
+                  onOpenPullRequests={() => panel.openSurface('pull-requests')}
+                  checkoutControls={
                     gitProject ? (
                       <CheckoutStrip
+                        layout="details"
+                        workspacePath={project.data?.mainCheckout.path}
                         mode={checkout.mode}
                         onModeChange={mode => {
                           setBranchError(null)
@@ -609,77 +705,11 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
                         disabled={creating || starting || switchBranch.pending}
                         onBranchSelect={selectBranch}
                         error={branches.error}
-                        trailing={permissionsChip}
                       />
-                    ) : (
-                      <div className="ms-auto">{permissionsChip}</div>
-                    )
-                  }
-                  actions={
-                    <ComposerActionTooltip
-                      busy={false}
-                      canSteer={false}
-                      trigger={
-                        <Button
-                          type="button"
-                          size="icon-sm"
-                          className="rounded-full"
-                          aria-label="Send"
-                          disabled={
-                            !promptWithReviewComments(
-                              promptWithAttachments(draft, attachments.items),
-                              reviewComments.items,
-                            ) ||
-                            attachmentBlocked ||
-                            !canSubmit ||
-                            creating ||
-                            starting ||
-                            !projectReady ||
-                            Boolean(intent)
-                          }
-                          onClick={submit}
-                        >
-                          <ArrowUp />
-                        </Button>
-                      }
-                    />
+                    ) : undefined
                   }
                 />
-                {attachmentBlocked && (
-                  <p className="text-muted-foreground mt-2 text-xs" role="status">
-                    The selected agent has not confirmed support for these attachments. Choose a compatible agent or
-                    remove them.
-                  </p>
-                )}
-                {inspected && !canSubmit && (
-                  <p className="text-muted-foreground mt-3 text-center text-xs" role="status">
-                    This agent cannot start a conversation with the selected setup.
-                  </p>
-                )}
-                {(error || inspect.error) && (
-                  <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="alert">
-                    <span className="text-destructive">{error ?? inspect.error}</span>
-                    {intent && !creating && (
-                      <Button type="button" size="sm" variant="outline" onClick={retryCreation}>
-                        Retry
-                      </Button>
-                    )}
-                  </div>
-                )}
-                {(projects.error || connections.error || project.error) && (
-                  <p className="text-destructive mt-3 text-center text-sm" role="alert">
-                    {projects.error || connections.error || project.error}
-                  </p>
-                )}
-                {archivedProject && (
-                  <div className="mt-3 flex items-center justify-center gap-2 text-sm" role="status">
-                    <span>This Project is archived.</span>
-                    <Button type="button" size="sm" variant="outline" onClick={() => onProjectChange?.(null)}>
-                      Continue with No project
-                    </Button>
-                  </div>
-                )}
-              </section>
+              )}
             </div>
             {!coach && (
               <WorkspaceTerminalDrawer
@@ -687,39 +717,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
                 open={terminal.open}
                 onOpenLink={url => resources.openBrowser(url)}
                 onAddToChat={addTerminalExcerpt}
-              />
-            )}
-            {!coach && (
-              <WorkspaceConversationDetails
-                open={detailsOpen}
-                onOpenChange={setDetailsOpen}
-                mode={detailsMode}
-                projectId={projectReady ? (projectId ?? undefined) : undefined}
-                checkoutId={project.data?.mainCheckout.id}
-                workspacePath={project.data?.mainCheckout.path}
-                isScratch={!selectedProject}
-                onOpenFiles={() => panel.openSurface('files')}
-                onOpenDiff={diffAvailable && checkout.mode === 'local' ? () => panel.openSurface('diff') : undefined}
-                onOpenPullRequests={() => panel.openSurface('pull-requests')}
-                checkoutControls={
-                  gitProject ? (
-                    <CheckoutStrip
-                      layout="details"
-                      workspacePath={project.data?.mainCheckout.path}
-                      mode={checkout.mode}
-                      onModeChange={mode => {
-                        setBranchError(null)
-                        setCheckoutChoice({ projectId, mode, baseBranch: checkout.baseBranch })
-                      }}
-                      branch={shownBranch}
-                      branches={branches.data}
-                      pending={switchBranch.pending}
-                      disabled={creating || starting || switchBranch.pending}
-                      onBranchSelect={selectBranch}
-                      error={branches.error}
-                    />
-                  ) : undefined
-                }
               />
             )}
           </div>

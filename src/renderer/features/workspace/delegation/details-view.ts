@@ -1,18 +1,24 @@
 import type { DelegationRecord } from '@/shared/schemas/delegation.js'
 
 import { elapsedBetween } from '../timeline/duration.js'
-import { isLiveDelegation } from './delegation-status.js'
+import { hasPendingWake, isLiveDelegation } from './delegation-status.js'
 
 type TimedDelegation = Pick<DelegationRecord, 'status' | 'settledAt' | 'createdAt'>
+type DelegationWithWake = TimedDelegation & Pick<DelegationRecord, 'wakeState'>
 
-export function groupDelegationDetails<Record extends TimedDelegation>(
+export function groupDelegationDetails<Record extends DelegationWithWake>(
   records: readonly Record[],
-): { readonly active: readonly Record[]; readonly previous: readonly Record[] } {
+): { readonly active: readonly Record[]; readonly pending: readonly Record[]; readonly previous: readonly Record[] } {
   const newestFirst = [...records].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
-  return {
-    active: newestFirst.filter(isLiveDelegation),
-    previous: newestFirst.filter(record => !isLiveDelegation(record)),
+  const active: Record[] = []
+  const pending: Record[] = []
+  const previous: Record[] = []
+  for (const record of newestFirst) {
+    if (isLiveDelegation(record)) active.push(record)
+    else if (hasPendingWake(record)) pending.push(record)
+    else previous.push(record)
   }
+  return { active, pending, previous }
 }
 
 export function delegationDetailsElapsed(record: TimedDelegation, now: number | null): number | null {

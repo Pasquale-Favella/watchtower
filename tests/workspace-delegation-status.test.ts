@@ -2,17 +2,21 @@ import { describe, expect, it } from 'vitest'
 
 import {
   delegateWaitingLabel,
+  delegationHeadline,
   delegationStatusLabel,
   delegationStatusTone,
   delegationTally,
   delegationTallyLabel,
   heldWake,
   isLiveDelegation,
+  sortStripDelegations,
   stripDelegations,
+  visibleQueuedFollowUps,
 } from '../src/renderer/features/workspace/delegation/delegation-status.js'
 import { DelegationStopGuard } from '../src/renderer/features/workspace/delegation/delegation-stop.js'
 import {
   delegationView,
+  formatDelegateElapsed,
   nativeDelegateView,
   previewText,
 } from '../src/renderer/features/workspace/delegation/delegation-view.js'
@@ -63,8 +67,8 @@ describe('delegation status vocabulary', () => {
     ['completed', 'Completed', 'success'],
     ['failed', 'Failed', 'failure'],
     ['interrupted', 'Stopped', 'neutral'],
-    ['cancelled', 'Cancelled', 'neutral'],
-    ['uncertain', 'Needs attention', 'attention'],
+    ['cancelled', 'Stopped', 'neutral'],
+    ['uncertain', 'Uncertain', 'attention'],
   ] as const)('maps %s to a label and tone', (status, label, tone) => {
     expect(delegationStatusLabel(status as DelegationStatus)).toBe(label)
     expect(delegationStatusTone(status as DelegationStatus)).toBe(tone)
@@ -96,8 +100,70 @@ describe('delegation tally', () => {
       record({ id: 'e' as DelegationRecord['id'], status: 'queued' }),
       record({ id: 'f' as DelegationRecord['id'], status: 'completed', settledAt: '2026-11-19T10:05:00.000Z' }),
     ])
-    expect(tally).toEqual({ running: 2, queued: 1, needsAnswer: 1, needsApproval: 1 })
+    expect(tally).toEqual({ running: 2, queued: 1, waiting: 0, needsAnswer: 1, needsApproval: 1 })
     expect(delegationTallyLabel(tally)).toBe('2 running · 1 queued · 1 needs answer · 1 needs approval')
+  })
+
+  it('counts running, queued and waiting separately and never files a running delegate as queued', () => {
+    const tally = delegationTally([
+      record({ id: 'a' as DelegationRecord['id'], status: 'running' }),
+      record({ id: 'b' as DelegationRecord['id'], status: 'running' }),
+      record({ id: 'c' as DelegationRecord['id'], status: 'queued' }),
+      record({ id: 'd' as DelegationRecord['id'], status: 'waiting' }),
+    ])
+    expect(tally).toEqual({ running: 2, queued: 1, waiting: 1, needsAnswer: 0, needsApproval: 0 })
+    expect(delegationTallyLabel(tally)).toBe('2 running · 1 queued · 1 waiting')
+  })
+
+  it('leads the headline with what needs the person, then running, then queued', () => {
+    expect(delegationHeadline(delegationTally([record({ status: 'running' }), record({ status: 'running' })]))).toEqual(
+      {
+        phase: 'Running',
+        tone: 'active',
+        detail: '2 delegates',
+      },
+    )
+    expect(
+      delegationHeadline(
+        delegationTally([
+          record({ status: 'running' }),
+          record({ status: 'waiting', pendingRequest: { requestId: 'p', kind: 'approval' } }),
+        ]),
+      ),
+    ).toEqual({ phase: 'Waiting', tone: 'attention', detail: '1 needs approval' })
+    expect(delegationHeadline(delegationTally([record({ status: 'queued' })]))).toMatchObject({
+      phase: 'Queued',
+      detail: '1 delegate',
+    })
+    expect(delegationHeadline(delegationTally([]))).toBeNull()
+  })
+
+  it('orders strip rows by what needs attention, then running, then queued, then held results', () => {
+    const rows = sortStripDelegations([
+      record({ id: 'queued' as DelegationRecord['id'], status: 'queued', createdAt: '2026-11-19T10:04:00.000Z' }),
+      record({
+        id: 'held' as DelegationRecord['id'],
+        status: 'completed',
+        settledAt: '2026-11-19T10:05:00.000Z',
+        createdAt: '2026-11-19T10:05:00.000Z',
+      }),
+      record({ id: 'old' as DelegationRecord['id'], status: 'running', createdAt: '2026-11-19T10:01:00.000Z' }),
+      record({ id: 'new' as DelegationRecord['id'], status: 'running', createdAt: '2026-11-19T10:03:00.000Z' }),
+      record({
+        id: 'ask' as DelegationRecord['id'],
+        status: 'waiting',
+        pendingRequest: { requestId: 'q', kind: 'question' },
+        createdAt: '2026-11-19T10:00:00.000Z',
+      }),
+    ])
+    expect(rows.map(row => row.id)).toEqual(['ask', 'new', 'old', 'queued', 'held'])
+  })
+
+  it('formats elapsed time compactly', () => {
+    expect(formatDelegateElapsed(12_400)).toBe('12s')
+    expect(formatDelegateElapsed(185_000)).toBe('3m 05s')
+    expect(formatDelegateElapsed(3_720_000)).toBe('1h 02m')
+    expect(formatDelegateElapsed(-5)).toBe('0s')
   })
 
   it('reads as nothing when no delegation is live', () => {
@@ -112,6 +178,22 @@ describe('delegation tally', () => {
       'Delegate waiting · Needs approval',
     )
     expect(delegateWaitingLabel(record())).toBeNull()
+  })
+})
+
+describe('queued prompt list', () => {
+  it('leaves out delegation wakes that deliver themselves and keeps paused ones and user prompts', () => {
+    const items = [
+      { id: 'wake', origin: 'delegation' as const },
+      { id: 'user', origin: 'user' as const },
+      { id: 'plain' },
+      { id: 'held-wake', origin: 'delegation' as const, held: true },
+    ]
+    expect(visibleQueuedFollowUps(items).map(entry => [entry.item.id, entry.queueIndex, entry.number])).toEqual([
+      ['user', 1, 1],
+      ['plain', 2, 2],
+      ['held-wake', 3, 3],
+    ])
   })
 })
 

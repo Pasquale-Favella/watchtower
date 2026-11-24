@@ -1,5 +1,5 @@
-import { SlidersHorizontal, X } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { SlidersHorizontal } from 'lucide-react'
+import { type ReactNode, useRef } from 'react'
 
 import { Button } from '@/renderer/components/ui/button'
 import { ContextMenu, ContextMenuTrigger } from '@/renderer/components/ui/context-menu'
@@ -12,6 +12,8 @@ import {
   DropdownMenuTrigger,
 } from '@/renderer/components/ui/dropdown-menu'
 import { PopoverContent } from '@/renderer/components/ui/popover'
+import { ScrollArea } from '@/renderer/components/ui/scroll-area'
+import { cn } from '@/renderer/shared/lib/utils'
 import type { ConversationId, ProjectId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 
 import { currentConversationRuns, isRunActive } from './composer-state.js'
@@ -22,7 +24,6 @@ import { WorkspaceConversationDetailsActions } from './WorkspaceConversationDeta
 
 interface Props {
   readonly open: boolean
-  readonly onOpenChange: (open: boolean) => void
   readonly mode: ConversationDetailsMode
   readonly taskId?: TaskId | undefined
   readonly conversationId?: ConversationId | null
@@ -40,7 +41,6 @@ interface Props {
 
 export function WorkspaceConversationDetails({
   open,
-  onOpenChange,
   mode,
   taskId,
   conversationId,
@@ -56,6 +56,8 @@ export function WorkspaceConversationDetails({
   children,
 }: Props): React.JSX.Element | null {
   const items = useConversationDetailsItems()
+  // The popover opens where the inline card sits, at the conversation's top-right, rather than under the header toggle.
+  const popoverAnchor = useRef<HTMLDivElement>(null)
   const snapshot = useWorkspaceTaskSnapshot(taskId ? { taskId, runLimit: 100 } : null)
   const runs = conversationId
     ? currentConversationRuns(snapshot.data?.runs ?? [], snapshot.data?.runContexts ?? [], conversationId)
@@ -77,73 +79,83 @@ export function WorkspaceConversationDetails({
       <DropdownMenuItem onClick={items.reset}>Reset to defaults</DropdownMenuItem>
     </>
   )
+  const nothingShown = CONVERSATION_DETAILS_ITEMS.every(item => !items.visible[item.id])
 
+  // Customizing lives in the card's context menu; a visible control appears only once every item is hidden.
   const card = (
     <ContextMenu>
       <ContextMenuTrigger
-        render={<div className="flex min-h-0 flex-col" />}
+        render={
+          <div
+            data-conversation-details-card
+            className={cn(
+              'bg-popover/90 text-popover-foreground ring-foreground/10 grid max-h-full min-h-0 grid-rows-[minmax(0,1fr)] overflow-hidden rounded-2xl shadow-md ring-1 backdrop-blur-xl',
+              mode === 'popover' && 'max-h-[min(calc(100dvh-6.5rem),40rem)]',
+            )}
+          />
+        }
         onContextMenuCapture={event => {
           const target = event.target
           const selection = window.getSelection()
           if (
-            (target instanceof Element && target.closest('input, textarea, [contenteditable], a[href]')) ||
+            (target instanceof Element && target.closest('input, textarea, select, [contenteditable], a[href]')) ||
             (selection && !selection.isCollapsed)
           )
             event.stopPropagation()
         }}
       >
-        <div className="flex h-9 shrink-0 items-center justify-between px-2">
-          <h2 id="conversation-details-title" className="sr-only">
-            Conversation details
-          </h2>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button type="button" variant="ghost" size="icon-sm" aria-label="Customize conversation details" />
-              }
-            >
-              <SlidersHorizontal aria-hidden="true" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-48">
-              {menuItems}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Close conversation details"
-            onClick={() => onOpenChange(false)}
-          >
-            <X aria-hidden="true" />
-          </Button>
-        </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto px-2 pb-2 text-sm">
-          <WorkspaceConversationDetailsActions
-            visible={items.visible}
-            projectId={projectId}
-            checkoutId={checkoutId}
-            workspacePath={workspacePath}
-            taskId={taskId}
-            conversationId={conversationId}
-            activeRun={Boolean(taskId && (!snapshot.data || snapshot.error || runs.some(isRunActive)))}
-            isScratch={isScratch}
-            onOpenDiff={onOpenDiff}
-            onOpenFiles={onOpenFiles}
-            onOpenPullRequests={onOpenPullRequests}
-            onOpenSideChat={onOpenSideChat}
-            checkoutControls={checkoutControls}
-          />
-          {snapshot.error && (
-            <p role="alert" className="text-destructive px-2.5 text-xs">
-              {snapshot.error}
-            </p>
-          )}
-          {children && <DetailsSection label="Conversations">{children}</DetailsSection>}
-          {!taskId && !projectId && (
-            <p className="text-muted-foreground text-xs">Select a project to see workspace actions.</p>
-          )}
-        </div>
+        <h2 id="conversation-details-title" className="sr-only">
+          Conversation details
+        </h2>
+        <ScrollArea scrollFade className="min-h-0">
+          <div className="divide-border/65 divide-y text-sm">
+            <WorkspaceConversationDetailsActions
+              visible={items.visible}
+              projectId={projectId}
+              checkoutId={checkoutId}
+              workspacePath={workspacePath}
+              taskId={taskId}
+              conversationId={conversationId}
+              activeRun={Boolean(taskId && (!snapshot.data || snapshot.error || runs.some(isRunActive)))}
+              isScratch={isScratch}
+              onOpenDiff={onOpenDiff}
+              onOpenFiles={onOpenFiles}
+              onOpenPullRequests={onOpenPullRequests}
+              onOpenSideChat={onOpenSideChat}
+              checkoutControls={checkoutControls}
+            />
+            {snapshot.error && (
+              <p role="alert" className="text-destructive px-4.5 py-2 text-xs">
+                {snapshot.error}
+              </p>
+            )}
+            {children && <DetailsSection label="Conversations">{children}</DetailsSection>}
+            {!taskId && !projectId && (
+              <p className="text-muted-foreground px-4.5 py-3 text-xs">Select a project to see workspace actions.</p>
+            )}
+            {nothingShown && (
+              <div className="p-2">
+                <DropdownMenu>
+                  <DropdownMenuTrigger
+                    render={
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="text-foreground/80 h-8 w-full justify-start gap-2.5 px-2.5 text-[13px]"
+                      />
+                    }
+                  >
+                    <SlidersHorizontal aria-hidden="true" className="text-muted-foreground size-4" />
+                    Choose what to show
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" className="w-48">
+                    {menuItems}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            )}
+          </div>
+        </ScrollArea>
       </ContextMenuTrigger>
       <DropdownMenuContent className="w-48">{menuItems}</DropdownMenuContent>
     </ContextMenu>
@@ -151,16 +163,18 @@ export function WorkspaceConversationDetails({
 
   return (
     <>
+      <div ref={popoverAnchor} aria-hidden="true" className="pointer-events-none absolute inset-x-3 top-0 h-0" />
       <PopoverContent
         role="dialog"
         aria-label="Conversation details"
         aria-labelledby="conversation-details-title"
         id={open && mode === 'popover' ? 'conversation-details-panel' : undefined}
         data-conversation-details-panel={open && mode === 'popover' ? 'popover' : undefined}
-        className={`bg-card flex max-h-[min(80vh,40rem)] w-[280px] gap-0 overflow-hidden rounded-xl border p-0 shadow-lg ${mode === 'inline' ? 'hidden' : ''}`}
+        className={cn('w-[280px] gap-0 bg-transparent p-0 shadow-none ring-0', mode === 'inline' && 'hidden')}
+        anchor={popoverAnchor}
         align="end"
         side="bottom"
-        sideOffset={8}
+        sideOffset={12}
       >
         {open && mode === 'popover' ? card : null}
       </PopoverContent>
@@ -169,7 +183,7 @@ export function WorkspaceConversationDetails({
           aria-label="Conversation details"
           data-conversation-details-panel="inline"
           id="conversation-details-panel"
-          className="bg-card absolute top-3 right-3 z-30 flex max-h-[calc(100%-1.5rem)] w-[280px] flex-col overflow-hidden rounded-xl border shadow-sm"
+          className="absolute top-3 right-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[280px] flex-col"
         >
           {card}
         </aside>
@@ -186,8 +200,8 @@ function DetailsSection({
   readonly children: ReactNode
 }): React.JSX.Element {
   return (
-    <section aria-label={label} className="space-y-2">
-      <h3 className="text-muted-foreground text-xs font-medium">{label}</h3>
+    <section aria-label={label} className="space-y-2 p-2">
+      <h3 className="text-muted-foreground px-2.5 text-xs font-medium">{label}</h3>
       {children}
     </section>
   )

@@ -1,9 +1,25 @@
-import { Check, ChevronLeft, ChevronRight } from 'lucide-react'
-import { useEffect, useEffectEvent, useId, useRef, useState } from 'react'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 
 import { Markdown } from '@/renderer/components/Markdown'
+import { Badge } from '@/renderer/components/ui/badge'
 import { Button } from '@/renderer/components/ui/button'
-import { Input } from '@/renderer/components/ui/input'
+import {
+  Questionnaire,
+  QuestionnaireActions,
+  QuestionnaireChoice,
+  QuestionnaireChoiceDescription,
+  QuestionnaireChoices,
+  QuestionnaireDescription,
+  QuestionnaireError,
+  QuestionnaireInput,
+  QuestionnaireItem,
+  QuestionnaireNext,
+  QuestionnairePrevious,
+  QuestionnaireProgress,
+  QuestionnaireSubmit,
+  QuestionnaireTitle,
+} from '@/renderer/components/ui/questionnaire'
 import { cn } from '@/renderer/shared/lib/utils'
 import type { AgentRequest, AgentRequestDecision } from '@/shared/schemas/execution.js'
 
@@ -21,6 +37,8 @@ import {
 
 const AUTO_ADVANCE_MS = 200
 
+type Question = AgentRequest['questions'][number]
+
 interface QuestionFormProps {
   readonly request: AgentRequest
   readonly disabled: boolean
@@ -32,18 +50,32 @@ function isEditableTarget(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && Boolean(target.closest('input, textarea, select, [contenteditable="true"]'))
 }
 
+function answerHint(question: Question): string {
+  if (question.options.length === 0) return 'Write your answer.'
+  if (question.multiSelect) return 'Choose all that apply.'
+  return 'Choose one answer.'
+}
+
 export function QuestionForm({ request, disabled, delivery, onRespond }: QuestionFormProps): React.JSX.Element {
   const [draft, setDraft] = useState(() => readQuestionDraft(request))
   const { answers, index } = draft
-  const panelId = useId()
-  const panelRef = useRef<HTMLDivElement>(null)
-  const headingRef = useRef<HTMLDivElement>(null)
+  const formRef = useRef<HTMLFormElement>(null)
   const submitRef = useRef<HTMLButtonElement>(null)
-  const focusNext = useRef(false)
   const advanceTimer = useRef<number | null>(null)
+  /** Set by a pointer press on a choice, so only clicks auto-advance; arrow keys and shortcuts select without moving on. */
+  const pointerChoice = useRef(false)
   const progress = questionProgress(request.questions, answers, index)
   const question = progress.question
   const decision = questionDecision(request, answers)
+  const items = useMemo(
+    () =>
+      request.questions.map(item => ({
+        name: item.id,
+        required: true,
+        choices: item.options.map(option => ({ value: option.id })),
+      })),
+    [request.questions],
+  )
 
   const clearAdvance = () => {
     if (advanceTimer.current !== null) window.clearTimeout(advanceTimer.current)
@@ -54,42 +86,38 @@ export function QuestionForm({ request, disabled, delivery, onRespond }: Questio
   useEffect(() => {
     if (delivery === 'accepted') forgetQuestionDraft(request)
   }, [delivery, request])
-  useEffect(() => {
-    if (!focusNext.current) return
-    focusNext.current = false
-    headingRef.current?.focus()
-  }, [question?.id])
 
   const goTo = (next: number) => {
     clearAdvance()
-    focusNext.current = true
     setDraft(current => ({ ...current, index: Math.min(Math.max(next, 0), Math.max(progress.total - 1, 0)) }))
   }
-  const submit = () => {
+  const choose = (target: Question, optionId: string, advance: boolean) => {
+    if (disabled) return
+    setDraft(current => ({ ...current, answers: chooseQuestionOption(target, current.answers, optionId) }))
+    if (target.multiSelect || !advance) return
     clearAdvance()
-    if (!disabled && decision) onRespond(decision)
-  }
-  const choose = (optionId: string) => {
-    if (disabled || !question) return
-    setDraft(current => ({ ...current, answers: chooseQuestionOption(question, current.answers, optionId) }))
-    if (question.multiSelect) return
-    clearAdvance()
+    const targetIndex = request.questions.findIndex(item => item.id === target.id)
     advanceTimer.current = window.setTimeout(() => {
       advanceTimer.current = null
-      if (progress.isLast) submitRef.current?.focus()
-      else goTo(progress.index + 1)
+      if (targetIndex >= progress.total - 1) submitRef.current?.focus()
+      else goTo(targetIndex + 1)
     }, AUTO_ADVANCE_MS)
   }
-  const shortcutChoose = useEffectEvent(choose)
+  const setCustomAnswer = (target: Question, text: string) => {
+    clearAdvance()
+    setDraft(current => ({ ...current, answers: setQuestionCustomAnswer(target, current.answers, text) }))
+  }
+
+  // Inside the form the questionnaire owns digit shortcuts. This fallback keeps them working while focus is
+  // elsewhere in the window (not in a text field), for the first question panel only.
+  const shortcutChoose = useEffectEvent((optionId: string) => question && choose(question, optionId, false))
   const options = question?.options
   useEffect(() => {
     if (disabled || !options?.length) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isEditableTarget(event.target)) return
-      const panel = panelRef.current
-      if (!panel) return
-      const focusedPanel = document.activeElement?.closest('[data-question-panel]')
-      if (focusedPanel ? focusedPanel !== panel : document.querySelector('[data-question-panel]') !== panel) return
+      if (event.defaultPrevented || isEditableTarget(event.target)) return
+      if (document.activeElement?.closest('[data-question-panel]')) return
+      if (document.querySelector('[data-question-panel]') !== formRef.current) return
       const optionIndex = digitShortcutIndex(event, options.length)
       const option = optionIndex === null ? undefined : options[optionIndex]
       if (!option) return
@@ -103,141 +131,127 @@ export function QuestionForm({ request, disabled, delivery, onRespond }: Questio
   if (!question) {
     return <p className="text-muted-foreground text-xs">This request contains no answerable questions.</p>
   }
-  const customAllowed = question.options.length === 0 || question.allowCustomAnswer === true
-  const customAnswer = questionCustomAnswer(question, answers)
   const preamble = request.prompt.trim()
   const combinedQuestions = request.questions
     .map(item => item.prompt)
     .join('\n')
     .trim()
-  let answerHint = 'Choose one answer'
-  if (question.options.length === 0) answerHint = 'Write your answer'
-  else if (question.multiSelect) answerHint = 'Choose all that apply'
 
   return (
-    <div ref={panelRef} data-question-panel className="space-y-3">
+    <Questionnaire
+      ref={formRef}
+      data-question-panel
+      aria-label="Agent questions"
+      className="gap-3"
+      items={items}
+      item={question.id}
+      onItemChange={name => goTo(request.questions.findIndex(item => item.id === name))}
+      shortcuts="numbers"
+      onSubmit={event => {
+        event.preventDefault()
+        clearAdvance()
+        if (!disabled && decision) onRespond(decision)
+      }}
+    >
       {preamble && preamble !== question.prompt.trim() && preamble !== combinedQuestions && (
         <div className="typeset text-muted-foreground text-xs">
           <Markdown>{request.prompt}</Markdown>
         </div>
       )}
       {progress.total > 1 && (
-        <nav aria-label="Question navigation" className="flex flex-wrap items-center gap-1">
-          {request.questions.map((item, questionIndex) => {
-            const answered = questionProgress([item], answers, 0).complete
-            return (
-              <Button
-                key={item.id}
-                type="button"
-                size="xs"
-                variant={questionIndex === progress.index ? 'secondary' : 'ghost'}
-                disabled={disabled}
-                aria-label={`Question ${questionIndex + 1}${item.header ? `: ${item.header}` : ''}`}
-                aria-current={questionIndex === progress.index ? 'step' : undefined}
-                onClick={() => goTo(questionIndex)}
-              >
-                {answered && <Check aria-hidden className="size-3" />}
-                {questionIndex + 1}
-              </Button>
-            )
-          })}
-          <span className="text-muted-foreground ml-auto text-xs tabular-nums">
-            {progress.index + 1} / {progress.total}
-          </span>
-        </nav>
-      )}
-      <fieldset key={question.id} disabled={disabled} className="space-y-2">
-        <legend className="sr-only">{question.prompt}</legend>
-        <div ref={headingRef} tabIndex={-1} className="outline-none">
-          {question.header && <p className="text-muted-foreground mb-1 text-xs font-medium">{question.header}</p>}
-          <div className="typeset text-sm font-medium">
-            <Markdown>{question.prompt}</Markdown>
-          </div>
-        </div>
-        {question.options.length > 0 && (
-          <div role={question.multiSelect ? 'group' : 'radiogroup'} aria-label={question.prompt} className="space-y-1">
-            {question.options.map((option, optionIndex) => {
-              const answer = answers[question.id]
-              const selected = Array.isArray(answer) ? answer.includes(option.id) : answer === option.id
+        <div className="flex flex-wrap items-center gap-1">
+          <nav aria-label="Question navigation" className="flex flex-wrap items-center gap-1">
+            {request.questions.map((item, questionIndex) => {
+              const current = questionIndex === progress.index
+              const answered = questionProgress([item], answers, 0).complete
               return (
-                <button
-                  key={option.id}
+                <Button
+                  key={item.id}
                   type="button"
-                  role={question.multiSelect ? 'checkbox' : 'radio'}
-                  aria-checked={selected}
-                  aria-describedby={option.description ? `${panelId}-option-${optionIndex}-description` : undefined}
+                  size="xs"
+                  variant={current ? 'secondary' : 'ghost'}
                   disabled={disabled}
-                  className={cn(
-                    'focus-visible:ring-ring/50 flex w-full items-start gap-2.5 rounded-lg border px-2.5 py-2 text-left text-sm transition-colors outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50',
-                    selected ? 'border-primary/40 bg-primary/10' : 'hover:bg-muted border-transparent',
-                  )}
-                  onClick={() => choose(option.id)}
-                  onKeyDown={event => {
-                    const offset = event.key === 'ArrowDown' || event.key === 'ArrowRight' ? 1 : -1
-                    if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) return
-                    event.preventDefault()
-                    const choices = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('button')
-                    choices?.[(optionIndex + offset + question.options.length) % question.options.length]?.focus()
-                  }}
+                  aria-label={`Question ${questionIndex + 1}${item.header ? `: ${item.header}` : ''}${answered ? ', answered' : ''}`}
+                  aria-current={current ? 'step' : undefined}
+                  onClick={() => goTo(questionIndex)}
                 >
                   <span
                     aria-hidden
-                    className={cn(
-                      'mt-0.5 flex size-4 shrink-0 items-center justify-center border',
-                      question.multiSelect ? 'rounded-sm' : 'rounded-full',
-                      selected ? 'border-primary bg-primary text-primary-foreground' : 'border-muted-foreground/50',
-                    )}
-                  >
-                    {selected && <Check className="size-3" />}
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block font-medium break-words">
-                      {option.label}
-                      {option.recommended && <span className="text-primary ml-2 text-[10px]">Recommended</span>}
-                    </span>
-                    {option.description && (
-                      <span
-                        id={`${panelId}-option-${optionIndex}-description`}
-                        className="text-muted-foreground mt-0.5 block text-xs break-words"
-                      >
-                        {option.description}
-                      </span>
-                    )}
-                  </span>
-                  {optionIndex < 9 && (
-                    <kbd className="text-muted-foreground shrink-0 font-mono text-[10px]">{optionIndex + 1}</kbd>
-                  )}
-                </button>
+                    className={cn('size-1.5 rounded-full', answered ? 'bg-primary' : 'bg-muted-foreground/30')}
+                  />
+                  {item.header ?? questionIndex + 1}
+                </Button>
               )
             })}
-          </div>
-        )}
-        {customAllowed && (
-          <label className="block space-y-1.5 text-xs">
-            <span className="text-muted-foreground">{question.options.length ? 'Other answer' : 'Your answer'}</span>
-            <Input
-              type={question.isSecret ? 'password' : 'text'}
-              aria-label={question.options.length ? 'Other answer' : 'Your answer'}
-              value={customAnswer}
-              autoComplete="off"
-              spellCheck={!question.isSecret}
-              placeholder={question.options.length ? 'Add your own answer' : 'Type your answer'}
-              onChange={event => {
-                clearAdvance()
-                const text = event.target.value
-                setDraft(current => ({ ...current, answers: setQuestionCustomAnswer(question, current.answers, text) }))
-              }}
-              onKeyDown={event => {
-                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return
-                event.preventDefault()
-                if (!progress.canAdvance) return
-                if (progress.isLast) submit()
-                else goTo(progress.index + 1)
-              }}
-            />
-          </label>
-        )}
-      </fieldset>
+          </nav>
+          <QuestionnaireProgress className="ml-auto min-w-0 text-[10px]" />
+        </div>
+      )}
+      {request.questions.map(item => {
+        const customAllowed = item.options.length === 0 || item.allowCustomAnswer === true
+        const answer = answers[item.id]
+        const customLabel = item.options.length ? 'Other answer' : 'Your answer'
+        return (
+          <QuestionnaireItem
+            key={item.id}
+            name={item.id}
+            required
+            multiple={item.multiSelect}
+            className="data-active:animate-in data-active:fade-in-0 gap-3"
+          >
+            <QuestionnaireTitle className="mb-1! text-sm">
+              {item.header && progress.total === 1 && (
+                <span className="text-muted-foreground mb-1 block text-xs">{item.header}</span>
+              )}
+              <span className="typeset block">
+                <Markdown>{item.prompt}</Markdown>
+              </span>
+            </QuestionnaireTitle>
+            <QuestionnaireDescription className="text-xs">{answerHint(item)}</QuestionnaireDescription>
+            <QuestionnaireChoices>
+              {item.options.map(option => (
+                <QuestionnaireChoice
+                  key={option.id}
+                  value={option.id}
+                  disabled={disabled}
+                  checked={Array.isArray(answer) ? answer.includes(option.id) : answer === option.id}
+                  onPointerDown={() => {
+                    pointerChoice.current = true
+                  }}
+                  onChange={() => {
+                    const viaPointer = pointerChoice.current
+                    pointerChoice.current = false
+                    choose(item, option.id, viaPointer)
+                  }}
+                >
+                  <span className="flex flex-wrap items-center gap-2 font-medium break-words">
+                    {option.label}
+                    {option.recommended && <Badge variant="secondary">Recommended</Badge>}
+                  </span>
+                  {option.description && (
+                    <QuestionnaireChoiceDescription className="text-xs break-words">
+                      {option.description}
+                    </QuestionnaireChoiceDescription>
+                  )}
+                </QuestionnaireChoice>
+              ))}
+              {customAllowed && (
+                <QuestionnaireInput
+                  type={item.isSecret ? 'password' : 'text'}
+                  aria-label={customLabel}
+                  value={questionCustomAnswer(item, answers)}
+                  disabled={disabled}
+                  autoComplete="off"
+                  spellCheck={!item.isSecret}
+                  placeholder={item.options.length ? 'Add your own answer' : 'Type your answer'}
+                  onChange={event => setCustomAnswer(item, event.target.value)}
+                />
+              )}
+            </QuestionnaireChoices>
+            <QuestionnaireError className="mt-0 text-xs" />
+          </QuestionnaireItem>
+        )
+      })}
       {progress.isLast && decision && request.questions.length > 1 && (
         <details className="text-muted-foreground rounded-lg border px-3 py-2 text-xs">
           <summary className="cursor-pointer">Review {request.questions.length} answers</summary>
@@ -251,30 +265,19 @@ export function QuestionForm({ request, disabled, delivery, onRespond }: Questio
           </dl>
         </details>
       )}
-      <div className="flex items-center justify-end gap-2">
-        <span className="text-muted-foreground mr-auto text-[10px]">{answerHint}</span>
-        {progress.index > 0 && (
-          <Button type="button" size="sm" variant="ghost" disabled={disabled} onClick={() => goTo(progress.index - 1)}>
-            <ChevronLeft aria-hidden className="size-3" />
-            Back
-          </Button>
-        )}
-        {progress.isLast ? (
-          <Button ref={submitRef} type="button" size="sm" disabled={disabled || decision === null} onClick={submit}>
-            Submit answers
-          </Button>
-        ) : (
-          <Button
-            type="button"
-            size="sm"
-            disabled={disabled || !progress.canAdvance}
-            onClick={() => goTo(progress.index + 1)}
-          >
-            Next
-            <ChevronRight aria-hidden className="size-3" />
-          </Button>
-        )}
-      </div>
-    </div>
+      <QuestionnaireActions>
+        <QuestionnairePrevious size="sm" variant="ghost" disabled={disabled}>
+          <ChevronLeft aria-hidden />
+          Back
+        </QuestionnairePrevious>
+        <QuestionnaireNext size="sm" disabled={disabled}>
+          Next
+          <ChevronRight aria-hidden />
+        </QuestionnaireNext>
+        <QuestionnaireSubmit ref={submitRef} size="sm" disabled={disabled}>
+          Submit answers
+        </QuestionnaireSubmit>
+      </QuestionnaireActions>
+    </Questionnaire>
   )
 }

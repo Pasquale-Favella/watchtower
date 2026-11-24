@@ -26,7 +26,7 @@ import { queueTerminalCommand } from './terminal/terminal-command-queue.js'
 import { useRetainedTaskTerminalTarget } from './terminal/use-terminal-adoption.js'
 import { useTerminalDrawer } from './terminal/use-terminal-drawer.js'
 import { WorkspaceTerminalDrawer } from './terminal/WorkspaceTerminalDrawer.js'
-import { CONVERSATION_DETAILS_LANE_INSET, useConversationDetailsLayout } from './use-conversation-details-layout.js'
+import { CONVERSATION_DETAILS_LANE_STYLE, useConversationDetailsLayout } from './use-conversation-details-layout.js'
 import { useConversationDetailsVisibility } from './use-conversation-details-visibility.js'
 import { useDraftAppend, useDraftReference, useWorkspaceCheckoutPreference } from './use-workspace-draft.js'
 import { useTaskPanelResourceKey } from './use-workspace-panel-context.js'
@@ -211,53 +211,103 @@ export function WorkspaceChatColumn({
             role="region"
             aria-label="Main conversation"
             className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-            style={
-              !coach && detailsOpen && detailsMode === 'inline'
-                ? { paddingRight: CONVERSATION_DETAILS_LANE_INSET }
-                : undefined
-            }
           >
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden [&>section]:h-full">
-              {conversation ? (
-                <WorkspaceConversation
-                  conversationId={conversation.id}
-                  sessionIdsByRunId={sessionIdsByRunId}
-                  runContextsByRunId={runContextsByRunId}
-                  promptCommands={promptCommands}
+            <div
+              className="relative flex min-h-0 flex-1 flex-col overflow-hidden"
+              style={!coach && detailsOpen && detailsMode === 'inline' ? CONVERSATION_DETAILS_LANE_STYLE : undefined}
+            >
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden [&>section]:h-full">
+                {conversation ? (
+                  <WorkspaceConversation
+                    conversationId={conversation.id}
+                    sessionIdsByRunId={sessionIdsByRunId}
+                    runContextsByRunId={runContextsByRunId}
+                    promptCommands={promptCommands}
+                    workspacePath={runContext?.workspacePath ?? checkout?.path}
+                    onOpenFile={coach ? undefined : panel.openFile}
+                    coach={coach}
+                    onOpenParentTask={onSelectTask}
+                    scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
+                  />
+                ) : (
+                  <div className="p-5 text-sm">No conversation activity yet.</div>
+                )}
+              </div>
+              {conversation && task.status !== 'archived' && (
+                <div key={conversation.id} className="shrink-0">
+                  {waitingSideChat && (
+                    <div role="status" className="flex items-center justify-between gap-2 border-t px-4 py-2 text-xs">
+                      <span>Side chat waiting</span>
+                      <Button type="button" variant="outline" size="xs" onClick={() => panel.activate(waitingSideChat)}>
+                        Open
+                      </Button>
+                    </div>
+                  )}
+                  <WorkspaceComposer
+                    onOpenFile={coach ? undefined : panel.openFile}
+                    task={task}
+                    conversationId={conversation.id}
+                    onSideChatCreated={coach ? undefined : id => panel.addSurface('side-chat', id)}
+                    coach={coach !== undefined}
+                  />
+                </div>
+              )}
+              {task.status === 'archived' && (
+                <p className="text-muted-foreground border-t px-4 py-3 text-sm">
+                  This chat is archived. Restore it to send a message.
+                </p>
+              )}
+              {!coach && (
+                <WorkspaceConversationDetails
+                  open={detailsOpen}
+                  mode={detailsMode}
+                  taskId={task.id}
+                  conversationId={conversation?.id ?? null}
+                  projectId={task.projectId}
+                  checkoutId={checkoutId}
                   workspacePath={runContext?.workspacePath ?? checkout?.path}
-                  onOpenFile={coach ? undefined : panel.openFile}
-                  coach={coach}
-                  onOpenParentTask={onSelectTask}
-                  scope={{ projectId: task.projectId, ...(checkoutId ? { checkoutId } : {}) }}
-                />
-              ) : (
-                <div className="p-5 text-sm">No conversation activity yet.</div>
+                  isScratch={project.data?.project.isScratch}
+                  onOpenFiles={() => panel.openSurface('files')}
+                  onOpenDiff={diffAvailable ? () => panel.openSurface('diff') : undefined}
+                  onOpenPullRequests={() => panel.openSurface('pull-requests')}
+                  onOpenSideChat={id => panel.addSurface('side-chat', id)}
+                >
+                  {hasSeveral || nextConversationId ? (
+                    <div className="space-y-2">
+                      {hasSeveral && (
+                        <label className="flex min-w-0 flex-col gap-2 text-xs">
+                          Conversation
+                          <select
+                            className="bg-background w-full min-w-0 rounded-md border px-2 py-1"
+                            value={conversation?.id ?? ''}
+                            onChange={event => onSelectConversation?.(event.target.value as ConversationId)}
+                          >
+                            {conversations.map((item, index) => (
+                              <option key={item.id} value={item.id}>
+                                {item.title ?? `Conversation ${index + 1}`}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      )}
+                      {nextConversationId && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            onSelectConversation?.(null)
+                            setAfterConversationId(nextConversationId)
+                          }}
+                        >
+                          More conversations
+                        </Button>
+                      )}
+                    </div>
+                  ) : null}
+                </WorkspaceConversationDetails>
               )}
             </div>
-            {conversation && task.status !== 'archived' && (
-              <div key={conversation.id} className="shrink-0">
-                {waitingSideChat && (
-                  <div role="status" className="flex items-center justify-between gap-2 border-t px-4 py-2 text-xs">
-                    <span>Side chat waiting</span>
-                    <Button type="button" variant="outline" size="xs" onClick={() => panel.activate(waitingSideChat)}>
-                      Open
-                    </Button>
-                  </div>
-                )}
-                <WorkspaceComposer
-                  onOpenFile={coach ? undefined : panel.openFile}
-                  task={task}
-                  conversationId={conversation.id}
-                  onSideChatCreated={coach ? undefined : id => panel.addSurface('side-chat', id)}
-                  coach={coach !== undefined}
-                />
-              </div>
-            )}
-            {task.status === 'archived' && (
-              <p className="text-muted-foreground border-t px-4 py-3 text-sm">
-                This chat is archived. Restore it to send a message.
-              </p>
-            )}
             {!coach && (
               <WorkspaceTerminalDrawer
                 target={terminalTarget}
@@ -265,57 +315,6 @@ export function WorkspaceChatColumn({
                 onOpenLink={url => resources.openBrowser(url)}
                 onAddToChat={addToChat}
               />
-            )}
-            {!coach && (
-              <WorkspaceConversationDetails
-                open={detailsOpen}
-                onOpenChange={setDetailsOpen}
-                mode={detailsMode}
-                taskId={task.id}
-                conversationId={conversation?.id ?? null}
-                projectId={task.projectId}
-                checkoutId={checkoutId}
-                workspacePath={runContext?.workspacePath ?? checkout?.path}
-                isScratch={project.data?.project.isScratch}
-                onOpenFiles={() => panel.openSurface('files')}
-                onOpenDiff={diffAvailable ? () => panel.openSurface('diff') : undefined}
-                onOpenPullRequests={() => panel.openSurface('pull-requests')}
-                onOpenSideChat={id => panel.addSurface('side-chat', id)}
-              >
-                {hasSeveral || nextConversationId ? (
-                  <div className="space-y-2">
-                    {hasSeveral && (
-                      <label className="flex min-w-0 flex-col gap-2 text-xs">
-                        Conversation
-                        <select
-                          className="bg-background w-full min-w-0 rounded-md border px-2 py-1"
-                          value={conversation?.id ?? ''}
-                          onChange={event => onSelectConversation?.(event.target.value as ConversationId)}
-                        >
-                          {conversations.map((item, index) => (
-                            <option key={item.id} value={item.id}>
-                              {item.title ?? `Conversation ${index + 1}`}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    {nextConversationId && (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        onClick={() => {
-                          onSelectConversation?.(null)
-                          setAfterConversationId(nextConversationId)
-                        }}
-                      >
-                        More conversations
-                      </Button>
-                    )}
-                  </div>
-                ) : null}
-              </WorkspaceConversationDetails>
             )}
           </div>
         </div>

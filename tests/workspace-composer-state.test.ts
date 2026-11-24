@@ -5,11 +5,13 @@ import {
   canSwitchAgentConnection,
   composerActionHintRows,
   connectionHandoffTarget,
+  conversationAgentChoice,
   currentConversationRuns,
   isRunActive,
   latestConversationCheckoutId,
   latestConversationSession,
   latestUnresolvedRun,
+  pausedFollowUpHead,
   shouldSubmitComposerKey,
   targetSelectionError,
   validateResumeSelection,
@@ -26,6 +28,17 @@ import type { WorkspaceNativeAgentSession, WorkspaceRunContext } from '@/shared/
 const taskId = taskIdSchema.make('task-1')
 const conversationId = conversationIdSchema.make('conversation-1')
 const checkoutId = workspaceCheckoutIdSchema.make('checkout-1')
+
+it('offers Resume for a held queue head even when more wakes are on a later page', () => {
+  const page = {
+    truncated: true,
+    total: 55,
+    items: Array.from({ length: 50 }, (_, index) => ({ commandId: `wake-${index}`, held: true })),
+  }
+  expect(pausedFollowUpHead(page.items)).toBe(page.items[0])
+  expect(pausedFollowUpHead([{ commandId: 'unheld-head', held: false }, ...page.items])).toBeUndefined()
+})
+
 const run = (id: string, status: AgentRun['status']): AgentRun => ({
   id: agentRunIdSchema.make(id),
   taskId,
@@ -278,5 +291,42 @@ describe('workspace composer state', () => {
     expect(validateResumeSelection(selection, [session], new Set([checkoutId]))).toBe(session)
     expect(validateResumeSelection({ ...selection, generation: 2 }, [session], new Set([checkoutId]))).toBeNull()
     expect(validateResumeSelection(selection, [session], new Set())).toBeNull()
+  })
+})
+
+describe('conversation agent choice', () => {
+  const at = (id: string, submittedAt: string): AgentRun => ({ ...run(id, 'completed'), submittedAt })
+  const context = (runId: AgentRun['id'], modelId: string, modeId?: string): WorkspaceRunContext => ({
+    runId,
+    conversationId,
+    checkoutId,
+    driverId: 'codex',
+    connectionId: 'codex',
+    modelId,
+    ...(modeId ? { modeId } : {}),
+  })
+  const first = at('delegated-run', '2026-11-02T00:00:00Z')
+  const second = at('follow-up', '2026-11-03T00:00:00Z')
+  const contexts = [context(first.id, 'gpt-5.5', 'high'), context(second.id, 'gpt-5.5-mini')]
+
+  it('shows the model and effort of the newest Run, such as the one a delegation started', () => {
+    expect(conversationAgentChoice({ runs: [first], contexts, conversationId, connectionId: 'codex' })).toEqual({
+      modelId: 'gpt-5.5',
+      modeId: 'high',
+    })
+    expect(conversationAgentChoice({ runs: [first, second], contexts, conversationId, connectionId: 'codex' })).toEqual(
+      { modelId: 'gpt-5.5-mini', modeId: '' },
+    )
+  })
+
+  it('offers nothing for another connection or a chat that never ran', () => {
+    expect(conversationAgentChoice({ runs: [first], contexts, conversationId, connectionId: 'claude' })).toEqual({
+      modelId: '',
+      modeId: '',
+    })
+    expect(conversationAgentChoice({ runs: [], contexts: [], conversationId, connectionId: 'codex' })).toEqual({
+      modelId: '',
+      modeId: '',
+    })
   })
 })

@@ -17,11 +17,13 @@ import {
   type ComposerAwaiting,
   composerPlaceholder,
   connectionHandoffTarget,
+  conversationAgentChoice,
   currentConversationRuns,
   isRunActive,
   isStopPrimary,
   latestConversationCheckoutId,
   latestUnresolvedRun,
+  pausedFollowUpHead,
   resolveComposerDispatch,
   shouldSubmitComposerKey,
   targetSelectionError,
@@ -34,6 +36,7 @@ import {
   useWorkspaceConnectionCatalog,
   useWorkspaceConnections,
 } from './connection-hooks.js'
+import { visibleQueuedFollowUps } from './delegation/delegation-status.js'
 import { DelegationStrip } from './delegation/DelegationStrip.js'
 import { WORKSPACE_DRAFT_MAX_LENGTH } from './draft-storage.js'
 import { useErrorToast } from './error-toast.js'
@@ -104,26 +107,6 @@ function pendingAgentHandoffMessage(currentAgent: string, nextAgent: string, mod
   return `Current agent: ${currentAgent}. Next agent: ${nextAgent} · ${model}. The next message starts a new session and receives a bounded handoff.`
 }
 
-function agentSelectionStatus(input: {
-  readonly busy: boolean
-  readonly hasQueuedFollowUps: boolean
-  readonly queueExhaustive: boolean
-  readonly queueError: string | null
-  readonly currentAgent: string
-  readonly nextModel: string
-}): string | null {
-  if (input.busy)
-    return `The active Run stays with ${input.currentAgent}. The next prompt uses ${input.nextModel}; queued prompts keep their saved agent and session.`
-  if (input.hasQueuedFollowUps)
-    return 'Finish or cancel queued follow-ups before switching agents. Each queued prompt keeps its saved agent and session.'
-  if (!input.queueExhaustive) {
-    return input.queueError
-      ? 'The follow-up queue could not be confirmed, so agent changes are disabled.'
-      : 'Checking the full follow-up queue before agent changes are available.'
-  }
-  return null
-}
-
 type WorkspaceComposerProps = {
   readonly onOpenFile?: ((path: string) => void) | undefined
   readonly task: Task
@@ -164,8 +147,6 @@ function WorkspaceComposerContent({
   const [selectedConnectionId, setSelectedConnectionId] = useState('')
   const [selectedModelId, setModelId] = useState<string | null>(null)
   const [selectedModeId, setModeId] = useState<string | null>(null)
-  const modelId = selectedModelId ?? preferences?.modelId ?? ''
-  const modeId = selectedModeId ?? preferences?.modeId ?? ''
   const [intent, setIntent] = useState<Intent | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>('local')
@@ -303,6 +284,14 @@ function WorkspaceComposerContent({
   const [branchError, setBranchError] = useState<string | null>(null)
   const connectionId = (resumeMode && selectedSession?.connectionId) || preferredConnectionId
   const selectedConnection = connections.data?.items.find(item => item.connectionId === connectionId) ?? null
+  const lastChoice = conversationAgentChoice({
+    runs: snapshot.data?.runs ?? [],
+    contexts: snapshot.data?.runContexts ?? [],
+    conversationId,
+    connectionId,
+  })
+  const modelId = selectedModelId ?? preferences?.modelId ?? lastChoice.modelId
+  const modeId = selectedModeId ?? preferences?.modeId ?? lastChoice.modeId
   const inspection = inspect.data?.connectionId === connectionId ? inspect.data : null
   const observedSession = useMemo(() => {
     if (resumeMode && selectedSession) return selectedSession
@@ -431,20 +420,6 @@ function WorkspaceComposerContent({
   let lockedConnectionId: string | undefined
   if (busy) lockedConnectionId = activeRunContext?.connectionId ?? selectedSession?.connectionId ?? connectionId
   else if (hasQueuedFollowUps) lockedConnectionId = connectionId || followUps.data?.items[0]?.connectionId
-  const agentStatus =
-    busy || hasQueuedFollowUps || (agentPickerDisabled && !pendingStart && !intent)
-      ? agentSelectionStatus({
-          busy,
-          hasQueuedFollowUps,
-          queueExhaustive,
-          queueError: followUps.error,
-          currentAgent:
-            connections.data?.items.find(item => item.connectionId === activeRunContext?.connectionId)?.label ??
-            selectedConnection?.label ??
-            'the current agent',
-          nextModel: `${selectedConnection?.label ?? 'the selected agent'} · ${selectedModelLabel}`,
-        })
-      : null
   let freshSessionMessage = ''
   if (handoffTarget) {
     const currentAgent =
@@ -838,11 +813,12 @@ function WorkspaceComposerContent({
     }
   }
 
+  const pausedQueueHead = pausedFollowUpHead(followUps.data?.items ?? [])
   const dispatchQueued = async (item: NonNullable<typeof followUps.data>['items'][number]) => {
     const queuedCheckoutId = item.checkoutId ?? (checkoutId ? checkoutId : null)
     const queuedDriverId = item.driverId ?? selectedSession?.driverId ?? selectedConnection?.driverId
     const queuedConnectionId = item.connectionId ?? selectedSession?.connectionId ?? connectionId
-    if (!queueExhaustive || blocked || !contextComplete || intent) return
+    if (item !== pausedQueueHead || busy || blocked || intent) return
     if (!queuedCheckoutId || !queuedDriverId || !queuedConnectionId) return
     const queuedSession = item.nativeSessionId
       ? validateResumeSelection(
@@ -911,9 +887,13 @@ function WorkspaceComposerContent({
 
   const conversationKey = String(conversationId)
   useErrorToast(`workspace:composer:${conversationKey}:branch`, "Couldn't switch branch", branchError)
+  const queuedPrompts = visibleQueuedFollowUps(followUps.data?.items ?? [])
 
   return (
-    <section className="bg-background shrink-0 px-4 pt-2 pb-3" aria-label="Conversation composer">
+    <section
+      className="bg-background shrink-0 ps-4 pe-[calc(1rem+var(--chat-lane-inset-end,0px))] pt-2 pb-3"
+      aria-label="Conversation composer"
+    >
       <div className="max-w-chat mx-auto w-full">
         {pendingStarts.store.error && (
           <p className="mb-2 text-sm text-amber-700" role="alert">
@@ -946,9 +926,9 @@ function WorkspaceComposerContent({
             </p>
           </details>
         )}
-        {followUps.data?.items.length ? (
+        {queuedPrompts.length > 0 ? (
           <ol className="mb-3 max-h-36 space-y-2 overflow-auto" aria-label="Queued prompts">
-            {followUps.data.items.map((item, index) => {
+            {queuedPrompts.map(({ item, number }) => {
               const queuedCheckoutId = item.checkoutId ?? checkoutId
               const queuedDriverId = item.driverId ?? selectedSession?.driverId ?? selectedConnection?.driverId
               const queuedConnectionId = item.connectionId ?? selectedSession?.connectionId ?? connectionId
@@ -969,10 +949,9 @@ function WorkspaceComposerContent({
                     )
                   : null
               const canResume = Boolean(
-                queueExhaustive &&
                 !busy &&
                 !blocked &&
-                contextComplete &&
+                !intent &&
                 queuedCheckoutId &&
                 queuedDriverId &&
                 queuedConnectionId &&
@@ -986,7 +965,7 @@ function WorkspaceComposerContent({
                 >
                   <div className="min-w-0">
                     <p className="text-muted-foreground text-xs">
-                      Queued #{index + 1} · {item.held ? 'Paused' : 'Sends when the agent is available'}
+                      Queued #{number} · {item.held ? 'Paused' : 'Sends when the agent is available'}
                     </p>
                     <PromptMessageContent content={item.prompt} attachments={item.attachments} bodyClassName="" />
                   </div>
@@ -1000,7 +979,7 @@ function WorkspaceComposerContent({
                     >
                       Cancel
                     </Button>
-                    {item.held && index === 0 && (
+                    {item === pausedQueueHead && (
                       <Button type="button" size="sm" disabled={!canResume} onClick={() => void dispatchQueued(item)}>
                         Resume
                       </Button>
@@ -1013,7 +992,7 @@ function WorkspaceComposerContent({
         ) : null}
         {followUps.data?.truncated && (
           <p className="mb-2 text-sm text-amber-700" role="status">
-            Queue history is truncated; dispatch is disabled until the full queue can be read.
+            Showing the first {followUps.data.items.length} queued prompts.
           </p>
         )}
         {sessions.data && (sessions.data.truncated || sessions.data.nextAfterId !== null) && (
@@ -1083,11 +1062,6 @@ function WorkspaceComposerContent({
               {handoffTarget ? 'Keep current agent' : 'Keep current session'}
             </Button>
           </div>
-        )}
-        {agentStatus && (
-          <p className="text-muted-foreground mb-2 text-xs" role="status">
-            {agentStatus}
-          </p>
         )}
         {latestGoal && (
           <section className="mb-2 rounded-md border px-3 py-2 text-xs" aria-label="Agent goal">

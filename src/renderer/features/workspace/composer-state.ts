@@ -6,6 +6,13 @@ import type { Platform } from '@/shared/schemas/renderer.js'
 import type { ConversationId, TaskId, WorkspaceCheckoutId } from '@/shared/schemas/workspace.js'
 import type { WorkspaceNativeAgentSession, WorkspaceRunContext } from '@/shared/schemas/workspace-store.js'
 
+export function pausedFollowUpHead<T extends { readonly held?: boolean | undefined }>(
+  items: readonly T[],
+): T | undefined {
+  const head = items[0]
+  return head?.held ? head : undefined
+}
+
 export function shouldSubmitComposerKey(input: {
   readonly key: string
   readonly shiftKey: boolean
@@ -160,6 +167,28 @@ export function latestConversationCheckoutId(
     .filter(run => checkoutByRun.has(run.id))
     .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt) || right.id.localeCompare(left.id))[0]
   return latest ? checkoutByRun.get(latest.id)?.checkoutId : undefined
+}
+
+/**
+ * The model and effort a chat last ran with: the composer shows it
+ * until the user picks another. A Delegated Task's chat saves no picker choice, so this is how its composer shows
+ * the model the parent agent chose. It does not carry over to another connection.
+ */
+export function conversationAgentChoice(input: {
+  readonly runs: readonly AgentRun[]
+  readonly contexts: readonly WorkspaceRunContext[]
+  readonly conversationId: ConversationId
+  readonly connectionId: string
+}): { readonly modelId: string; readonly modeId: string } {
+  const contextByRun = new Map(
+    input.contexts.filter(context => context.conversationId === input.conversationId).map(c => [c.runId, c]),
+  )
+  const latest = input.runs
+    .filter(run => contextByRun.has(run.id))
+    .sort((left, right) => right.submittedAt.localeCompare(left.submittedAt) || right.id.localeCompare(left.id))[0]
+  const context = latest ? contextByRun.get(latest.id) : undefined
+  if (context?.connectionId !== input.connectionId) return { modelId: '', modeId: '' }
+  return { modelId: context.modelId ?? '', modeId: context.modeId ?? '' }
 }
 
 /** Only the newest attempt can make the current composer state uncertain. Older terminal

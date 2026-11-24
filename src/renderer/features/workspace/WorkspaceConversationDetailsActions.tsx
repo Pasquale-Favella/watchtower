@@ -107,13 +107,13 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
   if (!scope && !workspacePath && !props.onOpenDiff && !props.onOpenPullRequests && !props.taskId) return null
 
   return (
-    <div className="divide-y">
+    <div className="divide-border/65 divide-y">
       <p role="status" className="sr-only">
         {announcement}
       </p>
       {props.visible.workspace && workspacePath && (
-        <section aria-label="Workspace">
-          <div className="flex min-w-0 items-center gap-2 px-2.5 py-2">
+        <section aria-label="Workspace" className="p-2">
+          <div className="flex h-8 min-w-0 items-center gap-2.5 px-2.5">
             <Folder aria-hidden="true" className="text-muted-foreground size-4 shrink-0" />
             <TextTooltip
               label={workspacePath}
@@ -131,7 +131,7 @@ export function WorkspaceConversationDetailsActions(props: Props): React.JSX.Ele
         !project.data?.project.isCoach &&
         (initializeGit || props.taskId || props.checkoutControls || props.onOpenDiff) &&
         (props.visible.branch || props.visible.changes || props.visible.pullRequests) && (
-          <section aria-labelledby={versionControlHeadingId} className="py-1">
+          <section aria-labelledby={versionControlHeadingId} className="p-2">
             <h3 id={versionControlHeadingId} ref={versionControlHeading} tabIndex={-1} className="sr-only outline-none">
               Version control
             </h3>
@@ -445,7 +445,7 @@ function TaskGitControls({
   return (
     <>
       {showBranch && (
-        <div className="px-2 py-1.5">
+        <div className="py-1">
           <CheckoutStrip
             layout="details"
             workspacePath={workspacePath ?? checkout.path}

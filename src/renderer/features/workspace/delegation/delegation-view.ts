@@ -34,6 +34,17 @@ export const accessModeLabels: Readonly<Record<AgentAccessMode, string>> = {
   'full-access': 'Full access',
 }
 
+/** Compact elapsed time for a delegate row: `12s`, `3m 05s`, `1h 02m`. */
+export function formatDelegateElapsed(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`
+  if (minutes > 0) return `${minutes}m ${String(seconds).padStart(2, '0')}s`
+  return `${seconds}s`
+}
+
 /** A short single-line excerpt of a result, for hover cards. */
 export function previewText(text: string | null | undefined): string | null {
   return excerpt(text, 200)
