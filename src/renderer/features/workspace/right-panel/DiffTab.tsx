@@ -33,6 +33,7 @@ import {
 } from '@/renderer/components/ui/dropdown-menu'
 import { Popover, PopoverContent, PopoverTrigger } from '@/renderer/components/ui/popover'
 import { Skeleton } from '@/renderer/components/ui/skeleton'
+import { Switch } from '@/renderer/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/renderer/components/ui/tooltip'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import type { CheckoutScope, DiffSourceSelector } from '@/shared/schemas/checkout-inspection.js'
@@ -526,22 +527,14 @@ function BaseRefPicker({ scope, revision, current, onSelect }: BaseRefPickerProp
               >
                 <span className="min-w-0 flex-1 truncate">{item.label}</span>
                 {item.local && item.remote ? (
-                  <button
-                    type="button"
-                    role="switch"
+                  <Switch
+                    size="sm"
                     aria-label={`Use remote version of ${item.label}`}
-                    aria-checked={current === item.remote}
+                    checked={current === item.remote}
                     onPointerDown={event => event.stopPropagation()}
-                    onClick={event => {
-                      event.stopPropagation()
-                      onSelect(current === item.remote ? item.local : item.remote)
-                    }}
-                    className={`border-border h-3.5 w-6 shrink-0 rounded-full border p-px ${current === item.remote ? 'bg-primary' : 'bg-muted'}`}
-                  >
-                    <span
-                      className={`bg-background block size-2.5 rounded-full transition-transform ${current === item.remote ? 'translate-x-2.5' : ''}`}
-                    />
-                  </button>
+                    onClick={event => event.stopPropagation()}
+                    onCheckedChange={checked => onSelect(checked ? item.remote : item.local)}
+                  />
                 ) : item.remote ? (
                   <Check role="img" aria-label="Remote only" className="text-muted-foreground size-3 shrink-0" />
                 ) : null}

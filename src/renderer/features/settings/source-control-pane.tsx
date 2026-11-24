@@ -5,6 +5,7 @@ import { QueryErrorNotice } from '@/renderer/components/QueryErrorNotice'
 import { Badge } from '@/renderer/components/ui/badge'
 import { Button } from '@/renderer/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/renderer/components/ui/select'
+import { Switch } from '@/renderer/components/ui/switch'
 import { TextTooltip } from '@/renderer/components/ui/tooltip'
 import {
   DEFAULT_SOURCE_CONTROL_PREFERENCES,
@@ -109,7 +110,7 @@ function SettingRow({
   )
 }
 
-function Switch({
+function SettingSwitch({
   id,
   checked,
   label,
@@ -125,21 +126,7 @@ function Switch({
   return (
     <TextTooltip
       label={tooltip}
-      trigger={
-        <button
-          id={id}
-          type="button"
-          role="switch"
-          aria-label={label}
-          aria-checked={checked}
-          onClick={() => onChange(!checked)}
-          className={`border-border focus-visible:ring-ring/50 h-5 w-9 shrink-0 rounded-full border p-0.5 outline-none focus-visible:ring-3 ${checked ? 'bg-primary' : 'bg-muted'}`}
-        >
-          <span
-            className={`bg-background block size-3.5 rounded-full transition-transform ${checked ? 'translate-x-4' : ''}`}
-          />
-        </button>
-      }
+      trigger={<Switch id={id} aria-label={label} checked={checked} onCheckedChange={next => onChange(next)} />}
     />
   )
 }
@@ -244,7 +231,7 @@ export function SourceControlPane(): React.JSX.Element {
             </span>
           }
           control={
-            <Switch
+            <SettingSwitch
               id="settings-source-control-github"
               checked={preferences.githubOffered}
               label="Offer GitHub"
