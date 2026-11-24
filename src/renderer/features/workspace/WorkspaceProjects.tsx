@@ -50,7 +50,7 @@ import { SidebarTaskRowContent } from './sidebar/SidebarTaskRowContent.js'
 import { useSidebarDelegatedParent } from './sidebar/use-sidebar-delegated-parent.js'
 import { useSidebarModels } from './sidebar/use-sidebar-models.js'
 import { useWorkspaceProjectDialog } from './use-project-dialog.js'
-import { shouldShowNoProjectsWelcome } from './WorkspaceNoProjectsWelcome.js'
+import { hasNoUserProjects } from './project-list-state.js'
 
 const PAGE_SIZE = 30
 const NO_PROJECT_GROUP = 'no-project'
@@ -225,7 +225,7 @@ export function WorkspaceProjects({
 
   const scratchProjects = useMemo(() => projects.filter(isScratchProject), [projects])
   const regularProjects = useMemo(() => projects.filter(project => !isScratchProject(project)), [projects])
-  const showNoProjects = shouldShowNoProjectsWelcome(projects, Boolean(projectPage?.nextAfterId))
+  const showNoProjects = hasNoUserProjects(projects, Boolean(projectPage?.nextAfterId))
   const searchTerm = search.trim().toLocaleLowerCase()
   const searching = searchTerm.length > 0
   const selectedGroupId =

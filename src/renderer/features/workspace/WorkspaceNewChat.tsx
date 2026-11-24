@@ -62,7 +62,6 @@ import { WorkspaceChatHeader } from './WorkspaceChatHeader.js'
 import { CheckoutStrip } from './WorkspaceCheckoutStrip.js'
 import { WorkspaceConversationDetails } from './WorkspaceConversationDetails.js'
 import type { WorkspaceImageContext } from './WorkspaceImageAnnotation.js'
-import { shouldShowNoProjectsWelcome, WorkspaceNoProjectsWelcome } from './WorkspaceNoProjectsWelcome.js'
 import { WorkspacePanelHost } from './WorkspacePanelHost.js'
 import { WorkspaceProjectPicker } from './WorkspaceProjectPicker.js'
 import type { PromptInputHandle } from './WorkspacePromptEditor.js'
@@ -200,14 +199,6 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
     return [selectedProject, ...registeredProjects]
   }, [registeredProjects, selectedProject])
   const archivedProject = selectedProject?.archivedAt ? selectedProject : null
-  // Only once the first page has loaded, so the welcome never flashes while the Projects are still arriving.
-  const noProjects =
-    !coach &&
-    !selectedProject &&
-    shouldShowNoProjectsWelcome(
-      projects.data ? [...priorProjectPages, ...projects.data.items] : null,
-      Boolean(projects.data?.nextAfterId),
-    )
   // Keyed by Project, so choosing another Project starts again from its current checkout.
   const [checkoutChoice, setCheckoutChoice] = useState<{
     readonly projectId: ProjectId | null
@@ -522,13 +513,7 @@ export function WorkspaceNewChat({ projectId, onStarted, onProjectChange, coach 
             <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto px-4 py-8">
               <section className="max-w-chat w-full" aria-label="New chat">
                 {coach && <coach.Welcome onSeed={seedPrompt} disabled={creating || starting || Boolean(intent)} />}
-                {noProjects && (
-                  <WorkspaceNoProjectsWelcome
-                    disabled={creating || starting}
-                    onStartWithoutProject={() => selectProject(null)}
-                  />
-                )}
-                {!coach && !noProjects && (
+                {!coach && (
                   <div className="mb-8 flex flex-col items-center gap-2 text-center">
                     {projectId && selectedProject && !archivedProject ? (
                       <>
